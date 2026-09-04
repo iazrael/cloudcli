@@ -1,6 +1,7 @@
 import { createElement } from 'react';
 
 import type { ChatMessage, DiffLine, LLMProvider, Project } from '@/shared/types';
+import { UiPreferencesProvider } from '@/shared/context/UiPreferencesContext';
 import { TranscriptExportDocument } from '@/modules/chat/export/TranscriptExportDocument';
 
 type BuildTranscriptHtmlInput = {
@@ -64,12 +65,19 @@ export async function buildTranscriptHtml(input: BuildTranscriptHtmlInput): Prom
   const { renderToStaticMarkup } = await import('react-dom/server');
 
   const body = renderToStaticMarkup(
-    createElement(TranscriptExportDocument, {
-      messages: input.messages,
-      createDiff: input.createDiff,
-      provider: input.provider,
-      selectedProject: input.selectedProject,
-    }),
+    // The transcript mounts the live MessageComponent, whose speak control
+    // reads the UI preferences context; a static render outside the app tree
+    // has no provider, so wrap one (harmless here: effects never run).
+    createElement(
+      UiPreferencesProvider,
+      null,
+      createElement(TranscriptExportDocument, {
+        messages: input.messages,
+        createDiff: input.createDiff,
+        provider: input.provider,
+        selectedProject: input.selectedProject,
+      }),
+    ),
   );
 
   const styles = dropUnresolvableUrls(collectDocumentStyles());

@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 
-import { describe, expect, it } from 'vitest';
-import { vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { ChatMessage } from '@/shared/types';
+import type * as UiPreferencesContext from '@/shared/context/UiPreferencesContext';
 import { buildTranscriptExport, toExportFileStem } from '@/modules/chat/utils/chatExport';
 import { createCachedDiffCalculator } from '@/modules/chat/utils/messageTransforms';
 
@@ -194,4 +194,12 @@ describe('html export', () => {
 
 vi.mock('@/shared/context/ThemeContext', () => ({ useTheme: () => ({ isDarkMode: false, toggleDarkMode: () => undefined }) }));
 
-vi.mock('@/shared/context/UiPreferencesContext', () => ({ useUiPreferences: () => ({ uiPreferences: { theme: 'light' }, setUiPreferences: () => undefined }) }));
+vi.mock('@/shared/context/UiPreferencesContext', async (importOriginal) => {
+  // Keep the real provider so buildTranscriptHtml's wrapper works; only the
+  // hook is stubbed (its reducer reads localStorage, pointless in jsdom).
+  const actual = await importOriginal<typeof UiPreferencesContext>();
+  return {
+    ...actual,
+    useUiPreferences: () => ({ uiPreferences: { theme: 'light' }, setUiPreferences: () => undefined }),
+  };
+});
