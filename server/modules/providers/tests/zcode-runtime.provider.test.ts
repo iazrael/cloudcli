@@ -61,8 +61,9 @@ const finishCreate = () => {
 
 // mode "perm-bridge": after session/send, mirrors the engine's blocking
 // permission flow — one interaction/requestPermission server request whose
-// answer releases the turn.
-let permPending = false;
+// answer releases the turn. The second announcement with a fresh protocol id
+// but the same requestId mirrors the engine's periodic re-announce.
+let permPending = 0;
 
 const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 rl.on('line', (line) => {
@@ -75,11 +76,13 @@ rl.on('line', (line) => {
       log('prefs_response', msg);
       finishCreate();
     }
-    if (msg.id === 'server-perm' && permPending) {
+    if ((msg.id === 'server-perm' || msg.id === 'server-perm2') && permPending > 0) {
       log('perm_answer', msg);
-      permPending = false;
-      send({ method: 'session/event', params: { sessionId, type: 'model_streaming', payload: { kind: 'text_delta', delta: 'ran it' } } });
-      send({ method: 'session/event', params: { sessionId, type: 'turn_complete', payload: { usage: { inputTokens: 3, outputTokens: 4 } } } });
+      permPending -= 1;
+      if (permPending === 0) {
+        send({ method: 'session/event', params: { sessionId, type: 'model_streaming', payload: { kind: 'text_delta', delta: 'ran it' } } });
+        send({ method: 'session/event', params: { sessionId, type: 'turn_complete', payload: { usage: { inputTokens: 3, outputTokens: 4 } } } });
+      }
     }
     return;
   }
@@ -111,8 +114,8 @@ rl.on('line', (line) => {
     }
     if (readMode() === 'perm-bridge') {
       // The turn blocks on a permission server request until answered.
-      permPending = true;
-      send({ id: 'server-perm', method: 'interaction/requestPermission', params: {
+      permPending = 2;
+      const permissionParams = {
         requestId: 'perm_test_1',
         sessionId,
         toolCallId: 'call_perm_1',
@@ -120,7 +123,9 @@ rl.on('line', (line) => {
         input: { command: 'touch /tmp/x' },
         reason: 'Tool Bash requires approval',
         riskLevel: 'medium',
-      } });
+      };
+      send({ id: 'server-perm', method: 'interaction/requestPermission', params: permissionParams });
+      send({ id: 'server-perm2', method: 'interaction/requestPermission', params: permissionParams });
       return;
     }
     send({ method: 'session/event', params: { sessionId, type: 'model_streaming', payload: { kind: 'text_delta', delta: 'hi there' } } });
@@ -297,14 +302,18 @@ test('runtime bridges interaction/requestPermission to the chat stream and answe
   assert.deepEqual(permissionMessage.input, { command: 'touch /tmp/x' });
 
   // Answering through the permissions facet unblocks the engine-side turn.
+  // One decision must satisfy BOTH stacked announcements (the engine
+  // re-announces pending permissions as fresh protocol requests).
   zcodeRuntimePermissions.resolve('perm_test_1', { allow: true });
 
   const result = await runPromise;
   assert.deepEqual(result, { sessionId: 'sess_stub_1', success: true });
 
-  const answer = readStubLog().find((entry) => entry.name === 'perm_answer');
-  assert.ok(answer, 'the engine must receive the decision');
-  assert.deepEqual((answer.value as { result: { decision: string } }).result, { decision: 'allow' });
+  const answers = readStubLog().filter((entry) => entry.name === 'perm_answer');
+  assert.equal(answers.length, 2, 'both announcements must receive the decision');
+  for (const answer of answers) {
+    assert.deepEqual((answer.value as { result: { decision: string } }).result, { decision: 'allow' });
+  }
   const delta = messages.find((msg) => msg.kind === 'stream_delta');
   assert.equal(delta?.content, 'ran it');
 });

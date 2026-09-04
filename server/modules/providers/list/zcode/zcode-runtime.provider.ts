@@ -104,7 +104,29 @@ const sessionCompletionState = new Map<string, {
 type PermissionBridgeAnswer = ServerRequestAnswer;
 
 const permissionWriters = new Map<string, ProviderRuntimeWriter>();
-const pendingPermissionResolvers = new Map<string, (answer: PermissionBridgeAnswer) => void>();
+/**
+ * One resolver per in-flight protocol request id: the engine re-announces a
+ * pending permission as a *new* server request (fresh protocol id) on an
+ * interval, and whichever announcement the engine ends up waiting on must
+ * receive the decision — so a user decision answers every stacked resolver
+ * for the business-level requestId.
+ */
+const pendingPermissionResolvers = new Map<string, Array<(answer: PermissionBridgeAnswer) => void>>();
+
+function answerPendingPermission(requestId: string, answer: PermissionBridgeAnswer): void {
+  const resolvers = pendingPermissionResolvers.get(requestId);
+  if (!resolvers) {
+    return;
+  }
+  pendingPermissionResolvers.delete(requestId);
+  for (const resolve of resolvers) {
+    try {
+      resolve(answer);
+    } catch {
+      // A resolver that throws on settle must not block its siblings.
+    }
+  }
+}
 
 /**
  * Bridges the engine's `interaction/requestPermission` server request to the
@@ -125,11 +147,14 @@ function permissionBridgeRequestHandler(
     return { error: { code: -32602, message: 'interaction/requestPermission is missing requestId' } };
   }
 
-  // The engine re-announces pending requests on an interval; answer each
-  // re-announcement with the same pending promise instead of stacking.
-  if (pendingPermissionResolvers.has(requestId)) {
+  const stack = pendingPermissionResolvers.get(requestId);
+
+  // The engine re-announces pending requests on an interval as fresh protocol
+  // requests (new ids); stack a resolver per announcement so the decision
+  // reaches whichever one the engine is waiting on.
+  if (stack) {
     return new Promise<PermissionBridgeAnswer>((resolve) => {
-      pendingPermissionResolvers.set(requestId, resolve);
+      stack.push(resolve);
     });
   }
 
@@ -157,7 +182,7 @@ function permissionBridgeRequestHandler(
   }));
 
   return new Promise<PermissionBridgeAnswer>((resolve) => {
-    pendingPermissionResolvers.set(requestId, resolve);
+    pendingPermissionResolvers.set(requestId, [resolve]);
   });
 }
 
@@ -172,20 +197,18 @@ function permissionBridgeRequestHandler(
  */
 export const zcodeRuntimePermissions = {
   resolve(requestId: string, decision: ProviderPermissionDecision): void {
-    const resolve = pendingPermissionResolvers.get(requestId);
-    if (!resolve) {
+    if (!pendingPermissionResolvers.has(requestId)) {
       return;
     }
-    pendingPermissionResolvers.delete(requestId);
 
     if (decision.allow) {
-      resolve(decision.updatedInput !== undefined
+      answerPendingPermission(requestId, decision.updatedInput !== undefined
         ? { result: { decision: 'modify', modifiedInput: decision.updatedInput, reason: decision.message } }
         : { result: { decision: 'allow', reason: decision.message } });
       return;
     }
 
-    resolve({ result: { decision: 'deny', reason: decision.message ?? 'Denied by user' } });
+    answerPendingPermission(requestId, { result: { decision: 'deny', reason: decision.message ?? 'Denied by user' } });
   },
 
   listPending(): unknown[] {
