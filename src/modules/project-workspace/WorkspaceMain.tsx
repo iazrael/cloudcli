@@ -10,6 +10,10 @@ import { usePaletteOpsRegister } from '@/modules/command-palette';
 import { TaskMasterPanel, useTaskMasterProjectSync, useTasksSettings } from '@/modules/task-master';
 import type { AppTab, Project, ProjectSession, SessionEstablishedContext, SessionNavigationOptions, SettingsMainTab } from '@/shared/types';
 import { useUiPreferences } from '@/shared/context/UiPreferencesContext';
+import {
+  useProcessingSessions,
+  useSessionProtectionActions,
+} from '@/shared/context/SessionProtectionContext';
 import { useFileOpenResolver } from '@/modules/project-workspace/hooks/useFileOpenResolver';
 import { EditorSidebar, useEditorSidebar } from '@/modules/code-editor';
 import WorkspaceHeader from '@/modules/project-workspace/WorkspaceHeader';
@@ -58,6 +62,12 @@ function WorkspaceMain({
 }: WorkspaceMainProps) {
   const preferences = useUiPreferences();
   const { showRawParameters, showThinking, sendByCtrlEnter } = preferences;
+  // Wiring the session-activity map in here is what makes the composer's
+  // activity indicator and the send→stop button reflect an in-flight run:
+  // ChatInterface treats both as optional, and without them the chat pane has
+  // no local source of "this session is processing".
+  const processingSessions = useProcessingSessions();
+  const { markSessionProcessing, markSessionIdle } = useSessionProtectionActions();
 
   const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings();
   const browserUseEnabled = useBrowserUseEnabled();
@@ -153,6 +163,9 @@ function WorkspaceMain({
                 onFileOpen={handleFileOpen}
                 onNavigateToSession={onNavigateToSession}
                 onSessionEstablished={onSessionEstablished}
+                onSessionProcessing={markSessionProcessing}
+                onSessionIdle={markSessionIdle}
+                processingSessions={processingSessions}
                 onShowSettings={onShowSettings}
                 showRawParameters={showRawParameters}
                 showThinking={showThinking}
