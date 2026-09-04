@@ -237,6 +237,17 @@ export function useChatRealtimeHandlers({
         return;
       }
 
+      // --- Thinking: merge frames of one reasoning block by id ---
+      // Frames sharing a stable message id are deltas of the same thinking
+      // segment; appending each as its own row stacked one collapsed entry
+      // per delta (the zcode reasoning stream).
+      if (msg.kind === 'thinking') {
+        if (sid) {
+          sessionStore.upsertThinkingDelta(sid, msg as unknown as NormalizedMessage);
+        }
+        return;
+      }
+
       // --- All other messages: route to store ---
       const shouldPersist =
         msg.kind !== 'complete'

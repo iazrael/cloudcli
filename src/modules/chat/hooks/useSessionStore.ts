@@ -18,6 +18,7 @@ import {
   isAssistantTextMatch,
   readMessageTime,
 } from '@/modules/chat/utils/sessionMessageTurnDedupe';
+import { isThinkingRowEchoOnServer, upsertThinkingRow } from '@/modules/chat/utils/sessionThinkingRows';
 import {
   buildSessionMessagesUrl,
   hasReachedCachedTailTimeBoundary,
@@ -228,6 +229,10 @@ function pruneRealtimeSupersededByServer(
       return true;
     }
 
+    if (message.kind === 'thinking' && isThinkingRowEchoOnServer(message, serverMessages)) {
+      return false;
+    }
+
     if (message.kind === 'text' && message.role === 'assistant') {
       if (isAssistantTextEchoedInSameTurnOnServer(message, serverMessages, realtimeMessages)) {
         return false;
@@ -261,6 +266,9 @@ function computeMerged(server: NormalizedMessage[], realtime: NormalizedMessage[
   const reconciledRealtime = removeOptimisticUserEchoes(server, realtime);
   const extra = reconciledRealtime.filter((message) => {
     if (serverIds.has(message.id)) {
+      return false;
+    }
+    if (message.kind === 'thinking' && isThinkingRowEchoOnServer(message, server)) {
       return false;
     }
     if (
@@ -677,6 +685,24 @@ export function useSessionStore() {
   }, [getSlot, notify]);
 
   /**
+   * Ingest a realtime `thinking` frame. Frames sharing one message id belong
+   * to the same reasoning block (zcode emits per-delta frames with a stable
+   * block id; other providers emit one frame per block), so a matching row
+   * receives the frame's content instead of the frame becoming its own
+   * transcript entry.
+   */
+  const upsertThinkingDelta = useCallback((sessionId: string, msg: NormalizedMessage) => {
+    const slot = getSlot(sessionId);
+    const normalizedMessage =
+      msg.sessionId === sessionId
+        ? msg
+        : { ...msg, sessionId };
+    slot.realtimeMessages = upsertThinkingRow(slot.realtimeMessages, normalizedMessage);
+    recomputeMergedIfNeeded(slot);
+    notify(sessionId);
+  }, [getSlot, notify]);
+
+  /**
    * Refreshes only the persisted tail and stitches it onto the contiguous
    * cached suffix. Large turns request a small offset bridge rather than the
    * whole transcript, and the final state is applied atomically.
@@ -836,6 +862,7 @@ export function useSessionStore() {
     fetchMore,
     appendRealtime,
     appendRealtimeBatch,
+    upsertThinkingDelta,
     refreshLatestFromServer,
     setActiveSession,
     setStatus,
@@ -848,7 +875,7 @@ export function useSessionStore() {
     getSessionSlot,
   }), [
     getSlot, has, fetchFromServer, fetchMore,
-    appendRealtime, appendRealtimeBatch, refreshLatestFromServer,
+    appendRealtime, appendRealtimeBatch, upsertThinkingDelta, refreshLatestFromServer,
     setActiveSession, setStatus, isStale, updateStreaming, finalizeStreaming,
     truncateAt, clearRealtime, getMessages, getSessionSlot,
   ]);

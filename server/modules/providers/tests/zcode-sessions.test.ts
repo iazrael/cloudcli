@@ -131,6 +131,104 @@ test('normalizeMessage maps reasoning deltas to thinking', () => {
   assert.equal(messages[0].content, 'Let me start');
 });
 
+test('consecutive reasoning deltas of one thinking segment share one stable id', () => {
+  const provider = new ZCodeSessionsProvider();
+  const first = provider.normalizeMessage(
+    { type: 'model_streaming', payload: { kind: 'reasoning_delta', delta: 'Let me start' } },
+    'sess_1'
+  );
+  const second = provider.normalizeMessage(
+    { type: 'model_streaming', payload: { kind: 'reasoning_delta', delta: ' and check' } },
+    'sess_1'
+  );
+
+  assert.equal(second.length, 1);
+  assert.equal(second[0].kind, 'thinking');
+  assert.equal(second[0].id, first[0].id);
+  assert.match(first[0].id, /^zcode_reasoning_/);
+});
+
+test('reasoning boundary markers emit nothing but open and close the block', () => {
+  const provider = new ZCodeSessionsProvider();
+  assert.deepEqual(
+    provider.normalizeMessage({ type: 'model_streaming', payload: { kind: 'reasoning_start', delta: '' } }, 'sess_1'),
+    []
+  );
+  const insideBlock = provider.normalizeMessage(
+    { type: 'model_streaming', payload: { kind: 'reasoning_delta', delta: 'thinking' } },
+    'sess_1'
+  );
+  assert.deepEqual(
+    provider.normalizeMessage({ type: 'model_streaming', payload: { kind: 'reasoning_end', delta: '' } }, 'sess_1'),
+    []
+  );
+  const nextBlock = provider.normalizeMessage(
+    { type: 'model_streaming', payload: { kind: 'reasoning_delta', delta: 'more thinking' } },
+    'sess_1'
+  );
+
+  assert.equal(insideBlock.length, 1);
+  assert.equal(nextBlock.length, 1);
+  assert.notEqual(nextBlock[0].id, insideBlock[0].id);
+});
+
+test('a text delta closes the reasoning block so the next segment gets a new id', () => {
+  const provider = new ZCodeSessionsProvider();
+  const first = provider.normalizeMessage(
+    { type: 'model_streaming', payload: { kind: 'reasoning_delta', delta: 'first thought' } },
+    'sess_1'
+  );
+  provider.normalizeMessage(
+    { type: 'model_streaming', payload: { kind: 'text_delta', delta: 'answer part' } },
+    'sess_1'
+  );
+  const second = provider.normalizeMessage(
+    { type: 'model_streaming', payload: { kind: 'reasoning_delta', delta: 'second thought' } },
+    'sess_1'
+  );
+
+  assert.equal(second.length, 1);
+  assert.notEqual(second[0].id, first[0].id);
+});
+
+test('reasoning blocks are tracked per session', () => {
+  const provider = new ZCodeSessionsProvider();
+  const sessionA = provider.normalizeMessage(
+    { type: 'model_streaming', payload: { kind: 'reasoning_delta', delta: 'session a thinks' } },
+    'sess_a'
+  );
+  const sessionB = provider.normalizeMessage(
+    { type: 'model_streaming', payload: { kind: 'reasoning_delta', delta: 'session b thinks' } },
+    'sess_b'
+  );
+
+  assert.notEqual(sessionA[0].id, sessionB[0].id);
+  const sessionAAgain = provider.normalizeMessage(
+    { type: 'model_streaming', payload: { kind: 'reasoning_delta', delta: ' still thinking' } },
+    'sess_a'
+  );
+  assert.equal(sessionAAgain[0].id, sessionA[0].id);
+});
+
+test('turn completion clears the open reasoning block', () => {
+  const provider = new ZCodeSessionsProvider();
+  const first = provider.normalizeMessage(
+    { type: 'model_streaming', payload: { kind: 'reasoning_delta', delta: 'run one thought' } },
+    'sess_1'
+  );
+  provider.normalizeMessage(
+    { type: 'turn_complete', payload: { usage: {} } },
+    'sess_1'
+  );
+  const second = provider.normalizeMessage(
+    { type: 'model_streaming', payload: { kind: 'reasoning_delta', delta: 'run two thought' } },
+    'sess_1'
+  );
+
+  assert.equal(second.length, 1);
+  assert.notEqual(second[0].id, first[0].id);
+});
+
 test('normalizeMessage skips streaming boundary markers with empty deltas', () => {
   const provider = new ZCodeSessionsProvider();
   assert.deepEqual(

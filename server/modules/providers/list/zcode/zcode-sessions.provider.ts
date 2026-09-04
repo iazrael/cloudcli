@@ -216,6 +216,15 @@ function aggregateZCodeSessionTokenUsage(
  */
 export class ZCodeSessionsProvider implements IProviderSessions {
   /**
+   * Open reasoning block per session: the stable message id shared by every
+   * `reasoning_delta` frame of one thinking segment. Engine 0.16.5 reasoning
+   * frames carry no message id, so the id is allocated here; without it each
+   * delta would reach the client as a separate transcript entry. Closed by
+   * `reasoning_end`, any other streaming kind, or run completion.
+   */
+  private reasoningBlockIds = new Map<string, string>();
+
+  /**
    * Normalizes live protocol events into frontend messages.
    *
    * Consumes the event shapes documented in Phase 0.3: typed envelopes such
@@ -314,6 +323,9 @@ export class ZCodeSessionsProvider implements IProviderSessions {
     // Run completion: both the per-model-call and the terminal turn event
     // carry usage; the runtime collapses them into exactly one complete.
     if (normalizedType === 'model_complete' || normalizedType === 'turn_complete') {
+      // A run never streams past its completion, so drop any reasoning block
+      // still open here instead of leaking it into the next run.
+      this.reasoningBlockIds.delete(eventSessionId ?? '');
       return [createNormalizedMessage({
         id: baseId,
         sessionId: eventSessionId,
@@ -377,8 +389,9 @@ export class ZCodeSessionsProvider implements IProviderSessions {
   /**
    * Normalizes `model_streaming` payload kinds per the Phase 0.3 mapping
    * table: text deltas stream, reasoning deltas think, tool announcements
-   * map to tool_use/tool_result. Boundary markers carry empty deltas and are
-   * skipped by the empty-content checks.
+   * map to tool_use/tool_result. Reasoning boundary markers open and close
+   * the per-session reasoning block instead of emitting messages; other
+   * streaming kinds close it so each thinking segment keeps its own id.
    */
   private normalizeStreamingKind(
     payload: AnyRecord,
@@ -387,6 +400,40 @@ export class ZCodeSessionsProvider implements IProviderSessions {
     baseId: string,
   ): NormalizedMessage[] {
     const kind = readOptionalString(payload.kind);
+    const reasoningStateKey = eventSessionId ?? '';
+
+    if (kind === 'reasoning_start') {
+      this.openReasoningBlock(reasoningStateKey);
+      return [];
+    }
+
+    if (kind === 'reasoning_delta') {
+      const content = extractText(payload.delta);
+      if (!content) {
+        return [];
+      }
+
+      return [createNormalizedMessage({
+        id: this.openReasoningBlock(reasoningStateKey),
+        sessionId: eventSessionId,
+        timestamp,
+        provider: PROVIDER,
+        kind: 'thinking',
+        content,
+      })];
+    }
+
+    if (kind === 'reasoning_end') {
+      this.reasoningBlockIds.delete(reasoningStateKey);
+      return [];
+    }
+
+    // Any other streaming kind ends the reasoning window, so a later thinking
+    // segment within the same model response opens a fresh block with its own
+    // id — mirroring the one reasoning part the engine persists per segment.
+    if (kind) {
+      this.reasoningBlockIds.delete(reasoningStateKey);
+    }
 
     if (kind === 'text_delta') {
       const content = extractText(payload.delta);
@@ -401,22 +448,6 @@ export class ZCodeSessionsProvider implements IProviderSessions {
         provider: PROVIDER,
         kind: 'stream_delta',
         role: 'assistant',
-        content,
-      })];
-    }
-
-    if (kind === 'reasoning_delta') {
-      const content = extractText(payload.delta);
-      if (!content) {
-        return [];
-      }
-
-      return [createNormalizedMessage({
-        id: baseId,
-        sessionId: eventSessionId,
-        timestamp,
-        provider: PROVIDER,
-        kind: 'thinking',
         content,
       })];
     }
@@ -455,6 +486,22 @@ export class ZCodeSessionsProvider implements IProviderSessions {
     }
 
     return [];
+  }
+
+  /**
+   * Returns the id of the session's open reasoning block, opening one with a
+   * fresh stable id when none exists. Every `reasoning_delta` of the same
+   * thinking segment therefore carries the same message id, which the client
+   * uses to merge the frames into a single transcript entry.
+   */
+  private openReasoningBlock(stateKey: string): string {
+    const existing = this.reasoningBlockIds.get(stateKey);
+    if (existing) {
+      return existing;
+    }
+    const id = generateMessageId('zcode_reasoning');
+    this.reasoningBlockIds.set(stateKey, id);
+    return id;
   }
 
   /**
