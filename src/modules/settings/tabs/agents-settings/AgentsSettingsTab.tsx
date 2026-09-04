@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 
-import type { AgentCategory, AgentContextByProvider, AgentProvider, AgentSettingsProject, AntigravityPermissionMode, ClaudePermissionsState, CodexPermissionMode, CursorPermissionsState, ProviderAuthStatus } from '@/shared/types';
+import type { AgentCategory, AgentContextByProvider, AgentProvider, AgentSettingsProject, AntigravityPermissionMode, ClaudePermissionsState, CodexPermissionMode, CursorPermissionsState, ProviderAuthStatus, ZcodePermissionMode } from '@/shared/types';
 import AgentCategoryContentSection from '@/modules/settings/tabs/agents-settings/sections/AgentCategoryContentSection';
 import AgentCategoryTabsSection from '@/modules/settings/tabs/agents-settings/sections/AgentCategoryTabsSection';
 import AgentSelectorSection from '@/modules/settings/tabs/agents-settings/sections/AgentSelectorSection';
@@ -18,6 +18,8 @@ type AgentsSettingsTabProps = {
   onCodexPermissionModeChange: (value: CodexPermissionMode) => void;
   antigravityPermissionMode?: AntigravityPermissionMode;
   onAntigravityPermissionModeChange?: (value: AntigravityPermissionMode) => void;
+  zcodePermissionMode?: ZcodePermissionMode;
+  onZcodePermissionModeChange?: (value: ZcodePermissionMode) => void;
   projects: AgentSettingsProject[];
 };
 
@@ -33,6 +35,8 @@ export default function AgentsSettingsTab({
   onCodexPermissionModeChange,
   antigravityPermissionMode,
   onAntigravityPermissionModeChange,
+  zcodePermissionMode,
+  onZcodePermissionModeChange,
   projects,
 }: AgentsSettingsTabProps) {
   const [selectedAgent, setSelectedAgent] = useState<AgentProvider>('claude');
@@ -125,6 +129,8 @@ export default function AgentsSettingsTab({
           onCodexPermissionModeChange={onCodexPermissionModeChange}
           antigravityPermissionMode={antigravityPermissionMode}
           onAntigravityPermissionModeChange={onAntigravityPermissionModeChange}
+          zcodePermissionMode={zcodePermissionMode}
+          onZcodePermissionModeChange={onZcodePermissionModeChange}
           projects={projects}
         />
       </div>

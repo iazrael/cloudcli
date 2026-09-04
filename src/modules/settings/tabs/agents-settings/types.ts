@@ -6,6 +6,7 @@ import type {
   CursorPermissionsState,
   CodexPermissionMode,
   AntigravityPermissionMode,
+  ZcodePermissionMode,
   SettingsProject,
 } from '@/shared/types';
 
@@ -28,6 +29,8 @@ export type AgentsSettingsTabProps = {
   onCodexPermissionModeChange: (value: CodexPermissionMode) => void;
   antigravityPermissionMode: AntigravityPermissionMode;
   onAntigravityPermissionModeChange: (value: AntigravityPermissionMode) => void;
+  zcodePermissionMode: ZcodePermissionMode;
+  onZcodePermissionModeChange: (value: ZcodePermissionMode) => void;
   projects: SettingsProject[];
 };
 
@@ -57,5 +60,7 @@ export type AgentCategoryContentSectionProps = {
   onCodexPermissionModeChange: (value: CodexPermissionMode) => void;
   antigravityPermissionMode: AntigravityPermissionMode;
   onAntigravityPermissionModeChange: (value: AntigravityPermissionMode) => void;
+  zcodePermissionMode: ZcodePermissionMode;
+  onZcodePermissionModeChange: (value: ZcodePermissionMode) => void;
   projects: SettingsProject[];
 };

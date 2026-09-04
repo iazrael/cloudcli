@@ -3,7 +3,7 @@ import { AlertTriangle, Plus, Shield, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { Button, Input } from '@/shared/ui';
-import type { AntigravityPermissionMode, CodexPermissionMode } from '@/shared/types';
+import type { AntigravityPermissionMode, CodexPermissionMode, ZcodePermissionMode } from '@/shared/types';
 
 const COMMON_CLAUDE_TOOLS = [
   'Bash(git log:*)',
@@ -707,11 +707,87 @@ function AntigravityPermissions({ permissionMode, onPermissionModeChange }: Omit
   );
 }
 
+type ZcodePermissionsProps = {
+  agent: 'zcode';
+  permissionMode: ZcodePermissionMode;
+  onPermissionModeChange: (value: ZcodePermissionMode) => void;
+};
+
+function ZcodePermissions({ permissionMode, onPermissionModeChange }: Omit<ZcodePermissionsProps, 'agent'>) {
+  const { t } = useTranslation('settings');
+
+  return (
+    <div className="space-y-6">
+      <div className="space-y-4">
+        <div className="flex items-center gap-3">
+          <Shield className="h-5 w-5 text-green-500" />
+          <h3 className="text-lg font-medium text-foreground">{t('permissions.zcode.permissionMode')}</h3>
+        </div>
+        <p className="text-sm text-muted-foreground">{t('permissions.zcode.description')}</p>
+
+        <PermissionModeRadioCard
+          name="zcodePermissionMode"
+          value="default"
+          currentValue={permissionMode}
+          onChange={onPermissionModeChange}
+          title={t('permissions.zcode.modes.default.title')}
+          description={t('permissions.zcode.modes.default.description')}
+        />
+
+        <PermissionModeRadioCard
+          name="zcodePermissionMode"
+          value="acceptEdits"
+          currentValue={permissionMode}
+          onChange={onPermissionModeChange}
+          variant="success"
+          title={t('permissions.zcode.modes.acceptEdits.title')}
+          description={t('permissions.zcode.modes.acceptEdits.description')}
+        />
+
+        <PermissionModeRadioCard
+          name="zcodePermissionMode"
+          value="plan"
+          currentValue={permissionMode}
+          onChange={onPermissionModeChange}
+          variant="info"
+          title={t('permissions.zcode.modes.plan.title')}
+          description={t('permissions.zcode.modes.plan.description')}
+        />
+
+        <PermissionModeRadioCard
+          name="zcodePermissionMode"
+          value="bypassPermissions"
+          currentValue={permissionMode}
+          onChange={onPermissionModeChange}
+          variant="warning"
+          hasWarningIcon
+          title={t('permissions.zcode.modes.bypassPermissions.title')}
+          description={t('permissions.zcode.modes.bypassPermissions.description')}
+        />
+
+        <details className="text-sm">
+          <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
+            {t('permissions.zcode.technicalDetails')}
+          </summary>
+          <div className="mt-2 space-y-2 rounded-lg bg-muted/50 p-3 text-xs text-muted-foreground">
+            <p><strong>{t('permissions.zcode.modes.default.title')}:</strong> {t('permissions.zcode.technicalInfo.default')}</p>
+            <p><strong>{t('permissions.zcode.modes.acceptEdits.title')}:</strong> {t('permissions.zcode.technicalInfo.acceptEdits')}</p>
+            <p><strong>{t('permissions.zcode.modes.plan.title')}:</strong> {t('permissions.zcode.technicalInfo.plan')}</p>
+            <p><strong>{t('permissions.zcode.modes.bypassPermissions.title')}:</strong> {t('permissions.zcode.technicalInfo.bypassPermissions')}</p>
+            <p className="text-xs opacity-75">{t('permissions.zcode.technicalInfo.overrideNote')}</p>
+          </div>
+        </details>
+      </div>
+    </div>
+  );
+}
+
 type PermissionsContentProps =
   | ClaudePermissionsProps
   | CursorPermissionsProps
   | CodexPermissionsProps
-  | AntigravityPermissionsProps;
+  | AntigravityPermissionsProps
+  | ZcodePermissionsProps;
 
 /** Rendered by AgentCategoryContentSection for the "permissions" category, one variant per agent provider. */
 export default function PermissionsContent(props: PermissionsContentProps) {
@@ -725,6 +801,10 @@ export default function PermissionsContent(props: PermissionsContentProps) {
 
   if (props.agent === 'antigravity') {
     return <AntigravityPermissions {...props} />;
+  }
+
+  if (props.agent === 'zcode') {
+    return <ZcodePermissions {...props} />;
   }
 
   return <CodexPermissions {...props} />;

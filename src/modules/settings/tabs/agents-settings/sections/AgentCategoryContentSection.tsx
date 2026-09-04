@@ -1,4 +1,4 @@
-import type { AgentCategory, AgentContextByProvider, AgentProvider, AgentSettingsProject, ClaudePermissionsState, CodexPermissionMode, CursorPermissionsState, McpProject, SkillsProject, AntigravityPermissionMode } from '@/shared/types';
+import type { AgentCategory, AgentContextByProvider, AgentProvider, AgentSettingsProject, ClaudePermissionsState, CodexPermissionMode, CursorPermissionsState, McpProject, SkillsProject, AntigravityPermissionMode, ZcodePermissionMode } from '@/shared/types';
 import { McpServers } from '@/modules/mcp';
 import { ProviderSkills } from '@/modules/skills';
 import AccountContent from '@/modules/settings/tabs/agents-settings/sections/content/AccountContent';
@@ -16,6 +16,8 @@ type AgentCategoryContentSectionProps = {
   onCodexPermissionModeChange: (value: CodexPermissionMode) => void;
   antigravityPermissionMode?: AntigravityPermissionMode;
   onAntigravityPermissionModeChange?: (value: AntigravityPermissionMode) => void;
+  zcodePermissionMode?: ZcodePermissionMode;
+  onZcodePermissionModeChange?: (value: ZcodePermissionMode) => void;
   projects: AgentSettingsProject[];
 };
 
@@ -32,6 +34,8 @@ export default function AgentCategoryContentSection({
   onCodexPermissionModeChange,
   antigravityPermissionMode,
   onAntigravityPermissionModeChange,
+  zcodePermissionMode,
+  onZcodePermissionModeChange,
   projects,
 }: AgentCategoryContentSectionProps) {
   return (
@@ -93,6 +97,14 @@ export default function AgentCategoryContentSection({
           agent="antigravity"
           permissionMode={antigravityPermissionMode!}
           onPermissionModeChange={onAntigravityPermissionModeChange!}
+        />
+      )}
+
+      {selectedCategory === 'permissions' && selectedAgent === 'zcode' && (
+        <PermissionsContent
+          agent="zcode"
+          permissionMode={zcodePermissionMode!}
+          onPermissionModeChange={onZcodePermissionModeChange!}
         />
       )}
 

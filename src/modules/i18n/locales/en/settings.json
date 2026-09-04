@@ -497,6 +497,36 @@
         "bypassPermissions": "Maps to agy --dangerously-skip-permissions. Full bypass of approval prompts."
       }
     },
+    "zcode": {
+      "permissionMode": "Permission Mode",
+      "description": "Controls how ZCode handles file edits, plan generation, and command execution",
+      "modes": {
+        "default": {
+          "title": "Default",
+          "description": "Standard interactive mode (build). Prompts before executing write tools or mutating system state."
+        },
+        "acceptEdits": {
+          "title": "Accept Edits",
+          "description": "Automatically accepts and applies proposed file edits (maps to the engine's edit mode)."
+        },
+        "plan": {
+          "title": "Plan Mode",
+          "description": "Read-only analysis and planning mode. Generates structured plans without editing files."
+        },
+        "bypassPermissions": {
+          "title": "Bypass Permissions",
+          "description": "Full system access with no restrictions. All commands and tool actions run automatically (maps to the engine's yolo mode). Use with caution."
+        }
+      },
+      "technicalDetails": "Technical details",
+      "technicalInfo": {
+        "default": "Maps to the engine's build mode: interactive prompts for sensitive actions.",
+        "acceptEdits": "Maps to the engine's edit mode: file edits are auto-accepted.",
+        "plan": "Maps to the engine's plan mode: read-only planning without modifications.",
+        "bypassPermissions": "Maps to the engine's yolo mode: everything runs without approval prompts.",
+        "overrideNote": "The per-session permission selector in the chat composer overrides this default for the current turn."
+      }
+    },
     "actions": {
       "add": "Add"
     }

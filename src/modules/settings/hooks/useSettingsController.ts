@@ -18,6 +18,7 @@ import type {
   NotificationPreferencesState,
   ProjectSortOrder,
   SettingsMainTab,
+  ZcodePermissionMode,
 } from '@/shared/types';
 
 type ThemeContextValue = {
@@ -49,6 +50,10 @@ type CodexSettingsStorage = {
 
 type AntigravitySettingsStorage = {
   permissionMode?: AntigravityPermissionMode;
+};
+
+type ZcodeSettingsStorage = {
+  permissionMode?: ZcodePermissionMode;
 };
 
 type NotificationPreferencesResponse = {
@@ -90,6 +95,14 @@ const toCodexPermissionMode = (value: unknown): CodexPermissionMode => {
 };
 
 const toAntigravityPermissionMode = (value: unknown): AntigravityPermissionMode => {
+  if (value === 'acceptEdits' || value === 'plan' || value === 'bypassPermissions') {
+    return value;
+  }
+
+  return 'default';
+};
+
+const toZcodePermissionMode = (value: unknown): ZcodePermissionMode => {
   if (value === 'acceptEdits' || value === 'plan' || value === 'bypassPermissions') {
     return value;
   }
@@ -172,6 +185,7 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
   ));
   const [codexPermissionMode, setCodexPermissionMode] = useState<CodexPermissionMode>('default');
   const [antigravityPermissionMode, setAntigravityPermissionMode] = useState<AntigravityPermissionMode>('default');
+  const [zcodePermissionMode, setZcodePermissionMode] = useState<ZcodePermissionMode>('default');
 
   const [showLoginModal, setShowLoginModal] = useState(false);
   const [loginProvider, setLoginProvider] = useState<ActiveLoginProvider>('');
@@ -215,6 +229,12 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
         {},
       );
       setAntigravityPermissionMode(toAntigravityPermissionMode(savedAntigravitySettings.permissionMode));
+
+      const savedZcodeSettings = parseJson<ZcodeSettingsStorage>(
+        localStorage.getItem('zcode-settings'),
+        {},
+      );
+      setZcodePermissionMode(toZcodePermissionMode(savedZcodeSettings.permissionMode));
 
       try {
         const notificationResponse = await authenticatedFetch('/api/settings/notification-preferences');
@@ -299,6 +319,11 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
         lastUpdated: now,
       }));
 
+      localStorage.setItem('zcode-settings', JSON.stringify({
+        permissionMode: zcodePermissionMode,
+        lastUpdated: now,
+      }));
+
       const notificationResponse = await authenticatedFetch('/api/settings/notification-preferences', {
         method: 'PUT',
         body: JSON.stringify(notificationPreferences),
@@ -323,6 +348,7 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
     cursorPermissions.skipPermissions,
     notificationPreferences,
     projectSortOrder,
+    zcodePermissionMode,
   ]);
 
   const updateCodeEditorSetting = useCallback(
@@ -428,6 +454,8 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
     setCodexPermissionMode,
     antigravityPermissionMode,
     setAntigravityPermissionMode,
+    zcodePermissionMode,
+    setZcodePermissionMode,
     providerAuthStatus,
     openLoginForProvider,
     showLoginModal,

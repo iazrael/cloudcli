@@ -1545,6 +1545,8 @@ type TaskPriority = 'high' | 'medium' | 'low' | string;
 // ─── Fork additions consolidated from src/types/app, chat/types, settings/types ───
 export type AntigravityPermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions';
 
+export type ZcodePermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions';
+
 export type AuthStatus = ProviderAuthStatus;
 
 export type ChatInterfaceProps = {
@@ -1588,6 +1590,7 @@ export type SettingsStoragePayload = {
   cursor: CursorPermissionsState & { lastUpdated: string };
   codex: { permissionMode: CodexPermissionMode; lastUpdated: string };
   antigravity: { permissionMode: AntigravityPermissionMode; lastUpdated: string };
+  zcode: { permissionMode: ZcodePermissionMode; lastUpdated: string };
 };
 
 export type SubagentChildTool = {
