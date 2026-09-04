@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import fsSync from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { after, test } from 'node:test';
+import { after, before, test } from 'node:test';
 
 import type {
   NormalizedMessage,
@@ -26,6 +26,8 @@ import type {
 import { protocolClient } from '../list/zcode/zcode-protocol.client.js';
 import { ZCodeRuntimeProvider } from '../list/zcode/zcode-runtime.provider.js';
 import { ZCodeSessionsProvider } from '../list/zcode/zcode-sessions.provider.js';
+
+import { closeConnection, initializeDatabase } from '@/modules/database/index.js';
 
 const stubDir = fsSync.mkdtempSync(path.join(os.tmpdir(), 'zcode-stub-'));
 const stubPath = path.join(stubDir, 'zcode-stub.cjs');
@@ -101,6 +103,15 @@ rl.on('line', (line) => {
     return;
   }
 
+  if (msg.method === 'session/resume') {
+    if (readMode() === 'resume-fail') {
+      send({ id: msg.id, error: { code: -32004, message: 'Session is not active: ' + (msg.params?.sessionId ?? '') } });
+      return;
+    }
+    send({ id: msg.id, result: { messages: [] } });
+    return;
+  }
+
   if (msg.method === 'session/setModel') {
     log('setModel', msg.params);
     send({ id: msg.id, result: {} });
@@ -119,6 +130,18 @@ fsSync.writeFileSync(logFilePath, '');
 process.env.CLOUDCLI_ZCODE_ENGINE = stubPath;
 process.env.ZCODE_STUB_MODE_FILE = modeFilePath;
 process.env.ZCODE_STUB_LOG = logFilePath;
+
+// The runtime reads the session row (model/effort) via sessionsDb during a
+// run, so the tests need a migrated app database. Without this the lazy
+// connection falls back to the legacy working-directory shell database,
+// which has no tables and fails every run with SQLITE_ERROR.
+const runtimeTestDbPath = path.join(stubDir, 'auth.db');
+fsSync.writeFileSync(runtimeTestDbPath, '');
+process.env.DATABASE_PATH = runtimeTestDbPath;
+
+before(async () => {
+  await initializeDatabase();
+});
 
 const sessionsProvider = new ZCodeSessionsProvider();
 
@@ -147,6 +170,7 @@ const readStubLog = (): Array<{ name: string; value: unknown }> =>
     .map((line) => JSON.parse(line) as { name: string; value: unknown });
 
 after(async () => {
+  closeConnection();
   await protocolClient.shutdown();
 });
 
@@ -201,6 +225,7 @@ test('runtime reports turn.failed as an error and completes with a failing exit 
   const error = messages.find((msg) => msg.kind === 'error');
   assert.ok(error, 'turn.failed must surface as an error message');
   assert.equal(error.text, 'provider auth failed');
+  assert.equal(error.content, 'provider auth failed');
   const complete = messages.find((msg) => msg.kind === 'complete');
   assert.ok(complete, 'run must still terminate with a complete event');
   assert.equal(complete.exitCode, 1);

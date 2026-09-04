@@ -237,13 +237,19 @@ export function resolveZCodeModelRef(
     };
   }
 
-  // Look up enabled provider in config if possible
-  try {
-    const configPath = path.join(getZCodeStorageDir(), 'v2', 'config.json');
-    const content = fsSync.readFileSync(configPath, 'utf8');
-    const config = readObjectRecord(JSON.parse(content));
-    const providers = readObjectRecord(config?.provider);
-    if (providers) {
+  // Look up enabled provider in config if possible. The app-server engine
+  // resolves provider ids against its own cli/config.json, so that file is
+  // consulted first; the App's v2 config only serves as a fallback because
+  // its provider ids (builtin:*) may not exist in the engine's config.
+  for (const configPath of [
+    path.join(getZCodeStorageDir(), 'cli', 'config.json'),
+    path.join(getZCodeStorageDir(), 'v2', 'config.json'),
+  ]) {
+    try {
+      const content = fsSync.readFileSync(configPath, 'utf8');
+      const config = readObjectRecord(JSON.parse(content));
+      const providers = readObjectRecord(config?.provider);
+      if (!providers) continue;
       for (const [providerId, providerConfig] of Object.entries(providers)) {
         const providerRecord = readObjectRecord(providerConfig);
         if (providerRecord?.enabled === false) continue;
@@ -268,9 +274,9 @@ export function resolveZCodeModelRef(
           };
         }
       }
+    } catch {
+      // Config read failed, try the next config source
     }
-  } catch {
-    // Config read failed, use default
   }
 
   return {

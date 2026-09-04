@@ -30,6 +30,19 @@ import { getZCodeDatabasePath } from './zcode-data-root.js';
 const PROVIDER = 'zcode';
 
 /**
+ * Engine 0.16.5 renamed the session/event type strings from snake_case to
+ * dotted names. Map the new names back onto the ones this facet normalizes
+ * against (validated on engine 0.16.3) so both engine generations share one
+ * code path. `turn.failed` kept its dotted name across both versions.
+ */
+const EVENT_TYPE_ALIASES: Record<string, string> = {
+  'model.streaming': 'model_streaming',
+  'turn.completed': 'turn_complete',
+  'tool.updated': 'tool_call_scheduled',
+  'permission.requested': 'permission_request',
+};
+
+/**
  * Open a read-only connection to ZCode's SQLite database.
  * Returns null if the database doesn't exist.
  */
@@ -237,6 +250,7 @@ export class ZCodeSessionsProvider implements IProviderSessions {
     if (!type) {
       return [];
     }
+    const normalizedType = EVENT_TYPE_ALIASES[type] ?? type;
 
     const payload = readObjectRecord(event.payload) ?? {};
     const eventSessionId = readOptionalString(event.sessionId)
@@ -248,12 +262,36 @@ export class ZCodeSessionsProvider implements IProviderSessions {
       ?? readOptionalString(payload.messageId)
       ?? generateMessageId('zcode');
 
-    if (type === 'model_streaming') {
+    if (normalizedType === 'model_streaming') {
       return this.normalizeStreamingKind(payload, eventSessionId, timestamp, baseId);
     }
 
-    // Tool calls surface as their own event type before execution
-    if (type === 'tool_call_scheduled') {
+    // Tool calls surface as their own event type before execution. Engine
+    // 0.16.5 funnels the whole tool lifecycle through `tool.updated` (aliased
+    // here) and distinguishes stages via payload.kind. Only the scheduling
+    // stage emits a tool_use — started/progress are incremental updates for
+    // an already-announced call, and the frontend appends realtime frames
+    // without dedup, so re-emitting them would stack duplicate tool cards.
+    if (normalizedType === 'tool_call_scheduled') {
+      const stage = readOptionalString(payload.kind);
+      if (stage === 'started' || stage === 'progress' || stage === 'batch') {
+        return [];
+      }
+      if (stage === 'result' || stage === 'error') {
+        const resultPartId = readOptionalString(payload.resultPartId);
+        return [createNormalizedMessage({
+          id: baseId,
+          sessionId: eventSessionId,
+          timestamp,
+          provider: PROVIDER,
+          kind: 'tool_result',
+          toolId: readOptionalString(payload.toolCallId) ?? baseId,
+          toolResult: {
+            content: resultPartId ? `Result stored in part ${resultPartId}` : '',
+            isError: stage === 'error',
+          },
+        })];
+      }
       const toolName = readOptionalString(payload.toolName) ?? 'Tool';
       const toolId = readOptionalString(payload.toolCallId) ?? baseId;
       return [createNormalizedMessage({
@@ -270,7 +308,7 @@ export class ZCodeSessionsProvider implements IProviderSessions {
 
     // Run completion: both the per-model-call and the terminal turn event
     // carry usage; the runtime collapses them into exactly one complete.
-    if (type === 'model_complete' || type === 'turn_complete') {
+    if (normalizedType === 'model_complete' || normalizedType === 'turn_complete') {
       return [createNormalizedMessage({
         id: baseId,
         sessionId: eventSessionId,
@@ -281,7 +319,7 @@ export class ZCodeSessionsProvider implements IProviderSessions {
       })];
     }
 
-    if (type === 'permission_request' || type === 'approval') {
+    if (normalizedType === 'permission_request' || normalizedType === 'approval') {
       return [createNormalizedMessage({
         id: baseId,
         sessionId: eventSessionId,
@@ -293,10 +331,14 @@ export class ZCodeSessionsProvider implements IProviderSessions {
       })];
     }
 
-    if (type === 'error' || type === 'fatal' || type === 'turn.failed') {
+    if (normalizedType === 'error' || normalizedType === 'fatal' || normalizedType === 'turn.failed') {
       // `turn.failed` (observed live on engine 0.16.3) wraps the cause in
       // payload.error ({message, attribution:{statusCode, reason, ...}}).
       const errorRecord = readObjectRecord(payload.error);
+      const errorText = readOptionalString(errorRecord?.message)
+        ?? readOptionalString(payload.error)
+        ?? readOptionalString(payload.message)
+        ?? 'Unknown ZCode error';
       return [createNormalizedMessage({
         id: baseId,
         sessionId: eventSessionId,
@@ -304,10 +346,10 @@ export class ZCodeSessionsProvider implements IProviderSessions {
         provider: PROVIDER,
         kind: 'error',
         isError: true,
-        text: readOptionalString(errorRecord?.message)
-          ?? readOptionalString(payload.error)
-          ?? readOptionalString(payload.message)
-          ?? 'Unknown ZCode error',
+        // `content` is what the chat UI renders; `text` keeps parity with the
+        // runtime-level error messages and earlier zcode error consumers.
+        content: errorText,
+        text: errorText,
       })];
     }
 

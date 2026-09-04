@@ -8,8 +8,10 @@
  * - Events only flow after `session/subscribe` (`deliveryKind:
  *   'desktop-continuous'`); subscribe may fail for inactive sessions (-32004)
  *   and is best-effort.
- * - `session/send` takes `content` (not `message`) and its result arrives on
- *   the event stream, so it is sent without a request timeout.
+ * - `session/send` takes `content` (not `message`). Its own response returns
+ *   immediately and says nothing about the turn; turn completion is observed
+ *   on the event stream (`turn.completed`), so the send request itself is
+ *   issued without a request timeout.
  * - The gateway keys aborts by the app-facing session id, which arrives in
  *   `options.sessionId`; the ZCode-native `sess_*` id is resolved/created and
  *   announced back via `writer.setSessionId` plus a `session_created` event.
@@ -116,8 +118,11 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
     // session/create failure would never reach the chat stream and the page
     // would stay silent (the gateway only logs runtime rejections).
     let zcodeSessionId: string;
+    let resumedSession = false;
     try {
-      zcodeSessionId = await this.resolveOrCreateSession(appSessionId, options, context, writer);
+      const resolved = await this.resolveOrCreateSession(appSessionId, options, context, writer);
+      zcodeSessionId = resolved.sessionId;
+      resumedSession = resolved.resumed;
     } catch (error) {
       this.sendRuntimeError(writer, appSessionId, error);
       this.notifyRunOutcome({
@@ -138,7 +143,7 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
 
     try {
       await this.subscribeToSessionEvents(zcodeSessionId);
-      await this.configureSessionModel(zcodeSessionId, options);
+      await this.configureSessionModel(zcodeSessionId, options, context, resumedSession);
       await this.configureSessionMode(zcodeSessionId, options);
 
       const eventListener = this.createSessionEventListener(zcodeSessionId, writer, context);
@@ -247,6 +252,9 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
       provider: 'zcode',
       kind: 'error',
       isError: true,
+      // Both fields carry the text: `content` is what the chat UI renders,
+      // `text` is what earlier zcode error consumers read.
+      content: error instanceof Error ? error.message : 'Unknown ZCode runtime error',
       text: error instanceof Error ? error.message : 'Unknown ZCode runtime error',
     });
     writer.send(errorMessage);
@@ -316,23 +324,34 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
    * Implements session resolution flow from §3.2.3:
    * 1. Resolve existing session via context.resolveProviderSessionId() with
    *    the app-facing session id
-   * 2. If no session, call session/create for the run's workspace
-   * 3. Report the returned sess_* id back to the gateway (setSessionId plus
-   *    a session_created event, matching the claude-runtime pattern)
+   * 2. Resume it engine-side — an engine restart orphans its in-memory
+   *    sessions while the DB mapping survives, and a send against an orphaned
+   *    session fails with -32004 "Session is not active"
+   * 3. When the session is gone engine-side entirely (resume fails), create a
+   *    replacement session for the run's workspace and report it back to the
+   *    gateway (setSessionId plus a session_created event, matching the
+   *    claude-runtime pattern). `writer.setSessionId` updates the stored
+   *    mapping, so the replacement is sticky across subsequent sends.
    */
   private async resolveOrCreateSession(
     appSessionId: string | null,
     options: AnyRecord,
     context: ProviderRuntimeContext,
     writer: ProviderRuntimeWriter,
-  ): Promise<string> {
+  ): Promise<{ sessionId: string; resumed: boolean }> {
     const existingSessionId = appSessionId
       ? context.resolveProviderSessionId(appSessionId)
       : null;
 
     if (existingSessionId) {
-      console.debug(`[ZCodeRuntime] Resolved existing session: ${existingSessionId}`);
-      return existingSessionId;
+      const resumed = await this.tryResumeSession(existingSessionId);
+      if (resumed) {
+        console.debug(`[ZCodeRuntime] Resumed existing session: ${existingSessionId}`);
+        return { sessionId: existingSessionId, resumed: true };
+      }
+      console.info(
+        `[ZCodeRuntime] Session ${existingSessionId} is no longer available engine-side; creating a replacement session`
+      );
     }
 
     const workspacePath = readOptionalString(options.workspacePath)
@@ -372,10 +391,40 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
       writer.send(sessionCreatedEvent);
 
       console.info(`[ZCodeRuntime] Created new session: ${newSessionId}`);
-      return newSessionId;
+      return { sessionId: newSessionId, resumed: false };
     } catch (error) {
       console.error('[ZCodeRuntime] Failed to create session:', error);
       throw new Error(`Failed to create ZCode session: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Attempts to reactivate an existing session engine-side.
+   *
+   * An engine process restart forgets its in-memory sessions, so a stored
+   * `provider_session_id` can point at a session the current engine no longer
+   * considers active. `session/resume` reloads it from ZCode's own database.
+   *
+   * Only "session is gone" failures (-32004, method missing on older engines)
+   * justify falling back to a replacement session: anything else (timeouts,
+   * transport errors) must propagate so the run surfaces the real cause
+   * instead of silently forking a fresh session on every send.
+   */
+  private async tryResumeSession(sessionId: string): Promise<boolean> {
+    try {
+      await protocolClient.sendRequest('session/resume', { sessionId });
+      return true;
+    } catch (error) {
+      const code = (error as AnyRecord | undefined)?.code;
+      const message = error instanceof Error ? error.message : String(error);
+      const sessionGone = code === -32004
+        || /not active|not found|does not exist/i.test(message)
+        || code === -32601; // engine without session/resume support
+      if (!sessionGone) {
+        throw error;
+      }
+      console.warn(`[ZCodeRuntime] Session ${sessionId} is gone engine-side (${message}); will create a replacement`);
+      return false;
     }
   }
 
@@ -404,14 +453,27 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
    *
    * The current model and variant are read from ZCode's own database (most recent
    * `message.data.modelID` / `model.variant`).
+   *
+   * `forceModelSync` skips the database early-return: a resumed session's
+   * stored model reference may name a provider that no longer exists in the
+   * engine's config (provider ids drift across engine lifetimes), which makes
+   * the next send fail with -32031 until the model is explicitly re-selected.
    */
   private async configureSessionModel(
     sessionId: string,
     options: AnyRecord,
+    context: ProviderRuntimeContext,
+    forceModelSync = false,
   ): Promise<void> {
-    const requestedModel = readOptionalString(options.model);
-    let requestedEffort = readOptionalString(options.effort);
     const appSessionId = readOptionalString(options.sessionId);
+    // The composer's explicit choice wins; without one, fall back to the model
+    // recorded on the app session row, and finally to the provider's default —
+    // a forced sync (resumed session) must always re-select *some* valid model
+    // instead of silently keeping a dead engine-side reference.
+    const requestedModel = readOptionalString(options.model)
+      ?? await context.resolveResumeModel(appSessionId ?? undefined, undefined)
+      ?? (forceModelSync ? (await context.getProviderModels()).DEFAULT : undefined);
+    let requestedEffort = readOptionalString(options.effort);
     if ((!requestedEffort || requestedEffort === 'default') && appSessionId) {
       const sessionRow = sessionsDb.getSessionById(appSessionId);
       if (sessionRow?.effort && sessionRow.effort !== 'default') {
@@ -429,7 +491,8 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
 
     const currentModelInfo = readZCodeSessionModelInfoFromDb(sessionId);
     if (
-      currentModelInfo
+      !forceModelSync
+      && currentModelInfo
       && currentModelInfo.modelId === requestedModel
       && (currentModelInfo.variant || undefined) === normalizedVariant
     ) {
@@ -480,11 +543,13 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
   /**
    * Sends user message to ZCode session.
    *
-   * `session/send` is issued without a request timeout because its result
-   * arrives on the event stream rather than as a protocol response. The
-   * params are strict-schema validated by the engine — extra keys such as a
-   * `deliveryKind` are rejected with "Unrecognized key" (validated against
-   * engine 0.16.3), so only `sessionId` and `content` are sent.
+   * `session/send` is issued without a request timeout: the response only
+   * acknowledges acceptance (observed immediate on engine 0.16.5), while the
+   * turn itself completes on the event stream — a timeout here could fire
+   * after acceptance on slow engines. The params are strict-schema validated
+   * by the engine — extra keys such as a `deliveryKind` are rejected with
+   * "Unrecognized key" (validated against engine 0.16.3), so only `sessionId`
+   * and `content` are sent.
    */
   private async sendUserMessage(
     sessionId: string,

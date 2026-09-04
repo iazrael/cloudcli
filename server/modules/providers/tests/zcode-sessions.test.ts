@@ -192,6 +192,84 @@ test('normalizeMessage unwraps session/event notification payloads', () => {
   assert.equal(messages[0].sessionId, 'sess_wrap');
 });
 
+test('normalizeMessage maps engine 0.16.5 dotted event names onto the 0.16.3 paths', () => {
+  const provider = new ZCodeSessionsProvider();
+
+  const streaming = provider.normalizeMessage(
+    {
+      method: 'session/event',
+      params: {
+        deliveryKind: 'desktop-continuous',
+        eventId: 'evt_1',
+        seq: 1,
+        sessionId: 'sess_new',
+        type: 'model.streaming',
+        payload: { kind: 'text_delta', delta: 'hi' },
+      },
+    },
+    'sess_new'
+  );
+  assert.equal(streaming.length, 1);
+  assert.equal(streaming[0].kind, 'stream_delta');
+  assert.equal(streaming[0].content, 'hi');
+
+  const completed = provider.normalizeMessage(
+    {
+      method: 'session/event',
+      params: {
+        deliveryKind: 'desktop-continuous',
+        eventId: 'evt_2',
+        seq: 2,
+        sessionId: 'sess_new',
+        type: 'turn.completed',
+        payload: { usage: { inputTokens: 10, outputTokens: 5 } },
+      },
+    },
+    'sess_new'
+  );
+  assert.equal(completed.length, 1);
+  assert.equal(completed[0].kind, 'complete');
+  assert.equal(completed[0].tokens, 15);
+
+  const toolScheduled = provider.normalizeMessage(
+    {
+      method: 'session/event',
+      params: {
+        type: 'tool.updated',
+        sessionId: 'sess_new',
+        payload: { kind: 'scheduled', toolCallId: 'call_1', toolName: 'Read', input: { path: 'a.txt' } },
+      },
+    },
+    'sess_new'
+  );
+  assert.equal(toolScheduled.length, 1);
+  assert.equal(toolScheduled[0].kind, 'tool_use');
+  assert.equal(toolScheduled[0].toolName, 'Read');
+  assert.equal(toolScheduled[0].toolId, 'call_1');
+
+  const toolResult = provider.normalizeMessage(
+    {
+      method: 'session/event',
+      params: {
+        type: 'tool.updated',
+        sessionId: 'sess_new',
+        payload: { kind: 'result', toolCallId: 'call_1', resultPartId: 'part_7' },
+      },
+    },
+    'sess_new'
+  );
+  assert.equal(toolResult.length, 1);
+  assert.equal(toolResult[0].kind, 'tool_result');
+  assert.equal(toolResult[0].toolId, 'call_1');
+
+  const permission = provider.normalizeMessage(
+    { method: 'session/event', params: { type: 'permission.requested', sessionId: 'sess_new', payload: { toolName: 'Bash' } } },
+    'sess_new'
+  );
+  assert.equal(permission.length, 1);
+  assert.equal(permission[0].kind, 'permission_request');
+});
+
 test('normalizeMessage maps error events', () => {
   const provider = new ZCodeSessionsProvider();
   const messages = provider.normalizeMessage(

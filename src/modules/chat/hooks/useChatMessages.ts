@@ -241,7 +241,9 @@ function convertRow(
       case 'error':
         outputs.push({
           type: 'error',
-          content: msg.content || 'Unknown error',
+          // zcode error messages carry the text in `text` (older rows) or
+          // `content`; accept either so history rows keep rendering.
+          content: msg.content || msg.text || 'Unknown error',
           timestamp: msg.timestamp,
           ...sharedMetadata,
         });

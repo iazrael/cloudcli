@@ -166,6 +166,9 @@ export function emitRuntimeFailureFallback(
       provider: input.provider,
       kind: 'error',
       isError: true,
+      // `content` is what the chat UI renders; `text` keeps parity with
+      // provider-level error messages.
+      content: input.message,
       text: input.message,
     })
   );
