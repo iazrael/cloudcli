@@ -179,6 +179,24 @@ function extractText(value: unknown): string {
 }
 
 /**
+ * Whether the engine marked this persisted user message as invisible to the
+ * UI. ZCode writes model-only injections (todo reminders, system reminders,
+ * subagent notifications) as user rows but declares their visibility
+ * semantics structurally; the flags are redundant across fields, so any hit
+ * is enough. Without this check every todo reminder renders as a user bubble.
+ */
+function isEngineHiddenUserMessage(messageInfo: Record<string, unknown> | null): boolean {
+  if (!messageInfo) {
+    return false;
+  }
+  const semantics = readObjectRecord(messageInfo.semantics);
+  const metadata = readObjectRecord(messageInfo.metadata);
+  return readOptionalString(semantics?.uiVisibility) === 'hidden'
+    || readOptionalString(semantics?.transcriptVisibility) === 'hidden'
+    || readOptionalString(metadata?.visibility) === 'model-only';
+}
+
+/**
  * Aggregate token usage from all messages in a session.
  */
 function aggregateZCodeSessionTokenUsage(
@@ -592,6 +610,7 @@ export class ZCodeSessionsProvider implements IProviderSessions {
     const normalized: NormalizedMessage[] = [];
     const emittedMessageErrors = new Set<string>();
     const emittedUserTexts = new Set<string>();
+    const emittedSummaryMessages = new Set<string>();
 
     for (const row of rows) {
       const timestamp = normalizeProviderTimestamp(row.part_time_created ?? row.message_time_created);
@@ -599,6 +618,11 @@ export class ZCodeSessionsProvider implements IProviderSessions {
       const baseId = `${row.message_id}_${row.part_id ?? normalized.length}`;
       const messageInfo = readJsonRecord(row.message_data);
       const messageRole = readOptionalString(messageInfo?.role);
+
+      // Model-only injections are skipped entirely, including their parts.
+      if (messageRole === 'user' && isEngineHiddenUserMessage(messageInfo)) {
+        continue;
+      }
 
       // Handle message-level errors
       if (
@@ -650,6 +674,27 @@ export class ZCodeSessionsProvider implements IProviderSessions {
       // Handle text parts
       if (partType === 'text') {
         const content = extractText(partData);
+
+        // A compaction summary persists as a user message carrying a
+        // structured `summary` field. Surfacing it as assistant-authored
+        // summary text (the shape claude uses) keeps it out of a user bubble.
+        if (readObjectRecord(messageInfo?.summary)) {
+          if (content.trim() && !emittedSummaryMessages.has(row.message_id)) {
+            emittedSummaryMessages.add(row.message_id);
+            normalized.push(createNormalizedMessage({
+              id: baseId,
+              sessionId,
+              timestamp,
+              provider: PROVIDER,
+              kind: 'text',
+              role: 'assistant',
+              content,
+              isCompactSummary: true,
+            }));
+          }
+          continue;
+        }
+
         if (content.trim()) {
           normalized.push(createNormalizedMessage({
             id: baseId,

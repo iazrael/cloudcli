@@ -420,6 +420,71 @@ test('fetchHistory loads and paginates the fixture database', async () => {
   });
 });
 
+test('fetchHistory hides model-only injections and surfaces compaction summaries', async () => {
+  await withZCodeStorage(async (storageDir) => {
+    await createFixtureDatabase(storageDir, 'sess_hidden');
+    const db = new Database(path.join(storageDir, 'cli', 'db', 'db.sqlite'));
+    try {
+      const insertMessage = db.prepare(
+        'INSERT INTO message (id, session_id, time_created, time_updated, data, sequence) VALUES (?, ?, ?, ?, ?, ?)'
+      );
+      const insertPart = db.prepare(
+        'INSERT INTO part (id, message_id, session_id, time_created, time_updated, data, sequence) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      );
+
+      // Model-only todo reminder: the engine marks it hidden to the UI.
+      insertMessage.run(
+        'msg_reminder', 'sess_hidden', 3000, 3000,
+        JSON.stringify({
+          role: 'user',
+          agent: 'zcode-agent',
+          metadata: { visibility: 'model-only' },
+          semantics: { kind: 'todo_reminder', uiVisibility: 'hidden', transcriptVisibility: 'hidden' },
+          anchor: { turnId: 'turn_1', origin: 'synthetic' },
+        }),
+        2
+      );
+      insertPart.run(
+        'part_reminder', 'msg_reminder', 'sess_hidden', 3000, 3000,
+        JSON.stringify({ type: 'text', text: "The TodoWrite tool hasn't been used recently." }),
+        0
+      );
+
+      // Compaction summary: a user message carrying a structured summary field.
+      insertMessage.run(
+        'msg_summary', 'sess_hidden', 3100, 3100,
+        JSON.stringify({ role: 'user', summary: { title: 'Compact summary', body: 'Summary of the earlier conversation.' } }),
+        3
+      );
+      insertPart.run(
+        'part_summary', 'msg_summary', 'sess_hidden', 3100, 3100,
+        JSON.stringify({ type: 'text', text: 'This session is being continued from a previous conversation.' }),
+        0
+      );
+    } finally {
+      db.close();
+    }
+
+    const provider = new ZCodeSessionsProvider();
+    const result = await provider.fetchHistory('sess_hidden');
+
+    // The model-only reminder and its parts never surface.
+    assert.equal(result.messages.some((message) => (message.content || '').includes('TodoWrite')), false);
+
+    // The compaction summary surfaces as assistant-authored summary text.
+    const summary = result.messages.find((message) => message.isCompactSummary === true);
+    assert.ok(summary);
+    assert.equal(summary.role, 'assistant');
+    assert.equal(summary.content, 'This session is being continued from a previous conversation.');
+
+    // Real user prompts are untouched.
+    assert.equal(
+      result.messages.some((message) => message.role === 'user' && message.content === 'List the files'),
+      true
+    );
+  });
+});
+
 test('fetchHistory returns empty for sub-agent sessions and missing databases', async () => {
   await withZCodeStorage(async () => {
     const provider = new ZCodeSessionsProvider();
