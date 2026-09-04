@@ -279,6 +279,10 @@ export class ZCodeSessionsProvider implements IProviderSessions {
       }
       if (stage === 'result' || stage === 'error') {
         const resultPartId = readOptionalString(payload.resultPartId);
+        // The message-level `content` mirrors toolResult.content: the chat UI's
+        // tool_use row reads the mapped tool_result *message's* content when
+        // attaching results, and an undefined there crashed its formatter.
+        const resultContent = resultPartId ? `Result stored in part ${resultPartId}` : '';
         return [createNormalizedMessage({
           id: baseId,
           sessionId: eventSessionId,
@@ -286,8 +290,9 @@ export class ZCodeSessionsProvider implements IProviderSessions {
           provider: PROVIDER,
           kind: 'tool_result',
           toolId: readOptionalString(payload.toolCallId) ?? baseId,
+          content: resultContent,
           toolResult: {
-            content: resultPartId ? `Result stored in part ${resultPartId}` : '',
+            content: resultContent,
             isError: stage === 'error',
           },
         })];
@@ -320,6 +325,9 @@ export class ZCodeSessionsProvider implements IProviderSessions {
     }
 
     if (normalizedType === 'permission_request' || normalizedType === 'approval') {
+      // `permission.requested` (engine 0.16.5) carries requestId/options for
+      // interactive review cards (e.g. ExitPlanMode plan approval); without
+      // the requestId the frontend drops the event entirely.
       return [createNormalizedMessage({
         id: baseId,
         sessionId: eventSessionId,
@@ -327,6 +335,15 @@ export class ZCodeSessionsProvider implements IProviderSessions {
         provider: PROVIDER,
         kind: 'permission_request',
         toolName: readOptionalString(payload.tool) ?? readOptionalString(payload.toolName) ?? readOptionalString(payload.action),
+        requestId: readOptionalString(payload.requestId) ?? baseId,
+        toolId: readOptionalString(payload.toolCallId),
+        input: payload.input,
+        context: {
+          riskLevel: readOptionalString(payload.riskLevel),
+          reason: readOptionalString(payload.reason),
+          options: payload.options,
+          suggestedPermissionUpdates: payload.suggestedPermissionUpdates,
+        },
         canInterrupt: true,
       })];
     }
@@ -421,6 +438,7 @@ export class ZCodeSessionsProvider implements IProviderSessions {
       // Streaming tool results only reference the persisted part id; the
       // full output arrives later through the SQLite sync path.
       const resultPartId = readOptionalString(payload.resultPartId);
+      const resultContent = resultPartId ? `Result stored in part ${resultPartId}` : '';
       return [createNormalizedMessage({
         id: baseId,
         sessionId: eventSessionId,
@@ -428,8 +446,9 @@ export class ZCodeSessionsProvider implements IProviderSessions {
         provider: PROVIDER,
         kind: 'tool_result',
         toolId: readOptionalString(payload.toolCallId) ?? baseId,
+        content: resultContent,
         toolResult: {
-          content: resultPartId ? `Result stored in part ${resultPartId}` : '',
+          content: resultContent,
           isError: false,
         },
       })];

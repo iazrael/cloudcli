@@ -263,11 +263,13 @@ test('normalizeMessage maps engine 0.16.5 dotted event names onto the 0.16.3 pat
   assert.equal(toolResult[0].toolId, 'call_1');
 
   const permission = provider.normalizeMessage(
-    { method: 'session/event', params: { type: 'permission.requested', sessionId: 'sess_new', payload: { toolName: 'Bash' } } },
+    { method: 'session/event', params: { type: 'permission.requested', sessionId: 'sess_new', payload: { toolName: 'Bash', requestId: 'perm_1', input: { command: 'ls' } } } },
     'sess_new'
   );
   assert.equal(permission.length, 1);
   assert.equal(permission[0].kind, 'permission_request');
+  assert.equal(permission[0].requestId, 'perm_1');
+  assert.deepEqual(permission[0].input, { command: 'ls' });
 });
 
 test('normalizeMessage maps error events', () => {

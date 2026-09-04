@@ -92,6 +92,32 @@ test('rebuilds a tool-use UI message when its separately received result changes
   assert.equal(afterResultChange[0]?.toolResult?.content, 'updated file contents');
 });
 
+test('a tool result without content renders as empty text instead of crashing', () => {
+  // The UI's tool_use row attaches the separately-arriving tool_result
+  // *message* and formats its message-level content; a tool_result without
+  // one made JSON.stringify return undefined and the unguarded `.trim()` took
+  // down the whole chat interface (observed live after a zcode permission
+  // approval). This pins the regression.
+  const toolUse = message('tool-use-empty-result', {
+    kind: 'tool_use',
+    toolId: 'tool-empty',
+    toolName: 'Bash',
+    toolInput: { command: 'ls' },
+  });
+  const toolResult: NormalizedMessage = {
+    ...message('tool-result-empty', {
+      kind: 'tool_result',
+      toolId: 'tool-empty',
+      toolResult: { content: '', isError: false },
+    }),
+    content: undefined,
+  };
+
+  const messages = normalizedToChatMessages([toolUse, toolResult]);
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0]?.toolResult?.content, '');
+});
+
 test('preserves existing UI objects when an older message is prepended', () => {
   const first = message('first', { content: 'First loaded message' });
   const second = message('second', { content: 'Second loaded message' });
