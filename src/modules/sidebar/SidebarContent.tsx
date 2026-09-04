@@ -3,7 +3,7 @@ import { Activity, Archive, Folder, MessageSquare, RotateCcw, Search, Trash2 } f
 import type { TFunction } from 'i18next';
 
 import { LLMProviderLogo, ScrollArea } from '@/shared/ui';
-import type { ArchivedProjectListItem, ArchivedSessionListItem, ConversationSearchResults, Project, RecentConversationListItem, ReleaseInfo, SearchProgress, SidebarProjectListProps, SidebarSearchMode } from '@/shared/types';
+import type { ArchivedProjectListItem, ArchivedSessionListItem, ConversationSearchResults, Project, RecentConversationListItem, ReleaseInfo, SearchProgress, SessionWithProvider, SidebarProjectListProps, SidebarSearchMode } from '@/shared/types';
 import { formatCompactAge, getAllSessions } from '@/modules/sidebar/utils/sidebarProjectFormatting';
 import SidebarFooter from '@/modules/sidebar/SidebarFooter';
 import SidebarHeader from '@/modules/sidebar/SidebarHeader';
@@ -81,6 +81,40 @@ function groupArchivedSessionsByProject(sessions: ArchivedSessionListItem[]): Ar
   });
 }
 
+/**
+ * Builds the ArchivedSessionListItem for a session row inside an archived
+ * project card. Shared by the open and permanent-delete actions so both hand
+ * out the same session identity.
+ */
+function toArchivedSessionListItem(project: ArchivedProjectListItem, session: SessionWithProvider): ArchivedSessionListItem {
+  const sessionTitle =
+    typeof session.summary === 'string' && session.summary.trim().length > 0
+      ? session.summary
+      : typeof session.name === 'string' && session.name.trim().length > 0
+        ? session.name
+        : String(session.id);
+
+  return {
+    sessionId: String(session.id),
+    provider: session.__provider,
+    projectId: project.projectId,
+    projectPath: project.fullPath,
+    projectDisplayName: project.displayName,
+    sessionTitle,
+    createdAt: typeof session.created_at === 'string' ? session.created_at : null,
+    updatedAt: typeof session.updated_at === 'string' ? session.updated_at : null,
+    lastActivity:
+      typeof session.lastActivity === 'string'
+        ? session.lastActivity
+        : typeof session.updated_at === 'string'
+          ? session.updated_at
+          : typeof session.created_at === 'string'
+            ? session.created_at
+            : null,
+    isProjectArchived: true,
+  };
+}
+
 type SidebarContentProps = {
   isPWA: boolean;
   isMobile: boolean;
@@ -106,6 +140,7 @@ type SidebarContentProps = {
   isSearching: boolean;
   searchProgress: SearchProgress | null;
   onRestoreArchivedProject: (projectId: string) => void;
+  onDeleteArchivedProject: (project: ArchivedProjectListItem) => void;
   onLoadMoreRecentConversations: () => void;
   onRetryRecentConversations: () => void;
   onArchivedSessionClick: (session: ArchivedSessionListItem) => void;
@@ -155,6 +190,7 @@ export default function SidebarContent({
   isSearching,
   searchProgress,
   onRestoreArchivedProject,
+  onDeleteArchivedProject,
   onLoadMoreRecentConversations,
   onRetryRecentConversations,
   onArchivedSessionClick,
@@ -524,76 +560,69 @@ export default function SidebarContent({
                         </p>
                       </div>
                       <button
-                        className="flex h-7 flex-shrink-0 items-center gap-1.5 rounded-lg border border-emerald-600/15 bg-emerald-500/10 px-2 text-[10px] font-medium text-emerald-700 transition-all hover:border-emerald-600/25 hover:bg-emerald-500/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40 dark:text-emerald-300"
+                        className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-lg border border-emerald-600/15 bg-emerald-500/10 text-emerald-700 transition-all hover:border-emerald-600/25 hover:bg-emerald-500/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40 dark:text-emerald-300"
                         onClick={() => onRestoreArchivedProject(project.projectId)}
                         title={t('archived.restoreProject', 'Restore workspace')}
                         aria-label={`${t('archived.restoreProject', 'Restore workspace')}: ${project.displayName}`}
                       >
-                        <RotateCcw className="h-3 w-3" />
-                        {t('archived.restoreAction', 'Restore')}
+                        <RotateCcw className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-lg border border-red-200 bg-red-500/10 text-red-600 transition-all hover:bg-red-500/20 active:scale-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/40 dark:border-red-800 dark:bg-red-900/30 dark:text-red-400"
+                        onClick={() => onDeleteArchivedProject(project)}
+                        title={t('archived.deleteProjectPermanently', 'Delete permanently')}
+                        aria-label={`${t('archived.deleteProjectPermanently', 'Delete permanently')}: ${project.displayName}`}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
                       </button>
                     </div>
                     {projectSessions.length > 0 && (
                       <div className="border-t border-border/45 bg-muted/[0.08]">
-                        {projectSessions.map((session) => (
-                          <button
-                            key={String(session.id)}
-                            className="flex w-full items-center gap-2.5 border-b border-border/35 px-2.5 py-2 text-left transition-colors last:border-b-0 hover:bg-accent/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-                            onClick={() => onArchivedSessionClick({
-                              sessionId: String(session.id),
-                              provider: session.__provider,
-                              projectId: project.projectId,
-                              projectPath: project.fullPath,
-                              projectDisplayName: project.displayName,
-                              sessionTitle:
-                                (typeof session.summary === 'string' && session.summary.trim().length > 0
-                                  ? session.summary
-                                  : typeof session.name === 'string' && session.name.trim().length > 0
-                                    ? session.name
-                                    : String(session.id)),
-                              createdAt: typeof session.created_at === 'string' ? session.created_at : null,
-                              updatedAt: typeof session.updated_at === 'string' ? session.updated_at : null,
-                              lastActivity:
-                                typeof session.lastActivity === 'string'
-                                  ? session.lastActivity
-                                  : typeof session.updated_at === 'string'
-                                    ? session.updated_at
-                                    : typeof session.created_at === 'string'
-                                      ? session.created_at
-                                      : null,
-                              isProjectArchived: true,
-                            })}
-                          >
-                            <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md bg-background/70">
-                              <LLMProviderLogo provider={session.__provider} className="h-3.5 w-3.5" />
-                            </span>
-                            <div className="min-w-0 flex-1">
-                              <p className="truncate text-xs text-foreground">
-                                {(typeof session.summary === 'string' && session.summary.trim().length > 0
-                                  ? session.summary
-                                  : typeof session.name === 'string' && session.name.trim().length > 0
-                                    ? session.name
-                                    : String(session.id))}
-                              </p>
-                              <div className="mt-0.5 flex items-center gap-1 text-[10px] text-muted-foreground/70">
-                                <span className="uppercase tracking-wide">{session.__provider}</span>
-                                <span aria-hidden>·</span>
-                                <span className="tabular-nums">
-                                  {formatCompactAge(
-                                    typeof session.lastActivity === 'string'
-                                      ? session.lastActivity
-                                      : typeof session.updated_at === 'string'
-                                        ? session.updated_at
-                                        : typeof session.created_at === 'string'
-                                          ? session.created_at
-                                          : null,
-                                    projectListProps.currentTime,
-                                  )}
+                        {projectSessions.map((session) => {
+                          const archivedSession = toArchivedSessionListItem(project, session);
+
+                          return (
+                            <div
+                              key={archivedSession.sessionId}
+                              className="group/session flex items-center gap-1 border-b border-border/35 px-2.5 py-2 last:border-b-0 hover:bg-accent/35"
+                            >
+                              <button
+                                className="flex min-w-0 flex-1 items-center gap-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                                onClick={() => onArchivedSessionClick(archivedSession)}
+                              >
+                                <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md bg-background/70">
+                                  <LLMProviderLogo provider={archivedSession.provider} className="h-3.5 w-3.5" />
                                 </span>
+                                <div className="min-w-0 flex-1">
+                                  <p className="truncate text-xs text-foreground">
+                                    {archivedSession.sessionTitle}
+                                  </p>
+                                  <div className="mt-0.5 flex items-center gap-1 text-[10px] text-muted-foreground/70">
+                                    <span className="uppercase tracking-wide">{archivedSession.provider}</span>
+                                    {archivedSession.lastActivity && (
+                                      <>
+                                        <span aria-hidden>·</span>
+                                        <span className="tabular-nums">
+                                          {formatCompactAge(archivedSession.lastActivity, projectListProps.currentTime)}
+                                        </span>
+                                      </>
+                                    )}
+                                  </div>
+                                </div>
+                              </button>
+                              <div className="flex flex-shrink-0 items-center gap-0.5">
+                                <button
+                                  className="flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-destructive/40"
+                                  onClick={() => onDeleteArchivedSession(archivedSession)}
+                                  title={t('archived.deletePermanently', 'Delete permanently')}
+                                  aria-label={`${t('archived.deletePermanently', 'Delete permanently')}: ${archivedSession.sessionTitle}`}
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
                               </div>
                             </div>
-                          </button>
-                        ))}
+                          );
+                        })}
                       </div>
                     )}
                   </section>

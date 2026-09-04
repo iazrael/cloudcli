@@ -1314,10 +1314,12 @@ export type ActiveSidebarRename =
  * The sidebar's pending delete confirmation. One value rather than a pair of
  * nullable states, so a project dialog and a session dialog cannot both be
  * open — they are portalled at the same z-index and would stack. The project
- * variant carries the session count the dialog warns with.
+ * variant carries the session count the dialog warns with. `isArchived` on
+ * both variants hides the archive-only option: an already-archived item can
+ * only be restored or deleted permanently.
  */
 export type PendingSidebarDeletion =
-  | { kind: 'project'; project: Project; sessionCount: number }
+  | { kind: 'project'; project: Project; sessionCount: number; isArchived: boolean }
   | { kind: 'session'; sessionId: string; sessionTitle: string; isArchived: boolean };
 
 /** Whether a TaskMaster MCP server is present and configured for a project, or null while that status is still unknown. */

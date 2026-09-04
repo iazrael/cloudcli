@@ -125,6 +125,7 @@ function Sidebar({
     showDeleteSessionConfirmation,
     confirmDeleteSession,
     requestProjectDelete,
+    requestArchivedProjectDelete,
     confirmDeleteProject,
     handleProjectSelect,
     openArchivedSession,
@@ -285,6 +286,7 @@ function Sidebar({
             isSearching={isSearching}
             searchProgress={searchProgress}
             onRestoreArchivedProject={restoreArchivedProject}
+            onDeleteArchivedProject={requestArchivedProjectDelete}
             onLoadMoreRecentConversations={loadMoreRecentConversations}
             onRetryRecentConversations={reloadRecentConversations}
             onArchivedSessionClick={openArchivedSession}

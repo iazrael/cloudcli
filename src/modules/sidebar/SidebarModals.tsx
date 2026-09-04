@@ -118,25 +118,34 @@ export default function SidebarModals({
                         {t('deleteConfirmation.sessionCount', { count: pendingDeletion.sessionCount })}
                       </p>
                     )}
+                    {pendingDeletion.isArchived && (
+                      <p className="mt-3 text-xs text-muted-foreground">
+                        {t('deleteConfirmation.archivedProjectNotice', 'This project is archived. Deleting permanently removes the project and all of its sessions, including chat history. This cannot be undone.')}
+                      </p>
+                    )}
                   </div>
                 </div>
               </div>
               <div className="flex flex-col gap-2 border-t border-border bg-muted/30 p-4">
-                <Button
-                  variant="outline"
-                  className="w-full justify-start"
-                  onClick={() => onConfirmDeleteProject(false)}
-                >
-                  <EyeOff className="mr-2 h-4 w-4" />
-                  {t('deleteConfirmation.archiveProject', 'Archive project')}
-                </Button>
+                {!pendingDeletion.isArchived && (
+                  <Button
+                    variant="outline"
+                    className="w-full justify-start"
+                    onClick={() => onConfirmDeleteProject(false)}
+                  >
+                    <EyeOff className="mr-2 h-4 w-4" />
+                    {t('deleteConfirmation.archiveProject', 'Archive project')}
+                  </Button>
+                )}
                 <Button
                   variant="destructive"
                   className="w-full justify-start bg-red-600 text-white hover:bg-red-700"
                   onClick={() => onConfirmDeleteProject(true)}
                 >
                   <Trash2 className="mr-2 h-4 w-4" />
-                  {t('deleteConfirmation.deleteAllData')}
+                  {pendingDeletion.isArchived
+                    ? t('deleteConfirmation.deleteProjectPermanently', 'Delete permanently')
+                    : t('deleteConfirmation.deleteAllData')}
                 </Button>
                 <Button variant="ghost" className="w-full" onClick={onCancelDeletion}>
                   {t('actions.cancel')}

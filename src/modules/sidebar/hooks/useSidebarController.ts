@@ -819,9 +819,24 @@ export function useSidebarController({
         kind: 'project',
         project,
         sessionCount: getProjectSessions(project).length,
+        isArchived: false,
       });
     },
     [getProjectSessions],
+  );
+
+  // Archived rows offer no archive-only option in the dialog, so this variant
+  // only ever leads to the permanent-delete confirmation.
+  const requestArchivedProjectDelete = useCallback(
+    (project: ArchivedProjectListItem) => {
+      setPendingDeletion({
+        kind: 'project',
+        project,
+        sessionCount: getAllSessions(project).length,
+        isArchived: true,
+      });
+    },
+    [],
   );
 
   const confirmDeleteProject = useCallback(async (deleteData = false) => {
@@ -841,6 +856,9 @@ export function useSidebarController({
 
       if (response.ok) {
         onProjectDelete?.(project.projectId);
+        // Deleting an archived project must also collapse its card in the
+        // archive view; the active-list cleanup stays in onProjectDelete.
+        await fetchArchivedSessions();
       } else {
         const data = (await response.json()) as { error?: string | { message?: string } };
         const err = data.error;
@@ -858,7 +876,7 @@ export function useSidebarController({
         return next;
       });
     }
-  }, [pendingDeletion, onProjectDelete, t]);
+  }, [pendingDeletion, onProjectDelete, fetchArchivedSessions, t]);
 
   const handleProjectSelect = useCallback(
     (project: Project) => {
@@ -1061,6 +1079,7 @@ export function useSidebarController({
     showDeleteSessionConfirmation,
     confirmDeleteSession,
     requestProjectDelete,
+    requestArchivedProjectDelete,
     confirmDeleteProject,
     handleProjectSelect,
     openArchivedSession,

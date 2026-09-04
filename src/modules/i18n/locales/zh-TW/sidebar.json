@@ -142,6 +142,27 @@
     "removeFromSidebar": "僅從側邊欄移除",
     "deleteAllData": "永久刪除所有資料",
     "allConversationsDeleted": "專案將從側邊欄中移除。您的檔案、記憶和工作階段資料將會保留。",
-    "cannotUndo": "您可以稍後重新新增此專案。"
+    "cannotUndo": "您可以稍後重新新增此專案。",
+    "archiveProject": "僅封存專案",
+    "archiveSession": "僅封存工作階段",
+    "deleteProjectPermanently": "永久刪除",
+    "deleteSessionPermanently": "永久刪除",
+    "archiveSessionNotice": "封存會將該工作階段移出活動清單，同時保留其歷史記錄。",
+    "archivedSessionNotice": "該工作階段已封存。您可以讓它繼續隱藏，或將其永久刪除。",
+    "archivedProjectNotice": "該專案已封存。永久刪除將連帶刪除該專案及其所有工作階段（含聊天記錄），且無法復原。"
+  },
+  "archived": {
+    "title": "封存",
+    "restoreHint": "隨時可以還原這些內容",
+    "loadingTitle": "封存載入中...",
+    "loadingDescription": "正在取得已隱藏的工作區和工作階段，稍後可還原。",
+    "emptyTitle": "沒有封存內容",
+    "emptyDescription": "當您把工作區或工作階段從活動清單隱藏後，它們會顯示在這裡。",
+    "noMatchingSessions": "找不到符合的封存內容",
+    "tryDifferentSearch": "嘗試調整您的搜尋詞。",
+    "restoreProject": "還原工作區",
+    "restore": "還原工作階段",
+    "deletePermanently": "永久刪除",
+    "deleteProjectPermanently": "永久刪除"
   }
 }

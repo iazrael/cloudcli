@@ -143,6 +143,27 @@
     "removeFromSidebar": "仅从侧边栏移除",
     "deleteAllData": "永久删除所有数据",
     "allConversationsDeleted": "项目将从侧边栏中移除。您的文件、记忆和会话数据将会保留。",
-    "cannotUndo": "您可以稍后重新添加此项目。"
+    "cannotUndo": "您可以稍后重新添加此项目。",
+    "archiveProject": "仅归档项目",
+    "archiveSession": "仅归档会话",
+    "deleteProjectPermanently": "永久删除",
+    "deleteSessionPermanently": "永久删除",
+    "archiveSessionNotice": "归档会将该会话移出活动列表，同时保留其历史记录。",
+    "archivedSessionNotice": "该会话已归档。您可以让它继续隐藏，或将其永久删除。",
+    "archivedProjectNotice": "该项目已归档。永久删除将连带删除该项目及其所有会话（含聊天记录），且无法恢复。"
+  },
+  "archived": {
+    "title": "归档",
+    "restoreHint": "随时可以恢复这些内容",
+    "loadingTitle": "归档加载中...",
+    "loadingDescription": "正在获取已隐藏的工作区和会话，稍后可恢复。",
+    "emptyTitle": "暂无归档内容",
+    "emptyDescription": "当您把工作区或会话从活动列表隐藏后，它们会显示在这里。",
+    "noMatchingSessions": "未找到匹配的归档内容",
+    "tryDifferentSearch": "尝试调整您的搜索词。",
+    "restoreProject": "恢复工作区",
+    "restore": "恢复会话",
+    "deletePermanently": "永久删除",
+    "deleteProjectPermanently": "永久删除"
   }
 }
