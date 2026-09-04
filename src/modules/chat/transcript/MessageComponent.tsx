@@ -1,9 +1,10 @@
 import { memo, useMemo, useRef } from 'react';
-import { GitBranchIcon, PencilIcon } from 'lucide-react';
+import { ChevronDownIcon, GitBranchIcon, PencilIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import LLMProviderLogo from '@/shared/ui/LLMProviderLogo';
 import { getProviderDisplayName } from '@/shared/providerDisplay';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/shared/ui/Collapsible';
 import type {DiffLine, 
   ChatMessage,
   ClaudePermissionSuggestion,
@@ -170,6 +171,22 @@ const MessageComponent = memo(({ message, prevMessage, turnAnchorMessage, create
             <span className="text-xs text-gray-500 dark:text-gray-400">{message.content}</span>
           </div>
         </div>
+      ) : message.isCompactSummary ? (
+        /* Compaction summary: quiet system line, expands to the persisted text */
+        <Collapsible className="w-full">
+          <CollapsibleTrigger className="group flex w-full cursor-pointer items-center gap-2 py-0.5 text-left">
+            <span className="inline-block h-1.5 w-1.5 flex-shrink-0 rounded-full bg-blue-400 dark:bg-blue-500" />
+            <span className="text-xs text-gray-500 dark:text-gray-400">{t('messageTypes.compactSummary')}</span>
+            <ChevronDownIcon className="h-3 w-3 flex-shrink-0 text-gray-400 transition-transform group-data-[state=open]:rotate-180" />
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <div className="mt-1 border-l-2 border-gray-200 pl-3 dark:border-gray-700">
+              <Markdown className="prose prose-sm max-w-none font-serif dark:prose-invert">
+                {message.content}
+              </Markdown>
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
       ) : (
         /* Claude/Error/Tool messages on the left */
         <div className="w-full">

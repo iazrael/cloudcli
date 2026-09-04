@@ -19,7 +19,8 @@
     "cursor": "Cursor",
     "codex": "Codex",
     "opencode": "OpenCode",
-    "antigravity": "Antigravity"
+    "antigravity": "Antigravity",
+    "compactSummary": "会话摘要"
   },
   "tools": {
     "settings": "工具设置",

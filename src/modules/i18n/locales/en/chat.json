@@ -19,7 +19,8 @@
     "cursor": "Cursor",
     "codex": "Codex",
     "opencode": "OpenCode",
-    "antigravity": "Antigravity"
+    "antigravity": "Antigravity",
+    "compactSummary": "Conversation summary"
   },
   "tools": {
     "settings": "Tool Settings",

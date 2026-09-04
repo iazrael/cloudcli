@@ -18,7 +18,8 @@
     "claude": "Claude",
     "cursor": "Cursor",
     "codex": "Codex",
-    "antigravity": "Antigravity"
+    "antigravity": "Antigravity",
+    "compactSummary": "會話摘要"
   },
   "tools": {
     "settings": "工具設定",
