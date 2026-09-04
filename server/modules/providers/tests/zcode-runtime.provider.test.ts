@@ -88,7 +88,7 @@ rl.on('line', (line) => {
   if (msg.method === 'session/send') {
     // Mirror the engine's strict schema: unknown keys are rejected.
     for (const key of Object.keys(msg.params ?? {})) {
-      if (key !== 'sessionId' && key !== 'content' && key !== 'attachments') {
+      if (key !== 'sessionId' && key !== 'content' && key !== 'attachments' && key !== 'runtimeModel') {
         send({ id: msg.id, error: { code: -32600, message: 'Invalid params — (root): Unrecognized key: "' + key + '"' } });
         return;
       }

@@ -213,6 +213,109 @@ export function readZCodeSessionModelFromDb(providerSessionId: string): string |
 }
 
 /**
+ * Builds the engine's `runtimeModel` payload for a model selection.
+ *
+ * The app-server engine keeps a per-workspace model catalog that only the
+ * embedding host normally populates. A remote client's catalogs start empty,
+ * so cold-resuming a session whose transcript references models the catalog
+ * cannot resolve marks it with a permanent "model unavailable" warning
+ * (-32031 on every send, immune to session/setModel). Attaching a
+ * `runtimeModel` to session/resume|create|send both seeds the catalog and
+ * clears that warning.
+ *
+ * Shape (engine schema `Of`, strict): `revision` (string), `generatedAt`
+ * (epoch ms), `model` ({providerId, modelId, variant?}), `provider` (the
+ * provider definition with at least one model). The provider entry comes
+ * from the engine's own cli/config.json so the ids match what the engine
+ * validates against; returns undefined when it cannot be built reliably.
+ *
+ * Consumer: `server/modules/providers/list/zcode/zcode-runtime.provider.ts`
+ */
+export function buildZCodeRuntimeModel(
+  modelKey: string,
+  variant?: string,
+): Record<string, unknown> | undefined {
+  const ref = resolveZCodeModelRef(modelKey, variant);
+  let providerRecord: Record<string, unknown> | undefined;
+
+  for (const configPath of [
+    path.join(getZCodeStorageDir(), 'cli', 'config.json'),
+    path.join(getZCodeStorageDir(), 'v2', 'config.json'),
+  ]) {
+    try {
+      const config = readObjectRecord(JSON.parse(fsSync.readFileSync(configPath, 'utf8')));
+      const candidate = readObjectRecord(readObjectRecord(config?.provider)?.[ref.providerId]);
+      if (candidate) {
+        providerRecord = candidate;
+        break;
+      }
+    } catch {
+      // Try the next config source
+    }
+  }
+
+  if (!providerRecord) {
+    return undefined;
+  }
+
+  const options = readObjectRecord(providerRecord.options);
+  const apiKey = readOptionalString(options?.apiKey);
+  const configModels = readObjectRecord(providerRecord.models) ?? {};
+  const engineModels = Object.entries(configModels).map(([modelId, modelConfig]) => {
+    const record = readObjectRecord(modelConfig);
+    const limit = readObjectRecord(record?.limit);
+    const reasoning = readObjectRecord(record?.reasoning);
+    return {
+      modelId,
+      ...(readOptionalString(record?.name) ? { label: readOptionalString(record?.name) } : {}),
+      ...(typeof limit?.context === 'number' ? { contextWindow: limit.context } : {}),
+      ...(typeof limit?.output === 'number' ? { maxOutputTokens: limit.output } : {}),
+      ...(reasoning && reasoning.enabled === true
+        ? {
+            reasoning: {
+              enabled: true,
+              // Engine schema: levels are {value, label} objects, not strings.
+              ...(Array.isArray(reasoning.levels)
+                ? {
+                    levels: reasoning.levels
+                      .map((level) => (typeof level === 'string' ? level.trim() : ''))
+                      .filter((level) => level.length > 0)
+                      .map((level) => ({ value: level, label: EFFORT_DESCRIPTIONS[level] ?? level })),
+                  }
+                : {}),
+              ...(readOptionalString(reasoning.defaultLevel)
+                ? { defaultLevel: readOptionalString(reasoning.defaultLevel) }
+                : {}),
+            },
+          }
+        : {}),
+    };
+  });
+
+  if (engineModels.length === 0) {
+    // The engine requires at least one model entry on the provider.
+    engineModels.push({ modelId: ref.modelId });
+  }
+
+  return {
+    revision: `${ref.providerId}/${ref.modelId}`,
+    generatedAt: Date.now(),
+    model: { providerId: ref.providerId, modelId: ref.modelId, ...(ref.variant ? { variant: ref.variant } : {}) },
+    provider: {
+      providerId: ref.providerId,
+      kind: readOptionalString(providerRecord.kind) ?? 'anthropic',
+      ...(readOptionalString(providerRecord.name) ? { label: readOptionalString(providerRecord.name) } : {}),
+      ...(readOptionalString(options?.baseURL) ? { baseURL: readOptionalString(options?.baseURL) } : {}),
+      // Engine schema Rbn: inline credentials travel as {source, value}. The
+      // payload only ever goes to the local engine subprocess over stdio.
+      ...(apiKey ? { apiKey: { source: 'inline', value: apiKey } } : {}),
+      models: engineModels,
+    },
+    ...(ref.variant ? { thoughtLevel: ref.variant } : {}),
+  };
+}
+
+/**
  * Resolves a model name/key string into ZCode's protocol model object `{ providerId, modelId, variant? }`.
  *
  * Handles:

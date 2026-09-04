@@ -33,7 +33,7 @@ import { sessionsDb } from '@/modules/database/index.js';
 
 import { SESSION_LOST_METHOD } from './zcode-codec.js';
 import { protocolClient } from './zcode-protocol.client.js';
-import { readZCodeSessionModelInfoFromDb, resolveZCodeModelRef } from './zcode-models.provider.js';
+import { buildZCodeRuntimeModel, readZCodeSessionModelInfoFromDb, resolveZCodeModelRef } from './zcode-models.provider.js';
 
 /**
  * Permission mode mapping from CloudCLI to ZCode (§5 of integration plan).
@@ -113,6 +113,12 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
   ): Promise<unknown> {
     const appSessionId = readOptionalString(options.sessionId) ?? null;
     const sessionSummary = readOptionalString(options.sessionSummary);
+    // Seed the engine's workspace model catalog with every session request:
+    // remote clients start with an empty catalog, and a cold resume of a
+    // session whose transcript references unresolvable models would
+    // otherwise be poisoned with a permanent "model unavailable" warning
+    // (-32031 on every send).
+    const runtimeModel = await this.resolveRuntimeModelPayload(options, context);
 
     // Runs before the main try block below; without its own error emission a
     // session/create failure would never reach the chat stream and the page
@@ -120,7 +126,7 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
     let zcodeSessionId: string;
     let resumedSession = false;
     try {
-      const resolved = await this.resolveOrCreateSession(appSessionId, options, context, writer);
+      const resolved = await this.resolveOrCreateSession(appSessionId, options, context, writer, runtimeModel);
       zcodeSessionId = resolved.sessionId;
       resumedSession = resolved.resumed;
     } catch (error) {
@@ -150,7 +156,7 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
       protocolClient.addSessionListener(zcodeSessionId, eventListener);
 
       try {
-        await this.sendUserMessage(zcodeSessionId, command, options);
+        await this.sendUserMessage(zcodeSessionId, command, options, runtimeModel);
         await this.waitForCompletion(zcodeSessionId, abortKey);
         this.sendCompletionEvent(zcodeSessionId, writer);
 
@@ -332,19 +338,25 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
    *    gateway (setSessionId plus a session_created event, matching the
    *    claude-runtime pattern). `writer.setSessionId` updates the stored
    *    mapping, so the replacement is sticky across subsequent sends.
+   *
+   * Both requests carry `runtimeModel` when a model selection is available:
+   * it seeds the engine's workspace model catalog (remote clients start with
+   * an empty one) and prevents the cold-resume "model unavailable" warning
+   * from poisoning sessions whose transcripts reference other provider ids.
    */
   private async resolveOrCreateSession(
     appSessionId: string | null,
     options: AnyRecord,
     context: ProviderRuntimeContext,
     writer: ProviderRuntimeWriter,
+    runtimeModel?: Record<string, unknown>,
   ): Promise<{ sessionId: string; resumed: boolean }> {
     const existingSessionId = appSessionId
       ? context.resolveProviderSessionId(appSessionId)
       : null;
 
     if (existingSessionId) {
-      const resumed = await this.tryResumeSession(existingSessionId);
+      const resumed = await this.tryResumeSession(existingSessionId, runtimeModel);
       if (resumed) {
         console.debug(`[ZCodeRuntime] Resumed existing session: ${existingSessionId}`);
         return { sessionId: existingSessionId, resumed: true };
@@ -368,6 +380,7 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
             workspacePath,
             workspaceKey: workspacePath,
           },
+          ...(runtimeModel ? { runtimeModel } : {}),
         }
       );
 
@@ -410,9 +423,15 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
    * transport errors) must propagate so the run surfaces the real cause
    * instead of silently forking a fresh session on every send.
    */
-  private async tryResumeSession(sessionId: string): Promise<boolean> {
+  private async tryResumeSession(
+    sessionId: string,
+    runtimeModel?: Record<string, unknown>,
+  ): Promise<boolean> {
     try {
-      await protocolClient.sendRequest('session/resume', { sessionId });
+      await protocolClient.sendRequest('session/resume', {
+        sessionId,
+        ...(runtimeModel ? { runtimeModel } : {}),
+      });
       return true;
     } catch (error) {
       const code = (error as AnyRecord | undefined)?.code;
@@ -547,14 +566,15 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
    * acknowledges acceptance (observed immediate on engine 0.16.5), while the
    * turn itself completes on the event stream — a timeout here could fire
    * after acceptance on slow engines. The params are strict-schema validated
-   * by the engine — extra keys such as a `deliveryKind` are rejected with
-   * "Unrecognized key" (validated against engine 0.16.3), so only `sessionId`
-   * and `content` are sent.
+   * by the engine (validated against engine 0.16.3 and 0.16.5), so only
+   * `sessionId`, `content`, `attachments`, and the `runtimeModel` catalog
+   * seed are sent.
    */
   private async sendUserMessage(
     sessionId: string,
     command: string,
     options: AnyRecord,
+    runtimeModel?: Record<string, unknown>,
   ): Promise<void> {
     const messagePayload: AnyRecord = {
       sessionId,
@@ -566,6 +586,12 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
       messagePayload.attachments = options.attachments;
     }
 
+    if (runtimeModel) {
+      // Refreshes the engine's workspace model catalog and clears any
+      // lingering "model unavailable" restore warning before the turn starts.
+      messagePayload.runtimeModel = runtimeModel;
+    }
+
     try {
       await protocolClient.sendRequest('session/send', messagePayload, 0);
       console.debug(`[ZCodeRuntime] Sent message to session ${sessionId}`);
@@ -573,6 +599,30 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
       console.error(`[ZCodeRuntime] Failed to send message to session ${sessionId}:`, error);
       throw error;
     }
+  }
+
+  /**
+   * Resolves the model selection carried by a run into the engine's
+   * `runtimeModel` catalog payload, or undefined when nothing was requested
+   * and no recorded/default model exists.
+   *
+   * Mirrors the resolution order of `configureSessionModel`: the composer's
+   * explicit choice, then the model recorded on the app session row.
+   */
+  private async resolveRuntimeModelPayload(
+    options: AnyRecord,
+    context: ProviderRuntimeContext,
+  ): Promise<Record<string, unknown> | undefined> {
+    const appSessionId = readOptionalString(options.sessionId);
+    const requestedModel = readOptionalString(options.model)
+      ?? await context.resolveResumeModel(appSessionId ?? undefined, undefined);
+    if (!requestedModel) {
+      return undefined;
+    }
+
+    const effort = readOptionalString(options.effort);
+    const variant = effort && effort !== 'default' ? effort.toLowerCase().trim() : undefined;
+    return buildZCodeRuntimeModel(requestedModel, variant);
   }
 
   /**
