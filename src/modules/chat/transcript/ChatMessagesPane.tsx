@@ -328,6 +328,7 @@ function ChatMessagesPane({
                     onGrantToolPermission={onGrantToolPermission}
                     showRawParameters={showRawParameters}
                     showThinking={showThinking}
+                    isThinkingStreaming={isProcessing && index === totalCount - 1 && Boolean(item.isThinking)}
                     selectedProject={selectedProject}
                     provider={provider}
                     onEditMessage={onEditMessage}

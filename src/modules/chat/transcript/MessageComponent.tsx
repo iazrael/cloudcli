@@ -37,6 +37,8 @@ type MessageComponentProps = {
   onGrantToolPermission?: (suggestion: ClaudePermissionSuggestion) => PermissionGrantResult | null | undefined;
   showRawParameters?: boolean;
   showThinking?: boolean;
+  /** True while this message is the thinking block currently streaming in — drives the Reasoning timer shown as "Thought for N seconds". */
+  isThinkingStreaming?: boolean;
   selectedProject?: Project | null;
   provider: Provider | string;
   onEditMessage?: (message: ChatMessage) => void;
@@ -51,7 +53,7 @@ type InteractiveOption = {
 
 const COPY_HIDDEN_TOOL_NAMES = new Set(['Bash', 'Edit', 'Write', 'ApplyPatch']);
 
-const MessageComponent = memo(({ message, prevMessage, turnAnchorMessage, createDiff, onFileOpen, showRawParameters, showThinking, selectedProject, provider, onEditMessage, onForkFromMessage }: MessageComponentProps) => {
+const MessageComponent = memo(({ message, prevMessage, turnAnchorMessage, createDiff, onFileOpen, showRawParameters, showThinking, isThinkingStreaming, selectedProject, provider, onEditMessage, onForkFromMessage }: MessageComponentProps) => {
   const { t } = useTranslation('chat');
   const isGrouped = prevMessage && prevMessage.type === message.type &&
     ((prevMessage.type === 'assistant') ||
@@ -332,8 +334,11 @@ const MessageComponent = memo(({ message, prevMessage, turnAnchorMessage, create
                 </div>
               </div>
             ) : message.isThinking ? (
-              /* Thinking messages — Reasoning component (ai-elements pattern) */
-              <Reasoning defaultOpen={false}>
+              /* Thinking messages — Reasoning component (ai-elements pattern).
+                 The component times the streaming window itself and shows
+                 "Thought for N seconds" once it ends; without the flag it can
+                 only say "a few seconds". */
+              <Reasoning defaultOpen={false} isStreaming={Boolean(isThinkingStreaming)}>
                 <ReasoningTrigger />
                 <ReasoningContent>
                   <Markdown className="prose prose-sm prose-gray max-w-none font-serif dark:prose-invert">
