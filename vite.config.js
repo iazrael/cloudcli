@@ -56,6 +56,10 @@ export default defineConfig(({ mode }) => {
     build: {
       outDir: 'dist',
       chunkSizeWarningLimit: 1000,
+      // Hidden maps: generated into dist/assets/*.map but not referenced by
+      // the bundles, so production stays lean while minified stack traces
+      // (file + line + column) can still be mapped back to source locally.
+      sourcemap: 'hidden',
       rollupOptions: {
         output: {
           manualChunks: {
