@@ -24,7 +24,7 @@ import type {
 } from '@/shared/types.js';
 
 import { protocolClient } from '../list/zcode/zcode-protocol.client.js';
-import { ZCodeRuntimeProvider } from '../list/zcode/zcode-runtime.provider.js';
+import { ZCodeRuntimeProvider, zcodeRuntimePermissions } from '../list/zcode/zcode-runtime.provider.js';
 import { ZCodeSessionsProvider } from '../list/zcode/zcode-sessions.provider.js';
 
 import { closeConnection, initializeDatabase } from '@/modules/database/index.js';
@@ -59,6 +59,11 @@ const finishCreate = () => {
   pendingCreateId = null;
 };
 
+// mode "perm-bridge": after session/send, mirrors the engine's blocking
+// permission flow — one interaction/requestPermission server request whose
+// answer releases the turn.
+let permPending = false;
+
 const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 rl.on('line', (line) => {
   let msg;
@@ -69,6 +74,12 @@ rl.on('line', (line) => {
     if (msg.id === 'server-1') {
       log('prefs_response', msg);
       finishCreate();
+    }
+    if (msg.id === 'server-perm' && permPending) {
+      log('perm_answer', msg);
+      permPending = false;
+      send({ method: 'session/event', params: { sessionId, type: 'model_streaming', payload: { kind: 'text_delta', delta: 'ran it' } } });
+      send({ method: 'session/event', params: { sessionId, type: 'turn_complete', payload: { usage: { inputTokens: 3, outputTokens: 4 } } } });
     }
     return;
   }
@@ -96,6 +107,20 @@ rl.on('line', (line) => {
     send({ id: msg.id, result: {} });
     if (readMode() === 'send-fail') {
       send({ method: 'session/event', params: { sessionId, type: 'turn.failed', payload: { error: { message: 'provider auth failed', attribution: { statusCode: 401, reason: 'auth_failed' } } } } });
+      return;
+    }
+    if (readMode() === 'perm-bridge') {
+      // The turn blocks on a permission server request until answered.
+      permPending = true;
+      send({ id: 'server-perm', method: 'interaction/requestPermission', params: {
+        requestId: 'perm_test_1',
+        sessionId,
+        toolCallId: 'call_perm_1',
+        toolName: 'Bash',
+        input: { command: 'touch /tmp/x' },
+        reason: 'Tool Bash requires approval',
+        riskLevel: 'medium',
+      } });
       return;
     }
     send({ method: 'session/event', params: { sessionId, type: 'model_streaming', payload: { kind: 'text_delta', delta: 'hi there' } } });
@@ -248,4 +273,38 @@ test('runtime configures model and reasoning effort variant', async () => {
   const setModelPayload = setModelEntry.value as { model: { modelId: string; variant?: string } };
   assert.equal(setModelPayload.model.modelId, 'GLM-5.3');
   assert.equal(setModelPayload.model.variant, 'high');
+});
+
+test('runtime bridges interaction/requestPermission to the chat stream and answers the engine', async () => {
+  fsSync.writeFileSync(modeFilePath, 'perm-bridge\n');
+  const runtime = new ZCodeRuntimeProvider();
+  const { messages, writer } = createWriter();
+
+  // The run parks on the permission until it is resolved.
+  const runPromise = runtime.run('hello', { sessionId: 'app-sess-perm', cwd: stubDir }, writer, context);
+
+  let permissionMessage: NormalizedMessage | undefined;
+  for (let i = 0; i < 100 && !permissionMessage; i += 1) {
+    permissionMessage = messages.find((msg) => msg.kind === 'permission_request');
+    if (!permissionMessage) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+
+  assert.ok(permissionMessage, 'the permission request must reach the chat stream');
+  assert.equal(permissionMessage.requestId, 'perm_test_1');
+  assert.equal(permissionMessage.toolName, 'Bash');
+  assert.deepEqual(permissionMessage.input, { command: 'touch /tmp/x' });
+
+  // Answering through the permissions facet unblocks the engine-side turn.
+  zcodeRuntimePermissions.resolve('perm_test_1', { allow: true });
+
+  const result = await runPromise;
+  assert.deepEqual(result, { sessionId: 'sess_stub_1', success: true });
+
+  const answer = readStubLog().find((entry) => entry.name === 'perm_answer');
+  assert.ok(answer, 'the engine must receive the decision');
+  assert.deepEqual((answer.value as { result: { decision: string } }).result, { decision: 'allow' });
+  const delta = messages.find((msg) => msg.kind === 'stream_delta');
+  assert.equal(delta?.content, 'ran it');
 });

@@ -24,7 +24,8 @@
  * @module zcode-protocol.client
  */
 
-import type { SessionEventListener } from './zcode-codec.js';
+import type { ProtocolServerRequest, SessionEventListener } from './zcode-codec.js';
+import type { ServerRequestAnswer } from './zcode-request-router.js';
 import { EngineSupervisor } from './zcode-engine-supervisor.js';
 import { RequestRouter } from './zcode-request-router.js';
 
@@ -107,6 +108,16 @@ class ZCodeProtocolClient {
    */
   removeSessionListener(sessionId: string, listener: SessionEventListener): void {
     this.router.removeSessionListener(sessionId, listener);
+  }
+
+  /**
+   * Replaces the engine-callback policy (server-initiated requests).
+   *
+   * Consumers: the zcode runtime provider, which wraps the default policy to
+   * bridge `interaction/requestPermission` through to the chat stream.
+   */
+  setServerRequestHandler(handler: (request: ProtocolServerRequest) => ServerRequestAnswer | Promise<ServerRequestAnswer>): void {
+    this.router.setServerRequestHandler(handler);
   }
 
   /**

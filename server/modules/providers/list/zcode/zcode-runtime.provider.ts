@@ -23,6 +23,7 @@ import type { IProviderRuntime } from '@/shared/interfaces.js';
 import type {
   AnyRecord,
   NormalizedMessage,
+  ProviderPermissionDecision,
   ProviderRuntimeContext,
   ProviderRuntimeWriter,
 } from '@/shared/types.js';
@@ -32,6 +33,9 @@ import { notifyRunFailed, notifyRunStopped } from '@/modules/notifications/index
 import { sessionsDb } from '@/modules/database/index.js';
 
 import { SESSION_LOST_METHOD } from './zcode-codec.js';
+import type { ProtocolServerRequest } from './zcode-codec.js';
+import { defaultServerRequestHandler } from './zcode-request-router.js';
+import type { ServerRequestAnswer } from './zcode-request-router.js';
 import { protocolClient } from './zcode-protocol.client.js';
 import { buildZCodeRuntimeModel, readZCodeSessionModelInfoFromDb, resolveZCodeModelRef } from './zcode-models.provider.js';
 
@@ -81,6 +85,113 @@ const sessionCompletionState = new Map<string, {
   failedMessage?: string;
   tokenUsage?: number;
 }>();
+
+/**
+ * Permission bridge state.
+ *
+ * The engine asks for tool approval through a blocking
+ * `interaction/requestPermission` server-initiated request. The bridge turns
+ * it into a `permission_request` message on the owning run's chat stream and
+ * keeps the engine waiting until the user answers through
+ * `chat.permission-response` → `zcodeRuntimePermissions.resolve`.
+ *
+ * `permissionWriters` maps the engine-side session id to the run's writer so
+ * the bridge can forward the request even though the protocol client is a
+ * singleton shared across runs; entries live for the run's duration, while
+ * pending resolvers outlive it so a card answered after the run still
+ * resolves cleanly instead of leaking the engine's request.
+ */
+type PermissionBridgeAnswer = ServerRequestAnswer;
+
+const permissionWriters = new Map<string, ProviderRuntimeWriter>();
+const pendingPermissionResolvers = new Map<string, (answer: PermissionBridgeAnswer) => void>();
+
+/**
+ * Bridges the engine's `interaction/requestPermission` server request to the
+ * chat stream. Installed once over the router's default policy; every other
+ * method falls through unchanged.
+ */
+function permissionBridgeRequestHandler(
+  request: ProtocolServerRequest,
+): ServerRequestAnswer | Promise<ServerRequestAnswer> {
+  if (request.method !== 'interaction/requestPermission') {
+    return defaultServerRequestHandler(request);
+  }
+
+  const params = request.params ?? {};
+  const requestId = readOptionalString(params.requestId);
+  const sessionId = readOptionalString(params.sessionId);
+  if (!requestId) {
+    return { error: { code: -32602, message: 'interaction/requestPermission is missing requestId' } };
+  }
+
+  // The engine re-announces pending requests on an interval; answer each
+  // re-announcement with the same pending promise instead of stacking.
+  if (pendingPermissionResolvers.has(requestId)) {
+    return new Promise<PermissionBridgeAnswer>((resolve) => {
+      pendingPermissionResolvers.set(requestId, resolve);
+    });
+  }
+
+  const writer = sessionId ? permissionWriters.get(sessionId) : undefined;
+  if (!writer) {
+    return { result: { decision: 'deny', reason: 'No active chat stream for this session' } };
+  }
+
+  writer.send(createNormalizedMessage({
+    id: generateMessageId('zcode'),
+    sessionId,
+    provider: 'zcode',
+    kind: 'permission_request',
+    requestId,
+    toolName: readOptionalString(params.toolName) ?? 'Tool',
+    toolId: readOptionalString(params.toolCallId),
+    input: params.input,
+    context: {
+      riskLevel: readOptionalString(params.riskLevel),
+      reason: readOptionalString(params.reason),
+      options: params.options,
+      suggestedPermissionUpdates: params.suggestedPermissionUpdates,
+    },
+    canInterrupt: true,
+  }));
+
+  return new Promise<PermissionBridgeAnswer>((resolve) => {
+    pendingPermissionResolvers.set(requestId, resolve);
+  });
+}
+
+/**
+ * ZCode permissions facet: answers the engine's pending
+ * `interaction/requestPermission` calls from the chat gateway's
+ * `chat.permission-response` flow.
+ *
+ * Consumer: `provider-runtime.service.resolveToolApproval` fans decisions out
+ * to every provider's permissions facet; zcode only answers request ids it
+ * bridged itself.
+ */
+export const zcodeRuntimePermissions = {
+  resolve(requestId: string, decision: ProviderPermissionDecision): void {
+    const resolve = pendingPermissionResolvers.get(requestId);
+    if (!resolve) {
+      return;
+    }
+    pendingPermissionResolvers.delete(requestId);
+
+    if (decision.allow) {
+      resolve(decision.updatedInput !== undefined
+        ? { result: { decision: 'modify', modifiedInput: decision.updatedInput, reason: decision.message } }
+        : { result: { decision: 'allow', reason: decision.message } });
+      return;
+    }
+
+    resolve({ result: { decision: 'deny', reason: decision.message ?? 'Denied by user' } });
+  },
+
+  listPending(): unknown[] {
+    return [...pendingPermissionResolvers.keys()];
+  },
+};
 
 /**
  * ZCode Runtime Provider Implementation
@@ -146,6 +257,10 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
     const notifySessionId = appSessionId ?? zcodeSessionId;
     activeSessions.set(abortKey, zcodeSessionId);
     sessionCompletionState.set(zcodeSessionId, { completed: false });
+    // Route the engine's permission server-requests for this session to this
+    // run's chat stream; installed once, but the writer map is per-run.
+    permissionWriters.set(zcodeSessionId, writer);
+    protocolClient.setServerRequestHandler(permissionBridgeRequestHandler);
 
     try {
       await this.subscribeToSessionEvents(zcodeSessionId);
@@ -200,6 +315,10 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
       activeSessions.delete(abortKey);
       sessionCompletionState.delete(zcodeSessionId);
       abortedRunKeys.delete(abortKey);
+      // Keep pendingPermissionResolvers: a permission card answered after the
+      // run still resolves the engine's request instead of leaking it. Only
+      // the writer mapping is run-scoped.
+      permissionWriters.delete(zcodeSessionId);
     }
   }
 
@@ -779,5 +898,10 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
 /**
  * Singleton instance of the ZCode runtime provider.
  * Consumer: zcode provider class (exposed as the provider's runtime facet).
+ * `permissions` wires the permission bridge into the chat gateway's
+ * `chat.permission-response` flow (see `zcodeRuntimePermissions` above).
  */
-export const zcodeRuntime = new ZCodeRuntimeProvider();
+export const zcodeRuntime: IProviderRuntime = Object.assign(
+  new ZCodeRuntimeProvider(),
+  { permissions: zcodeRuntimePermissions },
+);
