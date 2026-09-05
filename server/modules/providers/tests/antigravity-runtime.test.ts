@@ -45,6 +45,15 @@ if (mode === 'sleep') {
 } else if (mode === 'error-result') {
   console.log(JSON.stringify({ event: 'init', conversation_id: 'stub-conv-err', init: { cwd: '/tmp' } }));
   console.log(JSON.stringify({ event: 'result', result: { conversation_id: 'stub-conv-err', status: 'ERROR', error: 'model overloaded' } }));
+} else if (mode === 'stream-interrupted' || mode === 'stream-interrupted-prefixed') {
+  const error = mode === 'stream-interrupted-prefixed'
+    ? 'Error: The stream was interrupted. Please continue the task you were working on.'
+    : 'The stream was interrupted. Please continue the task you were working on.';
+  console.log(JSON.stringify({ event: 'init', conversation_id: 'stub-conv-interrupted', init: { cwd: '/tmp' } }));
+  console.log(JSON.stringify({ event: 'result', result: { conversation_id: 'stub-conv-interrupted', status: 'ERROR', error } }));
+  // agy exits non-zero after an ERROR result; the degraded path must still
+  // resolve the run.
+  process.exit(1);
 } else if (mode === 'noisy') {
   console.log('connecting to backend...');
   console.log(JSON.stringify({ event: 'init', conversation_id: 'stub-conv-noisy', init: { cwd: '/tmp' } }));
@@ -400,6 +409,36 @@ test('runtime reports provider error results even with a zero exit code', async 
     assert.deepEqual(result, { sessionId: 'stub-conv-err', success: true });
   } finally {
     delete process.env.AGY_STUB_MODE;
+  }
+});
+
+test('runtime degrades agy interrupted-stream notices to a quiet task notification', async () => {
+  const runtime = new AntigravityRuntimeProvider();
+
+  for (const mode of ['stream-interrupted', 'stream-interrupted-prefixed'] as const) {
+    await fs.rm(argsFilePath, { force: true });
+    process.env.AGY_STUB_MODE = mode;
+    try {
+      const { messages, writer } = createWriter();
+      // The stub exits 1 after the ERROR result; the degraded path must
+      // resolve the run instead of rejecting.
+      const result = await runtime.run('hello', { sessionId: `sess-${mode}` }, writer, context);
+      assert.deepEqual(result, { sessionId: 'stub-conv-interrupted', success: true }, mode);
+
+      assert.equal(
+        messages.some((msg) => msg.kind === 'error'),
+        false,
+        `${mode}: the notice must not surface as an error row`,
+      );
+      const notice = messages.find((msg) => msg.kind === 'task_notification');
+      assert.ok(notice, `${mode}: a task notification must reach the writer`);
+      assert.equal(notice?.summary, '会话中断，已自动重试');
+      assert.equal(notice?.status, 'interrupted');
+      const complete = messages.find((msg) => msg.kind === 'complete');
+      assert.equal(complete?.exitCode, 0, mode);
+    } finally {
+      delete process.env.AGY_STUB_MODE;
+    }
   }
 });
 

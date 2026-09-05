@@ -103,6 +103,31 @@ const abortedProcessKeys = new Set<string>();
  */
 const STDERR_TAIL_LIMIT = 4_000;
 
+/**
+ * agy's built-in notice when the backend generation stream breaks mid-turn.
+ * agy injects its own continuation prompt into the conversation on this
+ * condition, so the backend agent keeps working; the notice is a status
+ * update for the user, not a run failure.
+ */
+const STREAM_INTERRUPTED_NOTICE = 'The stream was interrupted. Please continue the task you were working on.';
+
+/**
+ * Neutral transcript copy shown in place of the raw notice, so an
+ * interrupted-stream turn does not render as a red error row.
+ */
+const STREAM_INTERRUPTED_SUMMARY = '会话中断，已自动重试';
+
+/**
+ * True when a result error is agy's interrupted-stream auto-resume notice
+ * rather than a real failure. Matches the bare sentence and its rendered
+ * `Error: `-prefixed variant.
+ */
+const isStreamInterruptedNotice = (message: string | null | undefined): boolean => {
+  const trimmed = message?.trim();
+  return trimmed === STREAM_INTERRUPTED_NOTICE
+    || trimmed === `Error: ${STREAM_INTERRUPTED_NOTICE}`;
+};
+
 export class AntigravityRuntimeProvider implements IProviderRuntime {
   /**
    * Executes a command using the Antigravity CLI.
@@ -142,6 +167,14 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
       let settled = false;
       let sawErrorResult = false;
       let errorResultMessage: string | null = null;
+      /**
+       * Set when the only error result was agy's interrupted-stream notice.
+       * The run then settles as a non-failure: agy has already asked the
+       * backend conversation to continue, so failing the run (error row,
+       * failure notification, rejected promise) would contradict the engine's
+       * own recovery.
+       */
+      let streamInterruptedResult = false;
       let stderrTail = '';
       /**
        * Whether an agent_response text segment is currently streaming. agy
@@ -175,7 +208,12 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
       const notifyTerminalState = ({ code = null, error = null }: { code?: number | null; error?: string | Error | null } = {}) => {
         const finalSessionId = sessionId || capturedSessionId || processKey;
         const normalizedUserId = writer.userId != null ? String(writer.userId) : null;
-        const failed = code !== 0 || error !== null || sawErrorResult;
+        // An interrupted-stream notice is agy's auto-resume handshake: only a
+        // real error result, a spawn error, or a non-interrupted non-zero
+        // exit counts as a failure.
+        const failed = sawErrorResult
+          || error !== null
+          || (code !== 0 && !streamInterruptedResult);
         if (!failed) {
           notifyRunStopped({
             userId: normalizedUserId,
@@ -407,7 +445,21 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
             const isError = resultData?.status === 'ERROR' || Boolean(resultData?.error);
             const errorMessage = readOptionalString(resultData?.error);
 
-            if (isError) {
+            if (isError && isStreamInterruptedNotice(errorMessage)) {
+              // agy reports a broken backend stream with this canned error and
+              // simultaneously injects a continuation prompt into the
+              // conversation, so the task resumes server-side. Degrade the
+              // notice to a quiet transcript line instead of a hard error.
+              streamInterruptedResult = true;
+              writer.send(createNormalizedMessage({
+                id: generateMessageId(PROVIDER),
+                kind: 'task_notification',
+                summary: STREAM_INTERRUPTED_SUMMARY,
+                status: 'interrupted',
+                sessionId: capturedSessionId || sessionId || null,
+                provider: PROVIDER,
+              }));
+            } else if (isError) {
               sawErrorResult = true;
               errorResultMessage = errorMessage ?? null;
               writer.send(createNormalizedMessage({
@@ -425,7 +477,7 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
               const completeMsg = createCompleteMessage({
                 provider: PROVIDER,
                 sessionId: capturedSessionId || sessionId || null,
-                exitCode: isError ? 1 : 0,
+                exitCode: isError && !streamInterruptedResult ? 1 : 0,
               });
               if (totalTokens !== undefined) {
                 completeMsg.tokens = totalTokens;
@@ -542,7 +594,7 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
         }
 
         notifyTerminalState({ code });
-        if (code === 0) {
+        if (code === 0 || (streamInterruptedResult && !sawErrorResult)) {
           settleOnce(() => resolve({ sessionId: capturedSessionId || sessionId, success: true }));
         } else {
           settleOnce(() => reject(new Error(describeFailure(code))));
