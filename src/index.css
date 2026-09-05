@@ -588,20 +588,14 @@
     clip-path: inset(-8px -8px 0 -8px);
   }
 
+  /* No content-visibility on transcript rows: cv:auto flips off-screen rows
+     between their estimate (contain-intrinsic-size) and real height at the
+     render-band edge, and each flip makes native scroll anchoring compensate,
+     which flips more rows — a self-sustaining geometry oscillation the user
+     sees as flicker/jump when scrolling up. Off-screen skipping is already
+     handled geometrically-stably by LazyMessageRow. */
   .chat-message {
     contain: layout style paint;
-    content-visibility: auto;
-    contain-intrinsic-size: auto 180px;
-  }
-
-  .chat-message.assistant {
-    contain-intrinsic-size: auto 240px;
-  }
-
-  .chat-message.user,
-  .chat-message.tool,
-  .chat-message.error {
-    contain-intrinsic-size: auto 96px;
   }
 
   /* Mobile touch optimization and safe areas */
