@@ -244,6 +244,18 @@ test('tool input fragments without an announced call are ignored', () => {
   assert.deepEqual(messages, []);
 });
 
+test('text segment boundaries surface as stream_end so clients finalize each segment', () => {
+  const provider = new ZCodeSessionsProvider();
+  for (const kind of ['text_start', 'text_end']) {
+    const messages = provider.normalizeMessage(
+      { type: 'model_streaming', payload: { kind, delta: '' } },
+      'sess_1'
+    );
+    assert.equal(messages.length, 1);
+    assert.equal(messages[0].kind, 'stream_end');
+  }
+});
+
 test('a text delta closes the reasoning block so the next segment gets a new id', () => {
   const provider = new ZCodeSessionsProvider();
   const first = provider.normalizeMessage(
@@ -301,12 +313,16 @@ test('turn completion clears the open reasoning block', () => {
   assert.notEqual(second[0].id, first[0].id);
 });
 
-test('normalizeMessage skips streaming boundary markers with empty deltas', () => {
+test('normalizeMessage maps text boundaries to control stream_end frames', () => {
   const provider = new ZCodeSessionsProvider();
-  assert.deepEqual(
-    provider.normalizeMessage({ type: 'model_streaming', payload: { kind: 'text_start', delta: '' } }, 'sess_1'),
-    []
+  // The control frame is never rendered as a message; it tells the client to
+  // finalize the segment it has been streaming.
+  const messages = provider.normalizeMessage(
+    { type: 'model_streaming', payload: { kind: 'text_start', delta: '' } },
+    'sess_1'
   );
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].kind, 'stream_end');
 });
 
 test('normalizeMessage maps tool_call_scheduled to tool_use', () => {

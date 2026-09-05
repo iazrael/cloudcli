@@ -771,14 +771,20 @@ export function useSessionStore() {
   /**
    * Update or create a streaming message (accumulated text so far).
    * Uses a well-known ID so subsequent calls replace the same message.
+   *
+   * The row's timestamp anchors to when the segment *started* streaming and
+   * never refreshes afterwards: the finalized text must sort ahead of the
+   * tool calls the model makes after writing it, not drift to the last
+   * update and get pushed below them.
    */
   const updateStreaming = useCallback((sessionId: string, accumulatedText: string, msgProvider: LLMProvider) => {
     const slot = getSlot(sessionId);
     const streamId = `__streaming_${sessionId}`;
+    const existing = slot.realtimeMessages.find((m) => m.id === streamId);
     const msg: NormalizedMessage = {
       id: streamId,
       sessionId,
-      timestamp: new Date().toISOString(),
+      timestamp: existing?.timestamp ?? new Date().toISOString(),
       provider: msgProvider,
       kind: 'stream_delta',
       content: accumulatedText,

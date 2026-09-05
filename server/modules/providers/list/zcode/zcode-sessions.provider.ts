@@ -575,6 +575,21 @@ export class ZCodeSessionsProvider implements IProviderSessions {
       this.reasoningBlockIds.delete(reasoningStateKey);
     }
 
+    // Text segment boundaries: the engine never emits a plain stream_end for
+    // them, so without this the client keeps the whole turn's text in one
+    // streaming row whose timestamp drifts to finalization time — pushing the
+    // finalized text below the tool calls that ran before it. Forwarding the
+    // boundaries as stream_end lets the client close each segment in place.
+    if (kind === 'text_start' || kind === 'text_end') {
+      return [createNormalizedMessage({
+        id: baseId,
+        sessionId: eventSessionId,
+        timestamp,
+        provider: PROVIDER,
+        kind: 'stream_end',
+      })];
+    }
+
     if (kind === 'text_delta') {
       const content = extractText(payload.delta);
       if (!content) {
