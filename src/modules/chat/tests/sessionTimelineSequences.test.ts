@@ -67,9 +67,6 @@ function stubHistoryFetch(script: Array<{ params: { limit: string; offset: strin
 
 type TimelineHarness = {
   sessionStore: ReturnType<typeof useSessionStore>;
-  lastSeqRef: { current: Map<string, number> };
-  accumulatedStreamsRef: { current: Map<string, string> };
-  streamTimersRef: { current: Map<string, number> };
   requestLatestMessages: ReturnType<typeof vi.fn>;
   onSessionIdle: ReturnType<typeof vi.fn>;
   emit: (frame: ServerEvent) => void;
@@ -89,9 +86,6 @@ function mountTimeline(activeSessionId: string | null = SESSION_ID): TimelineHar
   const sessionStore = storeRoot.result.current;
   sessionStore.setActiveSession(activeSessionId);
 
-  const streamTimersRef = { current: new Map<string, number>() };
-  const accumulatedStreamsRef = { current: new Map<string, string>() };
-  const lastSeqRef = { current: new Map<string, number>() };
   const statusCheckSentAtRef = { current: new Map<string, number>() };
   const requestLatestMessages = vi.fn();
   const onSessionIdle = vi.fn();
@@ -106,9 +100,6 @@ function mountTimeline(activeSessionId: string | null = SESSION_ID): TimelineHar
     setTokenBudget: vi.fn(),
     pendingPermissionRequests: [],
     setPendingPermissionRequests: vi.fn(),
-    streamTimersRef,
-    accumulatedStreamsRef,
-    lastSeqRef,
     statusCheckSentAtRef,
     onSessionProcessing,
     onSessionIdle,
@@ -126,15 +117,12 @@ function mountTimeline(activeSessionId: string | null = SESSION_ID): TimelineHar
   };
 
   const cleanup = () => {
-    for (const timer of streamTimersRef.current.values()) {
-      clearTimeout(timer);
-    }
-    streamTimersRef.current.clear();
+    sessionStore.resetStreamingState();
     handlersRoot.unmount();
     storeRoot.unmount();
   };
 
-  return { sessionStore, lastSeqRef, accumulatedStreamsRef, streamTimersRef, requestLatestMessages, onSessionIdle, emit, cleanup };
+  return { sessionStore, requestLatestMessages, onSessionIdle, emit, cleanup };
 }
 
 /** Lets the 100ms stream throttle fire exactly once and apply the row. */
@@ -334,7 +322,13 @@ test('a streaming row anchors its timestamp at segment start and finalizes in pl
     realtimeCountBefore,
     'finalization replaces the streaming row in place — no extra row may appear',
   );
-  assert.equal(timeline.accumulatedStreamsRef.current.size, 0, 'the buffer must be drained');
+  // Buffer drained, proven behaviorally: a later segment starts fresh
+  // instead of concatenating onto the finalized text.
+  timeline.emit({ kind: 'stream_delta', sessionId: SESSION_ID, content: 'Next' } as unknown as ServerEvent);
+  await tickThrottle();
+  const nextSegment = timeline.sessionStore.getMessages(SESSION_ID).find((row) => row.id === `__streaming_${SESSION_ID}`);
+  assert.ok(nextSegment);
+  assert.equal(nextSegment!.content, 'Next');
 
   timeline.cleanup();
 });
@@ -402,15 +396,15 @@ test('every sequenced frame advances the per-session resume seq, sessionless fra
   timeline.emit({ kind: 'status', sessionId: SESSION_ID, text: 'working', seq: 3 } as unknown as ServerEvent);
   timeline.emit({ kind: 'status', sessionId: SESSION_ID, text: 'working', seq: 7 } as unknown as ServerEvent);
   timeline.emit({ kind: 'status', sessionId: SESSION_ID, text: 'working', seq: 5 } as unknown as ServerEvent);
-  assert.equal(timeline.lastSeqRef.current.get(SESSION_ID), 7, 'the resume seq must be the max observed');
+  assert.equal(timeline.sessionStore.getResumeSeq(SESSION_ID), 7, 'the resume seq must be the max observed');
 
   // A frame without its own sessionId attributes to the viewed session.
   timeline.emit({ kind: 'status', text: 'working', seq: 9 } as unknown as ServerEvent);
-  assert.equal(timeline.lastSeqRef.current.get(SESSION_ID), 9);
+  assert.equal(timeline.sessionStore.getResumeSeq(SESSION_ID), 9);
 
   // Unsequenced frames never touch it.
   timeline.emit({ kind: 'status', sessionId: SESSION_ID, text: 'working' } as unknown as ServerEvent);
-  assert.equal(timeline.lastSeqRef.current.get(SESSION_ID), 9);
+  assert.equal(timeline.sessionStore.getResumeSeq(SESSION_ID), 9);
 
   timeline.cleanup();
 });
@@ -438,7 +432,12 @@ test('complete flushes the stream and requests the persisted tail only for the v
     timeline.sessionStore.getMessages(SESSION_ID).some((row) => row.kind === 'text' && row.content === 'partial'),
     'complete must finalize the buffered stream text',
   );
-  assert.equal(timeline.accumulatedStreamsRef.current.size, 0);
+  // Buffer drained, proven behaviorally: a later segment starts fresh.
+  timeline.emit({ kind: 'stream_delta', sessionId: SESSION_ID, content: 'Next' } as unknown as ServerEvent);
+  await tickThrottle();
+  const nextSegment = timeline.sessionStore.getMessages(SESSION_ID).find((row) => row.id === `__streaming_${SESSION_ID}`);
+  assert.ok(nextSegment);
+  assert.equal(nextSegment!.content, 'Next');
   assert.equal(timeline.requestLatestMessages.mock.calls.length, 1);
   assert.deepEqual(timeline.requestLatestMessages.mock.calls[0], [SESSION_ID, true]);
 

@@ -26,17 +26,6 @@ type UseChatRealtimeHandlersArgs = {
   setTokenBudget: (budget: Record<string, unknown> | null) => void;
   pendingPermissionRequests: PendingPermissionRequest[];
   setPendingPermissionRequests: Dispatch<SetStateAction<PendingPermissionRequest[]>>;
-  /** Per-session 100ms throttle timers for stream_delta → store updates. */
-  streamTimersRef: MutableRefObject<Map<string, number>>;
-  /** Per-session accumulated stream text; flushed on stream_end/complete. */
-  accumulatedStreamsRef: MutableRefObject<Map<string, string>>;
-  /**
-   * Highest live `seq` observed per session. Essential for reconnect catch-up:
-   * `chat.subscribe` sends this value as `lastSeq` so the server replays only
-   * the events this client actually missed. Written here on every sequenced
-   * frame; read wherever a `chat.subscribe` is sent (session open, reconnect).
-   */
-  lastSeqRef: MutableRefObject<Map<string, number>>;
   /** When each session's `chat.subscribe` was last sent; guards stale idle acks. */
   statusCheckSentAtRef: MutableRefObject<Map<string, number>>;
   onSessionProcessing?: MarkSessionProcessing;
@@ -68,9 +57,6 @@ export function useChatRealtimeHandlers({
   setTokenBudget,
   pendingPermissionRequests,
   setPendingPermissionRequests,
-  streamTimersRef,
-  accumulatedStreamsRef,
-  lastSeqRef,
   statusCheckSentAtRef,
   onSessionProcessing,
   onSessionIdle,
@@ -106,10 +92,7 @@ export function useChatRealtimeHandlers({
 
       // Record replay progress for every sequenced live event.
       if (sid && typeof msg.seq === 'number') {
-        const known = lastSeqRef.current.get(sid) ?? 0;
-        if (msg.seq > known) {
-          lastSeqRef.current.set(sid, msg.seq);
-        }
+        sessionStore.noteSeq(sid, msg.seq);
       }
 
       switch (msg.kind) {
@@ -196,25 +179,6 @@ export function useChatRealtimeHandlers({
       /*  Provider NormalizedMessage handling                            */
       /* -------------------------------------------------------------- */
 
-      /**
-       * Flushes one session's accumulated stream text into its `__streaming_`
-       * row and finalizes it as a regular assistant text message. Buffers are
-       * per session, so flushing one run never touches a concurrent run.
-       */
-      const flushSessionStream = (sessionId: string) => {
-        const timer = streamTimersRef.current.get(sessionId);
-        if (timer !== undefined) {
-          clearTimeout(timer);
-          streamTimersRef.current.delete(sessionId);
-        }
-        const buffer = accumulatedStreamsRef.current.get(sessionId);
-        if (buffer) {
-          accumulatedStreamsRef.current.delete(sessionId);
-          sessionStore.updateStreaming(sessionId, buffer, provider);
-          sessionStore.finalizeStreaming(sessionId);
-        }
-      };
-
       // Any content-bearing frame ends the current text segment: once the
       // model moves from prose to a tool call or its next thinking block, the
       // buffered text must finalize as its own message instead of absorbing
@@ -229,7 +193,7 @@ export function useChatRealtimeHandlers({
         && msg.kind !== 'permission_request'
         && msg.kind !== 'permission_cancelled'
       ) {
-        flushSessionStream(sid);
+        sessionStore.flushStream(sid, provider);
       }
 
       // --- Streaming: buffer for performance ---
@@ -240,22 +204,16 @@ export function useChatRealtimeHandlers({
       if (msg.kind === 'stream_delta') {
         const text = (msg.content as string) || '';
         if (!text || !sid) return;
-        accumulatedStreamsRef.current.set(sid, (accumulatedStreamsRef.current.get(sid) ?? '') + text);
-        if (!streamTimersRef.current.has(sid)) {
-          const timer = window.setTimeout(() => {
-            streamTimersRef.current.delete(sid);
-            sessionStore.updateStreaming(sid, accumulatedStreamsRef.current.get(sid) ?? '', provider);
-          }, 100);
-          streamTimersRef.current.set(sid, timer);
-        }
+        sessionStore.appendStreamDelta(sid, text, provider);
         return;
       }
 
       if (msg.kind === 'stream_end') {
         if (sid) {
-          flushSessionStream(sid);
-          // A stream_end without buffered text still closes the synthetic
-          // streaming row (finalizeStreaming is a no-op when none exists).
+          // Flushes the buffered text (finalizing its row when any existed),
+          // then closes the synthetic streaming row even when nothing was
+          // buffered — finalizeStreaming is a no-op when none exists.
+          sessionStore.flushStream(sid, provider);
           sessionStore.finalizeStreaming(sid);
         }
         return;
@@ -299,7 +257,7 @@ export function useChatRealtimeHandlers({
         case 'complete': {
           // Flush any remaining streaming state
           if (sid) {
-            flushSessionStream(sid);
+            sessionStore.flushStream(sid, provider);
           }
 
           // `complete` is the unified terminal event — every provider run ends
@@ -406,9 +364,6 @@ export function useChatRealtimeHandlers({
     setTokenBudget,
     pendingPermissionRequests,
     setPendingPermissionRequests,
-    streamTimersRef,
-    accumulatedStreamsRef,
-    lastSeqRef,
     statusCheckSentAtRef,
     onSessionProcessing,
     onSessionIdle,

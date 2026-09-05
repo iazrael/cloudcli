@@ -29,8 +29,6 @@ type UseChatSessionStateArgs = {
   resetStreamingState: () => void;
   /** When each session's `chat.subscribe` was last sent; guards stale idle acks. */
   statusCheckSentAtRef: MutableRefObject<Map<string, number>>;
-  /** Highest live seq observed per session; sent as `lastSeq` on subscribe. */
-  lastSeqRef: MutableRefObject<Map<string, number>>;
   sessionStore: SessionStore;
 }
 
@@ -112,7 +110,6 @@ export function useChatSessionState({
   onSessionIdle,
   resetStreamingState,
   statusCheckSentAtRef,
-  lastSeqRef,
   sessionStore,
 }: UseChatSessionStateArgs) {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(selectedSession?.id || null);
@@ -510,10 +507,10 @@ export function useChatSessionState({
       type: 'chat.subscribe',
       sessions: [{
         sessionId: selectedSession.id,
-        lastSeq: lastSeqRef.current.get(selectedSession.id) ?? 0,
+        lastSeq: sessionStore.getResumeSeq(selectedSession.id),
       }],
     });
-  }, [lastSeqRef, selectedProject, selectedSession, sendMessage, statusCheckSentAtRef, ws]);
+  }, [selectedProject, selectedSession, sendMessage, sessionStore, statusCheckSentAtRef, ws]);
 
   // Main session loading effect — store-based
   useEffect(() => {

@@ -52,27 +52,15 @@ function ChatInterface({
   }, [refreshProviderAuthStatuses]);
 
   const sessionStore = useSessionStore();
-  // Streaming accumulation is keyed per session: concurrent runs (one viewed,
-  // one background) each keep their own buffer and 100ms throttle timer, so
-  // deltas can never cross-contaminate and one run's terminal flush never
-  // discards another run's in-flight prefix.
-  const streamTimersRef = useRef(new Map<string, number>());
-  const accumulatedStreamsRef = useRef(new Map<string, string>());
   // When each session's `chat.subscribe` was last sent; idle acks older than
   // a later local request are discarded as stale.
   const statusCheckSentAtRef = useRef(new Map<string, number>());
-  // Highest live `seq` observed per session. Written by the realtime handler
-  // on every sequenced frame, read whenever a `chat.subscribe` is sent so the
-  // server replays only the events this client actually missed.
-  const lastSeqRef = useRef(new Map<string, number>());
-
+  // Stream buffers, throttle timers, and replay seqs live in the session
+  // store (they are timeline state); only the subscribe bookkeeping above
+  // belongs to this component.
   const resetStreamingState = useCallback(() => {
-    for (const timer of streamTimersRef.current.values()) {
-      clearTimeout(timer);
-    }
-    streamTimersRef.current.clear();
-    accumulatedStreamsRef.current.clear();
-  }, []);
+    sessionStore.resetStreamingState();
+  }, [sessionStore]);
 
   const {
     provider,
@@ -145,7 +133,6 @@ function ChatInterface({
     onSessionIdle,
     resetStreamingState,
     statusCheckSentAtRef,
-    lastSeqRef,
     sessionStore,
   });
 
@@ -249,10 +236,10 @@ function ChatInterface({
       type: 'chat.subscribe',
       sessions: [{
         sessionId: selectedSession.id,
-        lastSeq: lastSeqRef.current.get(selectedSession.id) ?? 0,
+        lastSeq: sessionStore.getResumeSeq(selectedSession.id),
       }],
     });
-  }, [isActive, requestLatestMessages, selectedProject, selectedSession, sendMessage]);
+  }, [isActive, requestLatestMessages, selectedProject, selectedSession, sendMessage, sessionStore]);
 
   useChatRealtimeHandlers({
     isActive,
@@ -263,9 +250,6 @@ function ChatInterface({
     setTokenBudget,
     pendingPermissionRequests,
     setPendingPermissionRequests,
-    streamTimersRef,
-    accumulatedStreamsRef,
-    lastSeqRef,
     statusCheckSentAtRef,
     onSessionProcessing,
     onSessionIdle,

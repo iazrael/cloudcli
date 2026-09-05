@@ -823,6 +823,83 @@ export function useSessionStore() {
     }
   }, [notify]);
 
+  // ─── Live stream buffering and replay progress ─────────────────────────────
+  // Per-session delta buffers with their 100ms throttle timers, plus the
+  // per-session resume seq. This is timeline state — it decides when a stream
+  // segment becomes a row and where a reconnect resumes — so it lives in the
+  // store rather than in the component tree that happens to host the handler.
+
+  const streamTimersRef = useRef(new Map<string, number>());
+  const accumulatedStreamsRef = useRef(new Map<string, string>());
+  const resumeSeqRef = useRef(new Map<string, number>());
+
+  /**
+   * Buffers one `stream_delta` text fragment and (re)arms the session's 100ms
+   * throttle that pushes the accumulated text into its `__streaming_` row.
+   * Consumer: the realtime handler's stream_delta route.
+   */
+  const appendStreamDelta = useCallback((sessionId: string, text: string, msgProvider: LLMProvider) => {
+    accumulatedStreamsRef.current.set(sessionId, (accumulatedStreamsRef.current.get(sessionId) ?? '') + text);
+    if (!streamTimersRef.current.has(sessionId)) {
+      const timer = window.setTimeout(() => {
+        streamTimersRef.current.delete(sessionId);
+        updateStreaming(sessionId, accumulatedStreamsRef.current.get(sessionId) ?? '', msgProvider);
+      }, 100);
+      streamTimersRef.current.set(sessionId, timer);
+    }
+  }, [updateStreaming]);
+
+  /**
+   * Drains the session's buffered stream text into its `__streaming_` row and
+   * finalizes that row as a regular assistant text message. A no-op when
+   * nothing was buffered (the timer, if armed, is still cancelled). Consumer:
+   * the realtime handler's content-frame flush gate and the complete frame.
+   */
+  const flushStream = useCallback((sessionId: string, msgProvider: LLMProvider) => {
+    const timer = streamTimersRef.current.get(sessionId);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      streamTimersRef.current.delete(sessionId);
+    }
+    const buffer = accumulatedStreamsRef.current.get(sessionId);
+    if (buffer) {
+      accumulatedStreamsRef.current.delete(sessionId);
+      updateStreaming(sessionId, buffer, msgProvider);
+      finalizeStreaming(sessionId);
+    }
+  }, [finalizeStreaming, updateStreaming]);
+
+  /**
+   * Records the highest live `seq` observed for the session. Consumers: the
+   * realtime handler writes it on every sequenced frame; `chat.subscribe`
+   * sends `getResumeSeq` as `lastSeq` so the server replays only the events
+   * this client actually missed.
+   */
+  const noteSeq = useCallback((sessionId: string, seq: number) => {
+    const known = resumeSeqRef.current.get(sessionId) ?? 0;
+    if (seq > known) {
+      resumeSeqRef.current.set(sessionId, seq);
+    }
+  }, []);
+
+  /** The `lastSeq` a `chat.subscribe` for this session should resume from. */
+  const getResumeSeq = useCallback((sessionId: string) => {
+    return resumeSeqRef.current.get(sessionId) ?? 0;
+  }, []);
+
+  /**
+   * Drops every session's pending stream buffer and cancels its throttle
+   * timer. Consumer: ChatInterface's teardown (unmount / New Session / no
+   * session selected) — a fresh view must not inherit stale fragments.
+   */
+  const resetStreamingState = useCallback(() => {
+    for (const timer of streamTimersRef.current.values()) {
+      clearTimeout(timer);
+    }
+    streamTimersRef.current.clear();
+    accumulatedStreamsRef.current.clear();
+  }, []);
+
 /**
    * Drops every persisted row from `anchorId` onwards after an edit replaced
    * an already-sent message, plus the live rows that belonged to the replaced
@@ -893,6 +970,11 @@ export function useSessionStore() {
     isStale,
     updateStreaming,
     finalizeStreaming,
+    appendStreamDelta,
+    flushStream,
+    noteSeq,
+    getResumeSeq,
+    resetStreamingState,
     truncateAt,
     clearRealtime,
     getMessages,
@@ -901,6 +983,7 @@ export function useSessionStore() {
     getSlot, has, fetchFromServer, fetchMore,
     appendRealtime, appendRealtimeBatch, upsertThinkingDelta, upsertToolUse, refreshLatestFromServer,
     setActiveSession, setStatus, isStale, updateStreaming, finalizeStreaming,
+    appendStreamDelta, flushStream, noteSeq, getResumeSeq, resetStreamingState,
     truncateAt, clearRealtime, getMessages, getSessionSlot,
   ]);
 }
