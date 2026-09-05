@@ -496,13 +496,8 @@ export class ZCodeRunLifecycle {
   }
 
   private rememberAnsweredPermission(requestId: string, answer: ServerRequestAnswer, toolCallId?: string): void {
-    const now = Date.now();
-    for (const [key, value] of this.answeredPermissions) {
-      if (value.expiresAt <= now) {
-        this.answeredPermissions.delete(key);
-      }
-    }
-    this.answeredPermissions.set(requestId, { answer, toolCallId, expiresAt: now + this.answeredTtlMs });
+    this.sweepExpiredPermissions();
+    this.answeredPermissions.set(requestId, { answer, toolCallId, expiresAt: Date.now() + this.answeredTtlMs });
   }
 
   private answerPendingPermission(requestId: string, answer: ServerRequestAnswer): void {

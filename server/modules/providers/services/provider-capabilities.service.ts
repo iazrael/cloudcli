@@ -67,11 +67,6 @@ function deriveCapabilities(providerId: LLMProvider, provider: {
   };
 }
 
-// Compile-time guarantee that the catalog covers exactly the registered
-// provider union — a provider added to the registry without a catalog entry
-// (or vice versa) fails here before any route can serve a hole.
-const CATALOG: Record<LLMProvider, Record<string, unknown>> = PROVIDER_CATALOG;
-
 /**
  * Application service exposing the provider capability matrix, derived once
  * at module load from the provider registry and the static catalog.

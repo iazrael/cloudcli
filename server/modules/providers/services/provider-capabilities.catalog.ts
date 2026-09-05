@@ -1,3 +1,5 @@
+import type { LLMProvider } from '@/shared/types.js';
+
 /**
  * Static provider capability catalog: the declaration point for everything
  * about a provider that CANNOT be derived from its registered facets —
@@ -14,6 +16,11 @@
  * types via the importing modules. The cross-tree parity test imports this
  * file's plain literal object against the frontend's fallback tables, so the
  * two can never drift apart silently again.
+ *
+ * The `satisfies` clause on the export makes the compiler reject a catalog
+ * that stops covering the registered provider union. The type-only import is
+ * erased at runtime, so this file keeps zero runtime dependencies for the
+ * cross-tree parity test.
  *
  * Consumers: provider-capabilities.service.ts (derives the public matrix
  * from this catalog plus the provider registry) and
@@ -103,4 +110,4 @@ export const PROVIDER_CATALOG = {
     supportsAbort: true,
     supportsEffort: true,
   },
-} as const;
+} as const satisfies Readonly<Record<LLMProvider, ProviderCatalogEntry>>;

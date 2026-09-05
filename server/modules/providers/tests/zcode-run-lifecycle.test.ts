@@ -226,6 +226,29 @@ test('a re-announcement refreshes the pending card freshness instead of expiring
   lifecycle.dispose(handle);
 });
 
+test('an answered decision expires from the cache, so a later announcement surfaces a fresh card', async () => {
+  const lifecycle = new ZCodeRunLifecycle({ answeredTtlMs: 20 });
+  const { messages, writer } = createWriter();
+  const handle = lifecycle.startRun({ abortKey: 'app-answer-ttl', sessionId: 'sess_engine_1', appSessionId: 'app-answer-ttl', writer });
+
+  const first = lifecycle.handleServerRequest(permissionRequest(1, {}));
+  lifecycle.resolvePermission('perm_req_1', { allow: true });
+  assert.deepEqual(await first, { result: { decision: 'allow', reason: undefined } });
+
+  // Past the answered TTL the recorded decision must no longer answer
+  // re-announcements: the engine asking again gets a fresh, answerable card.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const second = lifecycle.handleServerRequest(permissionRequest(2, {}));
+  const pending = lifecycle.listPendingPermissions('app-answer-ttl');
+  assert.equal(pending.length, 1, 'the expired decision must not absorb the new announcement');
+
+  lifecycle.resolvePermission('perm_req_1', { allow: false, message: 'Denied by user' });
+  assert.deepEqual(await second, { result: { decision: 'deny', reason: 'Denied by user' } },
+    'the new announcement must be answerable on its own terms');
+
+  lifecycle.dispose(handle);
+});
+
 test('non-permission server requests fall through to the default policy', () => {
   const lifecycle = new ZCodeRunLifecycle();
   assert.deepEqual(
