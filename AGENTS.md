@@ -1,22 +1,22 @@
 # Repository guidance
 
-## 核心架构文档（改动必须保持同步）
+## Core architecture docs (must stay in sync)
 
-本 fork 的核心架构说明在 `docs/core/`（中文）。改到下列代码时**必须同步更新对应文档**：
+This fork's core architecture guides live in `docs/core/` (written in Chinese). Changes to the code below **must update the matching doc**:
 
-| 文档 | 覆盖范围 | 触发更新的改动 |
+| Doc | Covers | Triggered by changes to |
 | --- | --- | --- |
-| `docs/core/overview.md` | 进程拓扑、数据与持久化、认证、构建部署 | `server/index.ts`、`server/modules/database/{schema,migrations}.ts`、构建产物结构、部署方式 |
-| `docs/core/providers.md` | 引擎接入框架与能力矩阵 | `server/modules/providers/**`、`server/shared/{types,interfaces}.ts` |
-| `docs/core/chat.md` | 聊天链路与前端时间线 store | `server/modules/websocket/**`、`src/modules/chat/**` |
-| `docs/core/frontend.md` | 前端状态分层、性能守则、i18n、PWA | `src/shared/**`、聊天渲染/性能相关 |
+| `docs/core/overview.md` | Process topology, data & persistence, auth, build & deploy | `server/index.ts`, `server/modules/database/{schema,migrations}.ts`, build output layout, deployment |
+| `docs/core/providers.md` | Engine integration framework & capability matrix | `server/modules/providers/**`, `server/shared/{types,interfaces}.ts` |
+| `docs/core/chat.md` | Chat pipeline & the frontend timeline store | `server/modules/websocket/**`, `src/modules/chat/**` |
+| `docs/core/frontend.md` | Frontend state layering, performance rules, i18n, PWA | `src/shared/**`, chat rendering/perf code |
 
-规则：
+Rules:
 
-- **只记架构，不记琐事**：接口、协议、扩展点、能力、性能不变量变了才更新文档；文档要精不要长。
-- **普通 bug 修复没动架构的，直接 `git commit --no-verify`**，不要为凑文档检查往架构文档里塞琐事。
-- pre-commit 的文档同步守卫（`scripts/hooks/check-doc-sync.mjs`）会拦截未同步的核心代码提交，报错信息里就是上面两条出口。
-- 上游自带的 `docs/architecture/`（英文聊天运行时六篇）随上游合并维护；其中 04/05 两篇已被本 fork 重构部分取代，以 `docs/core/chat.md` 为准。
+- **Architecture only, no trivia.** Update docs when interfaces, protocols, extension points, capabilities, or performance invariants change; keep the docs lean, not long.
+- **Ordinary bug fixes that don't touch architecture: just `git commit --no-verify`.** Never pad the architecture docs just to satisfy the check.
+- The pre-commit guard (`scripts/hooks/check-doc-sync.mjs`) blocks core-code commits whose doc wasn't staged; its error message spells out these two exits.
+- Upstream's `docs/architecture/` (six English chat-runtime docs) is maintained via upstream merges; 04/05 are partially superseded by this fork's rework — treat `docs/core/chat.md` as authoritative.
 
 ## Backend code
 
