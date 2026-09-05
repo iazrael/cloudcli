@@ -35,3 +35,22 @@ export function getZCodeStorageDir(): string {
 export function getZCodeDatabasePath(): string {
   return path.join(getZCodeStorageDir(), 'cli', 'db', 'db.sqlite');
 }
+
+/**
+ * Returns the storage-relative directories the File Tree may open read-only
+ * for files ZCode references in chat: its persistent memories, user-level
+ * skills, and the root AGENTS.md instructions file.
+ *
+ * Consumers: the File Tree composition root (external read-only allowlist).
+ *
+ * Deliberately narrow: the storage tree also holds credentials (`v2/`),
+ * the hook/MCP configuration (`cli/config.json`) and the session database
+ * (`cli/db/`), none of which belong in the editor's reach.
+ */
+export function getZcodeExternalReadOnlyRoots(): string[] {
+  return [
+    path.join(getZCodeStorageDir(), 'cli', 'memories'),
+    path.join(getZCodeStorageDir(), 'skills'),
+    path.join(getZCodeStorageDir(), 'AGENTS.md'),
+  ];
+}

@@ -29,6 +29,11 @@ export { shutdownZCodeRuntime } from './list/zcode/index.js';
 // read-only allowlist for workspace-external Antigravity plan documents.
 export { getAntigravityBrainRoots } from './list/antigravity/index.js';
 
+// getZcodeExternalReadOnlyRoots: used by the File Tree composition root as the
+// read-only allowlist for workspace-external ZCode files (memories, skills,
+// AGENTS.md) referenced from chat.
+export { getZcodeExternalReadOnlyRoots } from './list/zcode/index.js';
+
 export type {
   AntigravityQuotaData,
   AntigravityQuotaGroup,

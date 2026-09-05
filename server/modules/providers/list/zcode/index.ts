@@ -8,3 +8,7 @@
  */
 
 export { ZCodeProvider, shutdownZCodeRuntime } from './zcode.provider.js';
+
+// getZcodeExternalReadOnlyRoots: used by the File Tree composition root as the
+// read-only allowlist for workspace-external ZCode files referenced in chat.
+export { getZcodeExternalReadOnlyRoots } from './zcode-data-root.js';

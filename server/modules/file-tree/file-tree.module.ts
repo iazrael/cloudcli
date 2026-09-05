@@ -8,7 +8,7 @@ import multer from 'multer';
 import { projectsDb } from '@/modules/database/index.js';
 import { createFileTreeRouter } from '@/modules/file-tree/file-tree.routes.js';
 import { createFileTreeService } from '@/modules/file-tree/file-tree.service.js';
-import { getAntigravityBrainRoots } from '@/modules/providers/index.js';
+import { getAntigravityBrainRoots, getZcodeExternalReadOnlyRoots } from '@/modules/providers/index.js';
 import { getGlobalImageAssetsDir } from '@/shared/image-attachments.js';
 import type {
   FileTreeFileSystem,
@@ -101,14 +101,16 @@ const fileTreeServices = createFileTreeService({
   fileSystemConcurrency: readFileSystemConcurrency(),
   logger: fileTreeLogger,
   // Antigravity writes plan documents into its brain directories, chat
-  // file attachments live in ~/.cloudcli/assets, and provider runtimes stage
-  // generated reports and other throwaway artifacts in the OS temp directories;
+  // file attachments live in ~/.cloudcli/assets, provider runtimes stage
+  // generated reports and other throwaway artifacts in the OS temp directories,
+  // and ZCode references its memories, skills and AGENTS.md from chat;
   // this allowlist lets the editor open and preview those files read-only
   // without widening project-scoped access.
   externalReadOnlyRoots: [
     ...getAntigravityBrainRoots(),
     getGlobalImageAssetsDir(),
     ...getExternalTempRoots(),
+    ...getZcodeExternalReadOnlyRoots(),
   ],
 });
 
