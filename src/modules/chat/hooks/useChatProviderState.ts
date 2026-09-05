@@ -16,38 +16,26 @@ import {
   FALLBACK_PROVIDER_EFFORT_VALUES,
   toProviderEffortOptions,
 } from '@/modules/chat/constants/providerEffort';
+import { PROVIDER_FALLBACK_CATALOG, PROVIDER_FALLBACK_ORDER } from '@/shared/providerCatalogFallback';
 
-const FALLBACK_DEFAULT_MODEL: Record<LLMProvider, string> = {
-  claude: 'default',
-  cursor: 'gpt-5.3-codex',
-  codex: 'gpt-5.4',
-  opencode: 'anthropic/claude-sonnet-4-5',
-  zcode: 'GLM-5.3',
-  antigravity: 'gemini-3.7-flash',
-};
+// Typed views over the shared fallback catalog (whose literal file must stay
+// import-free for the cross-tree parity test to compile it from the server
+// tree). The parity test pins these values to the backend capability catalog.
+const FALLBACK_DEFAULT_MODEL = Object.fromEntries(
+  Object.entries(PROVIDER_FALLBACK_CATALOG).map(([provider, entry]) => [provider, entry.defaultModel]),
+) as Record<LLMProvider, string>;
 
-const PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'zcode', 'antigravity'];
+const FALLBACK_PERMISSION_MODES = Object.fromEntries(
+  Object.entries(PROVIDER_FALLBACK_CATALOG).map(([provider, entry]) => [provider, entry.permissionModes]),
+) as Record<LLMProvider, PermissionMode[]>;
+
+const PROVIDERS: LLMProvider[] = [...PROVIDER_FALLBACK_ORDER];
 
 const readStoredProvider = (): LLMProvider => {
   const storedProvider = localStorage.getItem('selected-provider');
   return PROVIDERS.includes(storedProvider as LLMProvider)
     ? storedProvider as LLMProvider
     : 'claude';
-};
-
-/**
- * Fallback permission-mode matrix used only until the backend capability
- * matrix (`GET /api/providers/capabilities`) has loaded. The backend is the
- * source of truth; this mirror exists so the composer renders sensibly on
- * first paint and when the capabilities request fails.
- */
-const FALLBACK_PERMISSION_MODES: Record<LLMProvider, PermissionMode[]> = {
-  claude: ['default', 'auto', 'acceptEdits', 'bypassPermissions', 'plan'],
-  cursor: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
-  codex: ['default', 'acceptEdits', 'bypassPermissions'],
-  opencode: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
-  zcode: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
-  antigravity: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
 };
 
 type ProviderCapabilities = {
