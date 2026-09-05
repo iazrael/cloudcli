@@ -24,25 +24,12 @@ import {
   removePathIfExists,
   sliceTailPage,
 } from '@/shared/utils.js';
+import { getGlobalImageAssetsDir } from '@/shared/image-attachments.js';
 
 import { getZCodeDatabasePath, getZCodeStorageDir } from './zcode-data-root.js';
-import { getGlobalImageAssetsDir } from '@/shared/image-attachments.js';
-import { ZCodeLiveEventNormalizer } from './zcode-live-event-normalizer.js';
+import { readZCodeTokenUsedCount, ZCodeLiveEventNormalizer } from './zcode-live-event-normalizer.js';
 
 const PROVIDER = 'zcode';
-
-/**
- * Engine 0.16.5 renamed the session/event type strings from snake_case to
- * dotted names. Map the new names back onto the ones this facet normalizes
- * against (validated on engine 0.16.3) so both engine generations share one
- * code path. `turn.failed` kept its dotted name across both versions.
- */
-const EVENT_TYPE_ALIASES: Record<string, string> = {
-  'model.streaming': 'model_streaming',
-  'turn.completed': 'turn_complete',
-  'tool.updated': 'tool_call_scheduled',
-  'permission.requested': 'permission_request',
-};
 
 /**
  * Open a read-only connection to ZCode's SQLite database.
@@ -111,21 +98,6 @@ function readTokenTotals(value: unknown): ZCodeTokenTotals | null {
 }
 
 /**
- * Reads the total used-token count from either the streaming usage shape
- * (`{inputTokens, outputTokens, reasoningTokens, cacheReadTokens, cacheWriteTokens}`)
- * or the SQLite `message.data.tokens` shape
- * (`{input, output, reasoning, cache: {read, write}}`).
- * Returns undefined when no positive count is present.
- */
-function readTokenUsedCount(value: unknown): number | undefined {
-  const totals = readTokenTotals(value);
-  if (!totals) {
-    return undefined;
-  }
-  return totals.input + totals.output + totals.reasoning + totals.cache;
-}
-
-/**
  * Builds the shared token usage summary from ZCode token totals.
  * Shape matches the `token_budget` summaries other providers report
  * (`used` plus input/output breakdown).
@@ -178,21 +150,6 @@ function extractText(value: unknown): string {
     ?? readOptionalString(record?.content)
     ?? readOptionalString(record?.delta)
     ?? '';
-}
-
-/**
- * Parses a buffered tool-argument fragment as a JSON object, or returns null
- * while the fragment is still mid-stream and therefore not valid JSON.
- */
-function tryParseJsonObject(text: string): Record<string, unknown> | null {
-  try {
-    const parsed = JSON.parse(text);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : null;
-  } catch {
-    return null;
-  }
 }
 
 const IMAGE_MIME_EXTENSIONS: Record<string, string> = {
@@ -339,10 +296,6 @@ function aggregateZCodeSessionTokenUsage(
  */
 export class ZCodeSessionsProvider implements IProviderSessions {
   private readonly liveEventNormalizer = new ZCodeLiveEventNormalizer();
-  // Legacy helpers remain temporarily below while history normalization keeps
-  // sharing their text and token readers; live events delegate above.
-  private reasoningBlockIds = new Map<string, string>();
-  private toolInputStreams = new Map<string, { toolCallId: string; toolName: string; buffer: string }>();
 
   /**
    * Normalizes live protocol events into frontend messages.
@@ -361,205 +314,6 @@ export class ZCodeSessionsProvider implements IProviderSessions {
 
   resetLiveMessageState(sessionId: string): void {
     this.liveEventNormalizer.resetSession(sessionId);
-  }
-
-  /**
-   * Normalizes `model_streaming` payload kinds per the Phase 0.3 mapping
-   * table: text deltas stream, reasoning deltas think, tool announcements
-   * map to tool_use/tool_result. Reasoning boundary markers open and close
-   * the per-session reasoning block instead of emitting messages; other
-   * streaming kinds close it so each thinking segment keeps its own id.
-   */
-  private normalizeStreamingKind(
-    payload: AnyRecord,
-    eventSessionId: string | null,
-    timestamp: string,
-    baseId: string,
-  ): NormalizedMessage[] {
-    const kind = readOptionalString(payload.kind);
-    const reasoningStateKey = eventSessionId ?? '';
-
-    if (kind === 'reasoning_start') {
-      this.openReasoningBlock(reasoningStateKey);
-      return [];
-    }
-
-    if (kind === 'reasoning_delta') {
-      const content = extractText(payload.delta);
-      if (!content) {
-        return [];
-      }
-
-      return [createNormalizedMessage({
-        id: this.openReasoningBlock(reasoningStateKey),
-        sessionId: eventSessionId,
-        timestamp,
-        provider: PROVIDER,
-        kind: 'thinking',
-        content,
-      })];
-    }
-
-    if (kind === 'reasoning_end') {
-      this.reasoningBlockIds.delete(reasoningStateKey);
-      return [];
-    }
-
-    if (kind === 'tool_input_start' || kind === 'tool_input_delta' || kind === 'tool_input_end') {
-      return this.normalizeToolInputEvent(payload, eventSessionId, timestamp, kind);
-    }
-
-    // Any other streaming kind ends the reasoning window, so a later thinking
-    // segment within the same model response opens a fresh block with its own
-    // id — mirroring the one reasoning part the engine persists per segment.
-    if (kind) {
-      this.reasoningBlockIds.delete(reasoningStateKey);
-    }
-
-    // Text segment boundaries: the engine never emits a plain stream_end for
-    // them, so without this the client keeps the whole turn's text in one
-    // streaming row whose timestamp drifts to finalization time — pushing the
-    // finalized text below the tool calls that ran before it. Forwarding the
-    // boundaries as stream_end lets the client close each segment in place.
-    if (kind === 'text_start' || kind === 'text_end') {
-      return [createNormalizedMessage({
-        id: baseId,
-        sessionId: eventSessionId,
-        timestamp,
-        provider: PROVIDER,
-        kind: 'stream_end',
-      })];
-    }
-
-    if (kind === 'text_delta') {
-      const content = extractText(payload.delta);
-      if (!content) {
-        return [];
-      }
-
-      return [createNormalizedMessage({
-        id: baseId,
-        sessionId: eventSessionId,
-        timestamp,
-        provider: PROVIDER,
-        kind: 'stream_delta',
-        role: 'assistant',
-        content,
-      })];
-    }
-
-    if (kind === 'tool_call') {
-      const toolCallId = readOptionalString(payload.toolCallId) ?? baseId;
-      const toolName = readOptionalString(payload.toolName) ?? 'Tool';
-      // Remember the announced call so streaming argument fragments know
-      // which card they belong to.
-      this.toolInputStreams.set(eventSessionId ?? '', { toolCallId, toolName, buffer: '' });
-      return [createNormalizedMessage({
-        id: baseId,
-        sessionId: eventSessionId,
-        timestamp,
-        provider: PROVIDER,
-        kind: 'tool_use',
-        toolName,
-        toolInput: payload.input ?? {},
-        toolId: toolCallId,
-      })];
-    }
-
-    if (kind === 'tool_result') {
-      // Streaming tool results only reference the persisted part id; the
-      // full output arrives later through the SQLite sync path.
-      const resultPartId = readOptionalString(payload.resultPartId);
-      const resultContent = resultPartId ? `Result stored in part ${resultPartId}` : '';
-      return [createNormalizedMessage({
-        id: baseId,
-        sessionId: eventSessionId,
-        timestamp,
-        provider: PROVIDER,
-        kind: 'tool_result',
-        toolId: readOptionalString(payload.toolCallId) ?? baseId,
-        content: resultContent,
-        toolResult: {
-          content: resultContent,
-          isError: false,
-        },
-      })];
-    }
-
-    return [];
-  }
-
-  /**
-   * Returns the id of the session's open reasoning block, opening one with a
-   * fresh stable id when none exists. Every `reasoning_delta` of the same
-   * thinking segment therefore carries the same message id, which the client
-   * uses to merge the frames into a single transcript entry.
-   */
-  private openReasoningBlock(stateKey: string): string {
-    const existing = this.reasoningBlockIds.get(stateKey);
-    if (existing) {
-      return existing;
-    }
-    const id = generateMessageId('zcode_reasoning');
-    this.reasoningBlockIds.set(stateKey, id);
-    return id;
-  }
-
-  /**
-   * Merges streaming tool arguments into the session's active tool call.
-   * Each fragment extends the buffered JSON; once it parses, a tool_use frame
-   * carrying the announced call's toolId is emitted so the client updates the
-   * existing card in place instead of appending a new one. `tool_input_end`
-   * closes the stream — a buffer that never parses produces nothing usable.
-   * When the engine attaches its own accumulated `input` object it wins over
-   * the locally parsed buffer.
-   */
-  private normalizeToolInputEvent(
-    payload: AnyRecord,
-    eventSessionId: string | null,
-    timestamp: string,
-    kind: string,
-  ): NormalizedMessage[] {
-    const stateKey = eventSessionId ?? '';
-    const stream = this.toolInputStreams.get(stateKey);
-    if (!stream) {
-      return [];
-    }
-
-    const rawDelta = payload.delta;
-    // Raw string on purpose: a delta is a JSON fragment, so whitespace is
-    // meaningful and the usual readOptionalString trim would corrupt values.
-    const deltaText = typeof rawDelta === 'string' ? rawDelta : undefined;
-    if (deltaText) {
-      stream.buffer += deltaText;
-    }
-    if (kind === 'tool_input_start') {
-      stream.buffer = '';
-      return [];
-    }
-
-    const engineInput = readObjectRecord(payload.input);
-    const parsedInput = engineInput ?? tryParseJsonObject(stream.buffer);
-    if (!parsedInput) {
-      if (kind === 'tool_input_end') {
-        this.toolInputStreams.delete(stateKey);
-      }
-      return [];
-    }
-    if (kind === 'tool_input_end') {
-      this.toolInputStreams.delete(stateKey);
-    }
-
-    return [createNormalizedMessage({
-      id: stream.toolCallId,
-      sessionId: eventSessionId,
-      timestamp,
-      provider: PROVIDER,
-      kind: 'tool_use',
-      toolName: stream.toolName,
-      toolInput: parsedInput,
-      toolId: stream.toolCallId,
-    })];
   }
 
   /**
@@ -835,7 +589,7 @@ export class ZCodeSessionsProvider implements IProviderSessions {
           timestamp,
           provider: PROVIDER,
           kind: 'complete',
-          tokens: readTokenUsedCount(messageInfo?.tokens),
+          tokens: readZCodeTokenUsedCount(messageInfo?.tokens),
         }));
         continue;
       }
