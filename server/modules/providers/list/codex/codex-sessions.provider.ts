@@ -1375,6 +1375,29 @@ async function getCodexSessionMessages(sessionId: string): Promise<CodexHistoryR
         continue;
       }
 
+      if (payload.type === 'sub_agent_activity' && payload.kind === 'interrupted') {
+        // An interrupted agent never sends the FINAL_ANSWER that closes its
+        // Task row, so the card would render as running forever. Close it here
+        // with the same non-error note the live path emits for the item.
+        const agentPath = readNonEmptyString(payload.agent_path);
+        const agentThreadId = readNonEmptyString(payload.agent_thread_id);
+        const subagent = (agentPath ? subagentsByPath.get(agentPath) : undefined)
+          ?? (agentThreadId
+            ? [...subagentsByCallId.values()].find((record) => record.agentThreadId === agentThreadId)
+            : undefined);
+        if (subagent && !subagent.isComplete) {
+          messages.push({
+            type: 'tool_result',
+            timestamp,
+            toolCallId: subagent.toolCallId,
+            output: 'Subagent was interrupted before returning a final answer.',
+            isError: false,
+          });
+          subagent.isComplete = true;
+        }
+        continue;
+      }
+
       // Codex reports patch results out of band. They carry the real unified
       // diffs, so they replace whatever was reconstructed from the call input.
       // Codex reports the applied patch out of band, and it is the only place

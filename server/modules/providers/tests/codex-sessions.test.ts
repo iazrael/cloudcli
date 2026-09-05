@@ -675,3 +675,63 @@ test('live collab orchestration calls are hidden from the transcript', () => {
     );
   }
 });
+
+test('an interrupted subagent closes its Task row instead of running forever', async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'codex-subagent-interrupted-'));
+  const workspacePath = path.join(tempRoot, 'workspace');
+  await mkdir(workspacePath, { recursive: true });
+  const restoreHomeDir = patchHomeDir(tempRoot);
+
+  try {
+    const providerSessionId = 'codex-subagent-interrupted-1';
+    const sessionsDir = path.join(tempRoot, '.codex', 'sessions', '2026', '07', '07');
+    await mkdir(sessionsDir, { recursive: true });
+    // Event shapes mirror a real rollout: the spawn's `message` is an
+    // encrypted transport blob, the activity `started` event carries the
+    // agent path, and the agent later dies without ever sending a
+    // FINAL_ANSWER that would close its Task card.
+    await writeFile(path.join(sessionsDir, `rollout-${providerSessionId}.jsonl`), `${[
+      JSON.stringify({ type: 'session_meta', payload: { id: providerSessionId, cwd: workspacePath } }),
+      JSON.stringify({
+        type: 'response_item',
+        payload: {
+          type: 'function_call',
+          call_id: 'call_spawn_1',
+          name: 'spawn_agent',
+          arguments: JSON.stringify({ task_name: 'review_normalizer', fork_turns: 'all', message: 'gAAAAA-encrypted-blob' }),
+        },
+      }),
+      JSON.stringify({
+        type: 'event_msg',
+        payload: {
+          type: 'sub_agent_activity',
+          event_id: 'call_spawn_1',
+          agent_path: '/root/review_normalizer',
+          agent_thread_id: 'thread-1',
+          kind: 'started',
+        },
+      }),
+      JSON.stringify({
+        type: 'event_msg',
+        payload: { type: 'sub_agent_activity', agent_path: '/root/review_normalizer', kind: 'interrupted' },
+      }),
+    ].join('\n')}\n`, 'utf8');
+
+    await withIsolatedDatabase(async () => {
+      sessionsDb.createAppSession('app-subagent-interrupted-1', 'codex', workspacePath);
+      sessionsDb.assignProviderSessionId('app-subagent-interrupted-1', providerSessionId);
+      await new CodexSessionSynchronizer().synchronize();
+
+      const history = await new CodexSessionsProvider().fetchHistory('app-subagent-interrupted-1');
+      const task = history.messages.find((message) => message.toolName === 'Task');
+
+      assert.ok(task, 'the spawn must render as a Task row');
+      assert.ok(task.toolResult, 'an interrupted subagent must not leave its card running');
+      assert.match(String(task.toolResult?.content), /interrupted/i);
+      assert.equal(task.toolResult?.isError, false);
+    });
+  } finally {
+    restoreHomeDir();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
