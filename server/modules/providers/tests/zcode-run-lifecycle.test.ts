@@ -89,6 +89,18 @@ test('a newer run for the same abort key supersedes the old waiter and shields d
   assert.equal(lifecycle.handleOf('app-1'), undefined);
 });
 
+test('a delivered abort settles the run as aborted', async () => {
+  const lifecycle = new ZCodeRunLifecycle();
+  const { writer } = createWriter();
+  const handle = lifecycle.startRun({ abortKey: 'app-abort', sessionId: 'sess_engine_1', appSessionId: 'app-abort', writer });
+
+  lifecycle.requestAbort(handle);
+  assert.deepEqual(await lifecycle.waitForSettle(handle, 5000), { kind: 'aborted' });
+  assert.equal(lifecycle.completionOf(handle).failed, false, 'an abort is not an engine failure');
+
+  lifecycle.dispose(handle);
+});
+
 test('session-lost fails a waiting run but never overwrites a reached terminal state', () => {
   const lifecycle = new ZCodeRunLifecycle();
   const { writer } = createWriter();

@@ -59,6 +59,10 @@ const finishCreate = () => {
   pendingCreateId = null;
 };
 
+// mode "abort-ok": streams until a session/stop arrives, which both answers
+// and ends the turn — mirroring an engine that honors a delivered stop.
+let abortTicker = null;
+
 // mode "perm-bridge": after session/send, mirrors the engine's blocking
 // permission flow — one interaction/requestPermission server request whose
 // answer releases the turn. The second announcement with a fresh protocol id
@@ -212,6 +216,28 @@ rl.on('line', (line) => {
       }, 400);
       return;
     }
+    if (readMode() === 'abort-ok') {
+      // Streams until a session/stop arrives (see the stop handler above),
+      // mirroring an engine that honors a delivered stop.
+      abortTicker = setInterval(() => {
+        send({ method: 'session/event', params: { sessionId, type: 'model_streaming', payload: { kind: 'text_delta', delta: 'streaming' } } });
+      }, 200);
+      return;
+    }
+    if (readMode() === 'stop-fail') {
+      // Keeps streaming through the refused stop attempts so the run stays
+      // alive; the turn only completes when the engine's own work is done.
+      let ticks = 0;
+      const ticker = setInterval(() => {
+        ticks += 1;
+        send({ method: 'session/event', params: { sessionId, type: 'model_streaming', payload: { kind: 'text_delta', delta: 'tick ' + ticks } } });
+        if (ticks >= 12) {
+          clearInterval(ticker);
+          send({ method: 'session/event', params: { sessionId, type: 'turn_complete', payload: { usage: { inputTokens: 3, outputTokens: 4 } } } });
+        }
+      }, 300);
+      return;
+    }
     if (readMode() === 'crash') {
       // Mirrors an engine process death mid-turn: acknowledge the send, emit
       // one live delta, then die. The supervisor must synthesize
@@ -231,6 +257,17 @@ rl.on('line', (line) => {
       return;
     }
     send({ id: msg.id, result: { messages: [] } });
+    return;
+  }
+
+  if (msg.method === 'session/stop') {
+    log('stop', msg.params);
+    if (abortTicker) { clearInterval(abortTicker); abortTicker = null; }
+    if (readMode() === 'stop-fail') {
+      send({ id: msg.id, error: { code: -32000, message: 'stop refused' } });
+      return;
+    }
+    send({ id: msg.id, result: {} });
     return;
   }
 
@@ -570,9 +607,64 @@ test('steady engine activity keeps the run alive past the silence window', async
   }
 });
 
+test('a delivered session/stop settles the run as aborted with a complete frame', async () => {
+  fsSync.writeFileSync(modeFilePath, 'abort-ok\n');
+  const runtime = new ZCodeRuntimeProvider();
+  const { messages, writer } = createWriter();
+
+  const runPromise = runtime.run('hello', { sessionId: 'app-sess-abort', cwd: stubDir }, writer, context);
+
+  // Wait until the turn is streaming, then stop it.
+  let streaming = false;
+  for (let i = 0; i < 100 && !streaming; i += 1) {
+    streaming = messages.some((msg) => msg.kind === 'stream_delta');
+    if (!streaming) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+  assert.ok(streaming, 'the stub must be streaming before the abort');
+
+  assert.equal(await runtime.abort('app-sess-abort'), true, 'a delivered stop must report success');
+
+  const result = await runPromise;
+  assert.deepEqual(result, { sessionId: 'sess_stub_1', success: false });
+
+  const complete = messages.find((msg) => msg.kind === 'complete');
+  assert.ok(complete, 'an aborted run must still end with a complete frame');
+  assert.equal(complete.exitCode, 0, 'an abort is not an engine failure');
+  assert.equal(messages.filter((msg) => msg.kind === 'error').length, 0, 'an abort must not surface an error bubble');
+});
+
 // Last: the crash mode kills the shared stub subprocess; the supervisor's
 // restart circuit breaker brings it back, but later tests should not have to
 // race the restart.
+test('a failed session/stop keeps the run running to its true completion instead of reporting aborted', async () => {
+  fsSync.writeFileSync(modeFilePath, 'stop-fail\n');
+  const runtime = new ZCodeRuntimeProvider();
+  const { messages, writer } = createWriter();
+
+  const runPromise = runtime.run('hello', { sessionId: 'app-sess-stopfail', cwd: stubDir }, writer, context);
+
+  // Let streaming start, then abort against an engine that refuses to stop.
+  // Every stop attempt must be refused before abort gives up.
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  const stopsBefore = readStubLog().filter((entry) => entry.name === 'stop').length;
+  assert.equal(await runtime.abort('app-sess-stopfail'), false, 'abort must report failure when every stop attempt is refused');
+  assert.equal(readStubLog().filter((entry) => entry.name === 'stop').length - stopsBefore, 3, 'all three stop attempts must reach the engine');
+
+  const stopError = messages.find((msg) => msg.kind === 'error' && /Failed to stop ZCode session/.test(msg.text ?? ''));
+  assert.ok(stopError, 'the failed stop must be surfaced to the chat stream');
+
+  // The engine never stopped, so the run continues to its real completion —
+  // the old code marked the run completed at abort time and ended it while
+  // the turn was in fact still running.
+  const result = await runPromise;
+  assert.deepEqual(result, { sessionId: 'sess_stub_1', success: true });
+  const complete = messages.find((msg) => msg.kind === 'complete');
+  assert.ok(complete, 'the run must terminate with a complete event');
+  assert.equal(complete.tokens, 7, 'the real turn completion must be delivered, not an abort short-circuit');
+});
+
 test('an engine crash fails the run fast through session-lost instead of timing out', async () => {
   fsSync.writeFileSync(modeFilePath, 'crash\n');
   const runtime = new ZCodeRuntimeProvider();

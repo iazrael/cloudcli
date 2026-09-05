@@ -197,6 +197,21 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
 
         protocolClient.removeSessionListener(zcodeSessionId, eventListener);
 
+        if (settle.kind === 'aborted') {
+          // A delivered session/stop settles the run here: report it as
+          // stopped with an `aborted` reason instead of a failure, matching
+          // the other runtimes. The complete frame is still emitted so the
+          // client ends the turn immediately.
+          this.sendCompletionEvent(handle, writer);
+          this.notifyRunOutcome({
+            userId: writer.userId,
+            sessionId: notifySessionId,
+            sessionSummary,
+            outcome: { failed: false, stopReason: 'aborted' },
+          });
+          return { sessionId: zcodeSessionId, success: false };
+        }
+
         if (settle.kind === 'completed') {
           this.sendCompletionEvent(handle, writer);
           const completion = runLifecycle.completionOf(handle);
@@ -307,6 +322,12 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
    * session id (no SIGINT fallback per §3.2.3 - the app-server process is
    * shared across sessions). Uses protocol-level retry on failure.
    *
+   * Only a stop that was actually delivered settles the run as aborted: the
+   * run then reports `aborted` and ends promptly. When every stop attempt
+   * fails, the run keeps waiting for the engine's real terminal event (the
+   * silence watchdog still bounds it) — reporting an abort the engine never
+   * performed would hide a turn that is in fact still running.
+   *
    * @param sessionId - CloudCLI app session ID to abort
    * @returns boolean indicating if abort was successful
    */
@@ -319,10 +340,6 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
     }
 
     try {
-      // Mark session as completed so the run's settle wait returns and the
-      // terminal state is reported by the run's own completion path.
-      runLifecycle.completeForAbort(handle);
-
       await this.callWithRetry(
         async () => {
           await protocolClient.sendRequest('session/stop', {
@@ -332,13 +349,19 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
         'session/stop',
         3
       );
-
-      console.info(`[ZCodeRuntime] Aborted session ${handle.sessionId}`);
-      return true;
     } catch (error) {
       console.error(`[ZCodeRuntime] Failed to abort session ${handle.sessionId}:`, error);
+      this.sendRuntimeError(
+        handle.writer,
+        handle.sessionId,
+        new Error(`Failed to stop ZCode session: ${error instanceof Error ? error.message : 'unknown error'}`),
+      );
       return false;
     }
+
+    console.info(`[ZCodeRuntime] Aborted session ${handle.sessionId}`);
+    runLifecycle.requestAbort(handle);
+    return true;
   }
 
   /**
@@ -766,18 +789,28 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
           return;
         }
 
+        if (settle.kind === 'aborted') {
+          // User-requested abort while detached: same contract as the
+          // attached abort path — complete frame + aborted notification.
+          this.sendCompletionEvent(handle, writer);
+          this.notifyRunOutcome({
+            userId: writer.userId,
+            sessionId: notifySessionId,
+            sessionSummary,
+            outcome: { failed: false, stopReason: 'aborted' },
+          });
+          return;
+        }
+
         this.sendCompletionEvent(handle, writer);
         const completion = runLifecycle.completionOf(handle);
-        const wasAborted = handle.abortRequested;
         this.notifyRunOutcome({
           userId: writer.userId,
           sessionId: notifySessionId,
           sessionSummary,
-          outcome: wasAborted
-            ? { failed: false, stopReason: 'aborted' }
-            : completion.failed
-              ? { failed: true, error: completion.failedMessage ?? 'ZCode run failed' }
-              : { failed: false, stopReason: 'completed' },
+          outcome: completion.failed
+            ? { failed: true, error: completion.failedMessage ?? 'ZCode run failed' }
+            : { failed: false, stopReason: 'completed' },
         });
       } finally {
         protocolClient.removeSessionListener(handle.sessionId, eventListener);

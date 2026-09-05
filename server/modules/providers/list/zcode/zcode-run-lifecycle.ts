@@ -73,6 +73,7 @@ export class EngineSilenceTimeoutError extends Error {
  */
 export type RunSettle =
   | { kind: 'completed' }
+  | { kind: 'aborted' }
   | { kind: 'silent'; timeoutMs: number }
   | { kind: 'superseded' };
 
@@ -112,7 +113,7 @@ export type RunHandle = {
   readonly sessionId: string;
   readonly appSessionId: string | null;
   readonly writer: ProviderRuntimeWriter;
-  /** Set when a user abort targeted this run, so terminal reporting says "aborted". */
+  /** Set when a delivered session/stop confirmed the user's abort. */
   abortRequested: boolean;
   /**
    * Who performs terminal handling and cleanup: the run coroutine until the
@@ -255,12 +256,14 @@ export class ZCodeRunLifecycle {
   }
 
   /**
-   * Marks the run completed on behalf of a user abort, so the settle wait
-   * returns promptly and the run's own completion path reports the outcome.
+   * Records a user abort that the engine confirmed (a `session/stop` that was
+   * actually delivered). The settle wait returns `aborted` promptly, and the
+   * terminal notification reports the run as aborted. A stop that failed must
+   * NOT be recorded here: the engine keeps working, so the run has to settle
+   * on its real terminal event instead.
    */
-  completeForAbort(handle: RunHandle): void {
+  requestAbort(handle: RunHandle): void {
     handle.abortRequested = true;
-    handle.state.completed = true;
   }
 
   /**
@@ -287,6 +290,9 @@ export class ZCodeRunLifecycle {
       }
       if (handle.state.completed) {
         return { kind: 'completed' };
+      }
+      if (handle.abortRequested) {
+        return { kind: 'aborted' };
       }
       if (Date.now() - handle.state.lastActivityAt > timeoutMs) {
         return { kind: 'silent', timeoutMs };
