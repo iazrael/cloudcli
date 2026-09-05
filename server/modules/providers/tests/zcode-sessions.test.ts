@@ -172,6 +172,77 @@ test('reasoning boundary markers emit nothing but open and close the block', () 
   assert.notEqual(nextBlock[0].id, insideBlock[0].id);
 });
 
+test('tool_input deltas merge into the announced call and emit parsed snapshots', () => {
+  const provider = new ZCodeSessionsProvider();
+  const announced = provider.normalizeMessage(
+    { type: 'model_streaming', payload: { kind: 'tool_call', toolCallId: 'call_1', toolName: 'Bash', input: {} } },
+    'sess_1'
+  );
+  assert.equal(announced.length, 1);
+  assert.equal(announced[0].kind, 'tool_use');
+  assert.equal(announced[0].toolId, 'call_1');
+
+  // Mid-fragment JSON does not parse — nothing is emitted yet.
+  const partial = provider.normalizeMessage(
+    { type: 'model_streaming', payload: { kind: 'tool_input_delta', delta: '{"command":"npm ' } },
+    'sess_1'
+  );
+  assert.deepEqual(partial, []);
+
+  const completed = provider.normalizeMessage(
+    { type: 'model_streaming', payload: { kind: 'tool_input_delta', delta: 'test"}' } },
+    'sess_1'
+  );
+  assert.equal(completed.length, 1);
+  assert.equal(completed[0].kind, 'tool_use');
+  assert.equal(completed[0].toolId, 'call_1');
+  assert.equal(completed[0].toolName, 'Bash');
+  assert.deepEqual(completed[0].toolInput, { command: 'npm test' });
+});
+
+test('tool_input_end emits the final snapshot and engine-provided input wins', () => {
+  const provider = new ZCodeSessionsProvider();
+  provider.normalizeMessage(
+    { type: 'model_streaming', payload: { kind: 'tool_call', toolCallId: 'call_2', toolName: 'Read', input: {} } },
+    'sess_1'
+  );
+
+  // A fragment whose buffer never parses still produces nothing mid-stream...
+  const midStream = provider.normalizeMessage(
+    { type: 'model_streaming', payload: { kind: 'tool_input_delta', delta: '{"file_path":"a' } },
+    'sess_1'
+  );
+  assert.deepEqual(midStream, []);
+
+  // ...but the engine's own accumulated input closes the stream with a snapshot.
+  const final = provider.normalizeMessage(
+    {
+      type: 'model_streaming',
+      payload: { kind: 'tool_input_end', input: { file_path: '/tmp/a.txt' } },
+    },
+    'sess_1'
+  );
+  assert.equal(final.length, 1);
+  assert.equal(final[0].toolId, 'call_2');
+  assert.deepEqual(final[0].toolInput, { file_path: '/tmp/a.txt' });
+
+  // The stream is closed: later fragments are ignored.
+  const afterEnd = provider.normalizeMessage(
+    { type: 'model_streaming', payload: { kind: 'tool_input_delta', delta: '{"x":1}' } },
+    'sess_1'
+  );
+  assert.deepEqual(afterEnd, []);
+});
+
+test('tool input fragments without an announced call are ignored', () => {
+  const provider = new ZCodeSessionsProvider();
+  const messages = provider.normalizeMessage(
+    { type: 'model_streaming', payload: { kind: 'tool_input_delta', delta: '{"command":"ls"}' } },
+    'sess_1'
+  );
+  assert.deepEqual(messages, []);
+});
+
 test('a text delta closes the reasoning block so the next segment gets a new id', () => {
   const provider = new ZCodeSessionsProvider();
   const first = provider.normalizeMessage(

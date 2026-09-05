@@ -116,7 +116,9 @@ export const BashCommandDisplay: React.FC<BashCommandDisplayProps> = ({
             open ? 'whitespace-pre-wrap break-all' : 'truncate',
           )}
         >
-          {command}
+          {/* Arguments stream in after the card is announced, so a running row
+              can briefly have no command text yet. */}
+          {command || (isRunning ? '…' : '')}
         </span>
 
         {isRunning && (

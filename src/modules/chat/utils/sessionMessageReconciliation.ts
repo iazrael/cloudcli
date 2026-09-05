@@ -116,3 +116,33 @@ export function removeOptimisticUserEchoes(
     return false;
   });
 }
+
+/**
+ * Merges a realtime tool_use frame into the session's realtime rows.
+ *
+ * Frames sharing one toolId are successive snapshots of the same call (zcode
+ * streams tool arguments into the already-announced card), so the existing row
+ * is updated in place and keeps its first-frame identity for stable React
+ * keys; a frame with an unseen toolId is appended. Providers whose tool ids
+ * are unique per call only ever hit the append path, so this is safe for every
+ * provider.
+ */
+export function upsertToolUseRow(rows: NormalizedMessage[], frame: NormalizedMessage): NormalizedMessage[] {
+  if (!frame.toolId) {
+    return [...rows, frame];
+  }
+
+  const index = rows.findIndex((row) => row.kind === 'tool_use' && row.toolId === frame.toolId);
+  if (index < 0) {
+    return [...rows, frame];
+  }
+
+  const next = [...rows];
+  next[index] = {
+    ...next[index],
+    toolName: frame.toolName || next[index].toolName,
+    toolInput: frame.toolInput ?? next[index].toolInput,
+    content: frame.content || next[index].content,
+  };
+  return next;
+}

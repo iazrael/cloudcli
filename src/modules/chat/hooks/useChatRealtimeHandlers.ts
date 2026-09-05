@@ -248,6 +248,17 @@ export function useChatRealtimeHandlers({
         return;
       }
 
+      // --- Tool use: merge snapshot frames of one call by toolId ---
+      // zcode streams tool arguments into the already-announced card; frames
+      // sharing a toolId update that card in place instead of stacking
+      // duplicates.
+      if (msg.kind === 'tool_use') {
+        if (sid) {
+          sessionStore.upsertToolUse(sid, msg as unknown as NormalizedMessage);
+        }
+        return;
+      }
+
       // --- All other messages: route to store ---
       const shouldPersist =
         msg.kind !== 'complete'

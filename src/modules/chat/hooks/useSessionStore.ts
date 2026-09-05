@@ -18,6 +18,7 @@ import {
   isAssistantTextMatch,
   readMessageTime,
 } from '@/modules/chat/utils/sessionMessageTurnDedupe';
+import { upsertToolUseRow } from '@/modules/chat/utils/sessionMessageReconciliation';
 import { isThinkingRowEchoOnServer, upsertThinkingRow } from '@/modules/chat/utils/sessionThinkingRows';
 import {
   buildSessionMessagesUrl,
@@ -703,6 +704,22 @@ export function useSessionStore() {
   }, [getSlot, notify]);
 
   /**
+   * Ingest a realtime tool_use frame. Frames sharing one toolId are snapshots
+   * of the same call (zcode streams arguments into the announced card), so the
+   * matching row is updated in place; see upsertToolUseRow.
+   */
+  const upsertToolUse = useCallback((sessionId: string, msg: NormalizedMessage) => {
+    const slot = getSlot(sessionId);
+    const normalizedMessage =
+      msg.sessionId === sessionId
+        ? msg
+        : { ...msg, sessionId };
+    slot.realtimeMessages = upsertToolUseRow(slot.realtimeMessages, normalizedMessage);
+    recomputeMergedIfNeeded(slot);
+    notify(sessionId);
+  }, [getSlot, notify]);
+
+  /**
    * Refreshes only the persisted tail and stitches it onto the contiguous
    * cached suffix. Large turns request a small offset bridge rather than the
    * whole transcript, and the final state is applied atomically.
@@ -863,6 +880,7 @@ export function useSessionStore() {
     appendRealtime,
     appendRealtimeBatch,
     upsertThinkingDelta,
+    upsertToolUse,
     refreshLatestFromServer,
     setActiveSession,
     setStatus,
@@ -875,7 +893,7 @@ export function useSessionStore() {
     getSessionSlot,
   }), [
     getSlot, has, fetchFromServer, fetchMore,
-    appendRealtime, appendRealtimeBatch, upsertThinkingDelta, refreshLatestFromServer,
+    appendRealtime, appendRealtimeBatch, upsertThinkingDelta, upsertToolUse, refreshLatestFromServer,
     setActiveSession, setStatus, isStale, updateStreaming, finalizeStreaming,
     truncateAt, clearRealtime, getMessages, getSessionSlot,
   ]);

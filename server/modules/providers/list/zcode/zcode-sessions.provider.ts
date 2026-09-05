@@ -179,6 +179,21 @@ function extractText(value: unknown): string {
 }
 
 /**
+ * Parses a buffered tool-argument fragment as a JSON object, or returns null
+ * while the fragment is still mid-stream and therefore not valid JSON.
+ */
+function tryParseJsonObject(text: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Whether the engine marked this persisted user message as invisible to the
  * UI. ZCode writes model-only injections (todo reminders, system reminders,
  * subagent notifications) as user rows but declares their visibility
@@ -241,6 +256,15 @@ export class ZCodeSessionsProvider implements IProviderSessions {
    * `reasoning_end`, any other streaming kind, or run completion.
    */
   private reasoningBlockIds = new Map<string, string>();
+
+  /**
+   * Tool-call argument streams, per session. Engine 0.16.5 announces a call
+   * (usually with an empty input) and then streams its arguments as
+   * `tool_input_start/delta/end` JSON fragments; merging them lets the
+   * announced card fill in live instead of showing blank until the run
+   * finishes. One active stream per session — the engine runs tools serially.
+   */
+  private toolInputStreams = new Map<string, { toolCallId: string; toolName: string; buffer: string }>();
 
   /**
    * Normalizes live protocol events into frontend messages.
@@ -326,6 +350,9 @@ export class ZCodeSessionsProvider implements IProviderSessions {
       }
       const toolName = readOptionalString(payload.toolName) ?? 'Tool';
       const toolId = readOptionalString(payload.toolCallId) ?? baseId;
+      // Remember the announced call so streaming argument fragments know
+      // which card they belong to.
+      this.toolInputStreams.set(eventSessionId ?? '', { toolCallId: toolId, toolName, buffer: '' });
       return [createNormalizedMessage({
         id: baseId,
         sessionId: eventSessionId,
@@ -342,8 +369,10 @@ export class ZCodeSessionsProvider implements IProviderSessions {
     // carry usage; the runtime collapses them into exactly one complete.
     if (normalizedType === 'model_complete' || normalizedType === 'turn_complete') {
       // A run never streams past its completion, so drop any reasoning block
-      // still open here instead of leaking it into the next run.
+      // or argument stream still open here instead of leaking it into the
+      // next run.
       this.reasoningBlockIds.delete(eventSessionId ?? '');
+      this.toolInputStreams.delete(eventSessionId ?? '');
       return [createNormalizedMessage({
         id: baseId,
         sessionId: eventSessionId,
@@ -446,6 +475,10 @@ export class ZCodeSessionsProvider implements IProviderSessions {
       return [];
     }
 
+    if (kind === 'tool_input_start' || kind === 'tool_input_delta' || kind === 'tool_input_end') {
+      return this.normalizeToolInputEvent(payload, eventSessionId, timestamp, kind);
+    }
+
     // Any other streaming kind ends the reasoning window, so a later thinking
     // segment within the same model response opens a fresh block with its own
     // id — mirroring the one reasoning part the engine persists per segment.
@@ -471,15 +504,20 @@ export class ZCodeSessionsProvider implements IProviderSessions {
     }
 
     if (kind === 'tool_call') {
+      const toolCallId = readOptionalString(payload.toolCallId) ?? baseId;
+      const toolName = readOptionalString(payload.toolName) ?? 'Tool';
+      // Remember the announced call so streaming argument fragments know
+      // which card they belong to.
+      this.toolInputStreams.set(eventSessionId ?? '', { toolCallId, toolName, buffer: '' });
       return [createNormalizedMessage({
         id: baseId,
         sessionId: eventSessionId,
         timestamp,
         provider: PROVIDER,
         kind: 'tool_use',
-        toolName: readOptionalString(payload.toolName) ?? 'Tool',
+        toolName,
         toolInput: payload.input ?? {},
-        toolId: readOptionalString(payload.toolCallId) ?? baseId,
+        toolId: toolCallId,
       })];
     }
 
@@ -520,6 +558,63 @@ export class ZCodeSessionsProvider implements IProviderSessions {
     const id = generateMessageId('zcode_reasoning');
     this.reasoningBlockIds.set(stateKey, id);
     return id;
+  }
+
+  /**
+   * Merges streaming tool arguments into the session's active tool call.
+   * Each fragment extends the buffered JSON; once it parses, a tool_use frame
+   * carrying the announced call's toolId is emitted so the client updates the
+   * existing card in place instead of appending a new one. `tool_input_end`
+   * closes the stream — a buffer that never parses produces nothing usable.
+   * When the engine attaches its own accumulated `input` object it wins over
+   * the locally parsed buffer.
+   */
+  private normalizeToolInputEvent(
+    payload: AnyRecord,
+    eventSessionId: string | null,
+    timestamp: string,
+    kind: string,
+  ): NormalizedMessage[] {
+    const stateKey = eventSessionId ?? '';
+    const stream = this.toolInputStreams.get(stateKey);
+    if (!stream) {
+      return [];
+    }
+
+    const rawDelta = payload.delta;
+    // Raw string on purpose: a delta is a JSON fragment, so whitespace is
+    // meaningful and the usual readOptionalString trim would corrupt values.
+    const deltaText = typeof rawDelta === 'string' ? rawDelta : undefined;
+    if (deltaText) {
+      stream.buffer += deltaText;
+    }
+    if (kind === 'tool_input_start') {
+      stream.buffer = '';
+      return [];
+    }
+
+    const engineInput = readObjectRecord(payload.input);
+    const parsedInput = engineInput ?? tryParseJsonObject(stream.buffer);
+    if (!parsedInput) {
+      if (kind === 'tool_input_end') {
+        this.toolInputStreams.delete(stateKey);
+      }
+      return [];
+    }
+    if (kind === 'tool_input_end') {
+      this.toolInputStreams.delete(stateKey);
+    }
+
+    return [createNormalizedMessage({
+      id: stream.toolCallId,
+      sessionId: eventSessionId,
+      timestamp,
+      provider: PROVIDER,
+      kind: 'tool_use',
+      toolName: stream.toolName,
+      toolInput: parsedInput,
+      toolId: stream.toolCallId,
+    })];
   }
 
   /**
