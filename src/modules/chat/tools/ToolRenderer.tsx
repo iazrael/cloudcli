@@ -317,11 +317,17 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
     }
 
     const isEditOrWrite = ['Edit', 'Write', 'ApplyPatch', 'replace_file_content', 'write_to_file'].includes(toolName);
+    // A snapshot with no content on either side (codex live file_change rows
+    // carry empty strings until the rollout row lands) would make the editor
+    // skip the disk read and render a blank document; open the file plainly then.
+    const hasContentSnapshot = Boolean(contentProps.oldContent || contentProps.newContent);
     const handleTitleClick = isEditOrWrite && contentProps.filePath && onFileOpen
-      ? () => onFileOpen(contentProps.filePath, {
-          old_string: contentProps.oldContent,
-          new_string: contentProps.newContent
-        })
+      ? hasContentSnapshot
+        ? () => onFileOpen(contentProps.filePath, {
+            old_string: contentProps.oldContent,
+            new_string: contentProps.newContent
+          })
+        : () => onFileOpen(contentProps.filePath)
       : undefined;
 
     // Not memoized on purpose: `createDiff` is the session's cached calculator,
