@@ -1,6 +1,7 @@
 import { createElement } from 'react';
 
 import type { ChatMessage, DiffLine, LLMProvider, Project } from '@/shared/types';
+import { ThemeProvider } from '@/shared/context/ThemeContext';
 import { UiPreferencesProvider } from '@/shared/context/UiPreferencesContext';
 import { TranscriptExportDocument } from '@/modules/chat/export/TranscriptExportDocument';
 
@@ -65,18 +66,23 @@ export async function buildTranscriptHtml(input: BuildTranscriptHtmlInput): Prom
   const { renderToStaticMarkup } = await import('react-dom/server');
 
   const body = renderToStaticMarkup(
-    // The transcript mounts the live MessageComponent, whose speak control
-    // reads the UI preferences context; a static render outside the app tree
-    // has no provider, so wrap one (harmless here: effects never run).
+    // The transcript mounts the live MessageComponent: its speak control reads
+    // the UI preferences context and every code block reads the theme context
+    // to pick its highlight palette. A static render outside the app tree has
+    // no providers, so wrap both (harmless here: effects never run).
     createElement(
-      UiPreferencesProvider,
+      ThemeProvider,
       null,
-      createElement(TranscriptExportDocument, {
-        messages: input.messages,
-        createDiff: input.createDiff,
-        provider: input.provider,
-        selectedProject: input.selectedProject,
-      }),
+      createElement(
+        UiPreferencesProvider,
+        null,
+        createElement(TranscriptExportDocument, {
+          messages: input.messages,
+          createDiff: input.createDiff,
+          provider: input.provider,
+          selectedProject: input.selectedProject,
+        }),
+      ),
     ),
   );
 

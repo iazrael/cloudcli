@@ -192,8 +192,9 @@ describe('html export', () => {
   });
 });
 
-vi.mock('@/shared/context/ThemeContext', () => ({ useTheme: () => ({ isDarkMode: false, toggleDarkMode: () => undefined }) }));
-
+// The theme hook runs for real: the export's static render tree must provide
+// every context the live transcript reads (theme included), or exporting a
+// conversation that contains any code block rejects with no user-visible error.
 vi.mock('@/shared/context/UiPreferencesContext', async (importOriginal) => {
   // Keep the real provider so buildTranscriptHtml's wrapper works; only the
   // hook is stubbed (its reducer reads localStorage, pointless in jsdom).
