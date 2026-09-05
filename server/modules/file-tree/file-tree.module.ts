@@ -30,6 +30,18 @@ function readFileSystemConcurrency(): number {
 }
 
 /**
+ * OS scratch directories where provider runtimes and their tools stage
+ * throwaway artifacts such as generated HTML reports. Chat file links point
+ * at these like at the Antigravity brain roots, so both the per-user temp
+ * directory and the shared /tmp join the external read-only allowlist. The
+ * set deduplicates platforms where `os.tmpdir()` already is /tmp, and an
+ * entry that does not exist (for example /tmp on Windows) allows nothing.
+ */
+function getExternalTempRoots(): string[] {
+  return Array.from(new Set([os.tmpdir(), '/tmp']));
+}
+
+/**
  * Production filesystem adapter owned by the File Tree composition root.
  * Application services receive this complete capability explicitly and never
  * import Node's mutable filesystem APIs themselves.
@@ -88,10 +100,16 @@ const fileTreeServices = createFileTreeService({
   resolveMimeType: (filePath) => mime.lookup(filePath) || 'application/octet-stream',
   fileSystemConcurrency: readFileSystemConcurrency(),
   logger: fileTreeLogger,
-  // Antigravity writes plan documents into its brain directories, and chat
-  // file attachments live in ~/.cloudcli/assets; this allowlist lets the editor
-  // open and preview those files read-only without widening project-scoped access.
-  externalReadOnlyRoots: [...getAntigravityBrainRoots(), getGlobalImageAssetsDir()],
+  // Antigravity writes plan documents into its brain directories, chat
+  // file attachments live in ~/.cloudcli/assets, and provider runtimes stage
+  // generated reports and other throwaway artifacts in the OS temp directories;
+  // this allowlist lets the editor open and preview those files read-only
+  // without widening project-scoped access.
+  externalReadOnlyRoots: [
+    ...getAntigravityBrainRoots(),
+    getGlobalImageAssetsDir(),
+    ...getExternalTempRoots(),
+  ],
 });
 
 const fileUploadMiddleware = multer({
