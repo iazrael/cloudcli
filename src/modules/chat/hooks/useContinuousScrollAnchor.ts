@@ -38,6 +38,8 @@ export type UseContinuousScrollAnchorReturn = {
 
 const DEFAULT_BOTTOM_THRESHOLD = 60;
 const DEFAULT_TOP_THRESHOLD = 100;
+/** Cooldown between chained top pages while the user stays parked at scrollTop≈0. */
+const CHAIN_NEXT_PAGE_DELAY_MS = 150;
 
 /**
  * Scroll stabilization for chat message lists, built on the browser's native
@@ -148,6 +150,41 @@ export function useContinuousScrollAnchor({
     });
   }, []);
 
+  // Top load handling with momentum lock. Extracted so the stay-at-top chain
+  // below can re-enter it: after a prepend the viewport sits at scrollTop≈0,
+  // where a further wheel-up produces no displacement and thus no scroll
+  // event — the only signal left to load the next page is us.
+  const attemptTopLoad = useCallback(function chainTopLoad() {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    const loadState = loadStateRef.current;
+    if (loadState.allMessagesLoaded || !loadState.hasMoreMessages || loadState.isLoadingMore) return;
+    if (container.scrollTop >= topThreshold || topBoundaryLockedRef.current) return;
+
+    topBoundaryLockedRef.current = true;
+    const prevHeight = container.scrollHeight;
+
+    // Compensate only when older rows actually prepended (the loader
+    // resolves false for no-ops and failures, which need no adjustment).
+    void Promise.resolve(onLoadOlderRef.current(container))
+      .then((loaded) => {
+        if (loaded) stabilizeTopPrepend(prevHeight);
+        // Stay-at-top chain: the user is still parked at the absolute top and
+        // asked for more history; keep paging until they scroll away, history
+        // runs out, or a page grows the content enough to move them off 0.
+        if (loaded && container.scrollTop <= 1) {
+          window.setTimeout(() => {
+            topBoundaryLockedRef.current = false;
+            chainTopLoad();
+          }, CHAIN_NEXT_PAGE_DELAY_MS);
+        }
+      })
+      .catch(() => {
+        // Load failures prepend nothing; no compensation. The lock releases
+        // through the existing >20px hysteresis once the user scrolls down.
+      });
+  }, [stabilizeTopPrepend, topThreshold]);
+
   // Main scroll event handler — geometry reads only, one state write per flip.
   const handleScroll = useCallback(() => {
     const container = scrollContainerRef.current;
@@ -173,36 +210,20 @@ export function useContinuousScrollAnchor({
       onNearTopRef.current?.(scrolledNearTop);
     }
 
-    // Top load handling with momentum lock
-    const loadState = loadStateRef.current;
-    if (!loadState.allMessagesLoaded && loadState.hasMoreMessages && !loadState.isLoadingMore) {
-      if (!scrolledNearTop) {
-        topBoundaryLockedRef.current = false;
-        return;
-      }
-
-      if (topBoundaryLockedRef.current) {
-        // Hysteresis release: unlock once scrolled slightly down (> 20px)
-        if (container.scrollTop > 20) {
-          topBoundaryLockedRef.current = false;
-        }
-        return;
-      }
-
-      topBoundaryLockedRef.current = true;
-      const prevHeight = container.scrollHeight;
-
-      // Compensate only when older rows actually prepended (the loader
-      // resolves false for no-ops and failures, which need no adjustment).
-      void Promise.resolve(onLoadOlderRef.current(container))
-        .then((loaded) => {
-          if (loaded) stabilizeTopPrepend(prevHeight);
-        })
-        .catch(() => {
-          // Load failures prepend nothing; no compensation.
-        });
+    if (!scrolledNearTop) {
+      topBoundaryLockedRef.current = false;
+      return;
     }
-  }, [bottomThreshold, stabilizeTopPrepend, topThreshold]);
+    if (topBoundaryLockedRef.current) {
+      // Hysteresis release: unlock once scrolled slightly down (> 20px);
+      // the load itself fires on the next event back at the boundary.
+      if (container.scrollTop > 20) {
+        topBoundaryLockedRef.current = false;
+      }
+      return;
+    }
+    attemptTopLoad();
+  }, [attemptTopLoad, bottomThreshold, topThreshold]);
 
   // Attach the native passive scroll listener exactly once per pane mount.
   useEffect(() => {
