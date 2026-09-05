@@ -215,6 +215,23 @@ export function useChatRealtimeHandlers({
         }
       };
 
+      // Any content-bearing frame ends the current text segment: once the
+      // model moves from prose to a tool call or its next thinking block, the
+      // buffered text must finalize as its own message instead of absorbing
+      // whatever comes after it. zcode's engine never emits text-boundary
+      // events, so without this flush a whole turn's text landed in one
+      // streaming bubble. stream_end/complete flush explicitly below.
+      if (
+        sid
+        && msg.kind !== 'stream_delta'
+        && msg.kind !== 'stream_end'
+        && msg.kind !== 'status'
+        && msg.kind !== 'permission_request'
+        && msg.kind !== 'permission_cancelled'
+      ) {
+        flushSessionStream(sid);
+      }
+
       // --- Streaming: buffer for performance ---
       // Viewed and background sessions share this path: every run accumulates
       // into its own single `__streaming_<sid>` store row. Appending each
