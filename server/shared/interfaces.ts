@@ -195,6 +195,11 @@ export interface IProviderMcp {
  */
 export interface IProviderSessions {
   normalizeMessage(raw: unknown, sessionId: string | null): NormalizedMessage[];
+  /**
+   * Clears incomplete real-time state after a provider runtime reaches a final
+   * outcome without emitting its normal completion event.
+   */
+  resetLiveMessageState?(sessionId: string): void;
   fetchHistory(sessionId: string, options?: FetchHistoryOptions): Promise<FetchHistoryResult>;
   cleanupSession?(nativeSessionId: string, jsonlPath?: string | null): Promise<boolean>;
   cleanupProjectStorage?(projectPath: string): Promise<void>;

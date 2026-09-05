@@ -27,6 +27,7 @@ import {
 
 import { getZCodeDatabasePath, getZCodeStorageDir } from './zcode-data-root.js';
 import { getGlobalImageAssetsDir } from '@/shared/image-attachments.js';
+import { ZCodeLiveEventNormalizer } from './zcode-live-event-normalizer.js';
 
 const PROVIDER = 'zcode';
 
@@ -337,22 +338,10 @@ function aggregateZCodeSessionTokenUsage(
  * API routes and realtime streams.
  */
 export class ZCodeSessionsProvider implements IProviderSessions {
-  /**
-   * Open reasoning block per session: the stable message id shared by every
-   * `reasoning_delta` frame of one thinking segment. Engine 0.16.5 reasoning
-   * frames carry no message id, so the id is allocated here; without it each
-   * delta would reach the client as a separate transcript entry. Closed by
-   * `reasoning_end`, any other streaming kind, or run completion.
-   */
+  private readonly liveEventNormalizer = new ZCodeLiveEventNormalizer();
+  // Legacy helpers remain temporarily below while history normalization keeps
+  // sharing their text and token readers; live events delegate above.
   private reasoningBlockIds = new Map<string, string>();
-
-  /**
-   * Tool-call argument streams, per session. Engine 0.16.5 announces a call
-   * (usually with an empty input) and then streams its arguments as
-   * `tool_input_start/delta/end` JSON fragments; merging them lets the
-   * announced card fill in live instead of showing blank until the run
-   * finishes. One active stream per session — the engine runs tools serially.
-   */
   private toolInputStreams = new Map<string, { toolCallId: string; toolName: string; buffer: string }>();
 
   /**
@@ -367,159 +356,11 @@ export class ZCodeSessionsProvider implements IProviderSessions {
    * deltas) and unknown types produce no messages.
    */
   normalizeMessage(rawMessage: unknown, sessionId: string | null): NormalizedMessage[] {
-    const raw = readObjectRecord(rawMessage);
-    if (!raw) {
-      return [];
-    }
+    return this.liveEventNormalizer.normalize(rawMessage, sessionId);
+  }
 
-    // Unwrap the session/event notification payload: the typed event may sit
-    // behind `params` (full notification envelope) and then an `event`/`data`
-    // wrapper (both seen in spike transcripts). Peels up to three layers or
-    // until a `type` discriminator appears.
-    let event: AnyRecord = raw;
-    for (let depth = 0; depth < 3 && !readOptionalString(event.type); depth += 1) {
-      const next = readObjectRecord(event.event)
-        ?? readObjectRecord(event.data)
-        ?? readObjectRecord(event.params);
-      if (!next) {
-        break;
-      }
-      event = next;
-    }
-    const type = readOptionalString(event.type) ?? readOptionalString(event.event);
-    if (!type) {
-      return [];
-    }
-    const normalizedType = EVENT_TYPE_ALIASES[type] ?? type;
-
-    const payload = readObjectRecord(event.payload) ?? {};
-    const eventSessionId = readOptionalString(event.sessionId)
-      ?? readOptionalString(raw.sessionId)
-      ?? sessionId;
-    const timestamp = normalizeProviderTimestamp(event.time ?? event.timestamp);
-    const baseId = readOptionalString(event.id)
-      ?? readOptionalString(event.messageID)
-      ?? readOptionalString(payload.messageId)
-      ?? generateMessageId('zcode');
-
-    if (normalizedType === 'model_streaming') {
-      return this.normalizeStreamingKind(payload, eventSessionId, timestamp, baseId);
-    }
-
-    // Tool calls surface as their own event type before execution. Engine
-    // 0.16.5 funnels the whole tool lifecycle through `tool.updated` (aliased
-    // here) and distinguishes stages via payload.kind. Only the scheduling
-    // stage emits a tool_use — started/progress are incremental updates for
-    // an already-announced call, and the frontend appends realtime frames
-    // without dedup, so re-emitting them would stack duplicate tool cards.
-    if (normalizedType === 'tool_call_scheduled') {
-      const stage = readOptionalString(payload.kind);
-      if (stage === 'started' || stage === 'progress' || stage === 'batch') {
-        return [];
-      }
-      if (stage === 'result' || stage === 'error') {
-        const resultPartId = readOptionalString(payload.resultPartId);
-        // The message-level `content` mirrors toolResult.content: the chat UI's
-        // tool_use row reads the mapped tool_result *message's* content when
-        // attaching results, and an undefined there crashed its formatter.
-        const resultContent = resultPartId ? `Result stored in part ${resultPartId}` : '';
-        return [createNormalizedMessage({
-          id: baseId,
-          sessionId: eventSessionId,
-          timestamp,
-          provider: PROVIDER,
-          kind: 'tool_result',
-          toolId: readOptionalString(payload.toolCallId) ?? baseId,
-          content: resultContent,
-          toolResult: {
-            content: resultContent,
-            isError: stage === 'error',
-          },
-        })];
-      }
-      const toolName = readOptionalString(payload.toolName) ?? 'Tool';
-      const toolId = readOptionalString(payload.toolCallId) ?? baseId;
-      // Remember the announced call so streaming argument fragments know
-      // which card they belong to.
-      this.toolInputStreams.set(eventSessionId ?? '', { toolCallId: toolId, toolName, buffer: '' });
-      return [createNormalizedMessage({
-        id: baseId,
-        sessionId: eventSessionId,
-        timestamp,
-        provider: PROVIDER,
-        kind: 'tool_use',
-        toolName,
-        toolInput: payload.input ?? {},
-        toolId,
-      })];
-    }
-
-    // Run completion: both the per-model-call and the terminal turn event
-    // carry usage; the runtime collapses them into exactly one complete.
-    if (normalizedType === 'model_complete' || normalizedType === 'turn_complete') {
-      // A run never streams past its completion, so drop any reasoning block
-      // or argument stream still open here instead of leaking it into the
-      // next run.
-      this.reasoningBlockIds.delete(eventSessionId ?? '');
-      this.toolInputStreams.delete(eventSessionId ?? '');
-      return [createNormalizedMessage({
-        id: baseId,
-        sessionId: eventSessionId,
-        timestamp,
-        provider: PROVIDER,
-        kind: 'complete',
-        tokens: readTokenUsedCount(payload.usage),
-      })];
-    }
-
-    if (normalizedType === 'permission_request' || normalizedType === 'approval') {
-      // `permission.requested` (engine 0.16.5) carries requestId/options for
-      // interactive review cards (e.g. ExitPlanMode plan approval); without
-      // the requestId the frontend drops the event entirely.
-      return [createNormalizedMessage({
-        id: baseId,
-        sessionId: eventSessionId,
-        timestamp,
-        provider: PROVIDER,
-        kind: 'permission_request',
-        toolName: readOptionalString(payload.tool) ?? readOptionalString(payload.toolName) ?? readOptionalString(payload.action),
-        requestId: readOptionalString(payload.requestId) ?? baseId,
-        toolId: readOptionalString(payload.toolCallId),
-        input: payload.input,
-        context: {
-          riskLevel: readOptionalString(payload.riskLevel),
-          reason: readOptionalString(payload.reason),
-          options: payload.options,
-          suggestedPermissionUpdates: payload.suggestedPermissionUpdates,
-        },
-        canInterrupt: true,
-      })];
-    }
-
-    if (normalizedType === 'error' || normalizedType === 'fatal' || normalizedType === 'turn.failed') {
-      // `turn.failed` (observed live on engine 0.16.3) wraps the cause in
-      // payload.error ({message, attribution:{statusCode, reason, ...}}).
-      const errorRecord = readObjectRecord(payload.error);
-      const errorText = readOptionalString(errorRecord?.message)
-        ?? readOptionalString(payload.error)
-        ?? readOptionalString(payload.message)
-        ?? 'Unknown ZCode error';
-      return [createNormalizedMessage({
-        id: baseId,
-        sessionId: eventSessionId,
-        timestamp,
-        provider: PROVIDER,
-        kind: 'error',
-        isError: true,
-        // `content` is what the chat UI renders; `text` keeps parity with the
-        // runtime-level error messages and earlier zcode error consumers.
-        content: errorText,
-        text: errorText,
-      })];
-    }
-
-    // Unknown event type - skip
-    return [];
+  resetLiveMessageState(sessionId: string): void {
+    this.liveEventNormalizer.resetSession(sessionId);
   }
 
   /**

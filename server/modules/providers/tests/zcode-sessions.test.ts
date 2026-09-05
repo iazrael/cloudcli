@@ -8,6 +8,7 @@ import test from 'node:test';
 import Database from 'better-sqlite3';
 
 import { ZCodeSessionSynchronizer } from '@/modules/providers/list/zcode/zcode-session-synchronizer.provider.js';
+import { ZCodeLiveEventNormalizer } from '@/modules/providers/list/zcode/zcode-live-event-normalizer.js';
 import { ZCodeSessionsProvider } from '@/modules/providers/list/zcode/zcode-sessions.provider.js';
 import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
 import { AppError } from '@/shared/utils.js';
@@ -118,6 +119,27 @@ test('normalizeMessage maps model_streaming text deltas to stream_delta', () => 
   assert.equal(messages[0].kind, 'stream_delta');
   assert.equal(messages[0].role, 'assistant');
   assert.equal(messages[0].content, '现在我来');
+});
+
+test('live event normalizer isolates state by session and clears it on reset', () => {
+  const normalizer = new ZCodeLiveEventNormalizer();
+  const first = normalizer.normalize(
+    { type: 'model_streaming', payload: { kind: 'reasoning_delta', delta: 'first' } },
+    'sess_a',
+  );
+  const otherSession = normalizer.normalize(
+    { type: 'model_streaming', payload: { kind: 'reasoning_delta', delta: 'other' } },
+    'sess_b',
+  );
+
+  normalizer.resetSession('sess_a');
+  const afterReset = normalizer.normalize(
+    { type: 'model_streaming', payload: { kind: 'reasoning_delta', delta: 'second' } },
+    'sess_a',
+  );
+
+  assert.notEqual(first[0]?.id, otherSession[0]?.id);
+  assert.notEqual(first[0]?.id, afterReset[0]?.id);
 });
 
 test('normalizeMessage maps reasoning deltas to thinking', () => {

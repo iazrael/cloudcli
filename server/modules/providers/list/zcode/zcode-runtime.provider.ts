@@ -495,6 +495,7 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
             abortKey,
             eventListener,
             writer,
+            context,
             silenceTimeoutMs,
             notifySessionId,
             sessionSummary,
@@ -528,6 +529,7 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
       }
     } finally {
       if (!detachedToWatcher) {
+        context.resetLiveMessageState?.(zcodeSessionId);
         activeSessions.delete(abortKey);
         sessionCompletionState.delete(zcodeSessionId);
         abortedRunKeys.delete(abortKey);
@@ -1092,12 +1094,13 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
     abortKey: string;
     eventListener: (notification: AnyRecord) => void;
     writer: ProviderRuntimeWriter;
+    context: ProviderRuntimeContext;
     silenceTimeoutMs: number;
     notifySessionId: string | null;
     sessionSummary: string | undefined;
   }): void {
     const {
-      zcodeSessionId, abortKey, eventListener, writer,
+      zcodeSessionId, abortKey, eventListener, writer, context,
       silenceTimeoutMs, notifySessionId, sessionSummary,
     } = options;
     const ownedState = sessionCompletionState.get(zcodeSessionId);
@@ -1162,6 +1165,7 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
       } finally {
         protocolClient.removeSessionListener(zcodeSessionId, eventListener);
         if (!ownedState || sessionCompletionState.get(zcodeSessionId) === ownedState) {
+          context.resetLiveMessageState?.(zcodeSessionId);
           activeSessions.delete(abortKey);
           sessionCompletionState.delete(zcodeSessionId);
           permissionWriters.delete(zcodeSessionId);

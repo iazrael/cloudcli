@@ -547,6 +547,8 @@ export type ProviderRuntimeContext = {
   ): Promise<string | undefined>;
   getProviderModels(): Promise<ProviderModelsDefinition>;
   normalizeMessage(raw: unknown, sessionId: string | null): NormalizedMessage[];
+  /** Optional provider hook for clearing incomplete real-time state at a terminal run outcome. */
+  resetLiveMessageState?(sessionId: string): void;
   isProviderInstalled(): Promise<boolean>;
 };
 

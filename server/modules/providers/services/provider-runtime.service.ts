@@ -52,6 +52,9 @@ export function createProviderRuntimeService(
       dependencies.resolveResumeModel(provider.id, sessionId, requestedModel),
     getProviderModels: async () => dependencies.getProviderModels(provider.id),
     normalizeMessage: (raw, sessionId) => provider.sessions.normalizeMessage(raw, sessionId),
+    resetLiveMessageState: provider.sessions.resetLiveMessageState
+      ? (sessionId) => provider.sessions.resetLiveMessageState?.(sessionId)
+      : undefined,
     async isProviderInstalled() {
       try {
         return (await provider.auth.getStatus()).installed;
