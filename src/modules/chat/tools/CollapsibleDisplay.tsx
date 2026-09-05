@@ -10,6 +10,13 @@ type CollapsibleDisplayProps = {
   defaultOpen?: boolean;
   action?: React.ReactNode;
   badge?: React.ReactNode;
+  /** Small marker rendered between the chevron and the tool name, e.g. the MCP badge. */
+  icon?: React.ReactNode;
+  /**
+   * Tool output flattened to text, rendered under the input content when the
+   * section expands — the combined view that keeps one row per tool call.
+   */
+  inlineOutput?: string;
   onTitleClick?: () => void;
   children: React.ReactNode;
   showRawParameters?: boolean;
@@ -40,6 +47,8 @@ export const CollapsibleDisplay: React.FC<CollapsibleDisplayProps> = ({
   defaultOpen = false,
   action,
   badge,
+  icon,
+  inlineOutput,
   onTitleClick,
   children,
   showRawParameters = false,
@@ -57,9 +66,19 @@ export const CollapsibleDisplay: React.FC<CollapsibleDisplayProps> = ({
         open={defaultOpen}
         action={action}
         badge={badge}
+        icon={icon}
         onTitleClick={onTitleClick}
       >
         {children}
+
+        {inlineOutput && (
+          <div className="mt-2 border-t border-border/40 pt-2">
+            <div className="text-[10px] uppercase tracking-wide text-muted-foreground/60">Output</div>
+            <pre className="mt-1 max-h-64 overflow-y-auto whitespace-pre-wrap break-words font-mono text-[11px] text-muted-foreground">
+              {inlineOutput}
+            </pre>
+          </div>
+        )}
 
         {showRawParameters && rawContent && (
           <Collapsible className="mt-2">

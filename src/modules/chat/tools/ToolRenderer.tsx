@@ -1,7 +1,7 @@
 import React, { memo, useMemo, useCallback } from 'react';
 
 import type { DiffLine, Project,ToolStatus } from '@/shared/types';
-import { formatToolDisplayName, getToolConfig } from '@/modules/chat/tools/configs/toolConfigs';
+import { extractToolResultText, formatToolDisplayName, getMcpExecHint, getToolConfig, shouldHideToolResult } from '@/modules/chat/tools/configs/toolConfigs';
 import { OneLineDisplay } from '@/modules/chat/tools/OneLineDisplay';
 import { BashCommandDisplay } from '@/modules/chat/tools/BashCommandDisplay';
 import { CollapsibleDisplay } from '@/modules/chat/tools/CollapsibleDisplay';
@@ -210,9 +210,25 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
   }
 
   if (displayConfig.type === 'collapsible') {
-    const title = typeof displayConfig.title === 'function'
+    const execHint = getMcpExecHint(toolName);
+    let title = typeof displayConfig.title === 'function'
       ? displayConfig.title(parsedData)
       : displayConfig.title || 'Details';
+
+    // An MCP script runner leads with the code it is about to execute — the
+    // same mental model as a Bash row's `$ command` — instead of a list of
+    // parameter names.
+    if (execHint && mode === 'input') {
+      const code = typeof parsedData === 'object' && parsedData !== null
+        ? String((parsedData as Record<string, unknown>).code ?? (parsedData as Record<string, unknown>).script ?? '')
+        : typeof parsedData === 'string'
+          ? parsedData
+          : '';
+      const firstLine = code.split('\n').map((line) => line.trim()).find(Boolean) ?? '';
+      if (firstLine) {
+        title = `${execHint} ${firstLine.length > 120 ? `${firstLine.slice(0, 120)}…` : firstLine}`;
+      }
+    }
 
     const defaultOpen = displayConfig.defaultOpen !== undefined
       ? displayConfig.defaultOpen
@@ -332,6 +348,20 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
       )
       : undefined;
 
+    // Combined view: the flattened output rides inside the input render so one
+    // tool call stays one row; the separate result render is skipped upstream.
+    const inlineOutput = mode === 'input' && toolResult && !toolResult.isError && !shouldHideToolResult(toolName, toolResult)
+      ? extractToolResultText(toolResult)
+      : undefined;
+
+    const mcpIcon = toolName.startsWith('mcp__')
+      ? (
+        <span className="flex h-4 w-4 flex-shrink-0 items-center justify-center rounded bg-muted text-[9px] font-semibold text-muted-foreground">
+          M
+        </span>
+      )
+      : undefined;
+
     return (
       <CollapsibleDisplay
         toolName={displayName}
@@ -340,6 +370,8 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
         defaultOpen={defaultOpen}
         onTitleClick={handleTitleClick}
         badge={badgeElement}
+        icon={mcpIcon}
+        inlineOutput={inlineOutput}
         showRawParameters={mode === 'input' && showRawParameters}
         rawContent={rawToolInput}
         toolCategory={getToolCategory(toolName)}

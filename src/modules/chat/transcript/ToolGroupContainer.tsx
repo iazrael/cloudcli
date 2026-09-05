@@ -5,6 +5,7 @@ import type { DiffLine,  ChatMessage, ClaudePermissionSuggestion, PermissionGran
 import type { Project } from '@/shared/types';
 import type { ToolGroupItem } from '@/modules/chat/utils/toolGrouping';
 import { getToolConfig } from '@/modules/chat/tools';
+import { formatToolDisplayName, getMcpExecHint } from '@/modules/chat/tools/configs/toolConfigs';
 import LLMProviderLogo from '@/shared/ui/LLMProviderLogo';
 import { getProviderDisplayName } from '@/shared/providerDisplay';
 
@@ -51,6 +52,18 @@ function cleanCommandPreview(cmd: string): string {
 function getToolInputPreview(message: ChatMessage): string {
   const toolName = message.toolName || 'UnknownTool';
   const parsedInput = parseToolInput(message.toolInput) as any;
+
+  // An MCP script runner previews the code it runs — the same mental model as
+  // a Bash row's `$ command` — instead of a list of parameter names.
+  const execHint = getMcpExecHint(toolName);
+  if (execHint) {
+    const code = String(parsedInput?.code ?? parsedInput?.script ?? '');
+    const firstLine = code.split('\n').map((line: string) => line.trim()).find(Boolean) ?? '';
+    if (firstLine) {
+      return `${execHint} ${firstLine}`;
+    }
+  }
+
   const config = getToolConfig(toolName).input;
   const title = typeof config.title === 'function' ? config.title(parsedInput) : config.title;
   const value = config.getValue?.(parsedInput);
@@ -168,7 +181,7 @@ export default memo(function ToolGroupContainer({
 
   const [isExpanded, setIsExpanded] = useState(hasError);
   const config = getToolConfig(group.toolName).input;
-  const label = config.label || group.toolName;
+  const label = config.label || formatToolDisplayName(group.toolName);
   const borderClass = hasError
     ? 'border-destructive'
     : config.colorScheme?.border || 'border-border';

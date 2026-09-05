@@ -76,9 +76,10 @@ function summarizeToolInput(input: unknown): string {
  * Turns a namespaced MCP tool id into something readable.
  *
  * Providers name MCP tools `mcp__<server>__<tool>`, which is accurate and
- * unreadable. The tool part is the action; the server is context.
+ * unreadable. The row leads with the action; the server that hosts it is
+ * context, shown in the hover title rather than the line itself.
  *
- * Used by chat's ToolRenderer to label every tool row.
+ * Used by chat's ToolRenderer and the tool-group header to label rows.
  */
 /**
  * Headers for the surfaces every provider is normalized onto.
@@ -103,7 +104,70 @@ export function formatToolDisplayName(toolName: string): string {
   if (!mcpMatch) {
     return toolName;
   }
-  return `${mcpMatch[2]} (${mcpMatch[1]})`;
+  return mcpMatch[2];
+}
+
+/**
+ * Returns the REPL prompt an MCP tool's row should lead its code preview
+ * with, or null when the tool is not an obvious script runner. Matched
+ * against the full namespaced id so either the server (`node_repl`) or the
+ * tool (`js`) part can opt in; python wins over shell over js because names
+ * like `mcp__py_tools__exec` must not fall through to the js rule.
+ */
+const MCP_EXEC_HINTS: Array<[RegExp, string]> = [
+  [/python/i, '>>>'],
+  [/(?:^|_)sh(?:$|_)|shell|bash|zsh|exec|command/i, '$'],
+  [/\bjs\b|javascript|node|repl/i, '>'],
+];
+
+export function getMcpExecHint(toolName: string): string | null {
+  if (!toolName.startsWith('mcp__')) {
+    return null;
+  }
+  for (const [pattern, hint] of MCP_EXEC_HINTS) {
+    if (pattern.test(toolName)) {
+      return hint;
+    }
+  }
+  return null;
+}
+
+/**
+ * Flattens a tool result into displayable text, unwrapping the MCP content
+ * array shape (`[{type: "text", text: "..."}]`) that MCP servers return and
+ * stringifying anything else structured.
+ */
+export function extractToolResultText(toolResult: any): string {
+  let content = toolResult?.content || '';
+
+  if (typeof content === 'string') {
+    try {
+      const parsed = JSON.parse(content);
+      if (Array.isArray(parsed)) {
+        const textParts = parsed
+          .filter((p: any) => p.type === 'text' && p.text)
+          .map((p: any) => p.text);
+        if (textParts.length > 0) {
+          content = textParts.join('\n');
+        }
+      }
+    } catch {
+      // Not JSON or not MCP format, use as-is
+    }
+  } else if (Array.isArray(content)) {
+    const textParts = content
+      .filter((p: any) => p.type === 'text' && p.text)
+      .map((p: any) => p.text);
+    if (textParts.length > 0) {
+      content = textParts.join('\n');
+    } else {
+      content = JSON.stringify(content, null, 2);
+    }
+  } else if (typeof content === 'object' && content !== null) {
+    content = JSON.stringify(content, null, 2);
+  }
+
+  return String(content);
 }
 
 export const TOOL_CONFIGS: Record<string, ToolDisplayConfig> = {
@@ -1040,42 +1104,10 @@ export const TOOL_CONFIGS: Record<string, ToolDisplayConfig> = {
       type: 'collapsible',
       title: 'Output',
       contentType: 'text',
-      getContentProps: (result) => {
-        let content = result?.content || '';
-
-        // Handle MCP format: array of objects with type and text fields
-        if (typeof content === 'string') {
-          try {
-            const parsed = JSON.parse(content);
-            if (Array.isArray(parsed)) {
-              const textParts = parsed
-                .filter((p: any) => p.type === 'text' && p.text)
-                .map((p: any) => p.text);
-              if (textParts.length > 0) {
-                content = textParts.join('\n');
-              }
-            }
-          } catch {
-            // Not JSON or not MCP format, use as-is
-          }
-        } else if (Array.isArray(content)) {
-          const textParts = content
-            .filter((p: any) => p.type === 'text' && p.text)
-            .map((p: any) => p.text);
-          if (textParts.length > 0) {
-            content = textParts.join('\n');
-          } else {
-            content = JSON.stringify(content, null, 2);
-          }
-        } else if (typeof content === 'object' && content !== null) {
-          content = JSON.stringify(content, null, 2);
-        }
-
-        return {
-          content: String(content),
-          format: 'plain'
-        };
-      }
+      getContentProps: (result) => ({
+        content: extractToolResultText(result),
+        format: 'plain'
+      })
     }
   }
 };

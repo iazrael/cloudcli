@@ -10,6 +10,8 @@ type CollapsibleSectionProps = {
   open?: boolean;
   action?: React.ReactNode;
   badge?: React.ReactNode;
+  /** Small marker rendered between the chevron and the tool name, e.g. the MCP badge. */
+  icon?: React.ReactNode;
   onTitleClick?: () => void;
   children: React.ReactNode;
   className?: string;
@@ -27,6 +29,7 @@ export const CollapsibleSection: React.FC<CollapsibleSectionProps> = ({
   open = false,
   action,
   badge,
+  icon,
   onTitleClick,
   children,
   className = '',
@@ -49,6 +52,7 @@ export const CollapsibleSection: React.FC<CollapsibleSectionProps> = ({
             >
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
             </svg>
+            {icon}
           </CollapsibleTrigger>
           {toolName && (
             <span className="flex-shrink-0 font-medium text-muted-foreground">{toolName}</span>
@@ -75,6 +79,7 @@ export const CollapsibleSection: React.FC<CollapsibleSectionProps> = ({
           >
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
           </svg>
+          {icon}
           {toolName && (
             <span className="flex-shrink-0 font-medium">{toolName}</span>
           )}
