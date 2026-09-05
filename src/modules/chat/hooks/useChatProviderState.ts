@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { authenticatedFetch } from '@/shared/api';
+import { useProviderCapabilitiesMap } from '@/shared/hooks/useProviderCapabilities';
+import type { ProviderCapabilities } from '@/shared/hooks/useProviderCapabilities';
 import type { PendingPermissionRequest, PermissionMode } from '@/shared/types';
 import type {
   ProjectSession,
@@ -38,26 +40,6 @@ const readStoredProvider = (): LLMProvider => {
     : 'claude';
 };
 
-type ProviderCapabilities = {
-  provider: LLMProvider;
-  permissionModes: string[];
-  defaultPermissionMode: string;
-  supportsImages: boolean;
-  supportsFiles: boolean;
-  supportsAbort: boolean;
-  supportsPermissionRequests: boolean;
-  supportsTokenUsage: boolean;
-  supportsEffort?: boolean;
-  supportsMessageEditing?: boolean;
-  supportsSessionForking?: boolean;
-};
-
-type ProviderCapabilitiesApiResponse = {
-  success?: boolean;
-  data?: {
-    providers?: ProviderCapabilities[];
-  };
-};
 
 type UseChatProviderStateArgs = {
   selectedSession: ProjectSession | null;
@@ -130,15 +112,14 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   });
 
   /**
-   * Backend-owned capability matrix keyed by provider. Drives the permission
-   * mode picker (and is the extension point for future per-provider UI
-   * differences) so the frontend stays free of hardcoded provider branching.
-   * Null until `/api/providers/capabilities` resolves; the static fallback
-   * map covers that window.
+   * Backend-owned capability matrix keyed by provider, via the shared
+   * module-level cached fetch point. Drives the permission mode picker (and
+   * is the extension point for future per-provider UI differences) so the
+   * frontend stays free of hardcoded provider branching. Null while loading
+   * or after a failed request; the static fallback catalog covers that
+   * window.
    */
-  const [providerCapabilities, setProviderCapabilities] = useState<
-    Partial<Record<LLMProvider, ProviderCapabilities>> | null
-  >(null);
+  const { capabilities: providerCapabilities } = useProviderCapabilitiesMap();
 
   const [providerModelCatalog, setProviderModelCatalog] = useState<
     Partial<Record<LLMProvider, ProviderModelsDefinition>>
@@ -214,33 +195,6 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   useEffect(() => {
     void loadProviderModels();
   }, [loadProviderModels]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    const loadCapabilities = async () => {
-      try {
-        const response = await authenticatedFetch('/api/providers/capabilities');
-        const body = (await response.json()) as ProviderCapabilitiesApiResponse;
-        if (cancelled || !body.success || !Array.isArray(body.data?.providers)) {
-          return;
-        }
-
-        const byProvider: Partial<Record<LLMProvider, ProviderCapabilities>> = {};
-        for (const capabilities of body.data.providers) {
-          byProvider[capabilities.provider] = capabilities;
-        }
-        setProviderCapabilities(byProvider);
-      } catch (error) {
-        console.error('Error loading provider capabilities:', error);
-      }
-    };
-
-    void loadCapabilities();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   const getPermissionModesForProvider = useCallback((targetProvider: LLMProvider): PermissionMode[] => {
     const capabilityModes = providerCapabilities?.[targetProvider]?.permissionModes;

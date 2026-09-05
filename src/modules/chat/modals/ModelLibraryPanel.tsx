@@ -18,15 +18,14 @@ import type {
   ProviderModelsDefinition,
 } from '@/shared/types';
 import type { ProviderAuthStatusMap } from '@/modules/provider-auth';
+import { PROVIDER_FALLBACK_ORDER } from '@/shared/providerCatalogFallback';
+import { getProviderDisplayName } from '@/shared/providerDisplay';
 
-const ALL_PROVIDERS: Array<{ id: LLMProvider; label: string }> = [
-  { id: 'claude', label: 'Claude' },
-  { id: 'codex', label: 'Codex' },
-  { id: 'cursor', label: 'Cursor' },
-  { id: 'opencode', label: 'OpenCode' },
-  { id: 'zcode', label: 'ZCode' },
-  { id: 'antigravity', label: 'Antigravity' },
-];
+// Order and labels derive from the canonical provider order and the shared
+// display-name table.
+const ALL_PROVIDERS: Array<{ id: LLMProvider; label: string }> = PROVIDER_FALLBACK_ORDER.map(
+  (id) => ({ id, label: getProviderDisplayName(id) }),
+);
 
 type ModelLibraryPanelProps = {
   initialProvider: LLMProvider;

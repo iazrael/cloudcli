@@ -27,17 +27,24 @@ import {
   Badge,
   Button,
 } from "@/shared/ui";
-
 import ModelLibraryPanel from '@/modules/chat/modals/ModelLibraryPanel';
+import { PROVIDER_FALLBACK_ORDER } from '@/shared/providerCatalogFallback';
+import { getProviderDisplayName } from '@/shared/providerDisplay';
 
-const PROVIDER_META: { id: LLMProvider; name: string }[] = [
-  { id: "claude", name: "Anthropic" },
-  { id: "codex", name: "OpenAI" },
-  { id: "cursor", name: "Cursor" },
-  { id: "opencode", name: "OpenCode" },
-  { id: "zcode", name: "ZCode" },
-  { id: "antigravity", name: "Antigravity" },
-];
+// Order follows the app-wide canonical provider order; the name column is
+// the vendor name, which is deliberately distinct from the product display
+// name in `providerDisplay.ts`.
+const PROVIDER_VENDOR_NAMES: Record<LLMProvider, string> = {
+  claude: "Anthropic",
+  cursor: "Cursor",
+  codex: "OpenAI",
+  opencode: "OpenCode",
+  zcode: "ZCode",
+  antigravity: "Antigravity",
+};
+const PROVIDER_META: { id: LLMProvider; name: string }[] = PROVIDER_FALLBACK_ORDER.map(
+  (id) => ({ id, name: PROVIDER_VENDOR_NAMES[id] }),
+);
 
 const MOD_KEY =
   typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl";
@@ -83,16 +90,6 @@ function getModelConfig(
 ): ProviderModelsDefinition {
   const entry = catalog[p];
   return entry ?? { OPTIONS: [], DEFAULT: "" };
-}
-
-function getProviderDisplayName(p: LLMProvider) {
-  if (p === "claude") return "Claude";
-  if (p === "cursor") return "Cursor";
-  if (p === "codex") return "Codex";
-  if (p === "opencode") return "OpenCode";
-  if (p === "zcode") return "ZCode";
-  if (p === "antigravity") return "Antigravity";
-  return "Claude";
 }
 
 export default function ProviderSelectionEmptyState({

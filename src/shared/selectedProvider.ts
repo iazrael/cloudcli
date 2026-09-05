@@ -1,3 +1,4 @@
+import { PROVIDER_FALLBACK_ORDER } from '@/shared/providerCatalogFallback';
 import type { LLMProvider } from '@/shared/types';
 import { readUserPreference, writeUserPreference } from '@/shared/userSettings';
 
@@ -16,7 +17,8 @@ import { readUserPreference, writeUserPreference } from '@/shared/userSettings';
  * choice both reaches every reader at once and follows the user between devices.
  */
 
-const PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'zcode', 'antigravity'];
+// The app-wide canonical provider set and order (see providerCatalogFallback).
+const PROVIDERS: LLMProvider[] = [...PROVIDER_FALLBACK_ORDER];
 
 const DEFAULT_PROVIDER: LLMProvider = 'claude';
 
