@@ -136,6 +136,13 @@ ${styles}
   </header>
   ${body}
 </div>
+<script>
+  // A printed (or "saved as PDF") copy is frozen: a section collapsed at
+  // print time is content the reader loses forever. Expand everything first.
+  window.addEventListener('beforeprint', function () {
+    document.querySelectorAll('details').forEach(function (d) { d.open = true; });
+  });
+</script>
 </body>
 </html>`;
 }

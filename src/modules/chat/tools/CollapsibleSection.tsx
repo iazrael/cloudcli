@@ -34,12 +34,14 @@ export const CollapsibleSection: React.FC<CollapsibleSectionProps> = ({
   children,
   className = '',
 }) => {
-  // A document has no chevron to click, so a section that stays collapsed in
-  // an export is simply content the reader can never reach.
+  // An exported document has no JavaScript, so the section renders as a native
+  // <details> the reader can still expand. It starts collapsed (callers'
+  // `open` carries their own defaults, e.g. failures); a document that
+  // auto-expanded every tool section would bury the conversation in noise.
   const isExporting = useIsExportingTranscript();
 
   return (
-    <Collapsible defaultOpen={open || isExporting} className={cn('group/section', className)}>
+    <Collapsible defaultOpen={open} nativeDetails={isExporting} className={cn('group/section', className)}>
       {/* When there's a clickable title (Edit/Write), only the chevron toggles collapse */}
       {onTitleClick ? (
         <div className="flex cursor-default select-none items-center gap-1.5 py-0.5 text-xs group-data-[state=open]/section:sticky group-data-[state=open]/section:top-0 group-data-[state=open]/section:z-10 group-data-[state=open]/section:-mx-1 group-data-[state=open]/section:bg-background group-data-[state=open]/section:px-1">

@@ -37,6 +37,8 @@ export type ReasoningProps = {
   defaultOpen?: boolean;
   onOpenChange?: (open: boolean) => void;
   duration?: number;
+  /** Forwarded to the underlying Collapsible: fold via native <details> so it works without JavaScript. */
+  nativeDetails?: boolean;
 } & React.HTMLAttributes<HTMLDivElement>;
 
 export const Reasoning = React.memo<ReasoningProps>(
@@ -47,6 +49,7 @@ export const Reasoning = React.memo<ReasoningProps>(
     defaultOpen,
     onOpenChange,
     duration: durationProp,
+    nativeDetails = false,
     children,
     ...props
   }) => {
@@ -117,6 +120,7 @@ export const Reasoning = React.memo<ReasoningProps>(
         <Collapsible
           open={isOpen}
           onOpenChange={setIsOpen}
+          nativeDetails={nativeDetails}
           className={cn('not-prose', className)}
           {...props}
         >

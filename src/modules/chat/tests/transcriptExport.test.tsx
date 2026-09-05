@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { ChatMessage } from '@/shared/types';
 import type * as UiPreferencesContext from '@/shared/context/UiPreferencesContext';
-import { buildTranscriptExport, toExportFileStem } from '@/modules/chat/utils/chatExport';
+import { buildTranscriptExport, downloadPDF, toExportFileStem } from '@/modules/chat/utils/chatExport';
 import { createCachedDiffCalculator } from '@/modules/chat/utils/messageTransforms';
 
 const createDiff = createCachedDiffCalculator();
@@ -46,18 +46,7 @@ const input = {
 };
 
 describe('markdown export', () => {
-  it('renders a tool call with its file, counts and diff', async () => {
-    const markdown = await buildTranscriptExport('markdown', input, exportedAt);
-
-    expect(markdown).toContain('`Edit`');
-    expect(markdown).toContain('/repo/src/helper.js');
-    expect(markdown).toContain('+2 -1');
-    expect(markdown).toContain('+const renamed = 1;');
-    expect(markdown).toContain('-const a = 1;');
-    expect(markdown).toContain('Applied 1 edit');
-  });
-
-  it('keeps the user and assistant turns', async () => {
+  it('is pure dialogue: tool calls are omitted entirely', async () => {
     const markdown = await buildTranscriptExport('markdown', input, exportedAt);
 
     expect(markdown).toContain('### You');
@@ -65,6 +54,20 @@ describe('markdown export', () => {
     expect(markdown).toContain('### Claude');
     expect(markdown).toContain('const renamed = 1;');
 
+    expect(markdown).not.toContain('`Edit`');
+    expect(markdown).not.toContain('/repo/src/helper.js');
+    expect(markdown).not.toContain('+const renamed = 1;');
+    expect(markdown).not.toContain('Applied 1 edit');
+  });
+
+  it('counts only the messages it renders', async () => {
+    const markdown = await buildTranscriptExport('markdown', input, exportedAt);
+
+    // User + assistant turn; the Edit tool row between them is omitted.
+    expect(markdown).toContain('_2 messages ·');
+  });
+
+  it('keeps the user and assistant turns', async () => {
     const zcodeMd = await buildTranscriptExport('markdown', { ...input, provider: 'zcode' }, exportedAt);
     expect(zcodeMd).toContain('### ZCode');
 
@@ -72,18 +75,14 @@ describe('markdown export', () => {
     expect(agyMd).toContain('### Antigravity');
   });
 
-  it('fences content that already contains a fence', async () => {
+  it('fences an error block that already contains a fence', async () => {
     const markdown = await buildTranscriptExport('markdown', {
       ...input,
       messages: [{
-        type: 'assistant',
-        content: '',
-        isToolUse: true,
-        toolName: 'Bash',
-        toolInput: JSON.stringify({ command: 'echo hi' }),
-        toolResult: { content: 'output containing ``` a fence', isError: false },
+        type: 'error',
+        content: 'output containing ``` a fence',
         timestamp: new Date('2026-08-24T09:02:00.000Z'),
-      } as unknown as ChatMessage],
+      } as ChatMessage],
     }, exportedAt);
 
     // A three-backtick fence would be closed early by the payload itself.
@@ -166,10 +165,32 @@ describe('html export', () => {
     expect(html).not.toContain('grid-rows-[0fr]');
   });
 
-  it('opens the collapsible bodies, since nothing in the file can expand them', async () => {
+  it('folds tool sections as native <details> the reader can expand', async () => {
     const html = await buildTranscriptExport('html', input, exportedAt);
 
-    expect(html).not.toContain('data-state="closed"');
+    // No JavaScript in the file: the fold must be a native element.
+    expect(html).toContain('<details');
+    expect(html).toContain('<summary');
+    // The Edit card's own markup (diff, badge) renders inside the fold.
+    expect(html).toContain('2 lines added, 1 removed');
+    expect(html).not.toContain('grid-rows-[0fr]');
+  });
+
+  it('expands failed tool groups while everything else stays folded', async () => {
+    const failingBash: ChatMessage = {
+      ...bashToolMessage,
+      toolResult: { content: 'command not found', isError: true },
+    } as unknown as ChatMessage;
+
+    // Two consecutive Bash rows form a group; its failure opens the fold.
+    const html = await buildTranscriptExport(
+      'html',
+      { ...input, messages: [bashToolMessage, failingBash] },
+      exportedAt,
+    );
+
+    expect(html).toContain('<details open');
+    expect(html).toContain('command not found');
   });
 
   it('renders assistant markdown instead of escaping it', async () => {
@@ -189,6 +210,89 @@ describe('html export', () => {
 
     expect(html).toContain('&lt;img src=x onerror=alert(1)&gt;');
     expect(html).not.toContain('<img src=x');
+  });
+});
+
+describe('thinking content in exports', () => {
+  const thinkingMessage: ChatMessage = {
+    type: 'assistant',
+    content: 'pondering the approach',
+    isThinking: true,
+    timestamp: new Date('2026-08-24T09:00:10.000Z'),
+  } as ChatMessage;
+
+  const assistantWithReasoning: ChatMessage = {
+    type: 'assistant',
+    content: 'Here is the answer.',
+    reasoning: 'weighing option A',
+    timestamp: new Date('2026-08-24T09:01:00.000Z'),
+  } as ChatMessage;
+
+  const thinkingInput = {
+    ...input,
+    messages: [thinkingMessage, assistantWithReasoning],
+  };
+
+  it('omits thinking rows and reasoning from markdown', async () => {
+    const markdown = await buildTranscriptExport('markdown', thinkingInput, exportedAt);
+
+    expect(markdown).not.toContain('pondering the approach');
+    expect(markdown).not.toContain('weighing option A');
+    expect(markdown).not.toContain('Reasoning');
+    expect(markdown).toContain('Here is the answer.');
+  });
+
+  it('keeps thinking rows and reasoning in html, folded shut', async () => {
+    const html = await buildTranscriptExport('html', thinkingInput, exportedAt);
+
+    // The document is the complete record: thinking stays, as a closed fold.
+    expect(html).toContain('pondering the approach');
+    expect(html).toContain('weighing option A');
+    expect(html).toContain('Here is the answer.');
+  });
+});
+
+describe('pdf export', () => {
+  it('writes the transcript document into a print window', async () => {
+    const written: string[] = [];
+    const fakeWindow = {
+      document: {
+        write: (html: string) => written.push(html),
+        close: () => undefined,
+      },
+      print: () => undefined,
+    };
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue(fakeWindow as unknown as Window);
+    vi.useFakeTimers();
+
+    try {
+      await downloadPDF(input);
+      vi.runAllTimers();
+
+      assert.equal(openSpy.mock.calls.length, 1);
+      assert.equal(written.length, 1);
+      // The same complete document the HTML export produces, including the
+      // print-time expansion that keeps folded sections out of a frozen PDF.
+      expect(written[0]).toContain('<details');
+      expect(written[0]).toContain("window.addEventListener('beforeprint'");
+      expect(written[0]).toContain('<title>Rename the helper</title>');
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
+
+  it('alerts when the popup is blocked instead of failing silently', async () => {
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue(null);
+    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => undefined);
+
+    try {
+      await downloadPDF(input);
+      expect(alertSpy.mock.calls.length).toBe(1);
+    } finally {
+      openSpy.mockRestore();
+      alertSpy.mockRestore();
+    }
   });
 });
 

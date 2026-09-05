@@ -1,6 +1,4 @@
 import type { ChatMessage, DiffLine, LLMProvider } from '@/shared/types';
-import { getToolConfig } from '@/modules/chat/tools';
-import { parseToolPayload, summarizeDiff } from '@/modules/chat/utils/messageTransforms';
 
 type BuildTranscriptMarkdownInput = {
   messages: ChatMessage[];
@@ -40,104 +38,59 @@ function readString(value: unknown): string {
 }
 
 /**
- * Renders one tool call the way the transcript summarizes it: what ran, on
- * what, and what came back.
- *
- * The previous exporter branched on `msg.type` alone, and a tool call is typed
- * `assistant` with empty content — so every one of them, which on an agent
- * transcript is most of the file, exported as a blank section.
- */
-function renderToolCall(
-  message: ChatMessage,
-  createDiff: (oldStr: string, newStr: string) => DiffLine[],
-): string {
-  const toolName = message.toolName || 'Tool';
-  const input = parseToolPayload(message.toolInput);
-  const config = getToolConfig(toolName).input;
-  const lines: string[] = [];
-
-  const contentProps = config.getContentProps?.(input ?? {}) as Record<string, unknown> | undefined;
-  const filePath = typeof contentProps?.filePath === 'string' ? contentProps.filePath : undefined;
-
-  lines.push(`**\`${toolName}\`**${filePath ? ` — \`${filePath}\`` : ''}`);
-
-  if (
-    config.contentType === 'diff'
-    && typeof contentProps?.oldContent === 'string'
-    && typeof contentProps?.newContent === 'string'
-  ) {
-    const diffLines = createDiff(contentProps.oldContent, contentProps.newContent);
-    const stats = summarizeDiff(diffLines);
-    lines.push('', `\`+${stats.added} -${stats.removed}\``);
-    lines.push('', codeBlock(
-      diffLines.map((line) => `${line.type === 'added' ? '+' : '-'}${line.content}`).join('\n'),
-      'diff',
-    ));
-  } else {
-    const rendered = readString(input);
-    if (rendered.trim()) {
-      lines.push('', codeBlock(rendered, rendered.trimStart().startsWith('{') ? 'json' : ''));
-    }
-  }
-
-  const result = readString(message.toolResult?.content);
-  if (result.trim()) {
-    lines.push('', message.toolResult?.isError ? '_Failed:_' : '_Result:_', '', codeBlock(result));
-  }
-
-  return lines.join('\n');
-}
-
-/**
  * Renders a transcript as Markdown that reads well in a plain text editor and
- * on any Markdown host, with tool calls, diffs and thinking blocks intact.
+ * on any Markdown host. It is pure dialogue — thinking and tool activity are
+ * the process, not the conversation, and the HTML/JSON exports are the
+ * complete record. Errors stay: they are conversation-level events.
  */
 export function buildTranscriptMarkdown(input: BuildTranscriptMarkdownInput): string {
   const providerLabel = PROVIDER_LABELS[String(input.provider)] ?? 'Assistant';
-  const sections: string[] = [
-    `# ${input.sessionTitle}`,
-    '',
-    `_${input.messages.length} messages · exported ${input.exportedAt.toLocaleString()}_`,
-    '',
-    '---',
-  ];
+  const sections: string[] = [];
+
+  // Counted after filtering so the header describes the document, not the
+  // session — a reader told "387 messages" over twenty dialogue rows would
+  // think the export was truncated.
+  let renderedCount = 0;
 
   for (const message of input.messages) {
-    sections.push('');
-
-    if (message.isToolUse) {
-      sections.push(renderToolCall(message, input.createDiff));
+    if (message.isThinking || message.isToolUse) {
       continue;
     }
 
     if (message.type === 'user') {
-      sections.push(`### You`);
-      sections.push('', readString(message.content));
+      sections.push('', `### You`, '', readString(message.content));
       if (message.images?.length) {
         sections.push('', `_${message.images.length} image attachment(s)_`);
       }
       if (message.files?.length) {
         sections.push('', `_Attached: ${message.files.map((file) => file.name).join(', ')}_`);
       }
+      renderedCount += 1;
       continue;
     }
 
     if (message.type === 'error') {
-      sections.push('### Error', '', codeBlock(readString(message.content)));
+      sections.push('', '### Error', '', codeBlock(readString(message.content)));
+      renderedCount += 1;
       continue;
     }
 
-    if (message.isThinking) {
-      sections.push(`### ${providerLabel} — thinking`, '', readString(message.content));
+    const content = readString(message.content);
+    if (!content.trim()) {
       continue;
     }
 
-    sections.push(`### ${providerLabel}`);
-    if (message.reasoning) {
-      sections.push('', '<details><summary>Reasoning</summary>', '', readString(message.reasoning), '', '</details>');
-    }
-    sections.push('', readString(message.content));
+    sections.push('', `### ${providerLabel}`, '', content);
+    renderedCount += 1;
   }
 
-  return `${sections.join('\n').replace(/\n{4,}/g, '\n\n\n')}\n`;
+  const header = [
+    `# ${input.sessionTitle}`,
+    '',
+    `_${renderedCount} messages · exported ${input.exportedAt.toLocaleString()}_`,
+    '',
+    '---',
+  ];
+
+  return `${[...header, ...sections].join('\n').replace(/\n{4,}/g, '\n\n\n')}\n`;
 }

@@ -4,6 +4,7 @@ import { ChevronRight } from 'lucide-react';
 import type { DiffLine,  ChatMessage, ClaudePermissionSuggestion, PermissionGrantResult, Provider } from '@/shared/types';
 import type { Project } from '@/shared/types';
 import type { ToolGroupItem } from '@/modules/chat/utils/toolGrouping';
+import { useIsExportingTranscript } from '@/modules/chat/context/TranscriptRenderContext';
 import { getToolConfig } from '@/modules/chat/tools';
 import { formatToolDisplayName, getMcpExecHint } from '@/modules/chat/tools/configs/toolConfigs';
 import LLMProviderLogo from '@/shared/ui/LLMProviderLogo';
@@ -180,6 +181,11 @@ export default memo(function ToolGroupContainer({
   }, [group.messages, group.toolName, createDiff]);
 
   const [isExpanded, setIsExpanded] = useState(hasError);
+  // A statically rendered document has no JavaScript: the group becomes a
+  // native <details> the reader can still fold. It starts collapsed — a
+  // document that auto-expanded every group buries the conversation — except
+  // for failures, which are usually exactly what the reader is hunting for.
+  const isExporting = useIsExportingTranscript();
   const config = getToolConfig(group.toolName).input;
   const label = config.label || formatToolDisplayName(group.toolName);
   const borderClass = hasError
@@ -216,6 +222,95 @@ export default memo(function ToolGroupContainer({
       prevMessage.type === 'error')
   );
 
+  const expanded = isExporting ? hasError : isExpanded;
+
+  const headerContent = (
+    <>
+      <ChevronRight
+        className={`h-3.5 w-3.5 flex-shrink-0 text-muted-foreground transition-transform ${expanded ? 'rotate-90' : ''}`}
+        aria-hidden
+      />
+      <span className={`${iconClass} flex h-5 w-5 flex-shrink-0 items-center justify-center rounded bg-background/80 text-xs font-medium`}>
+        {icon}
+      </span>
+      <span className="min-w-0 flex-shrink-0 text-xs font-medium text-foreground">{label}</span>
+      <span className="flex-shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+        x{group.messages.length}
+      </span>
+      {hasError && (
+        <span className="flex-shrink-0 rounded-full bg-destructive/15 px-1.5 py-0.5 text-[10px] font-medium text-destructive">
+          Failed
+        </span>
+      )}
+      {diffStats && (
+        <span className="flex flex-shrink-0 items-center gap-1 font-mono text-[10px] font-semibold leading-none">
+          {diffStats.added > 0 && (
+            <span className="text-emerald-600 dark:text-emerald-400">+{diffStats.added}</span>
+          )}
+          {diffStats.removed > 0 && (
+            <span className="text-rose-600 dark:text-rose-400">-{diffStats.removed}</span>
+          )}
+        </span>
+      )}
+      {preview && (
+        <>
+          <span className="text-[10px] text-muted-foreground/40">/</span>
+          <span className="min-w-0 truncate font-mono text-xs text-muted-foreground">{preview}</span>
+        </>
+      )}
+    </>
+  );
+
+  const bodyContent = (
+    <div className="mt-2 space-y-3 sm:space-y-4">
+      {group.messages.map((message, index) => (
+        <MessageComponent
+          key={getMessageKey(message)}
+          message={message}
+          // Only `type` is consumed for grouping; the first row groups
+          // with itself instead of a per-render throwaway object, so
+          // the memo comparison holds.
+          prevMessage={index > 0 ? group.messages[index - 1] : message}
+          createDiff={createDiff}
+          onFileOpen={onFileOpen}
+          onShowSettings={onShowSettings}
+          onGrantToolPermission={onGrantToolPermission}
+          showRawParameters={showRawParameters}
+          showThinking={showThinking}
+          selectedProject={selectedProject}
+          provider={provider}
+        />
+      ))}
+    </div>
+  );
+
+  if (isExporting) {
+    return (
+      <div className={`chat-message tool ${isGrouped ? 'grouped' : ''} px-3 sm:px-0`} data-message-timestamp={group.timestamp || undefined}>
+        <div className="w-full">
+          {!isGrouped && (
+            <div className="mb-2 flex items-center space-x-3">
+              <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full p-1 text-sm text-foreground">
+                <LLMProviderLogo provider={provider} className="h-full w-full" />
+              </div>
+              <div className="text-sm font-medium text-gray-900 dark:text-white">
+                {getProviderDisplayName(provider)}
+              </div>
+            </div>
+          )}
+          <details open={hasError}>
+            <summary
+              className={`group flex w-full items-center gap-2 border-l-2 ${borderClass} rounded-r-md bg-muted/25 px-3 py-2 text-left dark:bg-muted/10`}
+            >
+              {headerContent}
+            </summary>
+            {bodyContent}
+          </details>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className={`chat-message tool ${isGrouped ? 'grouped' : ''} px-3 sm:px-0`} data-message-timestamp={group.timestamp || undefined}>
       <div className="w-full">
@@ -236,62 +331,10 @@ export default memo(function ToolGroupContainer({
           onClick={() => setIsExpanded((current) => !current)}
           aria-expanded={isExpanded}
         >
-          <ChevronRight
-            className={`h-3.5 w-3.5 flex-shrink-0 text-muted-foreground transition-transform ${isExpanded ? 'rotate-90' : ''}`}
-            aria-hidden
-          />
-          <span className={`${iconClass} flex h-5 w-5 flex-shrink-0 items-center justify-center rounded bg-background/80 text-xs font-medium`}>
-            {icon}
-          </span>
-          <span className="min-w-0 flex-shrink-0 text-xs font-medium text-foreground">{label}</span>
-          <span className="flex-shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-            x{group.messages.length}
-          </span>
-          {hasError && (
-            <span className="flex-shrink-0 rounded-full bg-destructive/15 px-1.5 py-0.5 text-[10px] font-medium text-destructive">
-              Failed
-            </span>
-          )}
-          {diffStats && (
-            <span className="flex flex-shrink-0 items-center gap-1 font-mono text-[10px] font-semibold leading-none">
-              {diffStats.added > 0 && (
-                <span className="text-emerald-600 dark:text-emerald-400">+{diffStats.added}</span>
-              )}
-              {diffStats.removed > 0 && (
-                <span className="text-rose-600 dark:text-rose-400">-{diffStats.removed}</span>
-              )}
-            </span>
-          )}
-          {preview && (
-            <>
-              <span className="text-[10px] text-muted-foreground/40">/</span>
-              <span className="min-w-0 truncate font-mono text-xs text-muted-foreground">{preview}</span>
-            </>
-          )}
+          {headerContent}
         </button>
 
-        {isExpanded && (
-          <div className="mt-2 space-y-3 sm:space-y-4">
-            {group.messages.map((message, index) => (
-              <MessageComponent
-                key={getMessageKey(message)}
-                message={message}
-                // Only `type` is consumed for grouping; the first row groups
-                // with itself instead of a per-render throwaway object, so
-                // the memo comparison holds.
-                prevMessage={index > 0 ? group.messages[index - 1] : message}
-                createDiff={createDiff}
-                onFileOpen={onFileOpen}
-                onShowSettings={onShowSettings}
-                onGrantToolPermission={onGrantToolPermission}
-                showRawParameters={showRawParameters}
-                showThinking={showThinking}
-                selectedProject={selectedProject}
-                provider={provider}
-              />
-            ))}
-          </div>
-        )}
+        {isExpanded && bodyContent}
       </div>
     </div>
   );

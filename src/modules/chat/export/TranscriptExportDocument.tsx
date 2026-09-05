@@ -34,10 +34,19 @@ export function TranscriptExportDocument({
   provider,
   selectedProject,
 }: TranscriptExportDocumentProps) {
-  // Thinking blocks are included: an export is a record of what happened, and
-  // the on-screen toggle is about noise in a live conversation.
+  // Everything renders, folded: the exported document is the complete record
+  // of the conversation. Process content — thinking blocks, tool groups —
+  // renders as native <details> collapsed by default (failures open), so the
+  // record stays complete without burying the dialogue in noise.
   const grouped = groupConsecutiveTools(messages, true);
-  let previousMessage: ChatMessage | null = null;
+
+  // Derived per item from the preceding entry rather than accumulated in the
+  // render loop, so the component body never reassigns a variable after render.
+  const previousMessageOf = (index: number): ChatMessage | null => {
+    if (index === 0) return null;
+    const prev = grouped[index - 1];
+    return isToolGroupItem(prev) ? prev.messages[prev.messages.length - 1] ?? null : prev;
+  };
 
   return (
     <I18nextProvider i18n={i18n}>
@@ -45,14 +54,11 @@ export function TranscriptExportDocument({
         <div className="chat-export-transcript">
           {grouped.map((item, index) => {
             if (isToolGroupItem(item)) {
-              const groupPreviousMessage = previousMessage;
-              previousMessage = item.messages[item.messages.length - 1] || previousMessage;
-
               return (
                 <ToolGroupContainer
                   key={`group-${index}`}
                   group={item}
-                  prevMessage={groupPreviousMessage}
+                  prevMessage={previousMessageOf(index)}
                   createDiff={createDiff}
                   getMessageKey={(message: ChatMessage) => String(message.timestamp)}
                   showRawParameters={false}
@@ -63,14 +69,11 @@ export function TranscriptExportDocument({
               );
             }
 
-            const messagePreviousMessage = previousMessage;
-            previousMessage = item;
-
             return (
               <MessageComponent
                 key={`message-${index}`}
                 message={item}
-                prevMessage={messagePreviousMessage}
+                prevMessage={previousMessageOf(index)}
                 createDiff={createDiff}
                 showRawParameters={false}
                 showThinking

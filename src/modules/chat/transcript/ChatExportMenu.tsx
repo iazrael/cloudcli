@@ -18,13 +18,15 @@ export default function ChatExportMenu({ messages, sessionTitle, provider, creat
     return null;
   }
 
-  const options = { provider };
   const handleExport = async (format: 'markdown' | 'html' | 'pdf') => {
     try {
       if (format === 'pdf') {
-        const timestamp = new Date().toISOString().split('T')[0];
-        const filename = `${sessionTitle || 'chat'}-${timestamp}`;
-        downloadPDF(messages, filename, sessionTitle, options);
+        await downloadPDF({
+          messages,
+          sessionTitle: sessionTitle || 'chat',
+          provider: provider || 'claude',
+          createDiff,
+        });
       } else {
         await downloadTranscriptExport(format, {
           messages,

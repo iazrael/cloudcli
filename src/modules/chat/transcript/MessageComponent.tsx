@@ -14,6 +14,7 @@ import type {DiffLine,
 import { formatUsageLimitText, stripProposedPlanEnvelope } from '@/modules/chat/utils/chatFormatting';
 import type { Project } from '@/shared/types';
 import { getToolConfig, ToolRenderer, ToolErrorDisplay, shouldHideToolResult } from '@/modules/chat/tools';
+import { useIsExportingTranscript } from '@/modules/chat/context/TranscriptRenderContext';
 import { Reasoning, ReasoningTrigger, ReasoningContent } from '@/shared/ui/ReasoningFork';
 
 import ChatMessageImages from '@/modules/chat/transcript/ChatMessageImages';
@@ -56,6 +57,9 @@ const COPY_HIDDEN_TOOL_NAMES = new Set(['Bash', 'Edit', 'Write', 'ApplyPatch']);
 
 const MessageComponent = memo(({ message, prevMessage, turnAnchorMessage, createDiff, onFileOpen, showRawParameters, showThinking, isThinkingStreaming, selectedProject, provider, onEditMessage, onForkFromMessage }: MessageComponentProps) => {
   const { t } = useTranslation('chat');
+  // Folds (thinking, compaction summary) render as native <details> here so
+  // they stay expandable in the statically rendered exported document.
+  const isExporting = useIsExportingTranscript();
   const isGrouped = prevMessage && prevMessage.type === message.type &&
     ((prevMessage.type === 'assistant') ||
       (prevMessage.type === 'user') ||
@@ -173,7 +177,7 @@ const MessageComponent = memo(({ message, prevMessage, turnAnchorMessage, create
         </div>
       ) : message.isCompactSummary ? (
         /* Compaction summary: quiet system line, expands to the persisted text */
-        <Collapsible className="w-full">
+        <Collapsible className="w-full" nativeDetails={isExporting}>
           <CollapsibleTrigger className="group flex w-full cursor-pointer items-center gap-2 py-0.5 text-left">
             <span className="inline-block h-1.5 w-1.5 flex-shrink-0 rounded-full bg-blue-400 dark:bg-blue-500" />
             <span className="text-xs text-gray-500 dark:text-gray-400">{t('messageTypes.compactSummary')}</span>
@@ -356,8 +360,9 @@ const MessageComponent = memo(({ message, prevMessage, turnAnchorMessage, create
               /* Thinking messages — Reasoning component (ai-elements pattern).
                  The component times the streaming window itself and shows
                  "Thought for N seconds" once it ends; without the flag it can
-                 only say "a few seconds". */
-              <Reasoning defaultOpen={false} isStreaming={Boolean(isThinkingStreaming)}>
+                 only say "a few seconds". Exported documents fold thinking
+                 closed: it is process, not conversation. */
+              <Reasoning defaultOpen={false} isStreaming={Boolean(isThinkingStreaming)} nativeDetails={isExporting}>
                 <ReasoningTrigger />
                 <ReasoningContent>
                   <Markdown className="prose prose-sm prose-gray max-w-none font-serif dark:prose-invert">
@@ -372,7 +377,7 @@ const MessageComponent = memo(({ message, prevMessage, turnAnchorMessage, create
               <div dir="auto" className="text-sm text-gray-700 dark:text-gray-300">
                 {/* Reasoning accordion */}
                 {showThinking && message.reasoning && (
-                  <Reasoning className="mb-3" defaultOpen={false}>
+                  <Reasoning className="mb-3" defaultOpen={false} nativeDetails={isExporting}>
                     <ReasoningTrigger />
                     <ReasoningContent>
                       <div className="whitespace-pre-wrap">
