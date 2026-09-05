@@ -1,4 +1,4 @@
-import { CLOUDCLI_WORDMARK_FONT_FAMILY } from '@/shared/constants';
+import { APP_VERSION, BUILD_INFO, CLOUDCLI_WORDMARK_FONT_FAMILY } from '@/shared/constants';
 
 const loadingDotAnimationDelays = ['0s', '0.15s', '0.3s'];
 
@@ -33,6 +33,11 @@ export default function AuthLoadingScreen() {
             />
           ))}
         </div>
+        {APP_VERSION && BUILD_INFO.commit && (
+          <p className="mt-4 text-xs text-muted-foreground/60">
+            v{APP_VERSION}({BUILD_INFO.commit})
+          </p>
+        )}
       </div>
     </div>
   );

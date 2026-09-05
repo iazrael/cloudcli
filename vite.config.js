@@ -1,3 +1,4 @@
+import { execSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { fileURLToPath, URL } from 'node:url'
 import { defineConfig, loadEnv } from 'vite'
@@ -24,10 +25,24 @@ export default defineConfig(({ mode }) => {
   // TODO: Remove support for legacy PORT variables in all locations in a future major release, leaving only SERVER_PORT.
   const serverPort = env.SERVER_PORT || env.PORT || 3001
 
+  // Build fingerprint shown in the UI (splash + About). It changes on every build,
+  // so a long-lived PWA window can be told apart from the latest deploy. `-dirty`
+  // marks builds made from a tree with uncommitted changes.
+  let buildCommit = 'unknown'
+  try {
+    buildCommit = execSync('git describe --always --dirty', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim()
+  } catch {
+    // Outside a git repository (e.g. building from a release tarball)
+  }
+  const now = new Date()
+  const pad = (value) => String(value).padStart(2, '0')
+  const buildTime = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`
+
   return {
     plugins: [react()],
     define: {
-      __APP_VERSION__: JSON.stringify(pkg.version)
+      __APP_VERSION__: JSON.stringify(pkg.version),
+      __BUILD_INFO__: JSON.stringify({ commit: buildCommit, buildTime })
     },
     resolve: {
       alias: {

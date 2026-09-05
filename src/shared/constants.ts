@@ -38,6 +38,18 @@ export const CLOUDCLI_WORDMARK_FONT_FAMILY =
  */
 export const APP_VERSION: string = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : '';
 
+/**
+ * Build fingerprint baked into the client bundle at build time: `commit` is the git
+ * short hash of the built tree (suffixed `-dirty` for uncommitted changes) and
+ * `buildTime` the build timestamp. Unlike `APP_VERSION` it changes on every build,
+ * so a stale PWA window can be told apart from the latest deploy. Empty strings
+ * outside a Vite build (for example under the `tsx` test runner).
+ */
+export const BUILD_INFO: { commit: string; buildTime: string } =
+  typeof __BUILD_INFO__ === 'object' && __BUILD_INFO__ !== null
+    ? __BUILD_INFO__
+    : { commit: '', buildTime: '' };
+
 // ---------------------------
 
 //----------------- SETTINGS NAVIGATION ------------
