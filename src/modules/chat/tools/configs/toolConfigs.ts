@@ -398,7 +398,9 @@ export const TOOL_CONFIGS: Record<string, ToolDisplayConfig> = {
       actionButton: 'none',
       getContentProps: (input) => ({
         oldContent: '',
-        newContent: input.content ?? input.CodeContent ?? '',
+        // Codex normalizes file writes to old_string/new_string (no `content`),
+        // so read it last or the title-click diff snapshot opens the editor empty.
+        newContent: input.content ?? input.CodeContent ?? input.new_string ?? '',
         filePath: input.file_path || input.TargetFile,
         badge: 'New',
         badgeColor: 'green'
@@ -423,7 +425,7 @@ export const TOOL_CONFIGS: Record<string, ToolDisplayConfig> = {
       actionButton: 'none',
       getContentProps: (input) => ({
         oldContent: '',
-        newContent: input.CodeContent ?? input.content ?? '',
+        newContent: input.CodeContent ?? input.content ?? input.new_string ?? '',
         filePath: input.TargetFile || input.file_path,
         badge: 'New',
         badgeColor: 'green'
