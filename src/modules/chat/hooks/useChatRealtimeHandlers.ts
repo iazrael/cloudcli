@@ -144,7 +144,14 @@ export function useChatRealtimeHandlers({
 
           const isViewedSession = sid === activeViewSessionId;
           if (isViewedSession && Array.isArray(msg.pendingPermissions)) {
-            const nextPendingPermissionRequests = msg.pendingPermissions as PendingPermissionRequest[];
+            // Shape-check every entry: a bare request-id (or any malformed
+            // row) would render a card with an empty tool badge whose buttons
+            // are silently dropped because requestId is undefined.
+            const nextPendingPermissionRequests = (msg.pendingPermissions as unknown[]).filter(
+              (entry): entry is PendingPermissionRequest =>
+                typeof entry === 'object' && entry !== null &&
+                typeof (entry as PendingPermissionRequest).requestId === 'string',
+            );
             const hadActionablePermissionRequests = hasActionablePermissionRequests(pendingPermissionRequestsRef.current);
             const hasPendingActionablePermissionRequests = hasActionablePermissionRequests(nextPendingPermissionRequests);
 

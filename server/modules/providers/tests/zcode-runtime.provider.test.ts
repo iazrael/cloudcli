@@ -65,6 +65,33 @@ const finishCreate = () => {
 // but the same requestId mirrors the engine's periodic re-announce.
 let permPending = 0;
 
+const e2ePermissionParams = {
+  requestId: 'perm_e2e_1',
+  sessionId,
+  toolCallId: 'call_e2e_1',
+  toolName: 'Bash',
+  input: { command: 'rm /tmp/y' },
+  reason: 'Tool Bash requires approval',
+  riskLevel: 'high',
+};
+
+// A REUSED requestId whose call content differs — the decision cache must not
+// answer it with the recorded decision from the earlier request.
+const conflictParamsA = {
+  requestId: 'perm_conflict_1',
+  sessionId,
+  toolCallId: 'call_conflict_a',
+  toolName: 'Bash',
+  input: { command: 'rm /tmp/a' },
+  reason: 'Tool Bash requires approval',
+  riskLevel: 'high',
+};
+const conflictParamsB = {
+  ...conflictParamsA,
+  toolCallId: 'call_conflict_b',
+  input: { command: 'rm /tmp/b' },
+};
+
 const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 rl.on('line', (line) => {
   let msg;
@@ -83,6 +110,30 @@ rl.on('line', (line) => {
         send({ method: 'session/event', params: { sessionId, type: 'model_streaming', payload: { kind: 'text_delta', delta: 'ran it' } } });
         send({ method: 'session/event', params: { sessionId, type: 'turn_complete', payload: { usage: { inputTokens: 3, outputTokens: 4 } } } });
       }
+    }
+    if (msg.id === 'server-perm-e2e') {
+      log('perm_answer', msg);
+      // Late re-announcement of the SAME business requestId under a fresh
+      // protocol id, racing the just-recorded decision — mirrors the engine's
+      // periodic re-announce. The turn completes right after so the runtime's
+      // run-scoped writer is still installed when it arrives.
+      send({ id: 'server-perm-e2e-late', method: 'interaction/requestPermission', params: e2ePermissionParams });
+      send({ method: 'session/event', params: { sessionId, type: 'model_streaming', payload: { kind: 'text_delta', delta: 'e2e done' } } });
+      send({ method: 'session/event', params: { sessionId, type: 'turn_complete', payload: { usage: { inputTokens: 3, outputTokens: 4 } } } });
+    }
+    if (msg.id === 'server-perm-e2e-late') {
+      log('perm_answer', msg);
+    }
+    if (msg.id === 'server-perm-conflict') {
+      log('perm_answer', msg);
+      // Same requestId, different call content: a genuinely new request that
+      // must be surfaced and decided on its own.
+      send({ id: 'server-perm-conflict-b', method: 'interaction/requestPermission', params: conflictParamsB });
+      send({ method: 'session/event', params: { sessionId, type: 'model_streaming', payload: { kind: 'text_delta', delta: 'conflict done' } } });
+      send({ method: 'session/event', params: { sessionId, type: 'turn_complete', payload: { usage: { inputTokens: 3, outputTokens: 4 } } } });
+    }
+    if (msg.id === 'server-perm-conflict-b') {
+      log('perm_answer', msg);
     }
     return;
   }
@@ -126,6 +177,14 @@ rl.on('line', (line) => {
       };
       send({ id: 'server-perm', method: 'interaction/requestPermission', params: permissionParams });
       send({ id: 'server-perm2', method: 'interaction/requestPermission', params: permissionParams });
+      return;
+    }
+    if (readMode() === 'perm-e2e') {
+      send({ id: 'server-perm-e2e', method: 'interaction/requestPermission', params: e2ePermissionParams });
+      return;
+    }
+    if (readMode() === 'perm-e2e-conflict') {
+      send({ id: 'server-perm-conflict', method: 'interaction/requestPermission', params: conflictParamsA });
       return;
     }
     send({ method: 'session/event', params: { sessionId, type: 'model_streaming', payload: { kind: 'text_delta', delta: 'hi there' } } });
@@ -316,4 +375,100 @@ test('runtime bridges interaction/requestPermission to the chat stream and answe
   }
   const delta = messages.find((msg) => msg.kind === 'stream_delta');
   assert.equal(delta?.content, 'ran it');
+});
+
+test('pending permissions survive a reconnect as answerable cards and do not resurrect', async () => {
+  fsSync.writeFileSync(modeFilePath, 'perm-e2e\n');
+  const runtime = new ZCodeRuntimeProvider();
+  const { messages, writer } = createWriter();
+
+  const runPromise = runtime.run('hello', { sessionId: 'app-sess-perm-e2e', cwd: stubDir }, writer, context);
+
+  let permissionMessage: NormalizedMessage | undefined;
+  for (let i = 0; i < 100 && !permissionMessage; i += 1) {
+    permissionMessage = messages.find((msg) => msg.kind === 'permission_request');
+    if (!permissionMessage) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+  assert.ok(permissionMessage, 'the permission request must reach the chat stream');
+
+  // What chat.subscribe replays after a page reload must be a fully shaped
+  // card — the UI renders toolName from it and answers with requestId. A bare
+  // request-id string here renders a dead card (empty tool badge, clicks that
+  // are silently dropped because requestId is undefined). The gateway looks
+  // pending approvals up by the app-facing session id, which must win even
+  // though the bridge keys its writer by the engine's native id.
+  const pendingByAppId = zcodeRuntimePermissions.listPending('app-sess-perm-e2e');
+  assert.equal(pendingByAppId.length, 1, 'the pending request must be found by app session id');
+  const entry = pendingByAppId[0] as { requestId?: string; toolName?: string; sessionId?: string; input?: unknown };
+  assert.equal(entry.requestId, 'perm_e2e_1');
+  assert.equal(entry.toolName, 'Bash');
+  assert.equal(entry.sessionId, 'app-sess-perm-e2e');
+  assert.deepEqual(entry.input, { command: 'rm /tmp/y' });
+  assert.equal(zcodeRuntimePermissions.listPending('sess_stub_1').length, 1, 'the native session id must also resolve');
+  assert.deepEqual(zcodeRuntimePermissions.listPending('sess_other'), [], 'other sessions must not see this request');
+
+  zcodeRuntimePermissions.resolve('perm_e2e_1', { allow: true });
+  const result = await runPromise;
+  assert.deepEqual(result, { sessionId: 'sess_stub_1', success: true });
+
+  // The live client must learn the card is gone even though no `complete`
+  // replay will ever clear it on reconnect.
+  assert.ok(
+    messages.some((msg) => msg.kind === 'permission_cancelled' && msg.requestId === 'perm_e2e_1'),
+    'resolving a permission must retract the card via permission_cancelled'
+  );
+  // The late re-announcement (fresh protocol id, same requestId) must be
+  // answered from the recorded decision instead of spawning a second card
+  // that outlives the run as a zombie.
+  assert.equal(messages.filter((msg) => msg.kind === 'permission_request').length, 1);
+  const answers = readStubLog().filter((entry) => {
+    if (entry.name !== 'perm_answer') return false;
+    const id = (entry.value as { id?: string }).id;
+    return id === 'server-perm-e2e' || id === 'server-perm-e2e-late';
+  });
+  assert.equal(answers.length, 2, 'both the original and the late announcement must receive the decision');
+  assert.deepEqual(zcodeRuntimePermissions.listPending('app-sess-perm-e2e'), []);
+});
+
+test('a reused requestId with different call content is a fresh request, not a cached answer', async () => {
+  fsSync.writeFileSync(modeFilePath, 'perm-e2e-conflict\n');
+  const runtime = new ZCodeRuntimeProvider();
+  const { messages, writer } = createWriter();
+
+  const runPromise = runtime.run('hello', { sessionId: 'app-sess-conflict', cwd: stubDir }, writer, context);
+
+  const waitForCards = async (count: number): Promise<void> => {
+    for (let i = 0; i < 100; i += 1) {
+      if (messages.filter((msg) => msg.kind === 'permission_request').length >= count) return;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  };
+  await waitForCards(1);
+  zcodeRuntimePermissions.resolve('perm_conflict_1', { allow: true });
+
+  // The second announcement reuses the requestId but carries a different
+  // toolCallId/input — it must surface as its own card instead of silently
+  // inheriting the recorded allow.
+  await waitForCards(2);
+  const secondCard = messages.filter((msg) => msg.kind === 'permission_request')[1];
+  assert.equal(secondCard.toolId, 'call_conflict_b', 'the new card must be the reused-id request');
+  assert.deepEqual(secondCard.input, { command: 'rm /tmp/b' });
+  zcodeRuntimePermissions.resolve('perm_conflict_1', { allow: false, message: 'Denied by user' });
+
+  const result = await runPromise;
+  assert.deepEqual(result, { sessionId: 'sess_stub_1', success: true });
+
+  const answers = readStubLog().filter((entry) => {
+    if (entry.name !== 'perm_answer') return false;
+    const id = (entry.value as { id?: string }).id;
+    return id === 'server-perm-conflict' || id === 'server-perm-conflict-b';
+  });
+  assert.equal(answers.length, 2, 'both the original and the reused-id request must reach the engine');
+  assert.deepEqual((answers[0].value as { result: { decision: string } }).result, { decision: 'allow' });
+  assert.match((answers[1].value as { result: { reason?: string } }).result.reason ?? '', /Denied by user/);
+  const cancellations = messages.filter((msg) => msg.kind === 'permission_cancelled');
+  assert.equal(cancellations.length, 2, 'both cards must be retracted as they are answered');
+  assert.deepEqual(zcodeRuntimePermissions.listPending('app-sess-conflict'), []);
 });

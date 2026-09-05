@@ -113,12 +113,61 @@ const permissionWriters = new Map<string, ProviderRuntimeWriter>();
  */
 const pendingPermissionResolvers = new Map<string, Array<(answer: PermissionBridgeAnswer) => void>>();
 
+type PendingPermissionDetails = {
+  toolName: string;
+  toolId?: string;
+  input: unknown;
+  context: unknown;
+  sessionId: string;
+  /** App-facing session id, when the run knew one — `chat.subscribe` looks pending approvals up by it. */
+  appSessionId?: string;
+  receivedAt: Date;
+};
+
+/**
+ * What the UI needs to render an answerable card for each pending request.
+ * chat.subscribe replays these (via `permissions.listPending`) after a page
+ * reload, so they must be fully shaped — a bare request id renders a dead
+ * card whose buttons are dropped for lacking a requestId.
+ */
+const pendingPermissionDetails = new Map<string, PendingPermissionDetails>();
+
+/**
+ * Native engine session id → app-facing session id, valid while the owning
+ * run is live. The permission bridge consults it at first-announcement time
+ * so pending details survive the run with their app-facing id attached.
+ */
+const permissionAppSessionIds = new Map<string, string>();
+
+/**
+ * Decisions already delivered to the engine, kept briefly: the engine
+ * re-announces a pending permission on an interval under a fresh protocol id,
+ * and a re-announcement racing a just-recorded decision must be answered from
+ * this record instead of surfacing a second, never-resolvable card. The
+ * toolCallId rides along so a reused requestId with different call content is
+ * treated as a fresh request rather than silently auto-answered.
+ */
+const ANSWERED_PERMISSION_TTL_MS = 5 * 60 * 1000;
+const answeredPermissions = new Map<string, { answer: PermissionBridgeAnswer; toolCallId?: string; expiresAt: number }>();
+
+function rememberAnsweredPermission(requestId: string, answer: PermissionBridgeAnswer, toolCallId?: string): void {
+  const now = Date.now();
+  for (const [key, value] of answeredPermissions) {
+    if (value.expiresAt <= now) {
+      answeredPermissions.delete(key);
+    }
+  }
+  answeredPermissions.set(requestId, { answer, toolCallId, expiresAt: now + ANSWERED_PERMISSION_TTL_MS });
+}
+
 function answerPendingPermission(requestId: string, answer: PermissionBridgeAnswer): void {
   const resolvers = pendingPermissionResolvers.get(requestId);
   if (!resolvers) {
     return;
   }
   pendingPermissionResolvers.delete(requestId);
+  rememberAnsweredPermission(requestId, answer, pendingPermissionDetails.get(requestId)?.toolId);
+  pendingPermissionDetails.delete(requestId);
   for (const resolve of resolvers) {
     try {
       resolve(answer);
@@ -126,6 +175,29 @@ function answerPendingPermission(requestId: string, answer: PermissionBridgeAnsw
       // A resolver that throws on settle must not block its siblings.
     }
   }
+}
+
+/**
+ * Tells the live chat stream a pending card is gone; without this the card
+ * only disappears on a `complete` replay, so a client that (re)subscribes
+ * after the decision sees a zombie permission request forever.
+ */
+function retractPendingPermission(requestId: string, details: PendingPermissionDetails | undefined): void {
+  const sessionId = details?.sessionId;
+  if (!sessionId) {
+    return;
+  }
+  const writer = permissionWriters.get(sessionId);
+  if (!writer) {
+    return;
+  }
+  writer.send(createNormalizedMessage({
+    id: generateMessageId('zcode'),
+    sessionId,
+    provider: 'zcode',
+    kind: 'permission_cancelled',
+    requestId,
+  }));
 }
 
 /**
@@ -147,6 +219,16 @@ function permissionBridgeRequestHandler(
     return { error: { code: -32602, message: 'interaction/requestPermission is missing requestId' } };
   }
 
+  // A decision already went out for this requestId (an earlier announcement
+  // was answered); serve this late re-announcement from the record instead of
+  // surfacing a second card that nothing will ever resolve. A reused
+  // requestId carrying different call content is a fresh request and must not
+  // inherit the old decision.
+  const answered = answeredPermissions.get(requestId);
+  if (answered && answered.expiresAt > Date.now() && answered.toolCallId === readOptionalString(params.toolCallId)) {
+    return answered.answer;
+  }
+
   const stack = pendingPermissionResolvers.get(requestId);
 
   // The engine re-announces pending requests on an interval as fresh protocol
@@ -159,9 +241,32 @@ function permissionBridgeRequestHandler(
   }
 
   const writer = sessionId ? permissionWriters.get(sessionId) : undefined;
-  if (!writer) {
+  if (!sessionId || !writer) {
     return { result: { decision: 'deny', reason: 'No active chat stream for this session' } };
   }
+
+  const toolName = readOptionalString(params.toolName) ?? 'Tool';
+  const toolId = readOptionalString(params.toolCallId);
+  const context = {
+    riskLevel: readOptionalString(params.riskLevel),
+    reason: readOptionalString(params.reason),
+    options: params.options,
+    suggestedPermissionUpdates: params.suggestedPermissionUpdates,
+  };
+
+  // Register before sending the frame: if the send throws, the parked
+  // resolver and details still form a consistent, answerable pending entry
+  // (the engine will re-announce, which stacks onto the registered resolver).
+  pendingPermissionDetails.set(requestId, {
+    toolName,
+    toolId,
+    input: params.input,
+    context,
+    sessionId,
+    appSessionId: permissionAppSessionIds.get(sessionId),
+    receivedAt: new Date(),
+  });
+  pendingPermissionResolvers.set(requestId, []);
 
   writer.send(createNormalizedMessage({
     id: generateMessageId('zcode'),
@@ -169,20 +274,15 @@ function permissionBridgeRequestHandler(
     provider: 'zcode',
     kind: 'permission_request',
     requestId,
-    toolName: readOptionalString(params.toolName) ?? 'Tool',
-    toolId: readOptionalString(params.toolCallId),
+    toolName,
+    toolId,
     input: params.input,
-    context: {
-      riskLevel: readOptionalString(params.riskLevel),
-      reason: readOptionalString(params.reason),
-      options: params.options,
-      suggestedPermissionUpdates: params.suggestedPermissionUpdates,
-    },
+    context,
     canInterrupt: true,
   }));
 
   return new Promise<PermissionBridgeAnswer>((resolve) => {
-    pendingPermissionResolvers.set(requestId, [resolve]);
+    pendingPermissionResolvers.get(requestId)?.push(resolve);
   });
 }
 
@@ -198,21 +298,46 @@ function permissionBridgeRequestHandler(
 export const zcodeRuntimePermissions = {
   resolve(requestId: string, decision: ProviderPermissionDecision): void {
     if (!pendingPermissionResolvers.has(requestId)) {
+      // A stale response — the card was answered elsewhere, or the run died
+      // with the resolver still parked. This used to vanish silently, which
+      // made dead-card reports impossible to diagnose.
+      console.debug(`[ZCode] permission response for unknown request id: ${requestId}`);
       return;
     }
+
+    const details = pendingPermissionDetails.get(requestId);
 
     if (decision.allow) {
       answerPendingPermission(requestId, decision.updatedInput !== undefined
         ? { result: { decision: 'modify', modifiedInput: decision.updatedInput, reason: decision.message } }
         : { result: { decision: 'allow', reason: decision.message } });
+      retractPendingPermission(requestId, details);
       return;
     }
 
     answerPendingPermission(requestId, { result: { decision: 'deny', reason: decision.message ?? 'Denied by user' } });
+    retractPendingPermission(requestId, details);
   },
 
-  listPending(): unknown[] {
-    return [...pendingPermissionResolvers.keys()];
+  listPending(sessionId: string): unknown[] {
+    const pending: unknown[] = [];
+    for (const [requestId, details] of pendingPermissionDetails) {
+      // Match either id space: the gateway subscribes by app-facing session
+      // id, while the bridge keys its writer by the engine's native id.
+      if (details.sessionId !== sessionId && details.appSessionId !== sessionId) {
+        continue;
+      }
+      pending.push({
+        requestId,
+        toolName: details.toolName,
+        toolId: details.toolId,
+        input: details.input,
+        context: details.context,
+        sessionId: details.appSessionId ?? details.sessionId,
+        receivedAt: details.receivedAt,
+      });
+    }
+    return pending;
   },
 };
 
@@ -283,6 +408,9 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
     // Route the engine's permission server-requests for this session to this
     // run's chat stream; installed once, but the writer map is per-run.
     permissionWriters.set(zcodeSessionId, writer);
+    if (appSessionId) {
+      permissionAppSessionIds.set(zcodeSessionId, appSessionId);
+    }
     protocolClient.setServerRequestHandler(permissionBridgeRequestHandler);
 
     try {
@@ -342,6 +470,7 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
       // run still resolves the engine's request instead of leaking it. Only
       // the writer mapping is run-scoped.
       permissionWriters.delete(zcodeSessionId);
+      permissionAppSessionIds.delete(zcodeSessionId);
     }
   }
 
