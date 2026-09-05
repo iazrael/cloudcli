@@ -258,6 +258,9 @@ export function useChatRealtimeHandlers({
           // Flush any remaining streaming state
           if (sid) {
             sessionStore.flushStream(sid, provider);
+            // Terminal state: settle tool cards whose result frame never
+            // arrived, so a lost frame cannot leave a card running forever.
+            sessionStore.finalizeRunningTools(sid);
           }
 
           // `complete` is the unified terminal event — every provider run ends

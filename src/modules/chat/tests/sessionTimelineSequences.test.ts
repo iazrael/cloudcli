@@ -20,6 +20,7 @@ import type { ServerEvent } from '@/shared/context/WebSocketContext';
 import type { NormalizedMessage } from '@/shared/types';
 import { useChatRealtimeHandlers } from '@/modules/chat/hooks/useChatRealtimeHandlers';
 import { useSessionStore } from '@/modules/chat/hooks/useSessionStore';
+import { normalizedToChatMessages } from '@/modules/chat/hooks/useChatMessages';
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -446,6 +447,112 @@ test('complete flushes the stream and requests the persisted tail only for the v
   assert.equal(timeline.requestLatestMessages.mock.calls.length, 1);
   assert.equal(timeline.onSessionIdle.mock.calls.filter(([sid]) => sid === 'sess-background').length, 1,
     'the background session still reports idle');
+
+  timeline.cleanup();
+});
+
+// ─── complete: settle unmatched tool cards ───────────────────────────────────
+
+test('complete settles a tool card whose result frame never arrived', () => {
+  const timeline = mountTimeline();
+
+  timeline.emit({
+    kind: 'tool_use',
+    id: 'rt-tool-lost',
+    sessionId: SESSION_ID,
+    toolId: 'tool-lost',
+    toolName: 'Skill',
+    input: { skill: 'frontend-module-standards' },
+  } as unknown as ServerEvent);
+  timeline.emit({ kind: 'complete', sessionId: SESSION_ID, success: true } as unknown as ServerEvent);
+
+  const rows = timeline.sessionStore.getMessages(SESSION_ID);
+  const synthetic = rows.find((row) => row.id === '__finalized_tool-lost');
+  assert.ok(synthetic, 'the unpaired card must get a synthetic result row');
+  assert.equal(synthetic!.kind, 'tool_result');
+  assert.equal(synthetic!.toolId, 'tool-lost');
+  assert.equal(synthetic!.toolResult?.isError, false);
+
+  // The card itself must now render as completed: the synthetic row attaches
+  // to the tool_use row exactly like a real result would.
+  const attached = normalizedToChatMessages(rows).find((row) => row.id === 'rt-tool-lost');
+  assert.equal(attached!.toolResult?.isError, false, 'the card must no longer derive "running"');
+
+  timeline.cleanup();
+});
+
+test('a genuine result frame arriving after the settle wins over the synthetic row', () => {
+  const timeline = mountTimeline();
+
+  timeline.emit({
+    kind: 'tool_use',
+    id: 'rt-tool-late',
+    sessionId: SESSION_ID,
+    toolId: 'tool-late',
+    toolName: 'Bash',
+    input: { command: 'ls' },
+  } as unknown as ServerEvent);
+  timeline.emit({ kind: 'complete', sessionId: SESSION_ID, success: true } as unknown as ServerEvent);
+  timeline.emit({
+    kind: 'tool_result',
+    id: 'rt-result-late',
+    sessionId: SESSION_ID,
+    toolId: 'tool-late',
+    content: 'real output',
+    toolResult: { content: 'real output', isError: false },
+  } as unknown as ServerEvent);
+
+  const rows = timeline.sessionStore.getMessages(SESSION_ID);
+  const attached = normalizedToChatMessages(rows).find((row) => row.id === 'rt-tool-late');
+  assert.equal(attached!.toolResult?.content, 'real output', 'the real result must win last-write-wins');
+
+  timeline.cleanup();
+});
+
+test('complete is idempotent for cards that already have their result', () => {
+  const timeline = mountTimeline();
+
+  timeline.emit({
+    kind: 'tool_use',
+    id: 'rt-tool-paired',
+    sessionId: SESSION_ID,
+    toolId: 'tool-paired',
+    toolName: 'Bash',
+    input: { command: 'ls' },
+  } as unknown as ServerEvent);
+  timeline.emit({
+    kind: 'tool_result',
+    id: 'rt-result-paired',
+    sessionId: SESSION_ID,
+    toolId: 'tool-paired',
+    content: 'out',
+    toolResult: { content: 'out', isError: false },
+  } as unknown as ServerEvent);
+
+  const before = timeline.sessionStore.getMessages(SESSION_ID).length;
+  timeline.emit({ kind: 'complete', sessionId: SESSION_ID, success: true } as unknown as ServerEvent);
+  const after = timeline.sessionStore.getMessages(SESSION_ID).length;
+
+  assert.equal(after, before, 'a paired card must not gain a synthetic row');
+
+  timeline.cleanup();
+});
+
+test('an aborted complete still settles unmatched tool cards', () => {
+  const timeline = mountTimeline();
+
+  timeline.emit({
+    kind: 'tool_use',
+    id: 'rt-tool-aborted',
+    sessionId: SESSION_ID,
+    toolId: 'tool-aborted',
+    toolName: 'Bash',
+    input: { command: 'sleep 999' },
+  } as unknown as ServerEvent);
+  timeline.emit({ kind: 'complete', sessionId: SESSION_ID, success: false, aborted: true } as unknown as ServerEvent);
+
+  const synthetic = timeline.sessionStore.getMessages(SESSION_ID).find((row) => row.id === '__finalized_tool-aborted');
+  assert.ok(synthetic, 'an aborted run must still settle its in-flight cards');
 
   timeline.cleanup();
 });

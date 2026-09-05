@@ -865,6 +865,55 @@ export class SessionTimelineStore {
   }
 
   /**
+   * Settles every tool_use row whose `tool_result` frame never arrived.
+   *
+   * A run's `complete` frame is the terminal state — by then every tool call
+   * has been resolved engine-side, so a still-unpaired card can only mean the
+   * result frame was lost or the engine settles its tools in one batch at
+   * step end (zcode's parallel steps do exactly that). Without this, such a
+   * card renders as "running" forever.
+   *
+   * Each unpaired card gets a synthetic `tool_result` row appended, which the
+   * renderer's per-toolId attachment treats like any result. A genuine late
+   * result frame is ordered after the synthetic row, so the attachment map's
+   * last-write-wins keeps the real content.
+   */
+  finalizeRunningTools(sessionId: string): void {
+    const slot = this.slots.get(sessionId);
+    if (!slot) return;
+
+    const settledToolIds = new Set(
+      slot.realtimeMessages
+        .filter((m) => m.kind === 'tool_result')
+        .map((m) => m.toolId ?? ''),
+    );
+    const unpaired = new Map<string, NormalizedMessage>();
+    for (const row of slot.realtimeMessages) {
+      if (row.kind !== 'tool_use' || !row.toolId || settledToolIds.has(row.toolId)) {
+        continue;
+      }
+      unpaired.set(row.toolId, row);
+    }
+    if (unpaired.size === 0) {
+      return;
+    }
+
+    const synthetic: NormalizedMessage[] = [...unpaired.entries()].map(([toolId, row]) => ({
+      id: `__finalized_${toolId}`,
+      sessionId: row.sessionId,
+      timestamp: new Date().toISOString(),
+      provider: row.provider,
+      kind: 'tool_result',
+      toolId,
+      content: '',
+      toolResult: { content: '', isError: false },
+    }));
+    slot.realtimeMessages = [...slot.realtimeMessages, ...synthetic];
+    recomputeMergedIfNeeded(slot);
+    this.notify(sessionId);
+  }
+
+  /**
    * Buffers one `stream_delta` text fragment and (re)arms the session's 100ms
    * throttle that pushes the accumulated text into its `__streaming_` row.
    * Consumer: the realtime handler's stream_delta route.
