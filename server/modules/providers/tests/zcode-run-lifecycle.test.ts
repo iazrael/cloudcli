@@ -180,6 +180,52 @@ test('a permission for a session without a live run is denied outright', async (
   assert.deepEqual(lifecycle.listPendingPermissions('sess_unknown'), []);
 });
 
+test('a pending card expires after its TTL and its parked engine request is denied', async () => {
+  const lifecycle = new ZCodeRunLifecycle({ pendingTtlMs: 20 });
+  const { writer } = createWriter();
+  const handle = lifecycle.startRun({ abortKey: 'app-ttl', sessionId: 'sess_engine_1', appSessionId: 'app-ttl', writer });
+
+  const parked = lifecycle.handleServerRequest(permissionRequest(1, {}));
+  assert.equal(lifecycle.listPendingPermissions('app-ttl').length, 1);
+
+  await new Promise((resolve) => setTimeout(resolve, 60));
+
+  // The sweep runs inside listPendingPermissions, so read it first — reading
+  // is what resolves the parked engine request below.
+  assert.deepEqual(lifecycle.listPendingPermissions('app-ttl'), [], 'the expired card must be swept');
+  // The parked engine request must not dangle forever: it resolves with an
+  // explicit deny so the router can answer the engine.
+  assert.deepEqual(await parked, { result: { decision: 'deny', reason: 'Permission request expired unanswered' } });
+
+  // The expired entry must not haunt later announcements: a fresh request
+  // under the same id is surfaced again, answerable on its own.
+  const fresh = lifecycle.handleServerRequest(permissionRequest(2, {}));
+  assert.equal(lifecycle.listPendingPermissions('app-ttl').length, 1);
+  lifecycle.resolvePermission('perm_req_1', { allow: true });
+  assert.deepEqual(await fresh, { result: { decision: 'allow', reason: undefined } });
+
+  lifecycle.dispose(handle);
+});
+
+test('a re-announcement refreshes the pending card freshness instead of expiring it', async () => {
+  const lifecycle = new ZCodeRunLifecycle({ pendingTtlMs: 60 });
+  const { writer } = createWriter();
+  const handle = lifecycle.startRun({ abortKey: 'app-refresh', sessionId: 'sess_engine_1', appSessionId: 'app-refresh', writer });
+
+  lifecycle.handleServerRequest(permissionRequest(1, {}));
+  // Wait out most of the TTL, then let the engine re-announce: the stamp must
+  // restart so the card stays answerable past the original window.
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const restack = lifecycle.handleServerRequest(permissionRequest(2, {}));
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(lifecycle.listPendingPermissions('app-refresh').length, 1, 'the refreshed card must still be pending');
+
+  lifecycle.resolvePermission('perm_req_1', { allow: true });
+  assert.deepEqual(await restack, { result: { decision: 'allow', reason: undefined } });
+
+  lifecycle.dispose(handle);
+});
+
 test('non-permission server requests fall through to the default policy', () => {
   const lifecycle = new ZCodeRunLifecycle();
   assert.deepEqual(

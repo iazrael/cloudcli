@@ -133,6 +133,12 @@ type PendingPermissionDetails = {
   /** App-facing session id, when the run knew one — `chat.subscribe` looks pending approvals up by it. */
   appSessionId?: string;
   receivedAt: Date;
+  /**
+   * When the engine last announced this request. Refreshed on every
+   * re-announcement, so the pending TTL bounds how long the engine kept
+   * asking — not how long the user took to think.
+   */
+  lastAnnouncedAt: number;
 };
 
 /**
@@ -162,6 +168,25 @@ export type PendingPermissionView = {
 const ANSWERED_PERMISSION_TTL_MS = 5 * 60 * 1000;
 
 /**
+ * How long a pending permission card stays answerable after the engine's
+ * last announcement. The engine's own server-request window is 15s and it
+ * re-announces while it still cares, so an entry with no re-announcement for
+ * this long is a leftover of a dead run — a zombie card nothing could ever
+ * resolve. Generous enough that a card the engine still cares about (it
+ * keeps re-announcing, refreshing the stamp) never expires underneath a
+ * thinking user.
+ */
+const PENDING_PERMISSION_TTL_MS = 30 * 60 * 1000;
+
+/**
+ * Lifecycle tunables, injectable for tests.
+ */
+export type ZCodeRunLifecycleOptions = {
+  answeredTtlMs?: number;
+  pendingTtlMs?: number;
+};
+
+/**
  * The state machine and registries for ZCode runs. One instance is shared by
  * the runtime provider class and its permissions facet (module-private in
  * zcode-runtime.provider.ts); tests instantiate their own.
@@ -182,6 +207,13 @@ export class ZCodeRunLifecycle {
   private readonly pendingPermissionResolvers = new Map<string, Array<(answer: ServerRequestAnswer) => void>>();
   private readonly pendingPermissionDetails = new Map<string, PendingPermissionDetails>();
   private readonly answeredPermissions = new Map<string, { answer: ServerRequestAnswer; toolCallId?: string; expiresAt: number }>();
+  private readonly answeredTtlMs: number;
+  private readonly pendingTtlMs: number;
+
+  constructor(options: ZCodeRunLifecycleOptions = {}) {
+    this.answeredTtlMs = options.answeredTtlMs ?? ANSWERED_PERMISSION_TTL_MS;
+    this.pendingTtlMs = options.pendingTtlMs ?? PENDING_PERMISSION_TTL_MS;
+  }
 
   /**
    * Registers a new run, replacing any earlier handle for the same abort key
@@ -337,7 +369,7 @@ export class ZCodeRunLifecycle {
     // surfacing a second card that nothing will ever resolve. A reused
     // requestId carrying different call content is a fresh request and must not
     // inherit the old decision.
-    this.sweepExpiredAnsweredPermissions();
+    this.sweepExpiredPermissions();
     const answered = this.answeredPermissions.get(requestId);
     if (answered && answered.toolCallId === readOptionalString(params.toolCallId)) {
       return answered.answer;
@@ -347,8 +379,14 @@ export class ZCodeRunLifecycle {
 
     // The engine re-announces pending requests on an interval as fresh protocol
     // requests (new ids); stack a resolver per announcement so the decision
-    // reaches whichever one the engine is waiting on.
+    // reaches whichever one the engine is waiting on. The re-announcement also
+    // proves the engine still cares, so the pending card's freshness stamp
+    // restarts instead of expiring under a thinking user.
     if (stack) {
+      const pending = this.pendingPermissionDetails.get(requestId);
+      if (pending) {
+        pending.lastAnnouncedAt = Date.now();
+      }
       return new Promise<ServerRequestAnswer>((resolve) => {
         stack.push(resolve);
       });
@@ -379,6 +417,7 @@ export class ZCodeRunLifecycle {
       sessionId,
       appSessionId: handle.appSessionId ?? undefined,
       receivedAt: new Date(),
+      lastAnnouncedAt: Date.now(),
     });
     this.pendingPermissionResolvers.set(requestId, []);
 
@@ -408,6 +447,7 @@ export class ZCodeRunLifecycle {
    * bridged itself.
    */
   resolvePermission(requestId: string, decision: ProviderPermissionDecision): void {
+    this.sweepExpiredPermissions();
     if (!this.pendingPermissionResolvers.has(requestId)) {
       // A stale response — the card was answered elsewhere, or the run died
       // with the resolver still parked. This used to vanish silently, which
@@ -436,7 +476,7 @@ export class ZCodeRunLifecycle {
    * writer by the engine's native id.
    */
   listPendingPermissions(sessionId: string): PendingPermissionView[] {
-    this.sweepExpiredAnsweredPermissions();
+    this.sweepExpiredPermissions();
     const pending: PendingPermissionView[] = [];
     for (const [requestId, details] of this.pendingPermissionDetails) {
       if (details.sessionId !== sessionId && details.appSessionId !== sessionId) {
@@ -462,7 +502,7 @@ export class ZCodeRunLifecycle {
         this.answeredPermissions.delete(key);
       }
     }
-    this.answeredPermissions.set(requestId, { answer, toolCallId, expiresAt: now + ANSWERED_PERMISSION_TTL_MS });
+    this.answeredPermissions.set(requestId, { answer, toolCallId, expiresAt: now + this.answeredTtlMs });
   }
 
   private answerPendingPermission(requestId: string, answer: ServerRequestAnswer): void {
@@ -505,11 +545,37 @@ export class ZCodeRunLifecycle {
     }));
   }
 
-  private sweepExpiredAnsweredPermissions(): void {
+  /**
+   * Drops expired permission bookkeeping. The answered-decision cache expires
+   * by its own TTL; a pending card expires once the engine has not
+   * re-announced it for the pending TTL — engine announcements restart that
+   * stamp, so anything swept here is a leftover of a run or engine session
+   * that died with the card still pending. The parked engine requests are
+   * resolved with an explicit deny instead of being dropped: an un-resolved
+   * answer promise would leave the router's server-request reply pending
+   * forever.
+   */
+  private sweepExpiredPermissions(): void {
     const now = Date.now();
     for (const [key, value] of this.answeredPermissions) {
       if (value.expiresAt <= now) {
         this.answeredPermissions.delete(key);
+      }
+    }
+
+    for (const [key, details] of this.pendingPermissionDetails) {
+      if (now - details.lastAnnouncedAt <= this.pendingTtlMs) {
+        continue;
+      }
+      this.pendingPermissionDetails.delete(key);
+      const resolvers = this.pendingPermissionResolvers.get(key) ?? [];
+      this.pendingPermissionResolvers.delete(key);
+      for (const resolve of resolvers) {
+        try {
+          resolve({ result: { decision: 'deny', reason: 'Permission request expired unanswered' } });
+        } catch {
+          // A resolver that throws on settle must not block its siblings.
+        }
       }
     }
   }
