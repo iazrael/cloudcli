@@ -193,6 +193,28 @@ describe('html export', () => {
     expect(html).toContain('command not found');
   });
 
+  it('folds sections the screen opens by default (todo checklist)', async () => {
+    // TodoWrite is defaultOpen on screen — the export must still fold it:
+    // caller defaults are a live-view concern, not a document concern.
+    const todoWrite: ChatMessage = {
+      type: 'assistant',
+      content: '',
+      isToolUse: true,
+      toolName: 'TodoWrite',
+      toolInput: JSON.stringify({ todos: [{ content: 'fix the export', status: 'completed', activeForm: 'fixing the export' }] }),
+      toolResult: { content: 'ok', isError: false },
+      timestamp: new Date('2026-08-24T09:03:00.000Z'),
+    } as unknown as ChatMessage;
+
+    const html = await buildTranscriptExport('html', {
+      ...input,
+      messages: [todoWrite],
+    }, exportedAt);
+
+    expect(html).toContain('<details');
+    expect(html).not.toContain('<details open');
+  });
+
   it('renders assistant markdown instead of escaping it', async () => {
     const html = await buildTranscriptExport('html', input, exportedAt);
 

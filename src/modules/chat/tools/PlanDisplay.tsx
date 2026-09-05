@@ -14,6 +14,7 @@ import {
   Shimmer,
 } from '@/shared/ui';
 import { usePermission } from '@/modules/chat/context/PermissionContext';
+import { useIsExportingTranscript } from '@/modules/chat/context/TranscriptRenderContext';
 import { MarkdownContent } from '@/modules/chat/tools/ContentRenderers/MarkdownContent';
 
 type PlanDisplayProps = {
@@ -61,8 +62,12 @@ export const PlanDisplay: React.FC<PlanDisplayProps> = ({
     }
   };
 
+  // An exported document folds the plan shut like every other process block;
+  // the live defaultOpen is a screen-side choice.
+  const isExporting = useIsExportingTranscript();
+
   return (
-    <Collapsible defaultOpen={defaultOpen}>
+    <Collapsible defaultOpen={isExporting ? false : defaultOpen} nativeDetails={isExporting}>
       <Card className="my-1 flex flex-col shadow-none">
         {/* Header — always visible */}
         <CardHeader className="flex flex-row items-start justify-between space-y-0 px-4 pb-0 pt-4">

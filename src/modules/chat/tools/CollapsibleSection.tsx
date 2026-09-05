@@ -35,13 +35,14 @@ export const CollapsibleSection: React.FC<CollapsibleSectionProps> = ({
   className = '',
 }) => {
   // An exported document has no JavaScript, so the section renders as a native
-  // <details> the reader can still expand. It starts collapsed (callers'
-  // `open` carries their own defaults, e.g. failures); a document that
-  // auto-expanded every tool section would bury the conversation in noise.
+  // <details> the reader can still expand — always collapsed: a caller's
+  // `open` (e.g. TodoWrite's live defaultOpen) is a screen-side default, and a
+  // document that auto-expanded sections buries the conversation in noise.
+  // Failures surface outside this section, so nothing is lost by folding.
   const isExporting = useIsExportingTranscript();
 
   return (
-    <Collapsible defaultOpen={open} nativeDetails={isExporting} className={cn('group/section', className)}>
+    <Collapsible defaultOpen={isExporting ? false : open} nativeDetails={isExporting} className={cn('group/section', className)}>
       {/* When there's a clickable title (Edit/Write), only the chevron toggles collapse */}
       {onTitleClick ? (
         <div className="flex cursor-default select-none items-center gap-1.5 py-0.5 text-xs group-data-[state=open]/section:sticky group-data-[state=open]/section:top-0 group-data-[state=open]/section:z-10 group-data-[state=open]/section:-mx-1 group-data-[state=open]/section:bg-background group-data-[state=open]/section:px-1">
