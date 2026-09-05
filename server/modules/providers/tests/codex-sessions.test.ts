@@ -617,3 +617,61 @@ test('an exec script that updates the plan yields the steps it set', () => {
     ],
   }]);
 });
+
+/**
+ * Codex >=0.144 reports every multi-agent collaboration call as one live
+ * `collab_tool_call` item. Spawns must render as subagent Task cards and close
+ * out with a paired result, while pure orchestration calls stay hidden — the
+ * same contract the history reader enforces.
+ */
+const collabEvent = (overrides: Record<string, unknown>) => ({
+  type: 'item',
+  itemType: 'collab_tool_call',
+  itemId: 'item_18',
+  tool: 'spawn_agent',
+  status: 'in_progress',
+  receiverAgents: [{ thread_id: '01a07105', agent_nickname: 'Chandrasekhar' }],
+  ...overrides,
+});
+
+test('a live collab spawn renders as a Task card while in progress', () => {
+  const provider = new CodexSessionsProvider();
+  const messages = provider.normalizeMessage(collabEvent({}), 'session-1');
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].kind, 'tool_use');
+  assert.equal(messages[0].toolName, 'Task');
+  assert.equal(messages[0].status, 'in_progress');
+  const input = JSON.parse(String(messages[0].toolInput));
+  assert.equal(input.description, 'Chandrasekhar');
+});
+
+test('a completed live collab spawn closes with a paired result row', () => {
+  const provider = new CodexSessionsProvider();
+  const messages = provider.normalizeMessage(collabEvent({ status: 'completed' }), 'session-1');
+
+  assert.equal(messages.length, 2);
+  assert.equal(messages[1].kind, 'tool_result');
+  assert.equal(messages[1].toolId, 'item_18');
+  assert.equal(messages[1].isError, false);
+  assert.match(String(messages[1].content), /Chandrasekhar finished/);
+});
+
+test('a failed live collab spawn marks its result as an error', () => {
+  const provider = new CodexSessionsProvider();
+  const messages = provider.normalizeMessage(collabEvent({ status: 'failed' }), 'session-1');
+
+  assert.equal(messages.length, 2);
+  assert.equal(messages[1].isError, true);
+});
+
+test('live collab orchestration calls are hidden from the transcript', () => {
+  const provider = new CodexSessionsProvider();
+  for (const tool of ['wait', 'send_message', 'followup_task', 'interrupt_agent', 'list_agents', 'close_agent']) {
+    assert.deepEqual(
+      provider.normalizeMessage(collabEvent({ tool }), 'session-1'),
+      [],
+      `${tool} must not render a tool row`,
+    );
+  }
+});

@@ -27,9 +27,11 @@ const activeCodexSessions = new Map();
 
 /**
  * Item types whose in-flight updates are worth showing. These are the ones a
- * user waits on — a shell command's output, an MCP call, and the running plan.
+ * user waits on — a shell command's output, an MCP call, the running plan, and
+ * collaboration spawns (a sub-agent's item stays open until it finishes, so its
+ * status ticks are exactly what the user is waiting for).
  */
-const PROGRESSIVE_CODEX_ITEM_TYPES = new Set(['command_execution', 'mcp_tool_call', 'todo_list']);
+const PROGRESSIVE_CODEX_ITEM_TYPES = new Set(['command_execution', 'mcp_tool_call', 'todo_list', 'collab_tool_call']);
 
 function readUsageNumber(value) {
   const parsed = Number(value);
@@ -142,6 +144,22 @@ function transformCodexEvent(event) {
             itemType: 'web_search',
             itemId: item.id,
             query: item.query
+          };
+
+        case 'collab_tool_call':
+          // Codex >=0.144 multi-agent collaboration calls (spawn_agent, wait,
+          // send_message, ...). Forward the meaningful fields so the adapter
+          // can render spawns as subagent cards and drop pure orchestration
+          // noise, instead of dumping the raw item as an unknown tool.
+          return {
+            type: 'item',
+            itemType: 'collab_tool_call',
+            itemId: item.id,
+            tool: item.tool,
+            status: item.status,
+            prompt: item.prompt,
+            receiverAgents: item.receiver_agents,
+            agentsStates: item.agents_states
           };
 
         case 'todo_list':

@@ -1156,6 +1156,34 @@ const CODEX_COLLABORATION_CONTROL_TOOLS = new Set([
   'wait_agent',
 ]);
 
+/**
+ * Extracts a display name for the agent(s) a live `collab_tool_call` targets.
+ * The SDK's receiver list carries either plain strings, or records keyed by
+ * `agent_nickname` / `nickname` / `agent_path` depending on the Codex version,
+ * so read the first usable one and fall back to the last path segment.
+ */
+function readCodexCollabAgentLabel(receivers: unknown): string {
+  const lastSegment = (value: string): string => value.split('/').filter(Boolean).pop() ?? value;
+  const list = Array.isArray(receivers) ? receivers : [];
+  for (const entry of list) {
+    if (typeof entry === 'string' && entry.trim()) {
+      return lastSegment(entry.trim());
+    }
+    const record = readObjectRecord(entry);
+    const nickname = record
+      ? readNonEmptyString(record.agent_nickname) ?? readNonEmptyString(record.nickname)
+      : null;
+    if (nickname) {
+      return lastSegment(nickname);
+    }
+    const agentPath = record ? readNonEmptyString(record.agent_path) : null;
+    if (agentPath) {
+      return lastSegment(agentPath);
+    }
+  }
+  return 'agent';
+}
+
 // ─── Transcript reader ──────────────────────────────────────────────────────
 
 /**
@@ -2232,6 +2260,56 @@ export class CodexSessionsProvider implements IProviderSessions {
             toolInput: { query: raw.query },
             toolId: itemId,
           })];
+        case 'collab_tool_call': {
+          // Codex >=0.144 routes every multi-agent call (spawn_agent, wait,
+          // send_message, interrupt_agent, ...) through one item type. Only
+          // spawns are work the user recognizes; the pure-orchestration calls
+          // are suppressed here exactly as the history reader suppresses them
+          // (see CODEX_COLLABORATION_CONTROL_TOOLS), so a live turn and its
+          // later reload render identically.
+          if (readNonEmptyString(raw.tool) !== 'spawn_agent') {
+            return [];
+          }
+          const label = readCodexCollabAgentLabel(raw.receiverAgents);
+          // Same rule as the history reader: on collaboration spawns the
+          // `prompt` can be an encrypted transport blob — only surface readable
+          // text.
+          const spawnPrompt = readNonEmptyString(raw.prompt);
+          const toolUse = createNormalizedMessage({
+            id: itemId,
+            sessionId,
+            timestamp: ts,
+            provider: PROVIDER,
+            kind: 'tool_use',
+            toolName: 'Task',
+            toolInput: JSON.stringify({
+              description: humanizeCodexToolName(label),
+              ...(spawnPrompt && !/^gAAAAA/.test(spawnPrompt) ? { prompt: spawnPrompt } : {}),
+            }),
+            toolId: itemId,
+            status: raw.status,
+          });
+          // A spawn item stays open until the sub-agent finishes. Without the
+          // paired result row the front-end would render the card as running
+          // forever, so completion and failure close it out explicitly.
+          if (raw.status === 'in_progress') {
+            return [toolUse];
+          }
+          // Public lifecycle: in_progress | completed | failed | interrupted.
+          const outcome = raw.status === 'failed'
+            ? 'failed'
+            : raw.status === 'interrupted' ? 'was interrupted' : 'finished';
+          return [toolUse, createNormalizedMessage({
+            id: `${itemId}_result`,
+            sessionId,
+            timestamp: ts,
+            provider: PROVIDER,
+            kind: 'tool_result',
+            toolId: itemId,
+            content: `Subagent ${humanizeCodexToolName(label)} ${outcome}`,
+            isError: raw.status === 'failed',
+          })];
+        }
         case 'todo_list':
           // Codex's live plan uses `{text, completed}`; Claude's TodoWrite uses
           // `{content, status}`. Normalizing here means one renderer, not two.
