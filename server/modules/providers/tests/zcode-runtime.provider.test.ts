@@ -212,6 +212,14 @@ rl.on('line', (line) => {
       }, 400);
       return;
     }
+    if (readMode() === 'crash') {
+      // Mirrors an engine process death mid-turn: acknowledge the send, emit
+      // one live delta, then die. The supervisor must synthesize
+      // zcode:session/lost so the run fails fast instead of timing out.
+      send({ method: 'session/event', params: { sessionId, type: 'model_streaming', payload: { kind: 'text_delta', delta: 'about to die' } } });
+      setTimeout(() => process.exit(1), 100);
+      return;
+    }
     send({ method: 'session/event', params: { sessionId, type: 'model_streaming', payload: { kind: 'text_delta', delta: 'hi there' } } });
     send({ method: 'session/event', params: { sessionId, type: 'turn_complete', payload: { usage: { inputTokens: 3, outputTokens: 4 } } } });
     return;
@@ -560,4 +568,25 @@ test('steady engine activity keeps the run alive past the silence window', async
   } finally {
     delete process.env.CLOUDCLI_ZCODE_SILENCE_TIMEOUT_MS;
   }
+});
+
+// Last: the crash mode kills the shared stub subprocess; the supervisor's
+// restart circuit breaker brings it back, but later tests should not have to
+// race the restart.
+test('an engine crash fails the run fast through session-lost instead of timing out', async () => {
+  fsSync.writeFileSync(modeFilePath, 'crash\n');
+  const runtime = new ZCodeRuntimeProvider();
+  const { messages, writer } = createWriter();
+
+  // Resolves (rather than hanging for the silence window): the synthetic
+  // session-lost notification marks the run failed immediately.
+  const result = await runtime.run('hello', { sessionId: 'app-sess-crash', cwd: stubDir }, writer, context);
+  assert.deepEqual(result, { sessionId: 'sess_stub_1', success: false });
+
+  const complete = messages.find((msg) => msg.kind === 'complete');
+  assert.ok(complete, 'the run must still terminate with a complete event');
+  assert.equal(complete.exitCode, 1, 'a lost connection must complete the run as failed');
+
+  // The run's state is gone: a late abort finds nothing left to stop.
+  assert.equal(await runtime.abort('app-sess-crash'), false);
 });

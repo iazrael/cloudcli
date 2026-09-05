@@ -4,6 +4,11 @@
  * Implements IProviderRuntime for ZCode integration using the app-server protocol.
  * Handles session lifecycle, permission mode mapping, message streaming, and run completion.
  *
+ * Run state (completion, silence watchdog, abort, permission writers) lives in
+ * `zcode-run-lifecycle.ts`; this module is the protocol orchestration around
+ * it: resolve/subscribe/configure/send, the event-listener wiring, and the
+ * terminal reporting.
+ *
  * Protocol facts from the Phase 0 spike:
  * - Events only flow after `session/subscribe` (`deliveryKind:
  *   'desktop-continuous'`); subscribe may fail for inactive sessions (-32004)
@@ -33,11 +38,10 @@ import { notifyRunFailed, notifyRunStopped } from '@/modules/notifications/index
 import { sessionsDb } from '@/modules/database/index.js';
 
 import { SESSION_LOST_METHOD } from './zcode-codec.js';
-import type { ProtocolServerRequest } from './zcode-codec.js';
-import { defaultServerRequestHandler } from './zcode-request-router.js';
-import type { ServerRequestAnswer } from './zcode-request-router.js';
 import { protocolClient } from './zcode-protocol.client.js';
 import { buildZCodeRuntimeModel, readZCodeSessionModelInfoFromDb, resolveZCodeModelRef } from './zcode-models.provider.js';
+import { EngineSilenceTimeoutError, ZCodeRunLifecycle, resolveSilenceTimeoutMs } from './zcode-run-lifecycle.js';
+import type { RunHandle, RunSettle } from './zcode-run-lifecycle.js';
 
 /**
  * Permission mode mapping from CloudCLI to ZCode (§5 of integration plan).
@@ -58,324 +62,30 @@ const PERMISSION_MODE_MAP: Record<string, string> = {
 };
 
 /**
- * Active session tracking for abort capability.
- * Keys are app-facing session ids (what `abort` receives from the chat
- * gateway); values are ZCode-native session ids passed to `session/stop`.
+ * The run-lifecycle registry shared by the provider class and the
+ * permissions facet below. Module-level like the protocol client singleton:
+ * `zcodeRuntimePermissions` must answer request ids that any provider
+ * instance's runs bridged, so both facets must see the same registries.
  */
-const activeSessions = new Map<string, string>();
-
-/**
- * Abort keys whose run was terminated by a user-requested abort, so the
- * terminal notification reports "aborted" instead of a failure when the
- * aborted run unwinds through `waitForCompletion`.
- */
-const abortedRunKeys = new Set<string>();
-
-/**
- * Session completion tracking to ensure exactly one complete event per run.
- * Maps ZCode session IDs to completion state; `tokenUsage` is the run's
- * total used-token count carried on the final complete message, `failed`
- * marks runs that ended with a terminal error event (turn.failed/fatal) so
- * the complete message reports a non-zero exit code, and `failedMessage`
- * carries the last engine error text for the run-failure notification.
- * `lastActivityAt` is the liveness watchdog stamp: every engine notification
- * for the session refreshes it (see `createSessionEventListener`), so the
- * completion wait bounds engine *silence*, not total run duration.
- */
-const sessionCompletionState = new Map<string, {
-  completed: boolean;
-  failed?: boolean;
-  failedMessage?: string;
-  tokenUsage?: number;
-  lastActivityAt: number;
-}>();
-
-/** How often the completion waits poll the session's completion state. */
-const COMPLETION_POLL_INTERVAL_MS = 100;
-
-/**
- * How long the engine may stay completely silent (no notifications for the
- * session) before a run is reported as stalled. Bounds engine silence, not
- * total run duration — a turn that keeps streaming output never times out,
- * no matter how long it runs. Override for tests via
- * `CLOUDCLI_ZCODE_SILENCE_TIMEOUT_MS` (positive integer milliseconds).
- */
-const DEFAULT_SILENCE_TIMEOUT_MS = 10 * 60 * 1000;
-
-function resolveSilenceTimeoutMs(): number {
-  const raw = Number(process.env.CLOUDCLI_ZCODE_SILENCE_TIMEOUT_MS);
-  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_SILENCE_TIMEOUT_MS;
-}
-
-/**
- * Thrown by `waitForCompletion` when the engine has produced no notification
- * for the session for the whole silence window. Module-private: `run` catches
- * it to hand the still-attached stream to a background watcher instead of
- * tearing the run down like other failures — the engine may simply be
- * grinding on a tool call that emits no live events.
- */
-class EngineSilenceTimeoutError extends Error {
-  constructor(timeoutMs: number) {
-    const minutes = Math.max(1, Math.round(timeoutMs / 60000));
-    super(
-      `ZCode engine has been silent for ${minutes} min — the run stays attached in the background and will finish automatically when the engine responds`
-    );
-    this.name = 'EngineSilenceTimeoutError';
-  }
-}
-
-/**
- * Permission bridge state.
- *
- * The engine asks for tool approval through a blocking
- * `interaction/requestPermission` server-initiated request. The bridge turns
- * it into a `permission_request` message on the owning run's chat stream and
- * keeps the engine waiting until the user answers through
- * `chat.permission-response` → `zcodeRuntimePermissions.resolve`.
- *
- * `permissionWriters` maps the engine-side session id to the run's writer so
- * the bridge can forward the request even though the protocol client is a
- * singleton shared across runs; entries live for the run's duration, while
- * pending resolvers outlive it so a card answered after the run still
- * resolves cleanly instead of leaking the engine's request.
- */
-type PermissionBridgeAnswer = ServerRequestAnswer;
-
-const permissionWriters = new Map<string, ProviderRuntimeWriter>();
-/**
- * One resolver per in-flight protocol request id: the engine re-announces a
- * pending permission as a *new* server request (fresh protocol id) on an
- * interval, and whichever announcement the engine ends up waiting on must
- * receive the decision — so a user decision answers every stacked resolver
- * for the business-level requestId.
- */
-const pendingPermissionResolvers = new Map<string, Array<(answer: PermissionBridgeAnswer) => void>>();
-
-type PendingPermissionDetails = {
-  toolName: string;
-  toolId?: string;
-  input: unknown;
-  context: unknown;
-  sessionId: string;
-  /** App-facing session id, when the run knew one — `chat.subscribe` looks pending approvals up by it. */
-  appSessionId?: string;
-  receivedAt: Date;
-};
-
-/**
- * What the UI needs to render an answerable card for each pending request.
- * chat.subscribe replays these (via `permissions.listPending`) after a page
- * reload, so they must be fully shaped — a bare request id renders a dead
- * card whose buttons are dropped for lacking a requestId.
- */
-const pendingPermissionDetails = new Map<string, PendingPermissionDetails>();
-
-/**
- * Native engine session id → app-facing session id, valid while the owning
- * run is live. The permission bridge consults it at first-announcement time
- * so pending details survive the run with their app-facing id attached.
- */
-const permissionAppSessionIds = new Map<string, string>();
-
-/**
- * Decisions already delivered to the engine, kept briefly: the engine
- * re-announces a pending permission on an interval under a fresh protocol id,
- * and a re-announcement racing a just-recorded decision must be answered from
- * this record instead of surfacing a second, never-resolvable card. The
- * toolCallId rides along so a reused requestId with different call content is
- * treated as a fresh request rather than silently auto-answered.
- */
-const ANSWERED_PERMISSION_TTL_MS = 5 * 60 * 1000;
-const answeredPermissions = new Map<string, { answer: PermissionBridgeAnswer; toolCallId?: string; expiresAt: number }>();
-
-function rememberAnsweredPermission(requestId: string, answer: PermissionBridgeAnswer, toolCallId?: string): void {
-  const now = Date.now();
-  for (const [key, value] of answeredPermissions) {
-    if (value.expiresAt <= now) {
-      answeredPermissions.delete(key);
-    }
-  }
-  answeredPermissions.set(requestId, { answer, toolCallId, expiresAt: now + ANSWERED_PERMISSION_TTL_MS });
-}
-
-function answerPendingPermission(requestId: string, answer: PermissionBridgeAnswer): void {
-  const resolvers = pendingPermissionResolvers.get(requestId);
-  if (!resolvers) {
-    return;
-  }
-  pendingPermissionResolvers.delete(requestId);
-  rememberAnsweredPermission(requestId, answer, pendingPermissionDetails.get(requestId)?.toolId);
-  pendingPermissionDetails.delete(requestId);
-  for (const resolve of resolvers) {
-    try {
-      resolve(answer);
-    } catch {
-      // A resolver that throws on settle must not block its siblings.
-    }
-  }
-}
-
-/**
- * Tells the live chat stream a pending card is gone; without this the card
- * only disappears on a `complete` replay, so a client that (re)subscribes
- * after the decision sees a zombie permission request forever.
- */
-function retractPendingPermission(requestId: string, details: PendingPermissionDetails | undefined): void {
-  const sessionId = details?.sessionId;
-  if (!sessionId) {
-    return;
-  }
-  const writer = permissionWriters.get(sessionId);
-  if (!writer) {
-    return;
-  }
-  writer.send(createNormalizedMessage({
-    id: generateMessageId('zcode'),
-    sessionId,
-    provider: 'zcode',
-    kind: 'permission_cancelled',
-    requestId,
-  }));
-}
-
-/**
- * Bridges the engine's `interaction/requestPermission` server request to the
- * chat stream. Installed once over the router's default policy; every other
- * method falls through unchanged.
- */
-function permissionBridgeRequestHandler(
-  request: ProtocolServerRequest,
-): ServerRequestAnswer | Promise<ServerRequestAnswer> {
-  if (request.method !== 'interaction/requestPermission') {
-    return defaultServerRequestHandler(request);
-  }
-
-  const params = request.params ?? {};
-  const requestId = readOptionalString(params.requestId);
-  const sessionId = readOptionalString(params.sessionId);
-  if (!requestId) {
-    return { error: { code: -32602, message: 'interaction/requestPermission is missing requestId' } };
-  }
-
-  // A decision already went out for this requestId (an earlier announcement
-  // was answered); serve this late re-announcement from the record instead of
-  // surfacing a second card that nothing will ever resolve. A reused
-  // requestId carrying different call content is a fresh request and must not
-  // inherit the old decision.
-  const answered = answeredPermissions.get(requestId);
-  if (answered && answered.expiresAt > Date.now() && answered.toolCallId === readOptionalString(params.toolCallId)) {
-    return answered.answer;
-  }
-
-  const stack = pendingPermissionResolvers.get(requestId);
-
-  // The engine re-announces pending requests on an interval as fresh protocol
-  // requests (new ids); stack a resolver per announcement so the decision
-  // reaches whichever one the engine is waiting on.
-  if (stack) {
-    return new Promise<PermissionBridgeAnswer>((resolve) => {
-      stack.push(resolve);
-    });
-  }
-
-  const writer = sessionId ? permissionWriters.get(sessionId) : undefined;
-  if (!sessionId || !writer) {
-    return { result: { decision: 'deny', reason: 'No active chat stream for this session' } };
-  }
-
-  const toolName = readOptionalString(params.toolName) ?? 'Tool';
-  const toolId = readOptionalString(params.toolCallId);
-  const context = {
-    riskLevel: readOptionalString(params.riskLevel),
-    reason: readOptionalString(params.reason),
-    options: params.options,
-    suggestedPermissionUpdates: params.suggestedPermissionUpdates,
-  };
-
-  // Register before sending the frame: if the send throws, the parked
-  // resolver and details still form a consistent, answerable pending entry
-  // (the engine will re-announce, which stacks onto the registered resolver).
-  pendingPermissionDetails.set(requestId, {
-    toolName,
-    toolId,
-    input: params.input,
-    context,
-    sessionId,
-    appSessionId: permissionAppSessionIds.get(sessionId),
-    receivedAt: new Date(),
-  });
-  pendingPermissionResolvers.set(requestId, []);
-
-  writer.send(createNormalizedMessage({
-    id: generateMessageId('zcode'),
-    sessionId,
-    provider: 'zcode',
-    kind: 'permission_request',
-    requestId,
-    toolName,
-    toolId,
-    input: params.input,
-    context,
-    canInterrupt: true,
-  }));
-
-  return new Promise<PermissionBridgeAnswer>((resolve) => {
-    pendingPermissionResolvers.get(requestId)?.push(resolve);
-  });
-}
+const runLifecycle = new ZCodeRunLifecycle();
 
 /**
  * ZCode permissions facet: answers the engine's pending
- * `interaction/requestPermission` calls from the chat gateway's
- * `chat.permission-response` flow.
+ * `interaction/requestPermission` calls and replays pending cards after a
+ * page reload.
  *
- * Consumer: `provider-runtime.service.resolveToolApproval` fans decisions out
+ * Consumer: `provider-runtime.service.resolveToolApproval` and
+ * `chat.subscribe` (`permissions.listPending`) fan decisions and replays out
  * to every provider's permissions facet; zcode only answers request ids it
  * bridged itself.
  */
 export const zcodeRuntimePermissions = {
   resolve(requestId: string, decision: ProviderPermissionDecision): void {
-    if (!pendingPermissionResolvers.has(requestId)) {
-      // A stale response — the card was answered elsewhere, or the run died
-      // with the resolver still parked. This used to vanish silently, which
-      // made dead-card reports impossible to diagnose.
-      console.debug(`[ZCode] permission response for unknown request id: ${requestId}`);
-      return;
-    }
-
-    const details = pendingPermissionDetails.get(requestId);
-
-    if (decision.allow) {
-      answerPendingPermission(requestId, decision.updatedInput !== undefined
-        ? { result: { decision: 'modify', modifiedInput: decision.updatedInput, reason: decision.message } }
-        : { result: { decision: 'allow', reason: decision.message } });
-      retractPendingPermission(requestId, details);
-      return;
-    }
-
-    answerPendingPermission(requestId, { result: { decision: 'deny', reason: decision.message ?? 'Denied by user' } });
-    retractPendingPermission(requestId, details);
+    runLifecycle.resolvePermission(requestId, decision);
   },
 
   listPending(sessionId: string): unknown[] {
-    const pending: unknown[] = [];
-    for (const [requestId, details] of pendingPermissionDetails) {
-      // Match either id space: the gateway subscribes by app-facing session
-      // id, while the bridge keys its writer by the engine's native id.
-      if (details.sessionId !== sessionId && details.appSessionId !== sessionId) {
-        continue;
-      }
-      pending.push({
-        requestId,
-        toolName: details.toolName,
-        toolId: details.toolId,
-        input: details.input,
-        context: details.context,
-        sessionId: details.appSessionId ?? details.sessionId,
-        receivedAt: details.receivedAt,
-      });
-    }
-    return pending;
+    return runLifecycle.listPendingPermissions(sessionId);
   },
 };
 
@@ -390,6 +100,14 @@ export const zcodeRuntimePermissions = {
  * - Token usage aggregation
  */
 export class ZCodeRuntimeProvider implements IProviderRuntime {
+  constructor() {
+    // Installed once per process: the bridge is stateless over the lifecycle
+    // registries, so a single installation serves every run. (Per-run
+    // installation used to overwrite the singleton handler and never restore
+    // the default policy.)
+    protocolClient.setServerRequestHandler((request) => runLifecycle.handleServerRequest(request));
+  }
+
   /**
    * Executes a command in a ZCode session.
    *
@@ -442,57 +160,31 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
     const abortKey = appSessionId ?? zcodeSessionId;
     const notifySessionId = appSessionId ?? zcodeSessionId;
     const silenceTimeoutMs = resolveSilenceTimeoutMs();
-    activeSessions.set(abortKey, zcodeSessionId);
-    sessionCompletionState.set(zcodeSessionId, { completed: false, lastActivityAt: Date.now() });
-    // Route the engine's permission server-requests for this session to this
-    // run's chat stream; installed once, but the writer map is per-run.
-    permissionWriters.set(zcodeSessionId, writer);
-    if (appSessionId) {
-      permissionAppSessionIds.set(zcodeSessionId, appSessionId);
-    }
-    protocolClient.setServerRequestHandler(permissionBridgeRequestHandler);
+    const handle = runLifecycle.startRun({ abortKey, sessionId: zcodeSessionId, appSessionId, writer });
 
-    // Set when the silence watchdog hands the run to `watchSilentRun`: the
-    // watcher then owns the listener attachment and the run-scoped state, so
-    // the outer finally must not reclaim them out from under it.
-    let detachedToWatcher = false;
     try {
       await this.subscribeToSessionEvents(zcodeSessionId);
       await this.configureSessionModel(zcodeSessionId, options, context, resumedSession);
       await this.configureSessionMode(zcodeSessionId, options);
 
-      const eventListener = this.createSessionEventListener(zcodeSessionId, writer, context);
+      const eventListener = this.createSessionEventListener(handle, writer, context);
       protocolClient.addSessionListener(zcodeSessionId, eventListener);
 
+      let settle: RunSettle | null = null;
       try {
         await this.sendUserMessage(zcodeSessionId, command, options, runtimeModel);
-        await this.waitForCompletion(zcodeSessionId, abortKey, silenceTimeoutMs);
-        protocolClient.removeSessionListener(zcodeSessionId, eventListener);
-        this.sendCompletionEvent(zcodeSessionId, writer);
+        settle = await runLifecycle.waitForSettle(handle, silenceTimeoutMs);
 
-        const completionState = sessionCompletionState.get(zcodeSessionId);
-        this.notifyRunOutcome({
-          userId: writer.userId,
-          sessionId: notifySessionId,
-          sessionSummary,
-          outcome: completionState?.failed
-            ? { failed: true, error: completionState.failedMessage ?? 'ZCode run failed' }
-            : { failed: false, stopReason: 'completed' },
-        });
-
-        return { sessionId: zcodeSessionId, success: !completionState?.failed };
-      } catch (error) {
-        if (error instanceof EngineSilenceTimeoutError) {
+        if (settle.kind === 'silent') {
           // The engine went quiet, but quiet does not mean dead: it may be
           // grinding on a tool call that emits no live events. Report the
           // stall to the chat stream and hand the still-attached stream to a
           // background watcher instead of tearing the run down — late output
           // keeps streaming and the real completion still reaches the client.
-          detachedToWatcher = true;
-          this.sendRuntimeError(writer, zcodeSessionId, error);
+          runLifecycle.detachToWatcher(handle);
+          this.sendRuntimeError(writer, zcodeSessionId, new EngineSilenceTimeoutError(settle.timeoutMs));
           this.watchSilentRun({
-            zcodeSessionId,
-            abortKey,
+            handle,
             eventListener,
             writer,
             context,
@@ -505,39 +197,42 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
 
         protocolClient.removeSessionListener(zcodeSessionId, eventListener);
 
-        // A user-requested abort removes the abort key, so the resulting
-        // "Session was aborted" error lands here: report it as stopped with an
-        // `aborted` reason instead of a failure, matching the other runtimes.
-        const wasAborted = abortedRunKeys.delete(abortKey);
-
-        // Surface non-abort failures to the chat stream before propagating.
-        // Aborted runs skip the error bubble so users don't see false-alarm errors.
-        if (!wasAborted) {
-          this.sendRuntimeError(writer, zcodeSessionId, error);
+        if (settle.kind === 'completed') {
+          this.sendCompletionEvent(handle, writer);
+          const completion = runLifecycle.completionOf(handle);
+          this.notifyRunOutcome({
+            userId: writer.userId,
+            sessionId: notifySessionId,
+            sessionSummary,
+            outcome: completion.failed
+              ? { failed: true, error: completion.failedMessage ?? 'ZCode run failed' }
+              : { failed: false, stopReason: 'completed' },
+          });
+          return { sessionId: zcodeSessionId, success: !completion.failed };
         }
+
+        throw new Error('ZCode run was superseded by a newer run for this session');
+      } catch (error) {
+        protocolClient.removeSessionListener(zcodeSessionId, eventListener);
+
+        // Surface the failure to the chat stream before propagating.
+        this.sendRuntimeError(writer, zcodeSessionId, error);
 
         this.notifyRunOutcome({
           userId: writer.userId,
           sessionId: notifySessionId,
           sessionSummary,
-          outcome: wasAborted
-            ? { failed: false, stopReason: 'aborted' }
-            : { failed: true, error },
+          outcome: { failed: true, error },
         });
 
         throw error;
       }
     } finally {
-      if (!detachedToWatcher) {
+      // Once detached, the watcher owns the handle's cleanup (see
+      // `watchSilentRun`); the run must not reclaim it out from under it.
+      if (handle.owner === 'run') {
         context.resetLiveMessageState?.(zcodeSessionId);
-        activeSessions.delete(abortKey);
-        sessionCompletionState.delete(zcodeSessionId);
-        abortedRunKeys.delete(abortKey);
-        // Keep pendingPermissionResolvers: a permission card answered after the
-        // run still resolves the engine's request instead of leaking it. Only
-        // the writer mapping is run-scoped.
-        permissionWriters.delete(zcodeSessionId);
-        permissionAppSessionIds.delete(zcodeSessionId);
+        runLifecycle.dispose(handle);
       }
     }
   }
@@ -616,41 +311,33 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
    * @returns boolean indicating if abort was successful
    */
   async abort(sessionId: string): Promise<boolean> {
-    const zcodeSessionId = activeSessions.get(sessionId);
+    const handle = runLifecycle.handleOf(sessionId);
 
-    if (!zcodeSessionId) {
+    if (!handle) {
       console.warn(`[ZCodeRuntime] No active session found for ${sessionId}`);
       return false;
     }
 
-    // Record the user-requested abort so the run's terminal notification
-    // reports "aborted" instead of a failure when waitForCompletion unwinds.
-    abortedRunKeys.add(sessionId);
-
     try {
-      // Mark session as completed to prevent duplicate complete events
-      const completionState = sessionCompletionState.get(zcodeSessionId);
-      if (completionState) {
-        completionState.completed = true;
-      }
+      // Mark session as completed so the run's settle wait returns and the
+      // terminal state is reported by the run's own completion path.
+      runLifecycle.completeForAbort(handle);
 
       await this.callWithRetry(
         async () => {
           await protocolClient.sendRequest('session/stop', {
-            sessionId: zcodeSessionId,
+            sessionId: handle.sessionId,
           });
         },
         'session/stop',
         3
       );
 
-      console.info(`[ZCodeRuntime] Aborted session ${zcodeSessionId}`);
+      console.info(`[ZCodeRuntime] Aborted session ${handle.sessionId}`);
       return true;
     } catch (error) {
-      console.error(`[ZCodeRuntime] Failed to abort session ${zcodeSessionId}:`, error);
+      console.error(`[ZCodeRuntime] Failed to abort session ${handle.sessionId}:`, error);
       return false;
-    } finally {
-      activeSessions.delete(sessionId);
     }
   }
 
@@ -973,7 +660,7 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
    * complete is emitted once by `sendCompletionEvent`.
    */
   private createSessionEventListener(
-    sessionId: string,
+    handle: RunHandle,
     writer: ProviderRuntimeWriter,
     context: ProviderRuntimeContext,
   ): (notification: AnyRecord) => void {
@@ -981,24 +668,16 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
       try {
         // Any notification from the engine for this session is a sign of
         // life: refresh the silence-watchdog stamp before anything else.
-        const livingState = sessionCompletionState.get(sessionId);
-        if (livingState) {
-          livingState.lastActivityAt = Date.now();
-        }
+        runLifecycle.recordActivity(handle);
 
         const method = readOptionalString(notification.method);
 
         // Synthetic client-originated notification: the engine process died,
         // so this session no longer exists engine-side. Mark the run failed
-        // (once) so waitForCompletion returns instead of timing out against a
+        // (once) so the settle wait returns instead of timing out against a
         // dead engine.
         if (method === SESSION_LOST_METHOD) {
-          const completionState = sessionCompletionState.get(sessionId);
-          if (completionState && !completionState.completed) {
-            completionState.failed = true;
-            completionState.completed = true;
-            completionState.failedMessage = 'ZCode engine connection was lost';
-          }
+          runLifecycle.recordSessionLost(handle);
           return;
         }
 
@@ -1009,70 +688,28 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
 
         const normalizedMessages: NormalizedMessage[] = context.normalizeMessage(
           notification.params ?? notification,
-          sessionId,
+          handle.sessionId,
         );
 
         for (const message of normalizedMessages) {
           if (message.kind === 'complete') {
-            const completionState = sessionCompletionState.get(sessionId);
-            if (completionState) {
-              completionState.tokenUsage = message.tokens;
-              completionState.completed = true;
-            }
+            runLifecycle.recordCompletion(handle, message.tokens);
             continue;
           }
 
           if (message.kind === 'error') {
             // Terminal error events (turn.failed / fatal) end the turn; mark
-            // the run completed-as-failed so waitForCompletion and the final
+            // the run completed-as-failed so the settle wait and the final
             // complete message reflect it instead of timing out after 10 min.
-            const completionState = sessionCompletionState.get(sessionId);
-            if (completionState) {
-              completionState.failed = true;
-              completionState.completed = true;
-              completionState.failedMessage = readOptionalString(message.text) ?? undefined;
-            }
+            runLifecycle.recordEngineError(handle, readOptionalString(message.text) ?? undefined);
           }
 
           writer.send(message);
-        }      } catch (error) {
+        }
+      } catch (error) {
         console.error(`[ZCodeRuntime] Error processing session event:`, error);
       }
     };
-  }
-
-  /**
-   * Waits for the session's terminal completion signal.
-   *
-   * Liveness watchdog: the timeout bounds engine *silence*, not total run
-   * duration. Every engine notification for the session refreshes the state's
-   * `lastActivityAt` (see `createSessionEventListener`), so a turn that keeps
-   * producing output never times out regardless of how long it runs. Only a
-   * completely silent engine for `timeout` ms throws
-   * `EngineSilenceTimeoutError` (run() then hands the stream to
-   * `watchSilentRun`); a removed abort key still throws the user-abort error.
-   */
-  private async waitForCompletion(
-    sessionId: string,
-    abortKey: string,
-    timeout: number = DEFAULT_SILENCE_TIMEOUT_MS,
-  ): Promise<void> {
-    while (true) {
-      if (sessionCompletionState.get(sessionId)?.completed) {
-        return;
-      }
-
-      if (!activeSessions.has(abortKey)) {
-        throw new Error('Session was aborted');
-      }
-
-      const lastActivityAt = sessionCompletionState.get(sessionId)?.lastActivityAt;
-      if (lastActivityAt !== undefined && Date.now() - lastActivityAt > timeout) {
-        throw new EngineSilenceTimeoutError(timeout);
-      }
-
-      await new Promise(resolve => setTimeout(resolve, COMPLETION_POLL_INTERVAL_MS));
-    }
   }
 
   /**
@@ -1086,12 +723,11 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
    *
    * A second full silence window (engine alive but hung for good) gives up:
    * the stall is reported again and the run is failed. If a newer run claims
-   * the session first (state entry replaced), the watcher stands down and only
-   * detaches its listener — the new run owns the stream and the completion.
+   * the session first, the watcher stands down and only detaches its
+   * listener — the new run owns the stream and the completion.
    */
   private watchSilentRun(options: {
-    zcodeSessionId: string;
-    abortKey: string;
+    handle: RunHandle;
     eventListener: (notification: AnyRecord) => void;
     writer: ProviderRuntimeWriter;
     context: ProviderRuntimeContext;
@@ -1100,76 +736,54 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
     sessionSummary: string | undefined;
   }): void {
     const {
-      zcodeSessionId, abortKey, eventListener, writer, context,
+      handle, eventListener, writer, context,
       silenceTimeoutMs, notifySessionId, sessionSummary,
     } = options;
-    const ownedState = sessionCompletionState.get(zcodeSessionId);
-    // The grace window restarts at handoff: the run already waited one full
-    // silent window before getting here, so measuring from the stale stamp
-    // would immediately re-fire the watchdog.
-    if (ownedState) {
-      ownedState.lastActivityAt = Date.now();
-    }
 
     void (async () => {
       try {
-        while (ownedState && sessionCompletionState.get(zcodeSessionId) === ownedState && !ownedState.completed) {
-          if (!activeSessions.has(abortKey)) {
-            throw new Error('Session was aborted');
-          }
-          if (Date.now() - ownedState.lastActivityAt > silenceTimeoutMs) {
-            throw new EngineSilenceTimeoutError(silenceTimeoutMs);
-          }
-          await new Promise(resolve => setTimeout(resolve, COMPLETION_POLL_INTERVAL_MS));
-        }
+        const settle = await runLifecycle.waitForSettle(handle, silenceTimeoutMs);
 
-        // A newer run replaced the state entry: it owns the stream and the
-        // completion from here on, so this watcher only detaches its listener.
-        if (!ownedState || sessionCompletionState.get(zcodeSessionId) !== ownedState) {
+        if (settle.kind === 'superseded') {
+          // A newer run replaced this one: it owns the stream and the
+          // completion from here on, so this watcher only detaches its
+          // listener (in the finally).
           return;
         }
 
-        this.sendCompletionEvent(zcodeSessionId, writer);
-        const wasAborted = abortedRunKeys.delete(abortKey);
-        this.notifyRunOutcome({
-          userId: writer.userId,
-          sessionId: notifySessionId,
-          sessionSummary,
-          outcome: wasAborted
-            ? { failed: false, stopReason: 'aborted' }
-            : ownedState.failed
-              ? { failed: true, error: ownedState.failedMessage ?? 'ZCode run failed' }
-              : { failed: false, stopReason: 'completed' },
-        });
-      } catch (error) {
-        if (error instanceof EngineSilenceTimeoutError) {
+        if (settle.kind === 'silent') {
           // Still silent for another full window: report and give up on the
           // live stream. If the engine ever wakes after this, its output only
           // lands in the session history (visible on refresh).
-          this.sendRuntimeError(writer, zcodeSessionId, error);
+          const error = new EngineSilenceTimeoutError(settle.timeoutMs);
+          this.sendRuntimeError(writer, handle.sessionId, error);
           this.notifyRunOutcome({
             userId: writer.userId,
             sessionId: notifySessionId,
             sessionSummary,
             outcome: { failed: true, error },
           });
-        } else {
-          // User-requested abort while detached.
-          this.notifyRunOutcome({
-            userId: writer.userId,
-            sessionId: notifySessionId,
-            sessionSummary,
-            outcome: { failed: false, stopReason: 'aborted' },
-          });
+          return;
         }
+
+        this.sendCompletionEvent(handle, writer);
+        const completion = runLifecycle.completionOf(handle);
+        const wasAborted = handle.abortRequested;
+        this.notifyRunOutcome({
+          userId: writer.userId,
+          sessionId: notifySessionId,
+          sessionSummary,
+          outcome: wasAborted
+            ? { failed: false, stopReason: 'aborted' }
+            : completion.failed
+              ? { failed: true, error: completion.failedMessage ?? 'ZCode run failed' }
+              : { failed: false, stopReason: 'completed' },
+        });
       } finally {
-        protocolClient.removeSessionListener(zcodeSessionId, eventListener);
-        if (!ownedState || sessionCompletionState.get(zcodeSessionId) === ownedState) {
-          context.resetLiveMessageState?.(zcodeSessionId);
-          activeSessions.delete(abortKey);
-          sessionCompletionState.delete(zcodeSessionId);
-          permissionWriters.delete(zcodeSessionId);
-          permissionAppSessionIds.delete(zcodeSessionId);
+        protocolClient.removeSessionListener(handle.sessionId, eventListener);
+        if (runLifecycle.isActiveRun(handle)) {
+          context.resetLiveMessageState?.(handle.sessionId);
+          runLifecycle.dispose(handle);
         }
       }
     })();
@@ -1183,23 +797,22 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
    * total used-token count rides the `tokens` field.
    */
   private sendCompletionEvent(
-    sessionId: string,
+    handle: RunHandle,
     writer: ProviderRuntimeWriter,
   ): void {
-    const completionState = sessionCompletionState.get(sessionId);
-    const tokenUsage = completionState?.tokenUsage;
+    const completion = runLifecycle.completionOf(handle);
 
     const completeMessage = createCompleteMessage({
       provider: 'zcode',
-      sessionId,
-      exitCode: completionState?.failed ? 1 : 0,
+      sessionId: handle.sessionId,
+      exitCode: completion.failed ? 1 : 0,
     });
-    if (typeof tokenUsage === 'number') {
-      completeMessage.tokens = tokenUsage;
+    if (typeof completion.tokenUsage === 'number') {
+      completeMessage.tokens = completion.tokenUsage;
     }
 
     writer.send(completeMessage);
-    console.debug(`[ZCodeRuntime] Sent completion event for session ${sessionId}`);
+    console.debug(`[ZCodeRuntime] Sent completion event for session ${handle.sessionId}`);
   }
 
   /**
