@@ -1,1 +1,2 @@
 npx lint-staged
+node scripts/hooks/check-doc-sync.mjs
