@@ -5,6 +5,10 @@ Keep it current whenever provider wiring, skill discovery, or session sync
 behavior changes. The goal is that a human or AI agent can add a new provider
 without guessing which files need to move.
 
+> **架构总览与接入指南的权威版本在 [`docs/core/providers.md`](../../../docs/core/providers.md)（中文）**，
+> 含能力矩阵的推导规则（`provider-capabilities.service.ts`）与新增引擎的六步清单。
+> 本文聚焦模块内的文件布局与切面实现细节。
+
 ## Current Provider Shape
 
 Every provider wrapper exposes seven facets:
@@ -45,9 +49,14 @@ Current provider ids in this repo are:
 - `codex`
 - `cursor`
 - `opencode`
+- `zcode`
+- `antigravity`
 
 Those ids are mirrored in backend unions and frontend provider constants. If
-adding a new provider, update every place that hardcodes this list.
+adding a new provider, update every place that hardcodes this list, including
+the capability catalog (`provider-capabilities.catalog.ts`) and the frontend
+fallback mirror (`src/shared/providerCatalogFallback.ts`, pinned by the
+cross-tree parity test).
 
 ## Current File Layout
 
@@ -65,7 +74,9 @@ server/modules/providers/list/<provider>/
   <provider>-session-synchronizer.provider.ts
 ```
 
-The existing provider folders are `claude`, `codex`, `cursor`, and `opencode`.
+The existing provider folders are `claude`, `codex`, `cursor`, `opencode`,
+`zcode`, and `antigravity` (the latter two are TypeScript runtimes with their
+own protocol clients; the first four use legacy `.js` runtime adapters).
 
 Each provider wrapper owns its SDK/CLI runtime alongside its auth, model, and
 session facets. Runtime adapters receive registry-backed model and session
@@ -96,15 +107,18 @@ import the service from `server/modules/providers/index.ts`.
 1. Add the provider id everywhere it is part of the contract.
 
 - Update `server/shared/types.ts` `LLMProvider`.
-- Update `src/types/app.ts` `LLMProvider` if the frontend should know about it.
+- Update `src/shared/types.ts` `LLMProvider` if the frontend should know about it.
 - Update `server/modules/providers/provider.routes.ts`.
+- Update `server/modules/providers/services/provider-capabilities.catalog.ts`
+  (`PROVIDER_CATALOG`) with the static capability entry, and mirror it in
+  `src/shared/providerCatalogFallback.ts` (the parity test enforces this).
 - Update `server/modules/agent/agent.routes.ts` if the provider is launchable from the agent runtime.
 - Update `server/index.ts` if the provider needs runtime boot or shutdown wiring.
 - Update the `PROVIDER_ORDER` list in `public/api-docs.html` if the provider should appear in the public API docs.
-- Update `src/components/chat/hooks/useChatProviderState.ts` and
-  `src/components/chat/view/subcomponents/ProviderSelectionEmptyState.tsx` if
+- Update `src/modules/chat/hooks/useChatProviderState.ts` and
+  `src/modules/chat/transcript/ProviderSelectionEmptyState.tsx` if
   the provider should be selectable in chat.
-- Update `src/components/provider-auth/view/ProviderLoginModal.tsx` if the
+- Update `src/modules/provider-auth/ProviderLoginModal.tsx` if the
   provider has a login/setup flow.
 
 2. Create the wrapper class.
@@ -143,6 +157,8 @@ Current MCP formats in this repo are:
 | Codex | `.codex/config.toml` | `user`, `project` | `stdio`, `http` |
 | Cursor | `.cursor/mcp.json` | `user`, `project` | `stdio`, `http` |
 | OpenCode | `~/.config/opencode/opencode.json` or `<workspace>/opencode.json` (`.jsonc` is read when present) | `user`, `project` | `stdio`, `http` |
+| ZCode | `<workspace>/zcode.json` or `<workspace>/.zcode/config.json` (project), `~/.zcode/cli/config.json` (user) | `user`, `project` | `stdio`, `http` |
+| Antigravity | `<workspace>/.gemini/mcp_config.json` (project), `~/.gemini/config/mcp_config.json` (user) | `user`, `project` | `stdio`, `http` |
 
 5. Implement skills.
 
@@ -163,6 +179,8 @@ Current skill discovery roots are:
 | Codex | `~/.agents/skills`, `~/.codex/skills/.system`, `/etc/codex/skills` | `<workspace>/.agents/skills`, `path.dirname(workspacePath)/.agents/skills`, topmost git root `.agents/skills` | `$` | Overlapping roots are deduplicated before scanning. |
 | Cursor | `~/.cursor/skills` | `<workspace>/.cursor/skills`, `<workspace>/.agents/skills` | `/` | Uses slash-style commands. |
 | OpenCode | `~/.config/opencode/skills`, `~/.claude/skills`, `~/.agents/skills` | Cwd-to-topmost-git-root `.opencode/skills`, `.claude/skills`, and `.agents/skills` | `/` | Reuses OpenCode, Claude, and Agents skill locations. Overlapping roots are deduplicated before scanning. |
+| ZCode | `~/.agents/skills` | `<workspace>/.agents/skills` | `/` | Reuses the shared `.agents` skill locations. |
+| Antigravity | `~/.gemini/config/skills`, `~/.agents/skills` | `<workspace>/.agents/skills` | `/` | Also reuses the shared `.agents` skill locations. |
 
 Command forms currently used by the providers are:
 
@@ -208,6 +226,8 @@ Current session sync roots are:
 | Codex | `~/.codex/sessions/**/*.jsonl` | Uses `~/.codex/session_index.jsonl` for title lookup and the last `task_complete` message for a fallback title. |
 | Cursor | `~/.cursor/projects/**/*.jsonl` | Uses sibling `worker.log` to recover `workspacePath`, then derives the session title from the first user prompt. |
 | OpenCode | `~/.local/share/opencode/opencode.db` | Reads active sessions/messages/parts from OpenCode's shared SQLite database and stores `jsonl_path` as `null` so deleting one app session cannot remove the shared DB. |
+| ZCode | `~/.zcode/cli/db/db.sqlite` (see `zcode-data-root.ts`) | Reads the engine's own SQLite session store; the synchronizer extends the shared `SqliteSessionSynchronizer` base. |
+| Antigravity | `conversation_summaries.db` under `~/.gemini/antigravity-cli` (see `antigravity-data-root.ts`) | Each summary row carries the path of its per-session brain transcript (`~/.gemini/antigravity/brain/.../transcript.jsonl`); also extends the shared SQLite synchronizer base. |
 
 8. Register the provider.
 
@@ -227,10 +247,12 @@ If the provider can run live chat sessions, update the runtime entrypoints too:
 If the provider is visible in the UI, update:
 
 - provider model fallback files under `server/modules/providers/list/<provider>/`
-- `src/components/chat/hooks/useChatProviderState.ts`
-- `src/components/chat/view/subcomponents/ProviderSelectionEmptyState.tsx`
-- `src/components/provider-auth/view/ProviderLoginModal.tsx`
-- `src/components/mcp/constants.ts`
+- `src/shared/providerCatalogFallback.ts` (fallback mirror + canonical order)
+- `src/modules/chat/hooks/useChatProviderState.ts`
+- `src/modules/chat/transcript/ProviderSelectionEmptyState.tsx`
+- `src/modules/provider-auth/ProviderLoginModal.tsx`
+- `src/shared/constants.ts` (MCP capability constants)
+- `src/shared/ui/LLMProviderLogo.tsx` and `src/shared/providerDisplay.ts`
 
 ## Minimal Wrapper Template
 
@@ -331,7 +353,9 @@ Requirements:
     - server/modules/providers/provider.registry.ts
     - server/modules/providers/provider.routes.ts
    - server/shared/types.ts LLMProvider
-   - src/types/app.ts LLMProvider
+   - src/shared/types.ts LLMProvider
+   - server/modules/providers/services/provider-capabilities.catalog.ts PROVIDER_CATALOG
+   - src/shared/providerCatalogFallback.ts PROVIDER_FALLBACK_CATALOG
 3) Mirror the nearest existing provider implementation for file naming, style,
    and error handling.
 4) Implement skills support with SkillsProvider and the current skill roots.
@@ -339,7 +363,7 @@ Requirements:
 6) Ensure sessions use unique ids, safe path handling, and correct pagination.
 7) Keep `sessions` and `sessionSynchronizer` separate.
 8) Run:
-   - npx eslint <touched files>
+   - npx oxlint <touched files>
    - npx tsc --noEmit -p server/tsconfig.json
 ```
 
@@ -348,8 +372,9 @@ Requirements:
 After adding or changing a provider, run the relevant checks:
 
 ```bash
-npx eslint server/modules/providers/**/*.ts server/shared/types.ts server/shared/interfaces.ts
+npm run lint
 npx tsc --noEmit -p server/tsconfig.json
+npx tsx --test "server/modules/providers/tests/*.test.ts"
 ```
 
 Useful tests in this repo:
@@ -366,8 +391,8 @@ alongside the implementation.
 - Adding provider files but forgetting `provider.registry.ts` or
   `provider.routes.ts`.
 - Adding a live runtime without exposing it from the provider wrapper.
-- Updating backend provider ids but not `src/types/app.ts` or the frontend
-  provider constants.
+- Updating backend provider ids but not `src/shared/types.ts`, the capability
+  catalog, or the frontend fallback mirror.
 - Omitting `runtime`, `skills`, or `sessionSynchronizer` from the wrapper.
 - Returning duplicate normalized message ids for split content.
 - Treating `limit === 0` as unbounded history.

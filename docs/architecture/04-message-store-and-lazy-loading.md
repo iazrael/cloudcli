@@ -1,5 +1,11 @@
 # The message store and lazy loading
 
+> **Fork note:** this fork extracted the store described below into a
+> framework-free module — `src/modules/chat/utils/sessionTimelineStore.ts`
+> (`SessionTimelineStore`), with `useSessionStore` reduced to a thin React
+> adapter. The two-paths mental model and the slot shape still hold; for the
+> current invariants and the React boundary see `docs/core/chat.md`.
+
 ## In one paragraph
 
 Every transcript this tab has opened lives in one `Map<sessionId, SessionSlot>` inside

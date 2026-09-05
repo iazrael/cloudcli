@@ -4,6 +4,12 @@
 fighting the user. Paging and row mounting are covered in
 [the message store and lazy loading](./04-message-store-and-lazy-loading.md).*
 
+> **Fork note:** this fork changed the mechanics — `content-visibility: auto` was removed
+> from message rows (its estimated/real height flip self-sustained oscillation against the
+> anchor compensation), replaced by native anchoring (`useContinuousScrollAnchor`) and
+> lazy row mounting with stable row identity. The writer-coordination rules below still
+> apply; for the current behavior see `docs/core/chat.md` and `docs/core/frontend.md`.
+
 ## In one paragraph
 
 The transcript is one scrolling `div`, and five separate pieces of code write its
