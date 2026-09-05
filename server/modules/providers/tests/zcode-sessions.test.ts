@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { existsSync, readFileSync } from 'node:fs';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -553,6 +554,79 @@ test('fetchHistory hides model-only injections and surfaces compaction summaries
       result.messages.some((message) => message.role === 'user' && message.content === 'List the files'),
       true
     );
+  });
+});
+
+test('fetchHistory materializes user image attachments into the asset store', async () => {
+  await withZCodeStorage(async (storageDir) => {
+    // The shared asset store lives under the user's home; redirect HOME into
+    // the temp storage dir so the test never touches the real ~/.cloudcli.
+    const previousHome = process.env.HOME;
+    process.env.HOME = storageDir;
+
+    try {
+      await createFixtureDatabase(storageDir, 'sess_img');
+
+      // Engine artifact: a data-URL file whose filename ends with the
+      // artifact name referenced by the file part.
+      const artifactsDir = path.join(storageDir, 'cli', 'artifacts', 'sess_img');
+      await mkdir(artifactsDir, { recursive: true });
+      const pngBase64 = Buffer.from('fake-png-bytes').toString('base64');
+      await writeFile(
+        path.join(artifactsDir, 'prompt-attachment-upload-x-tool-result-abc123.txt'),
+        `data:image/png;base64,${pngBase64}`,
+      );
+
+      const db = new Database(path.join(storageDir, 'cli', 'db', 'db.sqlite'));
+      try {
+        const insertMessage = db.prepare(
+          'INSERT INTO message (id, session_id, time_created, time_updated, data, sequence) VALUES (?, ?, ?, ?, ?, ?)'
+        );
+        const insertPart = db.prepare(
+          'INSERT INTO part (id, message_id, session_id, time_created, time_updated, data, sequence) VALUES (?, ?, ?, ?, ?, ?, ?)'
+        );
+        insertMessage.run('msg_img', 'sess_img', 4000, 4000, JSON.stringify({ role: 'user' }), 4);
+        insertPart.run(
+          'part_img_text', 'msg_img', 'sess_img', 4000, 4000,
+          JSON.stringify({ type: 'text', text: 'look at this' }),
+          0
+        );
+        insertPart.run(
+          'part_img_file', 'msg_img', 'sess_img', 4001, 4001,
+          JSON.stringify({
+            type: 'file',
+            mime: 'image/png',
+            url: 'zcode-artifact://sess_img/tool-result-abc123',
+            metadata: { storageKind: 'artifact', artifactUri: 'zcode-artifact://sess_img/tool-result-abc123' },
+          }),
+          1
+        );
+      } finally {
+        db.close();
+      }
+
+      const provider = new ZCodeSessionsProvider();
+      const result = await provider.fetchHistory('sess_img');
+
+      const imageMessage = result.messages.find(
+        (message) => message.role === 'user' && message.content === 'look at this'
+      );
+      assert.ok(imageMessage);
+      const images = imageMessage.images as Array<{ path: string; mimeType: string }>;
+      assert.equal(images.length, 1);
+      assert.equal(images[0].path, 'zcode-sess_img-tool-result-abc123.png');
+      assert.equal(images[0].mimeType, 'image/png');
+
+      const assetFile = path.join(storageDir, '.cloudcli', 'assets', images[0].path);
+      assert.equal(existsSync(assetFile), true);
+      assert.equal(readFileSync(assetFile, 'utf8'), 'fake-png-bytes');
+    } finally {
+      if (previousHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = previousHome;
+      }
+    }
   });
 });
 

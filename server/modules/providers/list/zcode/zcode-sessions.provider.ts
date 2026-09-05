@@ -25,7 +25,8 @@ import {
   sliceTailPage,
 } from '@/shared/utils.js';
 
-import { getZCodeDatabasePath } from './zcode-data-root.js';
+import { getZCodeDatabasePath, getZCodeStorageDir } from './zcode-data-root.js';
+import { getGlobalImageAssetsDir } from '@/shared/image-attachments.js';
 
 const PROVIDER = 'zcode';
 
@@ -191,6 +192,94 @@ function tryParseJsonObject(text: string): Record<string, unknown> | null {
   } catch {
     return null;
   }
+}
+
+const IMAGE_MIME_EXTENSIONS: Record<string, string> = {
+  'image/png': '.png',
+  'image/jpeg': '.jpg',
+  'image/webp': '.webp',
+  'image/gif': '.gif',
+};
+
+/**
+ * Materializes one zcode file part into the shared image assets store.
+ *
+ * ZCode persists user-uploaded images as `{type:"file", mime, url}` parts
+ * whose `zcode-artifact://<sessionId>/<name>` URI references a data-URL file
+ * under the engine's artifact store (`<storage>/cli/artifacts/<sessionId>/`,
+ * where the filename ends with `<name>`). The image is decoded once and
+ * copied into `~/.cloudcli/assets` under a session-scoped name so the chat UI
+ * loads it through the shared assets route. Returns the asset descriptor, or
+ * null for non-images, missing sources, or malformed references.
+ */
+function materializeZcodeArtifactImage(
+  partData: AnyRecord,
+  sessionId: string,
+): { path: string; mimeType: string } | null {
+  const mimeType = (readOptionalString(partData.mime) ?? 'image/png').toLowerCase();
+  if (!mimeType.startsWith('image/')) {
+    return null;
+  }
+
+  const uri = readOptionalString(partData.url)
+    ?? readOptionalString(partData.artifactUri)
+    ?? '';
+  const artifactMatch = /^zcode-artifact:\/\/([^/\s]+)\/([^\s]+)$/.exec(uri);
+  if (!artifactMatch) {
+    return null;
+  }
+  const [, artifactSessionId, artifactName] = artifactMatch;
+  // Both segments become path parts below; refuse traversal outright.
+  if (artifactSessionId.includes('..') || artifactName.includes('..') || artifactName.includes('/')) {
+    return null;
+  }
+
+  const artifactsDir = path.join(getZCodeStorageDir(), 'cli', 'artifacts', artifactSessionId);
+  let artifactFile: string | null = null;
+  try {
+    // Artifact filenames carry engine-internal prefixes and a .txt extension
+    // (e.g. `prompt-attachment-upload-…-<name>.txt`), so match on containment
+    // — the uuid in the name is unique enough.
+    for (const entry of fsSync.readdirSync(artifactsDir)) {
+      if (entry.includes(artifactName)) {
+        artifactFile = path.join(artifactsDir, entry);
+        break;
+      }
+    }
+  } catch {
+    return null;
+  }
+  if (!artifactFile) {
+    return null;
+  }
+
+  let content: string;
+  try {
+    content = fsSync.readFileSync(artifactFile, 'utf8').trim();
+  } catch {
+    return null;
+  }
+  const dataUrlMatch = /^data:([^;,]+);base64,(.+)$/s.exec(content);
+  const resolvedMime = dataUrlMatch?.[1] ?? mimeType;
+  const base64Payload = dataUrlMatch?.[2];
+  if (!base64Payload) {
+    return null;
+  }
+
+  const assetsDir = getGlobalImageAssetsDir();
+  const extension = IMAGE_MIME_EXTENSIONS[resolvedMime] ?? '.png';
+  const assetFilename = `zcode-${sessionId.slice(0, 8)}-${artifactName}${extension}`;
+  const assetPath = path.join(assetsDir, assetFilename);
+  try {
+    if (!fsSync.existsSync(assetPath)) {
+      fsSync.mkdirSync(assetsDir, { recursive: true });
+      fsSync.writeFileSync(assetPath, Buffer.from(base64Payload, 'base64'));
+    }
+  } catch {
+    return null;
+  }
+
+  return { path: assetFilename, mimeType: resolvedMime };
 }
 
 /**
@@ -706,6 +795,9 @@ export class ZCodeSessionsProvider implements IProviderSessions {
     const emittedMessageErrors = new Set<string>();
     const emittedUserTexts = new Set<string>();
     const emittedSummaryMessages = new Set<string>();
+    // Index of each pushed text row by source message id, so a file part can
+    // attach its materialized image onto the message's existing text row.
+    const textRowIndexByMessageId = new Map<string, number>();
 
     for (const row of rows) {
       const timestamp = normalizeProviderTimestamp(row.part_time_created ?? row.message_time_created);
@@ -800,6 +892,35 @@ export class ZCodeSessionsProvider implements IProviderSessions {
             role: messageRole === 'user' ? 'user' : 'assistant',
             content,
           }));
+          textRowIndexByMessageId.set(row.message_id, normalized.length - 1);
+        }
+        continue;
+      }
+
+      // Handle file parts — user-uploaded images. ZCode stores the binary in
+      // its artifact store and references it via a zcode-artifact:// URI;
+      // materialize it into the shared asset store and attach it to the
+      // message's text row (or as a standalone image-only user message).
+      if (partType === 'file' || partType === 'image') {
+        const image = materializeZcodeArtifactImage(partData, sessionId);
+        if (image) {
+          const existingIndex = textRowIndexByMessageId.get(row.message_id);
+          if (existingIndex !== undefined) {
+            const target = normalized[existingIndex];
+            const existingImages = Array.isArray(target.images) ? target.images : [];
+            target.images = [...existingImages, image];
+          } else if (messageRole === 'user') {
+            normalized.push(createNormalizedMessage({
+              id: baseId,
+              sessionId,
+              timestamp,
+              provider: PROVIDER,
+              kind: 'text',
+              role: 'user',
+              content: '',
+              images: [image],
+            }));
+          }
         }
         continue;
       }
