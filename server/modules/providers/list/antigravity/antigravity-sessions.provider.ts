@@ -155,6 +155,24 @@ function cleanToolArgValue(val: unknown): unknown {
 }
 
 /**
+ * Extracts a human-readable message from a tool step's `error` field. agy
+ * sends either a plain string or a structured object such as
+ * `{ type: 'TOOL_ERROR', message: 'search path ... does not exist' }`; only
+ * the object's `message` carries the actionable text, so reading the field as
+ * a plain string loses it and the transcript degenerates to a generic
+ * 'Tool execution error' fallback.
+ */
+function readToolErrorMessage(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    return readOptionalString(value);
+  }
+  if (value && typeof value === 'object') {
+    return readOptionalString((value as { message?: unknown }).message);
+  }
+  return undefined;
+}
+
+/**
  * Strips outer quoted strings that Antigravity CLI occasionally emits in transcript tool arguments.
  */
 export function normalizeAntigravityToolArgs(args: unknown): AnyRecord {
@@ -333,7 +351,7 @@ export class AntigravitySessionsProvider implements IProviderSessions {
           id: generateMessageId(PROVIDER),
           kind: 'tool_result',
           toolId,
-          content: isError ? (readOptionalString(toolInfo?.error) ?? 'Tool execution error') : unwrapSystemMessageContent(output),
+          content: isError ? (readToolErrorMessage(toolInfo?.error) ?? 'Tool execution error') : unwrapSystemMessageContent(output),
           isError,
           sessionId,
           provider: PROVIDER,

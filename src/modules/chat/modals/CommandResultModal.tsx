@@ -38,11 +38,16 @@ import type {
   HelpCommandData,
   ModelCommandData,
   ProviderQuotaData,
+  QuotaBucket,
   QuotaGroup,
   StatusCommandData,
 } from '@/modules/chat/hooks/useChatComposerState';
 import { authenticatedFetch } from '@/shared/api';
-import { buildProviderQuotaUrl, resolveQuotaProvider } from '@/modules/chat/utils/providerQuota';
+import {
+  buildProviderQuotaUrl,
+  resolveIsActiveQuotaGroup,
+  resolveQuotaProvider,
+} from '@/modules/chat/utils/providerQuota';
 import { getProviderDisplayName, PROVIDER_DISPLAY_NAMES } from '@/shared/providerDisplay';
 
 import ModelLibraryPanel from '@/modules/chat/modals/ModelLibraryPanel';
@@ -469,6 +474,67 @@ function getQuotaTone(remainingFraction: number) {
   };
 }
 
+function resolveBucketTitle(bucket: QuotaBucket, t: TFunction): string {
+  const isFiveHour = bucket.window === '5h' || bucket.id.includes('5h');
+  if (isFiveHour) {
+    return t('cost.fiveHourWindow', { defaultValue: '5 小时滑动窗口限额' });
+  }
+
+  const isWeekly = bucket.window === 'weekly' || bucket.id.includes('weekly');
+  if (isWeekly) {
+    return t('cost.weeklyWindow', { defaultValue: '周配额' });
+  }
+
+  const isCycle = bucket.window === 'cycle' || bucket.id.includes('calls');
+  if (isCycle) {
+    return t('cost.cycleWindow', { defaultValue: '周期调用限额' });
+  }
+
+  return bucket.name;
+}
+
+function resolveBucketDescription(bucket: QuotaBucket, t: TFunction): string {
+  const isCycle = bucket.window === 'cycle' || bucket.id.includes('calls');
+  if (isCycle) {
+    const desc = bucket.description || '';
+    const enMatch = desc.match(/(\d+)\s+of\s+(\d+)\s+calls/i);
+    const zhMatch = desc.match(/总计\s*(\d+)\s*次[，,]\s*剩余\s*(\d+)\s*次/);
+
+    if (enMatch) {
+      const remaining = Number(enMatch[1]);
+      const total = Number(enMatch[2]);
+      return t('cost.cycleCallsDesc', { total, remaining, defaultValue: `${remaining} of ${total} calls remaining` });
+    }
+    if (zhMatch) {
+      const total = Number(zhMatch[1]);
+      const remaining = Number(zhMatch[2]);
+      return t('cost.cycleCallsDesc', { total, remaining, defaultValue: `总计 ${total} 次，剩余 ${remaining} 次` });
+    }
+    return t('cost.cycleGeneralDesc', { defaultValue: desc || '周期内模型与工具调用配额' });
+  }
+
+  const isFiveHour = bucket.window === '5h' || bucket.id.includes('5h');
+  if (isFiveHour && (bucket.description?.includes('token') || bucket.id.includes('tokens'))) {
+    return t('cost.fiveHourRollingDesc', { defaultValue: '5 小时滑动窗口 Token 配额' });
+  }
+
+  return bucket.description || bucket.name;
+}
+
+function resolveGroupDescription(description: string | undefined, t: TFunction): string | undefined {
+  if (!description) return undefined;
+  if (description.includes('BigModel')) {
+    return t('cost.groupDescBigModel', { defaultValue: description });
+  }
+  if (description.includes('Z.AI')) {
+    return t('cost.groupDescZai', { defaultValue: description });
+  }
+  if (description.includes('Codex')) {
+    return t('cost.groupDescCodex', { defaultValue: description });
+  }
+  return description;
+}
+
 function QuotaGroupCard({
   group,
   defaultExpanded,
@@ -482,6 +548,19 @@ function QuotaGroupCard({
 }) {
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
 
+  // 统一排序：短周期滑动窗口在前（5h），长周期配额（周配额、周期限额）在后
+  const sortedBuckets = useMemo(() => {
+    return [...group.buckets].sort((a, b) => {
+      const isAShort = a.window === '5h' || a.id.includes('5h') || a.id.includes('tokens');
+      const isBShort = b.window === '5h' || b.id.includes('5h') || b.id.includes('tokens');
+      if (isAShort && !isBShort) return -1;
+      if (!isAShort && isBShort) return 1;
+      return 0;
+    });
+  }, [group.buckets]);
+
+  const groupDescription = resolveGroupDescription(group.description, t);
+
   return (
     <div className="overflow-hidden rounded-2xl border border-border/70 bg-background/75 transition-all duration-200">
       <button
@@ -489,7 +568,7 @@ function QuotaGroupCard({
         onClick={() => setIsExpanded((previous) => !previous)}
         className="flex w-full items-center justify-between p-4 text-left transition-colors hover:bg-muted/25"
       >
-        <div className="flex items-center gap-3">
+        <div className="flex min-w-0 items-center gap-3">
           <span className="grid h-8 w-8 shrink-0 place-items-center rounded-xl border border-primary/20 bg-primary/10 text-primary">
             <Gauge className="h-4 w-4" />
           </span>
@@ -506,35 +585,32 @@ function QuotaGroupCard({
                 </span>
               )}
             </div>
-            {group.description && (
-              <p className="mt-0.5 truncate text-xs text-muted-foreground">{group.description}</p>
+            {groupDescription && (
+              <p className="mt-0.5 truncate text-xs text-muted-foreground">{groupDescription}</p>
             )}
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5 pl-3 text-xs text-muted-foreground">
           <span>{isExpanded ? t('cost.collapse', { defaultValue: '收起' }) : t('cost.expand', { defaultValue: '展开查看' })}</span>
           {isExpanded ? (
-            <ChevronDown className="h-4 w-4" />
+            <ChevronDown className="h-4 w-4 transition-transform duration-200" />
           ) : (
-            <ChevronRight className="h-4 w-4" />
+            <ChevronRight className="h-4 w-4 transition-transform duration-200" />
           )}
         </div>
       </button>
 
       {isExpanded && (
         <div className="space-y-3 border-t border-border/60 bg-muted/10 p-4">
-          {group.buckets.map((bucket) => {
+          {sortedBuckets.map((bucket) => {
             const percent = Math.round(bucket.remainingFraction * 100);
             const tone = getQuotaTone(bucket.remainingFraction);
             const isFiveHour = bucket.window === '5h' || bucket.id.includes('5h');
             const isWeekly = bucket.window === 'weekly' || bucket.id.includes('weekly');
             const countdown = formatRemainingCountdown(t, bucket.resetTime);
             const Icon = isFiveHour ? Clock : isWeekly ? Calendar : Timer;
-            const limitTitle = isFiveHour
-              ? t('cost.fiveHourWindow', { defaultValue: '5 小时滑动窗口限额' })
-              : isWeekly
-                ? t('cost.weeklyWindow', { defaultValue: '周配额' })
-                : bucket.name;
+            const limitTitle = resolveBucketTitle(bucket, t);
+            const limitDesc = resolveBucketDescription(bucket, t);
 
             return (
               <div key={bucket.id} className="shadow-xs space-y-2 rounded-xl border border-border/60 bg-background/80 p-3">
@@ -560,7 +636,7 @@ function QuotaGroupCard({
 
                 {/* Subtitle / Description & Reset Countdown */}
                 <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
-                  <span className="truncate">{bucket.description || bucket.name}</span>
+                  <span className="truncate">{limitDesc}</span>
                   {countdown && (
                     <span className="shrink-0 font-medium text-foreground/90">
                       {countdown}
@@ -666,9 +742,6 @@ function CostContent({ data }: { data: CostCommandData }) {
   ];
 
   const quotaGroups = quotaData?.groups ?? [];
-  const normalizedModel = (data.model || '').toLowerCase();
-  const isClaudeOrGpt = normalizedModel.includes('claude') || normalizedModel.includes('gpt');
-  const isGemini = normalizedModel.includes('gemini');
 
   return (
     <div className="scrollbar-thin h-full min-h-0 space-y-4 overflow-y-auto pr-1">
@@ -759,13 +832,11 @@ function CostContent({ data }: { data: CostCommandData }) {
           {!loadingQuota && quotaGroups.length > 0 && (
             <div className="space-y-3">
               {quotaGroups.map((group, index) => {
-                const groupNameLower = group.name.toLowerCase();
-                let isCurrent = data.provider === 'codex' && index === 0;
-                if (!isCurrent && (groupNameLower.includes('claude') || groupNameLower.includes('gpt'))) {
-                  isCurrent = isClaudeOrGpt;
-                } else if (groupNameLower.includes('gemini')) {
-                  isCurrent = isGemini;
-                }
+                const isCurrent = resolveIsActiveQuotaGroup(
+                  data.model,
+                  group,
+                  quotaGroups.length,
+                );
 
                 return (
                   <QuotaGroupCard

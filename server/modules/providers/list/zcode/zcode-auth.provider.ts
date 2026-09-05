@@ -1,77 +1,13 @@
-import { readFile } from 'node:fs/promises';
-import path from 'node:path';
-
 import type { IProviderAuth } from '@/shared/interfaces.js';
-import type { ProviderAuthStatus } from '@/shared/types.js';
-import { readObjectRecord } from '@/shared/utils.js';
+import type { ProviderAuthStatus, ProviderQuotaData } from '@/shared/types.js';
 
-import { getZCodeStorageDir } from './zcode-data-root.js';
-
+import { readDecryptedZCodeCredentials } from './zcode-credentials.js';
 import { getEngineVersion, tryResolveEnginePath } from './zcode-engine-path.js';
+import { fetchZCodeQuota } from './zcode-quota.provider.js';
 
 /**
- * Reads ZCode OAuth credentials from the encrypted credential store.
- *
- * Phase 0.2 findings: credentials live at `<storage>/v2/credentials.json` in
- * the encrypted `enc:v1:<payload>.<salt>.<iv>` format, keyed by entries such
- * as `oauth:bigmodel:access_token` and `zcodejwttoken`. Because the payload
- * is encrypted, detection is a presence check only and the user email cannot
- * be extracted (returned as null per integration plan §3.2.4).
- */
-const readZCodeCredentials = async (): Promise<{
-  authenticated: boolean;
-  method: string | null;
-  error?: string;
-}> => {
-  const credPath = path.join(getZCodeStorageDir(), 'v2', 'credentials.json');
-
-  try {
-    const content = await readFile(credPath, 'utf8');
-    const credentials = readObjectRecord(JSON.parse(content));
-
-    if (!credentials) {
-      return {
-        authenticated: false,
-        method: null,
-        error: 'ZCode credentials file is unreadable. Run the login command again.',
-      };
-    }
-
-    const hasAccessToken = typeof credentials['oauth:bigmodel:access_token'] === 'string'
-      || typeof credentials['zcodejwttoken'] === 'string';
-
-    if (!hasAccessToken) {
-      return {
-        authenticated: false,
-        method: null,
-        error: 'No ZCode login credentials found. Run the login command.',
-      };
-    }
-
-    return {
-      authenticated: true,
-      method: 'Z.AI OAuth',
-    };
-  } catch (error) {
-    let errorMessage = 'Unable to read ZCode credentials. Run the login command.';
-
-    if (error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT') {
-      errorMessage = 'ZCode credentials not found. Run the login command.';
-    } else if (error instanceof SyntaxError) {
-      errorMessage = 'ZCode credentials file is corrupted. Run the login command again.';
-    }
-
-    return {
-      authenticated: false,
-      method: null,
-      error: errorMessage,
-    };
-  }
-};
-
-/**
- * ZCode authentication provider implementing installation and credential
- * detection per integration plan §3.2.4.
+ * ZCode authentication provider implementing installation, credential
+ * detection, and account quota retrieval.
  */
 export class ZCodeProviderAuth implements IProviderAuth {
   /**
@@ -96,13 +32,13 @@ export class ZCodeProviderAuth implements IProviderAuth {
       };
     }
 
-    const credentials = await readZCodeCredentials();
+    const credentials = await readDecryptedZCodeCredentials();
 
     return {
       installed: true,
       provider: 'zcode',
       authenticated: credentials.authenticated,
-      email: null,
+      email: credentials.email,
       method: credentials.authenticated
         ? credentials.method
         : getEngineVersion(),
@@ -110,4 +46,14 @@ export class ZCodeProviderAuth implements IProviderAuth {
       loginCommand: `node ${enginePath} login`,
     };
   }
+
+  /**
+   * Retrieves account-level quota status (5-hour and weekly limits) for ZCode.
+   *
+   * Consumer: the provider token-usage service (GET /providers/quota).
+   */
+  async getQuota(options?: { forceRefresh?: boolean }): Promise<ProviderQuotaData | null> {
+    return fetchZCodeQuota(options);
+  }
 }
+

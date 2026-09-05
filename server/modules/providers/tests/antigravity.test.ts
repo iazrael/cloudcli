@@ -475,6 +475,53 @@ test('AntigravitySessionsProvider normalizes stream-json events', () => {
   assert.equal(toolResultMsg[0]?.content, 'file content here');
   assert.equal(toolResultMsg[0]?.isError, false);
 
+  // agy reports tool failures with a structured error object; its `message`
+  // must reach the transcript instead of the generic fallback.
+  const toolErrorMsg = sessions.normalizeMessage({
+    event: 'step_update',
+    step_update: {
+      step_index: 5,
+      state: 'ERROR',
+      step_type: 'tool',
+      tool_name: 'grep_search',
+      tool_info: {
+        parameters: { Query: 'currentGroup', SearchPath: '/test/missing' },
+        error: { type: 'TOOL_ERROR', message: 'search path file:///test/missing does not exist' },
+      },
+    },
+  }, 'test-conv-123');
+  assert.equal(toolErrorMsg.length, 1);
+  assert.equal(toolErrorMsg[0]?.kind, 'tool_result');
+  assert.equal(toolErrorMsg[0]?.content, 'search path file:///test/missing does not exist');
+  assert.equal(toolErrorMsg[0]?.isError, true);
+
+  // Plain-string errors keep working.
+  const toolErrorStringMsg = sessions.normalizeMessage({
+    event: 'step_update',
+    step_update: {
+      step_index: 6,
+      state: 'ERROR',
+      step_type: 'tool',
+      tool_name: 'run_command',
+      tool_info: { error: 'command failed' },
+    },
+  }, 'test-conv-123');
+  assert.equal(toolErrorStringMsg[0]?.content, 'command failed');
+  assert.equal(toolErrorStringMsg[0]?.isError, true);
+
+  // A malformed error payload still falls back to the generic copy.
+  const toolErrorEmptyMsg = sessions.normalizeMessage({
+    event: 'step_update',
+    step_update: {
+      step_index: 7,
+      state: 'ERROR',
+      step_type: 'tool',
+      tool_name: 'view_file',
+      tool_info: { error: { type: 'TOOL_ERROR' } },
+    },
+  }, 'test-conv-123');
+  assert.equal(toolErrorEmptyMsg[0]?.content, 'Tool execution error');
+
   // Test result completion
   const completeMsg = sessions.normalizeMessage({
     event: 'result',

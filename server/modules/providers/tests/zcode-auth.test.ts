@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { ZCodeProviderAuth } from '@/modules/providers/list/zcode/zcode-auth.provider.js';
+import { encryptZCodeCredentialValue } from '@/modules/providers/list/zcode/zcode-credentials.js';
 import { clearEnginePathCache } from '@/modules/providers/list/zcode/zcode-engine-path.js';
 
 /**
@@ -51,8 +52,8 @@ test('getStatus reports authenticated when OAuth credentials exist', async () =>
     await writeFile(
       path.join(storageDir, 'v2', 'credentials.json'),
       JSON.stringify({
-        'oauth:bigmodel:access_token': 'enc:v1:abc.def.ghi',
-        'zcodejwttoken': 'enc:v1:jwt.salt.iv',
+        'oauth:bigmodel:access_token': encryptZCodeCredentialValue('real-access-token'),
+        'zcodejwttoken': encryptZCodeCredentialValue('real-jwt-token'),
       }),
       'utf8'
     );
