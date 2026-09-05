@@ -89,7 +89,6 @@
       "plan": "Mode planification"
     },
     "descriptions": {
-      "default": "Seules les commandes de confiance (ls, cat, grep, git status, etc.) s'exécutent automatiquement. Les autres commandes sont ignorées. Peut écrire dans l'espace de travail.",
       "auto": "Un classifieur de modèle décide pour chaque appel d'outil d'approuver ou refuser. Mode mains libres, mais plus sûr que le contournement — des refus peuvent toujours se produire.",
       "acceptEdits": "Toutes les commandes s'exécutent automatiquement dans l'espace de travail. Mode entièrement automatique avec exécution sandboxée.",
       "bypassPermissions": "Accès système complet sans restrictions. Toutes les commandes s'exécutent automatiquement avec accès disque et réseau complet. À utiliser avec précaution.",

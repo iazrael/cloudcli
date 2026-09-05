@@ -388,8 +388,7 @@
       "description": "Codexがファイルの変更やコマンドの実行を処理する方法を制御します",
       "modes": {
         "default": {
-          "title": "デフォルト",
-          "description": "信頼されたコマンド（ls、cat、grep、git statusなど）のみ自動実行。その他のコマンドはスキップ。ワークスペースへの書き込みは可能。"
+          "title": "デフォルト"
         },
         "acceptEdits": {
           "title": "編集を許可",
@@ -402,7 +401,6 @@
       },
       "technicalDetails": "技術的な詳細",
       "technicalInfo": {
-        "default": "sandboxMode=workspace-write, approvalPolicy=untrusted。信頼されたコマンド: cat, cd, grep, head, ls, pwd, tail, git status/log/diff/show, find（-execなし）など。",
         "acceptEdits": "sandboxMode=workspace-write, approvalPolicy=never。すべてのコマンドがプロジェクトディレクトリ内で自動実行。",
         "bypassPermissions": "sandboxMode=danger-full-access, approvalPolicy=never。完全なシステムアクセス。信頼された環境でのみ使用してください。",
         "overrideNote": "チャットインターフェースのモードボタンを使用してセッションごとに上書きできます。"

@@ -90,7 +90,7 @@
       "plan": "Plan Mode"
     },
     "descriptions": {
-      "default": "Only trusted commands (ls, cat, grep, git status, etc.) run automatically. Other commands are skipped. Can write to workspace.",
+      "default": "Commands run automatically inside the workspace sandbox; actions that need to go beyond it will ask for your approval first.",
       "auto": "A model classifier decides per tool call whether to approve or deny. Hands-off, but safer than Bypass — denials still happen.",
       "acceptEdits": "All commands run automatically within the workspace. Full auto mode with sandboxed execution.",
       "bypassPermissions": "Full system access with no restrictions. All commands run automatically with full disk and network access. Use with caution.",

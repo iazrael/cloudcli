@@ -89,7 +89,6 @@
       "plan": "Modo de planificación"
     },
     "descriptions": {
-      "default": "Solo los comandos de confianza (ls, cat, grep, git status, etc.) se ejecutan automáticamente. Los demás comandos se omiten. Puede escribir en el espacio de trabajo.",
       "auto": "Un clasificador del modelo decide en cada llamada si aprobar o denegar. Sin intervención, pero más seguro que Omitir — las denegaciones siguen ocurriendo.",
       "acceptEdits": "Todos los comandos se ejecutan automáticamente dentro del espacio de trabajo. Modo automático completo con ejecución en sandbox.",
       "bypassPermissions": "Acceso completo al sistema sin restricciones. Todos los comandos se ejecutan automáticamente con acceso total a disco y red. Úsalo con precaución.",

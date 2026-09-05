@@ -388,8 +388,7 @@
       "description": "Controlla come Codex gestisce le modifiche ai file e l'esecuzione dei comandi",
       "modes": {
         "default": {
-          "title": "Predefinito",
-          "description": "Solo i comandi attendibili (ls, cat, grep, git status, ecc.) vengono eseguiti automaticamente. Gli altri comandi vengono saltati. Può scrivere nell'area di lavoro."
+          "title": "Predefinito"
         },
         "acceptEdits": {
           "title": "Accetta modifiche",
@@ -402,7 +401,6 @@
       },
       "technicalDetails": "Dettagli tecnici",
       "technicalInfo": {
-        "default": "sandboxMode=workspace-write, approvalPolicy=untrusted. Comandi attendibili: cat, cd, grep, head, ls, pwd, tail, git status/log/diff/show, find (senza -exec), ecc.",
         "acceptEdits": "sandboxMode=workspace-write, approvalPolicy=never. Tutti i comandi vengono auto-eseguiti nella directory del progetto.",
         "bypassPermissions": "sandboxMode=danger-full-access, approvalPolicy=never. Accesso completo al sistema, usa solo in ambienti attendibili.",
         "overrideNote": "Puoi sovrascrivere questa impostazione per sessione usando il pulsante modalità nell'interfaccia chat."

@@ -391,8 +391,7 @@
       "description": "Contrôle comment Codex gère les modifications de fichiers et l'exécution des commandes",
       "modes": {
         "default": {
-          "title": "Par défaut",
-          "description": "Seules les commandes de confiance (ls, cat, grep, git status, etc.) s'exécutent automatiquement. Les autres sont ignorées. Peut écrire dans l'espace de travail."
+          "title": "Par défaut"
         },
         "acceptEdits": {
           "title": "Accepter les modifications",
@@ -405,7 +404,6 @@
       },
       "technicalDetails": "Détails techniques",
       "technicalInfo": {
-        "default": "sandboxMode=workspace-write, approvalPolicy=untrusted. Commandes de confiance : cat, cd, grep, head, ls, pwd, tail, git status/log/diff/show, find (sans -exec), etc.",
         "acceptEdits": "sandboxMode=workspace-write, approvalPolicy=never. Toutes les commandes s'exécutent automatiquement dans le répertoire du projet.",
         "bypassPermissions": "sandboxMode=danger-full-access, approvalPolicy=never. Accès système complet, à utiliser uniquement dans des environnements de confiance.",
         "overrideNote": "Vous pouvez remplacer ce mode par session via le bouton de mode dans l'interface de chat."
