@@ -22,12 +22,11 @@ import type {
   ProviderRuntimeContext,
   ProviderRuntimeWriter,
 } from '@/shared/types.js';
+import { closeConnection, initializeDatabase } from '@/modules/database/index.js';
 
 import { protocolClient } from '../list/zcode/zcode-protocol.client.js';
 import { ZCodeRuntimeProvider, zcodeRuntimePermissions } from '../list/zcode/zcode-runtime.provider.js';
 import { ZCodeSessionsProvider } from '../list/zcode/zcode-sessions.provider.js';
-
-import { closeConnection, initializeDatabase } from '@/modules/database/index.js';
 
 const stubDir = fsSync.mkdtempSync(path.join(os.tmpdir(), 'zcode-stub-'));
 const stubPath = path.join(stubDir, 'zcode-stub.cjs');

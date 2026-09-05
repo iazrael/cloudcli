@@ -34,7 +34,6 @@ import type {
 } from '@/shared/types.js';
 import { createCompleteMessage, createNormalizedMessage, generateMessageId, readOptionalString } from '@/shared/utils.js';
 import { notifyRunFailed, notifyRunStopped } from '@/modules/notifications/index.js';
-
 import { sessionsDb } from '@/modules/database/index.js';
 
 import { SESSION_LOST_METHOD } from './zcode-codec.js';
