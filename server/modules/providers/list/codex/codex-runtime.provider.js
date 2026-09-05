@@ -273,7 +273,10 @@ function mapPermissionModeToCodexOptions(permissionMode) {
     default:
       return {
         sandboxMode: 'workspace-write',
-        approvalPolicy: 'untrusted'
+        // Codex 0.153 removed the `untrusted` approval policy even though the
+        // SDK's types still list it; `on-request` keeps a live approval gate
+        // in front of sandbox escalations.
+        approvalPolicy: 'on-request'
       };
   }
 }
