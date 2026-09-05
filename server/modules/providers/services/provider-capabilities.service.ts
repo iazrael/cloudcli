@@ -1,4 +1,7 @@
 import type { LLMProvider } from '@/shared/types.js';
+import { providerRegistry } from '@/modules/providers/provider.registry.js';
+
+import { PROVIDER_CATALOG } from './provider-capabilities.catalog.js';
 
 /**
  * Static, backend-owned description of what one provider integration supports.
@@ -8,22 +11,15 @@ import type { LLMProvider } from '@/shared/types.js';
  * free of per-provider conditionals. New provider features should be exposed
  * here instead of branching on the provider id in React components.
  */
-type ProviderCapabilities = {
+export type ProviderCapabilities = {
   provider: LLMProvider;
-  /** Permission modes the provider runtime understands, in cycle order. */
   permissionModes: string[];
   defaultPermissionMode: string;
-  /** Whether image attachments can be included in a chat.send. */
   supportsImages: boolean;
-  /** Whether general file attachments can be included in a chat.send. */
   supportsFiles: boolean;
-  /** Whether an in-flight run can be cancelled via chat.abort. */
   supportsAbort: boolean;
-  /** Whether interactive tool permission prompts can reach the UI. */
   supportsPermissionRequests: boolean;
-  /** Whether the token-usage endpoint has data for this provider. */
   supportsTokenUsage: boolean;
-  /** Whether the provider runtime can accept model-level reasoning effort. */
   supportsEffort: boolean;
   /**
    * Whether an already-sent message can be replaced, which requires the
@@ -37,119 +33,62 @@ type ProviderCapabilities = {
 };
 
 /**
- * The capability matrix mirrors what each runtime actually implements today:
- * - permission modes match the option sets accepted by each CLI/SDK.
- * - only the Claude SDK integration surfaces interactive permission requests.
- * - Cursor has no token usage endpoint support (its store.db has no usage rows).
+ * Derives the capability matrix from the provider's registered facets instead
+ * of restating it by hand: an optional facet's presence IS the capability.
+ * `provider-capabilities.test.ts` pins the derived matrix to an explicit
+ * baseline, so a facet added or removed surfaces as a reviewed test delta
+ * rather than a silent capability change.
+ *
+ * - forking rides the optional `fork` facet (transcript branching).
+ * - message editing rides `sessions.resolveEditAnchor` (the anchor lookup the
+ *   edit flow needs; both integrations that have it also provide the rest).
+ * - the token-usage endpoint rides `sessions.getTokenUsage`.
+ * - interactive permission prompts ride the runtime's optional `permissions`
+ *   gateway (claude's SDK bridge; zcode's engine permission bridge).
  */
-const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
-  claude: {
-    provider: 'claude',
-    permissionModes: ['default', 'auto', 'acceptEdits', 'bypassPermissions', 'plan'],
-    defaultPermissionMode: 'default',
-    supportsImages: true,
-    supportsFiles: true,
-    supportsAbort: true,
-    supportsPermissionRequests: true,
-    supportsTokenUsage: true,
-    supportsEffort: true,
-    // `resumeSessionAt` re-runs a conversation truncated at a message, and
-    // `forkSession` copies a transcript prefix into a new session file.
-    supportsMessageEditing: true,
-    supportsSessionForking: true,
-  },
-  cursor: {
-    provider: 'cursor',
-    permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
-    defaultPermissionMode: 'default',
-    supportsImages: true,
-    supportsFiles: true,
-    supportsAbort: true,
-    supportsPermissionRequests: false,
-    supportsTokenUsage: false,
-    supportsEffort: false,
-    supportsMessageEditing: false,
-    supportsSessionForking: false,
-  },
-  codex: {
-    provider: 'codex',
-    permissionModes: ['default', 'acceptEdits', 'bypassPermissions'],
-    defaultPermissionMode: 'default',
-    supportsImages: true,
-    supportsFiles: true,
-    supportsAbort: true,
-    supportsPermissionRequests: false,
-    supportsTokenUsage: true,
-    supportsEffort: true,
-    // Not from the Codex SDK, which only starts and resumes threads: both ride
-    // the same CLI's `app-server` protocol, whose `thread/fork` copies a
-    // thread up to a chosen turn. Editing is that fork plus a new prompt,
-    // which is how Codex's own IDE clients do it.
-    supportsMessageEditing: true,
-    supportsSessionForking: true,
-  },
-  opencode: {
-    provider: 'opencode',
-    // Mapped by the runtime onto OpenCode's controls: `--agent plan` (plan),
-    // `--auto` (bypassPermissions) and the OPENCODE_PERMISSION env var
-    // (acceptEdits). See resolveOpenCodePermissionOptions in the OpenCode runtime adapter.
-    permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
-    defaultPermissionMode: 'default',
-    supportsImages: true,
-    supportsFiles: true,
-    supportsAbort: true,
-    supportsPermissionRequests: false,
-    supportsTokenUsage: true,
-    supportsEffort: true,
-    supportsMessageEditing: false,
-    supportsSessionForking: false,
-  },
-  zcode: {
-    provider: 'zcode',
-    // Mapped by the runtime onto ZCode's session/setMode modes: build
-    // (default), edit, plan and yolo. See PERMISSION_MODE_MAP in the
-    // zcode runtime adapter.
-    permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
-    defaultPermissionMode: 'default',
-    // Attachment parameters are not confirmed by the Phase 0 spike yet.
-    supportsImages: false,
-    supportsFiles: false,
-    supportsAbort: true,
-    // First version maps permission modes instead of per-tool approval.
-    supportsPermissionRequests: false,
-    supportsTokenUsage: true,
-    supportsEffort: true,
-    // No resolveEditAnchor/rewindSession facets: transcripts are append-only
-    // for this provider today.
-    supportsMessageEditing: false,
-    supportsSessionForking: false,
-  },
-  antigravity: {
-    provider: 'antigravity',
-    permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
-    defaultPermissionMode: 'default',
-    supportsImages: true,
-    supportsFiles: true,
-    supportsAbort: true,
-    supportsPermissionRequests: false,
-    supportsTokenUsage: true,
-    supportsEffort: true,
-    // No resolveEditAnchor/rewindSession facets: transcripts are append-only
-    // for this provider today.
-    supportsMessageEditing: false,
-    supportsSessionForking: false,
-  },
-};
+function deriveCapabilities(providerId: LLMProvider, provider: {
+  fork?: unknown;
+  runtime?: { permissions?: unknown };
+  sessions?: { resolveEditAnchor?: unknown; getTokenUsage?: unknown };
+}): ProviderCapabilities {
+  const catalog = PROVIDER_CATALOG[providerId];
+  return {
+    provider: providerId,
+    permissionModes: [...catalog.permissionModes],
+    defaultPermissionMode: catalog.defaultPermissionMode,
+    supportsImages: catalog.supportsImages,
+    supportsFiles: catalog.supportsFiles,
+    supportsAbort: catalog.supportsAbort,
+    supportsPermissionRequests: Boolean(provider.runtime?.permissions),
+    supportsTokenUsage: typeof provider.sessions?.getTokenUsage === 'function',
+    supportsEffort: catalog.supportsEffort,
+    supportsMessageEditing: typeof provider.sessions?.resolveEditAnchor === 'function',
+    supportsSessionForking: provider.fork !== undefined,
+  };
+}
+
+// Compile-time guarantee that the catalog covers exactly the registered
+// provider union — a provider added to the registry without a catalog entry
+// (or vice versa) fails here before any route can serve a hole.
+const CATALOG: Record<LLMProvider, Record<string, unknown>> = PROVIDER_CATALOG;
 
 /**
- * Application service exposing the provider capability matrix.
+ * Application service exposing the provider capability matrix, derived once
+ * at module load from the provider registry and the static catalog.
  */
 export const providerCapabilitiesService = {
   getProviderCapabilities(provider: LLMProvider): ProviderCapabilities {
-    return PROVIDER_CAPABILITIES[provider];
+    return DERIVED_CAPABILITIES[provider];
   },
 
   listAllProviderCapabilities(): ProviderCapabilities[] {
-    return Object.values(PROVIDER_CAPABILITIES);
+    return Object.values(DERIVED_CAPABILITIES);
   },
 };
+
+const DERIVED_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = Object.fromEntries(
+  providerRegistry.listProviders().map((provider) => [
+    provider.id,
+    deriveCapabilities(provider.id, provider),
+  ]),
+) as Record<LLMProvider, ProviderCapabilities>;

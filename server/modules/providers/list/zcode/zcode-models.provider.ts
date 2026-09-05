@@ -22,7 +22,12 @@ import { getZCodeDatabasePath, getZCodeStorageDir } from './zcode-data-root.js';
  * ZCode builtin models definition as fallback when config read fails.
  * Based on integration plan §3.2.5 and spike findings (GLM-5.3 with 1M context, 128K output).
  */
-const ZCODE_BUILTIN_MODELS: ProviderModelsDefinition = {
+/**
+ * Static fallback catalog used when the engine's model config cannot be read.
+ * Exported for the capability tests: the capability catalog's defaultModel is
+ * pinned to this definition's DEFAULT.
+ */
+export const ZCODE_BUILTIN_MODELS: ProviderModelsDefinition = {
   OPTIONS: [
     {
       value: 'GLM-5.3',
