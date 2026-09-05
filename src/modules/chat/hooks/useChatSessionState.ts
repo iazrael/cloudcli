@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { MutableRefObject } from 'react';
 
 import type { MarkSessionIdle, SessionActivityMap } from '@/shared/types';
-import type { SessionStore, NormalizedMessage } from '@/modules/chat/hooks/useSessionStore';
+import type { SessionSlot, SessionStore, NormalizedMessage } from '@/modules/chat/hooks/useSessionStore';
 import { SESSION_MESSAGES_PAGE_SIZE } from '@/modules/chat/utils/sessionMessagePagination';
 import type { Project, ProjectSession, LLMProvider } from '@/shared/types';
 import { authenticatedFetch } from '@/shared/api';
@@ -132,7 +132,6 @@ export function useChatSessionState({
   const allMessagesLoadedRef = useRef(false);
   const topLoadLockRef = useRef(false);
   const pendingInitialScrollRef = useRef(true);
-  const messagesOffsetRef = useRef(0);
   const loadAllFinishedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadAllOverlayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastLoadedSessionKeyRef = useRef<string | null>(null);
@@ -174,7 +173,6 @@ export function useChatSessionState({
     resetStreamingState();
     setCurrentSessionId(null);
     setPendingUserMessage(null);
-    messagesOffsetRef.current = 0;
     setHasMoreMessages(false);
     setTotalMessages(0);
     
@@ -227,6 +225,21 @@ export function useChatSessionState({
   isActiveRef.current = isActive;
   activeSessionIdRef.current = activeSessionId;
 
+  /**
+   * Single mirror point from a store slot into the view's pagination and
+   * token-usage state. Every store response applied to the viewed session
+   * funnels through here, so the local mirror and the slot can never drift
+   * apart (a missed copy at any call site used to leave top loading gated on
+   * a stale hasMore).
+   */
+  const syncPaginationFromSlot = useCallback((slot: SessionSlot) => {
+    setHasMoreMessages(slot.hasMore);
+    setTotalMessages(slot.total);
+    if (slot.tokenUsage && typeof slot.tokenUsage === 'object') {
+      setTokenBudget(slot.tokenUsage as Record<string, unknown>);
+    }
+  }, []);
+
   const latestRefreshExecutorRef = useRef<(sessionId: string) => Promise<boolean | void>>(
     async () => true,
   );
@@ -240,12 +253,7 @@ export function useChatSessionState({
     });
     const slot = result.slot;
     if (slot && activeSessionIdRef.current === sessionId) {
-      setHasMoreMessages(slot.hasMore);
-      setTotalMessages(slot.total);
-      messagesOffsetRef.current = slot.offset;
-      if (slot.tokenUsage && typeof slot.tokenUsage === 'object') {
-        setTokenBudget(slot.tokenUsage as Record<string, unknown>);
-      }
+      syncPaginationFromSlot(slot);
     }
     return !result.deferred;
   };
@@ -362,12 +370,7 @@ export function useChatSessionState({
           ),
         });
         const { slot, prependedCount } = result;
-        setHasMoreMessages(slot.hasMore);
-        setTotalMessages(slot.total);
-        messagesOffsetRef.current = slot.offset;
-        if (slot.tokenUsage && typeof slot.tokenUsage === 'object') {
-          setTokenBudget(slot.tokenUsage as Record<string, unknown>);
-        }
+        syncPaginationFromSlot(slot);
 
         if (prependedCount === 0) {
           if (!slot.hasMore) {
@@ -524,8 +527,7 @@ export function useChatSessionState({
 
       resetStreamingState();
       setCurrentSessionId(null);
-      messagesOffsetRef.current = 0;
-      setHasMoreMessages(false);
+        setHasMoreMessages(false);
       setTotalMessages(0);
       setTokenBudget(null);
       lastLoadedSessionKeyRef.current = null;
@@ -559,7 +561,6 @@ export function useChatSessionState({
     // Reset pagination/scroll state. Stream buffers are NOT reset here: they
     // are per session now, and clearing them on switch would discard the
     // in-flight prefix of a run still streaming in another session.
-    messagesOffsetRef.current = 0;
     setHasMoreMessages(false);
     setTotalMessages(0);
     setVisibleMessageCount(INITIAL_VISIBLE_MESSAGES);
@@ -592,12 +593,7 @@ export function useChatSessionState({
       ),
     }).then(slot => {
       if (slot) {
-        setHasMoreMessages(slot.hasMore);
-        setTotalMessages(slot.total);
-        messagesOffsetRef.current = slot.offset;
-        if (slot.tokenUsage && typeof slot.tokenUsage === 'object') {
-          setTokenBudget(slot.tokenUsage as Record<string, unknown>);
-        }
+        syncPaginationFromSlot(slot);
       }
       setIsLoadingSessionMessages(false);
     }).catch(() => {
@@ -691,9 +687,7 @@ export function useChatSessionState({
               ),
             });
             if (slot) {
-              setHasMoreMessages(false);
-              setTotalMessages(slot.total);
-              messagesOffsetRef.current = slot.offset;
+              syncPaginationFromSlot(slot);
               setVisibleMessageCount(Infinity);
               setAllMessagesLoaded(true);
               allMessagesLoadedRef.current = true;
@@ -857,9 +851,7 @@ export function useChatSessionState({
       if (slot) {
         notifyContentMutating();
 
-        setHasMoreMessages(false);
-        setTotalMessages(slot.total);
-        messagesOffsetRef.current = slot.offset;
+        syncPaginationFromSlot(slot);
         setVisibleMessageCount(Infinity);
         setAllMessagesLoaded(true);
 
