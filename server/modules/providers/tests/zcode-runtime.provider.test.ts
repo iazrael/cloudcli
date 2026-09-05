@@ -187,6 +187,31 @@ rl.on('line', (line) => {
       send({ id: 'server-perm-conflict', method: 'interaction/requestPermission', params: conflictParamsA });
       return;
     }
+    if (readMode() === 'silent') {
+      send({ method: 'session/event', params: { sessionId, type: 'model_streaming', payload: { kind: 'text_delta', delta: 'going quiet' } } });
+      // Wakes well after the runtime's silence window handed the run to the
+      // background watcher, proving late output still streams to the client.
+      setTimeout(() => {
+        send({ method: 'session/event', params: { sessionId, type: 'model_streaming', payload: { kind: 'text_delta', delta: 'late wake' } } });
+        send({ method: 'session/event', params: { sessionId, type: 'turn_complete', payload: { usage: { inputTokens: 3, outputTokens: 4 } } } });
+      }, 1600);
+      return;
+    }
+    if (readMode() === 'steady') {
+      // Continuous activity: every delta must reset the silence window so the
+      // run survives several windows' worth of wall-clock time and completes
+      // normally instead of tripping the watchdog.
+      let ticks = 0;
+      const ticker = setInterval(() => {
+        ticks += 1;
+        send({ method: 'session/event', params: { sessionId, type: 'model_streaming', payload: { kind: 'text_delta', delta: 'tick ' + ticks } } });
+        if (ticks >= 6) {
+          clearInterval(ticker);
+          send({ method: 'session/event', params: { sessionId, type: 'turn_complete', payload: { usage: { inputTokens: 3, outputTokens: 4 } } } });
+        }
+      }, 400);
+      return;
+    }
     send({ method: 'session/event', params: { sessionId, type: 'model_streaming', payload: { kind: 'text_delta', delta: 'hi there' } } });
     send({ method: 'session/event', params: { sessionId, type: 'turn_complete', payload: { usage: { inputTokens: 3, outputTokens: 4 } } } });
     return;
@@ -471,4 +496,68 @@ test('a reused requestId with different call content is a fresh request, not a c
   const cancellations = messages.filter((msg) => msg.kind === 'permission_cancelled');
   assert.equal(cancellations.length, 2, 'both cards must be retracted as they are answered');
   assert.deepEqual(zcodeRuntimePermissions.listPending('app-sess-conflict'), []);
+});
+
+test('a silent engine hands the run to a background watcher that still streams the late completion', async () => {
+  process.env.CLOUDCLI_ZCODE_SILENCE_TIMEOUT_MS = '1000';
+  fsSync.writeFileSync(modeFilePath, 'silent\n');
+  const runtime = new ZCodeRuntimeProvider();
+  const { messages, writer } = createWriter();
+
+  try {
+    // Resolves (rather than rejecting): the stall is carried by the error
+    // message, and the still-attached stream keeps running in the background
+    // instead of being torn down the way the old wall-clock timeout did.
+    const result = await runtime.run('hello', { sessionId: 'app-sess-silent', cwd: stubDir }, writer, context);
+    assert.deepEqual(result, { sessionId: 'sess_stub_1', success: false });
+
+    const stall = messages.find((msg) => msg.kind === 'error');
+    assert.ok(stall, 'the silence stall must reach the chat stream');
+    assert.match(stall.text ?? '', /silent/);
+    assert.equal(
+      messages.filter((msg) => msg.kind === 'complete').length, 0,
+      'no complete may be sent while the engine may still be working'
+    );
+
+    // The engine wakes after the handoff: the late delta must stream and the
+    // watcher must deliver the real completion.
+    let complete: NormalizedMessage | undefined;
+    for (let i = 0; i < 250 && !complete; i += 1) {
+      complete = messages.find((msg) => msg.kind === 'complete');
+      if (!complete) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    }
+    assert.ok(complete, 'the watcher must deliver the completion after the engine wakes');
+    assert.equal(complete.tokens, 7);
+    assert.ok(
+      messages.some((msg) => msg.kind === 'stream_delta' && msg.content === 'late wake'),
+      'late engine output must stream to the client'
+    );
+  } finally {
+    delete process.env.CLOUDCLI_ZCODE_SILENCE_TIMEOUT_MS;
+  }
+});
+
+test('steady engine activity keeps the run alive past the silence window', async () => {
+  process.env.CLOUDCLI_ZCODE_SILENCE_TIMEOUT_MS = '600';
+  fsSync.writeFileSync(modeFilePath, 'steady\n');
+  const runtime = new ZCodeRuntimeProvider();
+  const { messages, writer } = createWriter();
+
+  try {
+    // ~2.4s of continuous deltas against a 600ms silence window: the run must
+    // complete normally instead of stalling out (the old wall-clock timeout
+    // killed any run past its budget even while it was actively streaming).
+    const result = await runtime.run('hello', { sessionId: 'app-sess-steady', cwd: stubDir }, writer, context);
+    assert.deepEqual(result, { sessionId: 'sess_stub_1', success: true });
+
+    assert.ok(messages.filter((msg) => msg.kind === 'stream_delta').length >= 6);
+    const complete = messages.find((msg) => msg.kind === 'complete');
+    assert.ok(complete, 'the run must terminate with a complete event');
+    assert.equal(complete.tokens, 7);
+    assert.equal(messages.filter((msg) => msg.kind === 'error').length, 0, 'an active run must never surface the silence stall');
+  } finally {
+    delete process.env.CLOUDCLI_ZCODE_SILENCE_TIMEOUT_MS;
+  }
 });
