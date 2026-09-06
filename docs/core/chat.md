@@ -64,6 +64,7 @@ flowchart LR
 - 思考块按稳定 id 归组 upsert（`src/modules/chat/utils/sessionThinkingRows.ts`）。
 - 流式文本由 `transcript/StreamingMarkdown.tsx` 渲染：按 `streamingMarkdown.ts` 切"已定稿前缀 + 待定尾块"两段 `MarkdownBody`，前缀字节稳定命中 memo，每 100ms tick 只重解析尾块。
 - 搜索跳转先按 `searchTargetLocator.ts` 在数据上解析命中下标（-1 即确定性放弃），再按 `resolveSearchWindowSize` 只渲染命中窗口（不再整转录渲染），DOM 定位走 `LazyMessageRow` 包装层常驻的时间戳锚。
+- 滚动机制归 `hooks/useChatScrollController`（组合锚定 hook）：初始贴底 rAF 循环、发送/刷新后的确定性回底（立即 + 双 rAF 重钉，取代盲延时）、搜索命中 reveal；组件别再自己 `setTimeout` 摸滚动，与分页耦合的意图（回底并重置窗口、窗口扩张）留在 session 状态。
 - 工具卡片按 toolId upsert，服务端把引擎的流式参数增量累积成稳定快照再发。
 - 视口懒挂载与滚动锚定见 [frontend.md](./frontend.md) 的性能守则。
 

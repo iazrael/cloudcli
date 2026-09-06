@@ -12,7 +12,7 @@ import type { DiffCalculator } from '@/shared/types';
 import { createCachedDiffCalculator } from '@/modules/chat/utils/messageTransforms';
 
 import { normalizedToChatMessages } from '@/modules/chat/hooks/useChatMessages';
-import { useContinuousScrollAnchor } from '@/modules/chat/hooks/useContinuousScrollAnchor';
+import { useChatScrollController } from '@/modules/chat/hooks/useChatScrollController';
 import { expandVisibleCount, sliceVisibleMessages } from '@/modules/chat/utils/chatScrollMath';
 import { findSearchTargetIndex, resolveSearchWindowSize } from '@/modules/chat/utils/searchTargetLocator';
 
@@ -99,41 +99,6 @@ function chatMessageToNormalized(
 }
 
 /* ------------------------------------------------------------------ */
-/*  Helper: Find the rendered row wrapper for a message                */
-/* ------------------------------------------------------------------ */
-
-/**
- * Locates the LazyMessageRow wrapper of `message` inside the scroll container.
- * The wrapper stays in the DOM with its `data-message-timestamp` even while the
- * row's content is an unmounted placeholder, so the lookup never needs retries.
- * A hit collapsed inside a tool group renders under the group's own first
- * timestamp, so an exact miss falls back to the nearest row.
- */
-function findMessageRow(container: HTMLElement, message: ChatMessage): Element | null {
-  const timestamp = typeof message.timestamp === 'string' ? message.timestamp : '';
-  if (!timestamp) return null;
-
-  const exact = container.querySelector(`[data-message-timestamp="${CSS.escape(timestamp)}"]`);
-  if (exact) return exact;
-
-  const targetTime = new Date(timestamp).getTime();
-  if (!Number.isFinite(targetTime)) return null;
-
-  let nearest: Element | null = null;
-  let nearestDistance = Infinity;
-  for (const row of container.querySelectorAll('[data-message-timestamp]')) {
-    const rowTime = new Date(row.getAttribute('data-message-timestamp') || '').getTime();
-    if (!Number.isFinite(rowTime)) continue;
-    const distance = Math.abs(rowTime - targetTime);
-    if (distance < nearestDistance) {
-      nearestDistance = distance;
-      nearest = row;
-    }
-  }
-  return nearest;
-}
-
-/* ------------------------------------------------------------------ */
 /*  Hook                                                              */
 /* ------------------------------------------------------------------ */
 
@@ -164,12 +129,16 @@ export function useChatSessionState({
   const [showLoadAllOverlay, setShowLoadAllOverlay] = useState(false);
   const [viewHiddenCount, setViewHiddenCount] = useState(0);
 
-  const wasNearTopRef = useRef(false);
+  /**
+   * One-shot latch for the load-all overlay: the overlay shows once per
+   * near-top episode and re-arms on session/New-Session resets — NOT on
+   * scrolling away (that edge detection lives inside the scroll anchor).
+   */
+  const loadAllOverlayShownRef = useRef(false);
   const [searchTarget, setSearchTarget] = useState<{ timestamp?: string; uuid?: string; snippet?: string } | null>(null);
   const searchScrollActiveRef = useRef(false);
   const isLoadingMoreRef = useRef(false);
   const allMessagesLoadedRef = useRef(false);
-  const topLoadLockRef = useRef(false);
   const pendingInitialScrollRef = useRef(true);
   const loadAllFinishedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadAllOverlayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -224,9 +193,8 @@ export function useChatSessionState({
     setShowLoadAllOverlay(false);
     setViewHiddenCount(0);
     setSearchTarget(null);
-    wasNearTopRef.current = false;
+    loadAllOverlayShownRef.current = false;
     searchScrollActiveRef.current = false;
-    topLoadLockRef.current = false;
     pendingInitialScrollRef.current = true;
     lastLoadedSessionKeyRef.current = null;
 
@@ -448,17 +416,23 @@ export function useChatSessionState({
     scrollToBottom,
     notifyPaneMounted,
     notifyContentMutating,
-  } = useContinuousScrollAnchor({
+    stickToBottomSettled,
+    revealMessageRow,
+  } = useChatScrollController({
     isActive,
     hasMoreMessages,
     isLoadingMore: isLoadingMoreMessages || isLoadingAllMessages,
     allMessagesLoaded,
-    onLoadOlder: loadOlderMessages,
+    isLoadingSessionMessages,
+    messageCount: chatMessages.length,
+    searchScrollActiveRef,
+    pendingInitialScrollRef,
     scrollContentRef,
+    onLoadOlder: loadOlderMessages,
     onNearTop: (nearTop) => {
       if (nearTop && hasMoreMessages && !allMessagesLoadedRef.current) {
-        if (!wasNearTopRef.current) {
-          wasNearTopRef.current = true;
+        if (!loadAllOverlayShownRef.current) {
+          loadAllOverlayShownRef.current = true;
           if (loadAllOverlayTimerRef.current) clearTimeout(loadAllOverlayTimerRef.current);
 
           setShowLoadAllOverlay(true);
@@ -468,7 +442,7 @@ export function useChatSessionState({
           }, 2500);
         }
       } else if (!nearTop) {
-        wasNearTopRef.current = false;
+        loadAllOverlayShownRef.current = false;
       }
     },
   });
@@ -488,51 +462,10 @@ export function useChatSessionState({
       pendingInitialScrollRef.current = true;
       setVisibleMessageCount(INITIAL_VISIBLE_MESSAGES);
     }
-    topLoadLockRef.current = false;
-    wasNearTopRef.current = false;
+    loadAllOverlayShownRef.current = false;
     setIsUserScrolledUp(false);
   }, [selectedProject?.projectId, selectedSession?.id, setIsUserScrolledUp]);
 
-  // Initial scroll to bottom — robust to lazy content reflow, but yields the
-  // moment the user scrolls up (isPinnedToBottomRef flips) so it can never
-  // fight the user for the viewport during the first second.
-  useEffect(() => {
-    if (!isActive) return;
-    if (!pendingInitialScrollRef.current || !scrollContainerRef.current || isLoadingSessionMessages) return;
-    if (chatMessages.length === 0) { pendingInitialScrollRef.current = false; return; }
-    if (searchScrollActiveRef.current) { pendingInitialScrollRef.current = false; return; }
-
-    const container = scrollContainerRef.current;
-    let frame = 0;
-    let lastHeight = 0;
-    let stableCount = 0;
-    let rafId = 0;
-
-    const tick = () => {
-      if (!pendingInitialScrollRef.current || !scrollContainerRef.current) return;
-      if (!isPinnedToBottomRef.current) {
-        pendingInitialScrollRef.current = false;
-        return;
-      }
-      container.scrollTop = container.scrollHeight;
-      if (container.scrollHeight === lastHeight) {
-        stableCount++;
-      } else {
-        stableCount = 0;
-        lastHeight = container.scrollHeight;
-      }
-      frame++;
-      if (stableCount < 3 && frame < 60) {
-        rafId = requestAnimationFrame(tick);
-      } else {
-        pendingInitialScrollRef.current = false;
-      }
-    };
-    rafId = requestAnimationFrame(tick);
-    return () => {
-      if (rafId) cancelAnimationFrame(rafId);
-    };
-  }, [chatMessages.length, isActive, isLoadingSessionMessages, isPinnedToBottomRef, scrollContainerRef, scrollToBottom]);
 
   // Session replay/subscription remains active regardless of which main tab is
   // visible. Only persisted-history HTTP traffic is visibility-gated below.
@@ -604,7 +537,7 @@ export function useChatSessionState({
     setLoadAllJustFinished(false);
     setShowLoadAllOverlay(false);
     setViewHiddenCount(0);
-    wasNearTopRef.current = false;
+    loadAllOverlayShownRef.current = false;
     if (loadAllOverlayTimerRef.current) clearTimeout(loadAllOverlayTimerRef.current);
     if (loadAllFinishedTimerRef.current) clearTimeout(loadAllFinishedTimerRef.current);
 
@@ -668,7 +601,7 @@ export function useChatSessionState({
           await requestLatestMessages(selectedSession.id);
 
           if (shouldStickToBottom) {
-            setTimeout(() => scrollToBottom(), 200);
+            stickToBottomSettled();
           }
         }
       } catch (error) {
@@ -681,7 +614,7 @@ export function useChatSessionState({
     externalMessageUpdate,
     isNearBottom,
     requestLatestMessages,
-    scrollToBottom,
+    stickToBottomSettled,
     selectedProject,
     selectedSession,
     isProcessing,
@@ -756,29 +689,12 @@ export function useChatSessionState({
         resolveSearchWindowSize(messages.length, targetIndex, SEARCH_JUMP_TRAILING_CONTEXT),
       );
 
-      // The wrapper rows carry the timestamp attribute even while their
-      // content is an unmounted placeholder, so one commit is all the lookup
-      // needs; the second pass just re-centers after row heights settle from
-      // estimates to real measurements.
-      window.setTimeout(() => {
-        const row = scrollContainerRef.current
-          ? findMessageRow(scrollContainerRef.current, messages[targetIndex])
-          : null;
-        if (!row || !scrollContainerRef.current) {
-          searchScrollActiveRef.current = false;
-          return;
-        }
-        row.scrollIntoView({ block: 'center' });
-        window.setTimeout(() => {
-          const container = scrollContainerRef.current;
-          const settledRow = container ? findMessageRow(container, messages[targetIndex]) : null;
-          const finalRow = settledRow ?? row;
-          finalRow.scrollIntoView({ block: 'center' });
-          finalRow.classList.add('search-highlight-flash');
-          window.setTimeout(() => finalRow.classList.remove('search-highlight-flash'), 4000);
-          searchScrollActiveRef.current = false;
-        }, 300);
-      }, 150);
+      // The reveal (row lookup, double center, flash) is scroll mechanics —
+      // the scroll controller owns it; the jump releases the viewport when
+      // the reveal settles.
+      revealMessageRow(messages[targetIndex], () => {
+        searchScrollActiveRef.current = false;
+      });
     };
 
     scrollToTarget();
@@ -929,7 +845,6 @@ export function useChatSessionState({
     hasMoreMessages,
     totalMessages,
     isUserScrolledUp,
-    setIsUserScrolledUp,
     tokenBudget,
     setTokenBudget,
     refreshTokenUsage,
@@ -944,7 +859,7 @@ export function useChatSessionState({
     createDiff,
     scrollContainerRef,
     scrollContentRef,
-    scrollToBottom,
+    stickToBottomSettled,
     scrollToBottomAndReset,
     isNearBottom,
     notifyPaneMounted,

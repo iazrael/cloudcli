@@ -68,9 +68,9 @@ type UseChatComposerStateArgs = {
   onInputFocusChange?: (focused: boolean) => void;
   onFileOpen?: (filePath: string, diffInfo?: unknown) => void;
   onShowSettings?: () => void;
-  scrollToBottom: () => void;
+  /** Sticks the transcript to the bottom after a send: unpins and settles past the new row's commit. */
+  stickToBottomAfterSend: () => void;
   addMessage: (msg: ChatMessage) => void;
-  setIsUserScrolledUp: (isScrolledUp: boolean) => void;
   setPendingPermissionRequests: Dispatch<SetStateAction<PendingPermissionRequest[]>>;
 }
 
@@ -273,9 +273,8 @@ export function useChatComposerState({
   onInputFocusChange,
   onFileOpen,
   onShowSettings,
-  scrollToBottom,
+  stickToBottomAfterSend,
   addMessage,
-  setIsUserScrolledUp,
   setPendingPermissionRequests,
 }: UseChatComposerStateArgs) {
   const [input, setInput] = useState(() => {
@@ -943,8 +942,7 @@ export function useChatComposerState({
         canInterrupt: true,
       });
 
-      setIsUserScrolledUp(false);
-      setTimeout(() => scrollToBottom(), 100);
+      stickToBottomAfterSend();
 
       // One message shape for every provider. The backend resolves the
       // provider, project path, and provider-native resume id from the
@@ -988,12 +986,11 @@ export function useChatComposerState({
       onSessionEstablished,
       provider,
       resetCommandMenuState,
-      scrollToBottom,
+      stickToBottomAfterSend,
       selectedProject,
       sendMessage,
       sessionKey,
       addMessage,
-      setIsUserScrolledUp,
       slashCommands,
     ],
   );
