@@ -86,7 +86,7 @@ test('tool output is searchable, since it is rendered text', () => {
   const withTool: ChatMessage[] = [
     message('intro text', '2024-01-01T10:00:00.000Z'),
     {
-      type: 'tool',
+      type: 'assistant',
       content: '',
       timestamp: '2024-01-01T10:01:00.000Z',
       isToolUse: true,
@@ -101,7 +101,7 @@ test('tool output is searchable, since it is rendered text', () => {
 test('a tool result is searchable', () => {
   const withResult: ChatMessage[] = [
     {
-      type: 'tool',
+      type: 'assistant',
       content: '',
       timestamp: '2024-01-01T10:01:00.000Z',
       toolResult: { content: 'migration applied successfully', isError: false },

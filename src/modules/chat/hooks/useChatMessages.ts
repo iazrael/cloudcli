@@ -4,7 +4,7 @@
  */
 
 import type { NormalizedMessage } from '@/modules/chat/hooks/useSessionStore';
-import type { ChatMessage, SubagentChildTool } from '@/shared/types';
+import type { ChatMessage } from '@/shared/types';
 import { formatUsageLimitText } from '@/modules/chat/utils/chatFormatting';
 
 function formatToolResultContent(content: unknown): string {
@@ -188,20 +188,6 @@ function convertRow(
         const tr = msg.toolResult || (msg.toolId ? toolResultMap.get(msg.toolId) : null);
         const isSubagentContainer = msg.toolName === 'Task';
 
-        // Build child tools from subagentTools
-        const childTools: SubagentChildTool[] = [];
-        if (isSubagentContainer && msg.subagentTools && Array.isArray(msg.subagentTools)) {
-          for (const tool of msg.subagentTools as any[]) {
-            childTools.push({
-              toolId: tool.toolId,
-              toolName: tool.toolName,
-              toolInput: tool.toolInput,
-              toolResult: tool.toolResult || null,
-              timestamp: new Date(tool.timestamp || Date.now()),
-            });
-          }
-        }
-
         const toolResult = tr
           ? {
               content: formatToolResultContent(tr.content),
@@ -220,13 +206,6 @@ function convertRow(
           toolId: msg.toolId,
           toolResult,
           isSubagentContainer,
-          subagentState: isSubagentContainer
-            ? {
-                childTools,
-                currentToolIndex: childTools.length > 0 ? childTools.length - 1 : -1,
-                isComplete: Boolean(toolResult),
-              }
-            : undefined,
           ...sharedMetadata,
         });
         break;

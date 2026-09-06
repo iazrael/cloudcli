@@ -1,7 +1,7 @@
 import { memo, useMemo, useState } from 'react';
 import { ChevronRight } from 'lucide-react';
 
-import type { DiffLine,  ChatMessage, ClaudePermissionSuggestion, PermissionGrantResult, Provider } from '@/shared/types';
+import type { DiffLine,  ChatMessage, Provider } from '@/shared/types';
 import type { Project } from '@/shared/types';
 import type { ToolGroupItem } from '@/modules/chat/utils/toolGrouping';
 import { useIsExportingTranscript } from '@/modules/chat/context/TranscriptRenderContext';
@@ -24,8 +24,6 @@ type ToolGroupContainerProps = {
   createDiff: (oldStr: string, newStr: string) => DiffLine[];
   getMessageKey: (message: ChatMessage) => string;
   onFileOpen?: (filePath: string, diffInfo?: unknown) => void;
-  onShowSettings?: () => void;
-  onGrantToolPermission?: (suggestion: ClaudePermissionSuggestion) => PermissionGrantResult | null | undefined;
   showRawParameters?: boolean;
   showThinking?: boolean;
   selectedProject?: Project | null;
@@ -138,15 +136,13 @@ export default memo(function ToolGroupContainer({
   createDiff,
   getMessageKey,
   onFileOpen,
-  onShowSettings,
-  onGrantToolPermission,
   showRawParameters,
   showThinking,
   selectedProject,
   provider,
 }: ToolGroupContainerProps) {
   const hasError = useMemo(() => {
-    return group.messages.some((m) => Boolean(m.isError || m.toolResult?.isError));
+    return group.messages.some((m) => Boolean(m.toolResult?.isError));
   }, [group.messages]);
 
   const diffStats = useMemo(() => {
@@ -206,7 +202,6 @@ export default memo(function ToolGroupContainer({
     prevMessage.type === firstMessage?.type &&
     (prevMessage.type === 'assistant' ||
       prevMessage.type === 'user' ||
-      prevMessage.type === 'tool' ||
       prevMessage.type === 'error')
   );
 
@@ -261,8 +256,6 @@ export default memo(function ToolGroupContainer({
           prevMessage={index > 0 ? group.messages[index - 1] : message}
           createDiff={createDiff}
           onFileOpen={onFileOpen}
-          onShowSettings={onShowSettings}
-          onGrantToolPermission={onGrantToolPermission}
           showRawParameters={showRawParameters}
           showThinking={showThinking}
           selectedProject={selectedProject}

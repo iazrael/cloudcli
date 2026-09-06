@@ -1,21 +1,13 @@
 import { useTranslation } from 'react-i18next';
 import { memo, useCallback, useEffect, useMemo } from 'react';
-import type { Dispatch, RefObject, SetStateAction } from 'react';
+import type { RefObject } from 'react';
 
 import type { ChatMessage } from '@/shared/types';
-import type {
-  Project,
-  ProjectSession,
-  LLMProvider,
-  ProviderModelActions,
-  ProviderModelsDefinition,
-} from '@/shared/types';
-import type { ProviderAuthStatusMap } from '@/modules/provider-auth';
+import type { Project, ProjectSession, LLMProvider } from '@/shared/types';
 import { getIntrinsicMessageKey } from '@/modules/chat/utils/messageKeys';
 import { groupConsecutiveTools, isToolGroupItem } from '@/modules/chat/utils/toolGrouping';
 
 import MessageComponent from '@/modules/chat/transcript/MessageComponent';
-import ProviderSelectionEmptyState from '@/modules/chat/transcript/ProviderSelectionEmptyState';
 import ToolGroupContainer from '@/modules/chat/transcript/ToolGroupContainer';
 import LoadAllMessagesOverlay from '@/modules/chat/transcript/LoadAllMessagesOverlay';
 import ChatExportMenu from '@/modules/chat/transcript/ChatExportMenu';
@@ -28,31 +20,17 @@ type ChatMessagesPaneProps = {
   scrollContentRef: RefObject<HTMLDivElement>;
   /** Reports mount/unmount so the scroll anchor can (re)attach listeners. */
   onPaneMounted: () => void;
-  isLoadingSessionMessages: boolean;
   /** True while the viewed session has an active provider run in flight. */
   isProcessing?: boolean;
   /** True while ChatComposer's floating activity/stop tab is rendered above the input. */
   hasActivityIndicator?: boolean;
   chatMessages: ChatMessage[];
   selectedSession: ProjectSession | null;
-  currentSessionId: string | null;
   provider: LLMProvider;
-  setProvider: (provider: LLMProvider) => void;
-  textareaRef: RefObject<HTMLTextAreaElement>;
-  providerModels: Record<LLMProvider, string>;
-  setProviderModel: (provider: LLMProvider, model: string) => void;
   /** Present when the provider supports editing an already-sent message. */
   onEditMessage?: (message: ChatMessage) => void;
   /** Present when the provider supports forking the session from a message. */
   onForkFromMessage?: (message: ChatMessage) => void;
-  providerModelCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>>;
-  providerModelActions: ProviderModelActions;
-  providerModelsLoading: boolean;
-  providerAuthStatus?: ProviderAuthStatusMap;
-  tasksEnabled: boolean;
-  isTaskMasterInstalled: boolean | null;
-  onShowAllTasks?: (() => void) | null;
-  setInput: Dispatch<SetStateAction<string>>;
   isLoadingMoreMessages: boolean;
   hasMoreMessages: boolean;
   totalMessages: number;
@@ -67,8 +45,6 @@ type ChatMessagesPaneProps = {
   showLoadAllOverlay: boolean;
   createDiff: any;
   onFileOpen?: (filePath: string, diffInfo?: unknown) => void;
-  onShowSettings?: () => void;
-  onGrantToolPermission: (suggestion: { entry: string; toolName: string }) => { success: boolean };
   showRawParameters?: boolean;
   showThinking?: boolean;
   selectedProject: Project;
@@ -78,27 +54,13 @@ function ChatMessagesPane({
   scrollContainerRef,
   scrollContentRef,
   onPaneMounted,
-  isLoadingSessionMessages,
   isProcessing = false,
   hasActivityIndicator = false,
   chatMessages,
   selectedSession,
-  currentSessionId,
   provider,
-  setProvider,
-  textareaRef,
-  providerModels,
-  setProviderModel,
   onEditMessage,
   onForkFromMessage,
-  providerModelCatalog,
-  providerModelActions,
-  providerModelsLoading,
-  providerAuthStatus,
-  tasksEnabled,
-  isTaskMasterInstalled,
-  onShowAllTasks,
-  setInput,
   isLoadingMoreMessages,
   hasMoreMessages,
   totalMessages,
@@ -113,8 +75,6 @@ function ChatMessagesPane({
   showLoadAllOverlay,
   createDiff,
   onFileOpen,
-  onShowSettings,
-  onGrantToolPermission,
   showRawParameters,
   showThinking,
   selectedProject,
@@ -187,33 +147,6 @@ function ChatMessagesPane({
         </div>
       )}
       <div ref={scrollContentRef} className="mx-auto w-full max-w-[54.25rem] space-y-3 px-4 sm:space-y-4">
-      {(isLoadingSessionMessages || isProcessing) && chatMessages.length === 0 ? (
-        <div className="mt-8 text-center text-gray-500 dark:text-gray-400">
-          <div className="flex items-center justify-center space-x-2">
-            <div className="h-4 w-4 animate-spin rounded-full border-b-2 border-gray-400" />
-            <p>{t('session.loading.sessionMessages')}</p>
-          </div>
-        </div>
-      ) : chatMessages.length === 0 ? (
-        <ProviderSelectionEmptyState
-          selectedSession={selectedSession}
-          currentSessionId={currentSessionId}
-          provider={provider}
-          setProvider={setProvider}
-          textareaRef={textareaRef}
-          providerModels={providerModels}
-          setProviderModel={setProviderModel}
-          providerModelCatalog={providerModelCatalog}
-          providerModelActions={providerModelActions}
-          providerModelsLoading={providerModelsLoading}
-          providerAuthStatus={providerAuthStatus}
-          tasksEnabled={tasksEnabled}
-          isTaskMasterInstalled={isTaskMasterInstalled}
-          onShowAllTasks={onShowAllTasks}
-          setInput={setInput}
-        />
-      ) : (
-        <>
           {/* Loading indicator for older messages (hide when load-all is active) */}
           {isLoadingMoreMessages && !isLoadingAllMessages && !allMessagesLoaded && (
             <div className="py-3 text-center text-gray-500 dark:text-gray-400">
@@ -283,8 +216,6 @@ function ChatMessagesPane({
                       createDiff={createDiff}
                       getMessageKey={getMessageKey}
                       onFileOpen={onFileOpen}
-                      onShowSettings={onShowSettings}
-                      onGrantToolPermission={onGrantToolPermission}
                       showRawParameters={showRawParameters}
                       showThinking={showThinking}
                       selectedProject={selectedProject}
@@ -324,8 +255,6 @@ function ChatMessagesPane({
                     turnAnchorMessage={currentTurnAnchor}
                     createDiff={createDiff}
                     onFileOpen={onFileOpen}
-                    onShowSettings={onShowSettings}
-                    onGrantToolPermission={onGrantToolPermission}
                     showRawParameters={showRawParameters}
                     showThinking={showThinking}
                     isThinkingStreaming={isProcessing && index === totalCount - 1 && Boolean(item.isThinking)}
@@ -353,8 +282,6 @@ function ChatMessagesPane({
               );
             });
           })()}
-        </>
-      )}
       </div>
     </div>
   );

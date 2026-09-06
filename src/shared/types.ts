@@ -275,15 +275,18 @@ export type SubagentInfo = {
   activityCount?: number;
 };
 
-/** One rendered entry in a chat transcript — user turn, assistant turn, tool call and result, local command output, or subagent container — and the shape the chat message list and message components consume. */
+/** One rendered entry in a chat transcript — a user turn, an assistant turn (plain text, tool call, thinking, interactive prompt, task notification, compaction summary, streaming segment) or an error row — and the shape the chat message list and message components consume. `isToolUse`/`isThinking`/… flags distinguish the assistant sub-shapes; `type` only carries user/assistant/error. */
+export type ChatMessageType = 'user' | 'assistant' | 'error';
+
 export type ChatMessage = {
-  type: string;
+  type: ChatMessageType;
+  id?: string;
   content?: string;
   displayText?: string;
   timestamp: string | number | Date;
   images?: ChatImage[];
   files?: ChatAttachment[];
-  reasoning?: string;
+  taskStatus?: string;
   /**
    * The provider's identifier for the transcript row behind this message, when
    * the provider has stable per-row identity. Present on user turns from
@@ -295,12 +298,12 @@ export type ChatMessage = {
    * already-sent one, naming the anchor it replaces. Local to this client.
    */
   replacesAnchorId?: string;
-  /** The agent this row spawned, when it spawned one. Its presence is what makes a row a subagent container. */
-  subagent?: SubagentInfo;
   isThinking?: boolean;
   isStreaming?: boolean;
   isInteractivePrompt?: boolean;
   isToolUse?: boolean;
+  /** Set on assistant rows synthesized from `<task-notification>` XML. */
+  isTaskNotification?: boolean;
   toolName?: string;
   toolInput?: unknown;
   toolResult?: ToolResult | null;
@@ -313,12 +316,6 @@ export type ChatMessage = {
   isLocalCommandStdout?: boolean;
   isCompactSummary?: boolean;
   isSubagentContainer?: boolean;
-  subagentState?: {
-    childTools: SubagentChildTool[];
-    currentToolIndex: number;
-    isComplete: boolean;
-  };
-  [key: string]: unknown;
 }
 
 /** The user's locally persisted Claude preferences (allowed and disallowed tool lists, permission skipping and project sort order) read from and written back to browser storage. */
@@ -620,19 +617,6 @@ export type QueuedSendOptions = Record<string, unknown>;
 
 /** Function that turns an old/new string pair into rendered diff lines; the chat session state supplies one memoized, caching instance so each file diff is computed only once. */
 export type DiffCalculator = (oldStr: string, newStr: string) => DiffLine[];
-
-/** A synthetic transcript entry standing for a run of consecutive calls to the same tool, produced by the message grouping pass and identified by its `_isGroup` flag so the message list can collapse the run into one expandable block. */
-export type ToolGroupItem = {
-  _isGroup: true;
-  toolName: string;
-  messages: ChatMessage[];
-  timestamp: ChatMessage['timestamp'];
-  /**
-   * Summary line for the collapsed group, built while grouping so the tool-input
-   * JSON parsing it needs never runs during render.
-   */
-  preview: string;
-};
 
 /** One line of a rendered file diff, marked 'added' or 'removed', with its text and line number. */
 export type DiffLine = {
@@ -1540,7 +1524,6 @@ type TaskStatus =
   | 'cancelled'
   | string;
 
-/** A TaskMaster task's priority; high, medium and low are the known values and the string fallback tolerates anything else TaskMaster emits. */
 type TaskPriority = 'high' | 'medium' | 'low' | string;
 
 // ─── Fork additions consolidated from src/types/app, chat/types, settings/types ───

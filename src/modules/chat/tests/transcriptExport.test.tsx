@@ -243,33 +243,29 @@ describe('thinking content in exports', () => {
     timestamp: new Date('2026-08-24T09:00:10.000Z'),
   } as ChatMessage;
 
-  const assistantWithReasoning: ChatMessage = {
+  const assistantReply: ChatMessage = {
     type: 'assistant',
     content: 'Here is the answer.',
-    reasoning: 'weighing option A',
     timestamp: new Date('2026-08-24T09:01:00.000Z'),
   } as ChatMessage;
 
   const thinkingInput = {
     ...input,
-    messages: [thinkingMessage, assistantWithReasoning],
+    messages: [thinkingMessage, assistantReply],
   };
 
-  it('omits thinking rows and reasoning from markdown', async () => {
+  it('omits thinking rows from markdown', async () => {
     const markdown = await buildTranscriptExport('markdown', thinkingInput, exportedAt);
 
     expect(markdown).not.toContain('pondering the approach');
-    expect(markdown).not.toContain('weighing option A');
-    expect(markdown).not.toContain('Reasoning');
     expect(markdown).toContain('Here is the answer.');
   });
 
-  it('keeps thinking rows and reasoning in html, folded shut', async () => {
+  it('keeps thinking rows in html, folded shut', async () => {
     const html = await buildTranscriptExport('html', thinkingInput, exportedAt);
 
     // The document is the complete record: thinking stays, as a closed fold.
     expect(html).toContain('pondering the approach');
-    expect(html).toContain('weighing option A');
     expect(html).toContain('Here is the answer.');
   });
 });

@@ -12,12 +12,11 @@ import {
 function createMockToolMessage(toolName: string, id: string): ChatMessage {
   return {
     id,
-    type: 'tool',
+    type: 'assistant',
     isToolUse: true,
     toolName,
     content: '',
     timestamp: '2026-09-03T00:00:00.000Z',
-    sender: 'assistant',
   };
 }
 
@@ -63,7 +62,6 @@ test('groupConsecutiveTools groups tools across empty or hidden thinking message
     isThinking: true,
     content: '',
     timestamp: '2026-09-03T00:00:00.000Z',
-    sender: 'assistant',
   };
   const messages: ChatMessage[] = [
     createMockToolMessage('Bash', '1'),

@@ -36,8 +36,6 @@ type MessageComponentProps = {
   turnAnchorMessage?: ChatMessage | null;
   createDiff: (oldStr: string, newStr: string) => DiffLine[];
   onFileOpen?: (filePath: string, diffInfo?: unknown) => void;
-  onShowSettings?: () => void;
-  onGrantToolPermission?: (suggestion: ClaudePermissionSuggestion) => PermissionGrantResult | null | undefined;
   showRawParameters?: boolean;
   showThinking?: boolean;
   /** True while this message is the thinking block currently streaming in — drives the Reasoning timer shown as "Thought for N seconds". */
@@ -64,7 +62,6 @@ const MessageComponent = memo(({ message, prevMessage, turnAnchorMessage, create
   const isGrouped = prevMessage && prevMessage.type === message.type &&
     ((prevMessage.type === 'assistant') ||
       (prevMessage.type === 'user') ||
-      (prevMessage.type === 'tool') ||
       (prevMessage.type === 'error'));
   const messageRef = useRef<HTMLDivElement | null>(null);
   const userCopyContent = String(message.content || '');
@@ -201,10 +198,6 @@ const MessageComponent = memo(({ message, prevMessage, turnAnchorMessage, create
                 <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-red-600 text-sm text-white">
                   !
                 </div>
-              ) : message.type === 'tool' ? (
-                <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-gray-600 text-sm text-white dark:bg-gray-700">
-                  🔧
-                </div>
               ) : (
                 <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full p-1 text-sm text-foreground">
                   <LLMProviderLogo provider={provider} className="h-full w-full" />
@@ -213,9 +206,7 @@ const MessageComponent = memo(({ message, prevMessage, turnAnchorMessage, create
               <div className="text-sm font-medium text-gray-900 dark:text-white">
                 {message.type === 'error'
                   ? t('messageTypes.error')
-                  : message.type === 'tool'
-                    ? t('messageTypes.tool')
-                    : getProviderDisplayName(provider)}
+                  : getProviderDisplayName(provider)}
               </div>
             </div>
           )}
@@ -376,18 +367,6 @@ const MessageComponent = memo(({ message, prevMessage, turnAnchorMessage, create
               </Reasoning>
             ) : (
               <div dir="auto" className="text-sm text-gray-700 dark:text-gray-300">
-                {/* Reasoning accordion */}
-                {showThinking && message.reasoning && (
-                  <Reasoning className="mb-3" defaultOpen={false} nativeDetails={isExporting}>
-                    <ReasoningTrigger />
-                    <ReasoningContent>
-                      <div className="whitespace-pre-wrap">
-                        {message.reasoning}
-                      </div>
-                    </ReasoningContent>
-                  </Reasoning>
-                )}
-
                 {(() => {
                   const content = formattedMessageContent;
 

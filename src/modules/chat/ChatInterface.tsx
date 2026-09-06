@@ -16,6 +16,7 @@ import { useProviderAuthStatus } from '@/modules/provider-auth';
 
 import { useScheduledMessages } from '@/modules/chat/composer/useScheduledMessages';
 import ChatMessagesPane from '@/modules/chat/transcript/ChatMessagesPane';
+import ProviderSelectionEmptyState from '@/modules/chat/transcript/ProviderSelectionEmptyState';
 import type { ChatMessage } from '@/shared/types';
 import { api } from '@/shared/api';
 import ChatComposer from '@/modules/chat/composer/ChatComposer';
@@ -368,31 +369,45 @@ function ChatInterface({
   return (
     <PermissionContext.Provider value={permissionContextValue}>
       <div className="flex h-full min-h-0 flex-col">
+        {chatMessages.length === 0 ? (
+          (isLoadingSessionMessages || isProcessing) ? (
+            <div className="flex min-h-0 flex-1 items-center justify-center">
+              <div className="flex items-center space-x-2 text-gray-500 dark:text-gray-400">
+                <div className="h-4 w-4 animate-spin rounded-full border-b-2 border-gray-400" />
+                <p>{t('session.loading.sessionMessages')}</p>
+              </div>
+            </div>
+          ) : (
+            <ProviderSelectionEmptyState
+              selectedSession={selectedSession}
+              currentSessionId={currentSessionId}
+              provider={provider}
+              setProvider={handlePaneProviderChange}
+              textareaRef={textareaRef}
+              providerModels={providerModels}
+              setProviderModel={setProviderModel}
+              providerModelCatalog={providerModelCatalog}
+              providerModelActions={providerModelActions}
+              providerModelsLoading={providerModelsLoading}
+              providerAuthStatus={providerAuthStatus}
+              tasksEnabled={tasksEnabled}
+              isTaskMasterInstalled={isTaskMasterInstalled}
+              onShowAllTasks={onShowAllTasks}
+              setInput={setInput}
+            />
+          )
+        ) : (
         <ChatMessagesPane
           scrollContainerRef={scrollContainerRef}
           scrollContentRef={scrollContentRef}
           onPaneMounted={notifyPaneMounted}
-          isLoadingSessionMessages={isLoadingSessionMessages}
           isProcessing={isProcessing}
           hasActivityIndicator={hasActivityIndicator}
           chatMessages={chatMessages}
           selectedSession={selectedSession}
-          currentSessionId={currentSessionId}
           provider={provider}
-          setProvider={handlePaneProviderChange}
-          textareaRef={textareaRef}
-          providerModels={providerModels}
-          setProviderModel={setProviderModel}
           onEditMessage={supportsMessageEditing && !isProcessing ? beginEditMessage : undefined}
           onForkFromMessage={supportsSessionForking ? handleForkFromMessage : undefined}
-          providerModelCatalog={providerModelCatalog}
-          providerModelActions={providerModelActions}
-          providerModelsLoading={providerModelsLoading}
-          providerAuthStatus={providerAuthStatus}
-          tasksEnabled={tasksEnabled}
-          isTaskMasterInstalled={isTaskMasterInstalled}
-          onShowAllTasks={onShowAllTasks}
-          setInput={setInput}
           isLoadingMoreMessages={isLoadingMoreMessages}
           hasMoreMessages={hasMoreMessages}
           totalMessages={totalMessages}
@@ -407,12 +422,11 @@ function ChatInterface({
           showLoadAllOverlay={showLoadAllOverlay}
           createDiff={createDiff}
           onFileOpen={onFileOpen}
-          onShowSettings={onShowSettings}
-          onGrantToolPermission={handleGrantToolPermission}
           showRawParameters={showRawParameters}
           showThinking={showThinking}
           selectedProject={selectedProject}
         />
+        )}
 
         <div className="relative flex-shrink-0">
           {isUserScrolledUp && chatMessages.length > 0 && (

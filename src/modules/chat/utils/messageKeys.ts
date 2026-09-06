@@ -10,14 +10,13 @@ const toMessageKeyPart = (value: unknown): string | null => {
 };
 
 export const getIntrinsicMessageKey = (message: ChatMessage): string | null => {
+  // convertRow always stamps `id`; tool rows additionally carry toolId /
+  // toolCallId. The other engine-native identity fields exist on
+  // NormalizedMessage but never survive the ChatMessage conversion.
   const candidates = [
     message.id,
-    message.messageId,
     message.toolId,
     message.toolCallId,
-    message.blobId,
-    message.rowid,
-    message.sequence,
   ];
 
   for (const candidate of candidates) {
