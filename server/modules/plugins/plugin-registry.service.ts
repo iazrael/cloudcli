@@ -179,6 +179,29 @@ function runBuildIfNeeded(dir, packageJsonPath, onSuccess, onError) {
   });
 }
 
+/**
+ * Restore the exec bit on node-pty's prebuilt spawn-helper binaries after
+ * `npm install --ignore-scripts` skipped node-pty's postinstall (our plugin
+ * installer always installs with that flag). Without +x, pty.spawn fails with
+ * posix_spawnp on macOS/Linux and terminal-like plugins die on first use.
+ * Used by the install/update chains here and by plugin-registry tests.
+ */
+export function restoreNativeBinaryExecBits(pluginDir) {
+  const prebuildsDir = path.join(pluginDir, 'node_modules', 'node-pty', 'prebuilds');
+  if (!fs.existsSync(prebuildsDir)) return;
+  try {
+    for (const platform of fs.readdirSync(prebuildsDir)) {
+      const helper = path.join(prebuildsDir, platform, 'spawn-helper');
+      try {
+        const st = fs.statSync(helper);
+        if (st.isFile() && (st.mode & 0o111) === 0) {
+          fs.chmodSync(helper, 0o755);
+        }
+      } catch { /* best-effort per file */ }
+    }
+  } catch { /* best-effort */ }
+}
+
 export function scanPlugins() {
   const pluginsDir = getPluginsDir();
   const config = getPluginsConfig();
@@ -385,6 +408,7 @@ export function installPluginFromGit(url) {
             cleanupTemp();
             return reject(new Error(`npm install for ${repoName} failed (exit code ${npmCode})`));
           }
+          restoreNativeBinaryExecBits(tempDir);
           runBuildIfNeeded(tempDir, packageJsonPath, () => finalize(manifest), (err) => { cleanupTemp(); reject(err); });
         });
 
@@ -450,6 +474,7 @@ export function updatePluginFromGit(name) {
           if (npmCode !== 0) {
             return reject(new Error(`npm install for ${name} failed (exit code ${npmCode})`));
           }
+          restoreNativeBinaryExecBits(pluginDir);
           runBuildIfNeeded(pluginDir, packageJsonPath, () => resolve(manifest), (err) => reject(err));
         });
         npmProcess.on('error', (err) => reject(err));
