@@ -107,22 +107,8 @@ export default function SidebarFooter({
         </button>
       </div>
 
-      {/* Desktop version brand line (OSS mode only) */}
-      {!IS_PLATFORM && (
-        <div className="hidden px-3 py-2 text-center md:block">
-          <a
-            href={GITHUB_REPO_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-[10px] text-muted-foreground/40 transition-colors hover:text-muted-foreground"
-          >
-            CloudCLI v{currentVersion} – {t('branding.openSource')}
-          </a>
-        </div>
-      )}
-
       {/* Mobile settings */}
-      <div className="px-3 pt-2 md:hidden">
+      <div className="px-3 pb-3 pt-2 md:hidden">
         <button
           className="flex h-10 w-full items-center gap-3 rounded-xl bg-muted/40 px-3.5 transition-all hover:bg-muted/60 active:scale-[0.98]"
           onClick={onShowSettings}
@@ -134,20 +120,23 @@ export default function SidebarFooter({
         </button>
       </div>
 
-      {/* Mobile version line: the quick-glance counterpart of the desktop brand
-          line above, in the about tab's `vX.Y.Z(hash)` format. Tap opens the
-          version modal so checking the running version does not require a
-          detour through settings → about. */}
-      <div className="px-3 pb-3 md:hidden">
-        <button
-          className="w-full text-center text-[10px] text-muted-foreground/40 transition-colors active:text-muted-foreground"
-          onClick={onShowVersionModal}
-          aria-label={t('version.title', 'Version')}
-        >
-          v{currentVersion}
-          {BUILD_INFO.commit && `(${BUILD_INFO.commit})`}
-        </button>
-      </div>
+      {/* Version brand line, all layouts: the one always-visible version readout
+          (about-tab style vX.Y.Z(hash)). It intentionally does not open the
+          version modal — that is reserved for the update banner, which only
+          appears when the update check actually finds a newer release. */}
+      {!IS_PLATFORM && (
+        <div className="px-3 pb-3 pt-1 text-center md:py-2">
+          <a
+            href={GITHUB_REPO_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-[10px] text-muted-foreground/40 transition-colors hover:text-muted-foreground"
+          >
+            CloudCLI v{currentVersion}
+            {BUILD_INFO.commit && `(${BUILD_INFO.commit})`} – {t('branding.openSource')}
+          </a>
+        </div>
+      )}
     </div>
   );
 }
