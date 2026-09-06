@@ -123,7 +123,7 @@ export default function SidebarFooter({
       )}
 
       {/* Mobile settings */}
-      <div className="px-3 pb-3 pt-2 md:hidden">
+      <div className="px-3 pt-2 md:hidden">
         <button
           className="flex h-10 w-full items-center gap-3 rounded-xl bg-muted/40 px-3.5 transition-all hover:bg-muted/60 active:scale-[0.98]"
           onClick={onShowSettings}
@@ -132,6 +132,19 @@ export default function SidebarFooter({
             <Settings className="h-4 w-4 text-muted-foreground" />
           </div>
           <span className="text-sm font-normal text-foreground">{t('actions.settings')}</span>
+        </button>
+      </div>
+
+      {/* Mobile version line: the quick-glance counterpart of the desktop brand
+          line above. Tap opens the version modal so checking the running
+          version does not require a detour through settings → about. */}
+      <div className="px-3 pb-3 md:hidden">
+        <button
+          className="w-full text-center text-[10px] text-muted-foreground/40 transition-colors active:text-muted-foreground"
+          onClick={onShowVersionModal}
+          aria-label={t('version.title', 'Version')}
+        >
+          v{currentVersion}
         </button>
       </div>
     </div>
