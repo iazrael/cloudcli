@@ -145,7 +145,6 @@
       "content": "Archiving only removes old sessions from the active sidebar list. Your conversation history and files on disk are never deleted. You can browse or restore archived sessions at any time in the sidebar Archive view."
     }
   },
-
   "notifications": {
     "title": "Notifications",
     "description": "Control which notification events you receive.",
@@ -182,6 +181,13 @@
     "darkMode": {
       "label": "Dark Mode",
       "description": "Toggle between light and dark themes"
+    },
+    "workspaceTab": {
+      "title": "Workspace"
+    },
+    "terminalTab": {
+      "label": "Show terminal tab",
+      "description": "Hides the terminal entry from the workspace tab bar. The terminal keeps working; turn this back on to restore the tab."
     },
     "projectSorting": {
       "label": "Project Sorting",

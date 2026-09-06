@@ -71,11 +71,13 @@ function WorkspaceMain({
 
   const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings();
   const browserUseEnabled = useBrowserUseEnabled();
+  const { showTerminalTab } = useUiPreferences();
 
   useTaskMasterProjectSync(selectedProject);
 
   const shouldShowTasksTab = Boolean(tasksEnabled && isTaskMasterInstalled);
   const shouldShowBrowserTab = browserUseEnabled;
+  const shouldShowShellTab = showTerminalTab;
 
   const {
     editingFile,
@@ -107,6 +109,12 @@ function WorkspaceMain({
       setActiveTab('chat');
     }
   }, [shouldShowBrowserTab, activeTab, setActiveTab]);
+
+  useEffect(() => {
+    if (!shouldShowShellTab && activeTab === 'shell') {
+      setActiveTab('chat');
+    }
+  }, [shouldShowShellTab, activeTab, setActiveTab]);
 
   // Stable so React.memo(ChatInterface) can bail out: an inline arrow here made
   // every WorkspaceMain render re-render the whole chat tree, including during
@@ -146,6 +154,7 @@ function WorkspaceMain({
         selectedSession={selectedSession}
         shouldShowTasksTab={shouldShowTasksTab}
         shouldShowBrowserTab={shouldShowBrowserTab}
+        shouldShowShellTab={shouldShowShellTab}
         isMobile={isMobile}
         onMenuClick={onMenuClick}
       />

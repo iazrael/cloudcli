@@ -2,6 +2,7 @@ import { useTranslation } from 'react-i18next';
 
 import { DarkModeToggle } from '@/shared/ui';
 import type { CodeEditorSettingsState, ProjectSortOrder } from '@/shared/types';
+import { useUiPreferences, useSetUiPreference } from '@/shared/context/UiPreferencesContext';
 import { LanguageSelector } from '@/modules/i18n';
 import SettingsCard from '@/modules/settings/SettingsCard';
 import SettingsRow from '@/modules/settings/SettingsRow';
@@ -29,6 +30,8 @@ export default function AppearanceSettingsTab({
   onCodeEditorFontSizeChange,
 }: AppearanceSettingsTabProps) {
   const { t } = useTranslation('settings');
+  const { showTerminalTab } = useUiPreferences();
+  const setUiPreference = useSetUiPreference();
 
   return (
     <div className="space-y-8">
@@ -63,6 +66,21 @@ export default function AppearanceSettingsTab({
               <option value="name">{t('appearanceSettings.projectSorting.alphabetical')}</option>
               <option value="date">{t('appearanceSettings.projectSorting.recentActivity')}</option>
             </select>
+          </SettingsRow>
+        </SettingsCard>
+      </SettingsSection>
+
+      <SettingsSection title={t('appearanceSettings.workspaceTab.title')}>
+        <SettingsCard>
+          <SettingsRow
+            label={t('appearanceSettings.terminalTab.label')}
+            description={t('appearanceSettings.terminalTab.description')}
+          >
+            <SettingsToggle
+              checked={showTerminalTab}
+              onChange={(value) => setUiPreference('showTerminalTab', value)}
+              ariaLabel={t('appearanceSettings.terminalTab.label')}
+            />
           </SettingsRow>
         </SettingsCard>
       </SettingsSection>

@@ -145,7 +145,6 @@
       "content": "归档操作只会从侧边栏列表中移出旧会话，绝不会删除您的对话历史和磁盘文件。您随时可以在侧边栏点击“归档视图”（顶部箱子图标）查看完整历史记录，或者一键将其恢复回活跃列表中。"
     }
   },
-
   "notifications": {
     "title": "通知",
     "description": "控制你希望接收的通知事件。",
@@ -182,6 +181,13 @@
     "darkMode": {
       "label": "深色模式",
       "description": "切换浅色和深色主题"
+    },
+    "workspaceTab": {
+      "title": "工作区"
+    },
+    "terminalTab": {
+      "label": "显示终端标签页",
+      "description": "关闭后仅隐藏工作区的终端标签入口，终端功能保留，随时可回来重新打开。"
     },
     "projectSorting": {
       "label": "项目排序",

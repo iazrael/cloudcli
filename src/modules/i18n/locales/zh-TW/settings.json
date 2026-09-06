@@ -127,6 +127,13 @@
       "label": "深色模式",
       "description": "切換淺色和深色佈景主題"
     },
+    "workspaceTab": {
+      "title": "工作區"
+    },
+    "terminalTab": {
+      "label": "顯示終端機標籤頁",
+      "description": "關閉後僅隱藏工作區的終端機標籤入口，終端機功能保留，隨時可回來重新開啟。"
+    },
     "projectSorting": {
       "label": "專案排序",
       "description": "專案在側邊欄中的排列方式",

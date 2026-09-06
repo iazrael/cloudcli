@@ -15,6 +15,7 @@ type WorkspaceHeaderProps = {
   selectedSession: ProjectSession | null;
   shouldShowTasksTab: boolean;
   shouldShowBrowserTab: boolean;
+  shouldShowShellTab: boolean;
   isMobile: boolean;
   onMenuClick: () => void;
 };
@@ -27,6 +28,7 @@ export default function WorkspaceHeader({
   selectedSession,
   shouldShowTasksTab,
   shouldShowBrowserTab,
+  shouldShowShellTab,
   isMobile,
   onMenuClick,
 }: WorkspaceHeaderProps) {
@@ -122,6 +124,7 @@ export default function WorkspaceHeader({
                 setActiveTab={setActiveTab}
                 shouldShowTasksTab={shouldShowTasksTab}
                 shouldShowBrowserTab={shouldShowBrowserTab}
+                shouldShowShellTab={shouldShowShellTab}
               />
             </div>
             {canScrollRight && (

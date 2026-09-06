@@ -12,6 +12,8 @@ type WorkspaceTabsProps = {
   setActiveTab: Dispatch<SetStateAction<AppTab>>;
   shouldShowTasksTab: boolean;
   shouldShowBrowserTab: boolean;
+  /** Defaults to true so callers that predate the terminal-tab preference keep the tab. */
+  shouldShowShellTab?: boolean;
 };
 
 type BuiltInTab = {
@@ -33,10 +35,16 @@ type TabDefinition = BuiltInTab | PluginTab;
 
 const BASE_TABS: BuiltInTab[] = [
   { kind: 'builtin', id: 'chat',  labelKey: 'tabs.chat',  icon: MessageSquare },
-  { kind: 'builtin', id: 'shell', labelKey: 'tabs.shell', icon: Terminal },
   { kind: 'builtin', id: 'files', labelKey: 'tabs.files', icon: Folder },
   { kind: 'builtin', id: 'git',   labelKey: 'tabs.git',   icon: GitBranch },
 ];
+
+const SHELL_TAB: BuiltInTab = {
+  kind: 'builtin',
+  id: 'shell',
+  labelKey: 'tabs.shell',
+  icon: Terminal,
+};
 
 const BROWSER_TAB: BuiltInTab = {
   kind: 'builtin',
@@ -58,12 +66,14 @@ export default function WorkspaceTabs({
   setActiveTab,
   shouldShowTasksTab,
   shouldShowBrowserTab,
+  shouldShowShellTab = true,
 }: WorkspaceTabsProps) {
   const { t } = useTranslation();
   const { plugins } = usePlugins();
 
   const builtInTabs: BuiltInTab[] = [
     ...BASE_TABS,
+    ...(shouldShowShellTab ? [SHELL_TAB] : []),
     ...(shouldShowBrowserTab ? [BROWSER_TAB] : []),
     ...(shouldShowTasksTab ? [TASKS_TAB] : []),
   ];
