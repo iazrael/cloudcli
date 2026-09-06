@@ -1,5 +1,5 @@
-import { type ReactNode } from 'react';
-import { Activity, Archive, Folder, MessageSquare, RotateCcw, Search, Trash2 } from 'lucide-react';
+import { type ReactNode, useState } from 'react';
+import { Activity, Archive, ChevronDown, Folder, MessageSquare, RotateCcw, Search, Trash2 } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
 import { LLMProviderLogo, ScrollArea } from '@/shared/ui';
@@ -219,6 +219,23 @@ export default function SidebarContent({
   const groupedArchivedSessions = groupArchivedSessionsByProject(archivedSessions);
   const visibleArchivedItemsCount = archivedProjects.length + archivedSessions.length;
   const isRenamingOnMobile = isMobile && projectListProps.activeRename !== null;
+
+  // Archive cards start expanded; collapsing is per card and view-local, so
+  // users can shorten a long archive list without that choice leaking into
+  // the active sidebar. Keys carry a prefix so an archived project and a
+  // standalone-session group can never collide on the same id.
+  const [collapsedArchivedGroups, setCollapsedArchivedGroups] = useState<Set<string>>(() => new Set());
+  const toggleArchivedGroup = (groupKey: string) => {
+    setCollapsedArchivedGroups((previous) => {
+      const next = new Set(previous);
+      if (next.has(groupKey)) {
+        next.delete(groupKey);
+      } else {
+        next.add(groupKey);
+      }
+      return next;
+    });
+  };
 
   return (
     <div
@@ -534,6 +551,8 @@ export default function SidebarContent({
               </div>
               {archivedProjects.map((project) => {
                 const projectSessions = getAllSessions(project);
+                const archivedGroupKey = `project:${project.projectId}`;
+                const isArchivedGroupCollapsed = collapsedArchivedGroups.has(archivedGroupKey);
 
                 return (
                   <section
@@ -541,24 +560,37 @@ export default function SidebarContent({
                     className="group/archive overflow-hidden rounded-xl border border-border/70 bg-card/45 shadow-[0_1px_0_hsl(var(--border)/0.2)] transition-colors hover:border-border"
                   >
                     <div className="flex items-center gap-2.5 px-2.5 py-2.5">
-                      <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg border border-border/60 bg-muted/45 text-muted-foreground">
-                        <Folder className="h-4 w-4" />
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex min-w-0 items-center gap-1.5">
-                          <h3 className="truncate text-[13px] font-medium text-foreground">
-                            {project.displayName}
-                          </h3>
-                          {projectSessions.length > 0 && (
-                            <span className="flex-shrink-0 rounded-md bg-muted/60 px-1.5 py-0.5 text-[9px] tabular-nums text-muted-foreground">
-                              {projectSessions.length}
-                            </span>
-                          )}
+                      <button
+                        type="button"
+                        className="flex min-w-0 flex-1 items-center gap-2.5 rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        onClick={projectSessions.length > 0 ? () => toggleArchivedGroup(archivedGroupKey) : undefined}
+                        aria-expanded={projectSessions.length > 0 ? !isArchivedGroupCollapsed : undefined}
+                        title={t('archived.toggleSessions', 'Show or hide sessions')}
+                      >
+                        <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg border border-border/60 bg-muted/45 text-muted-foreground">
+                          <Folder className="h-4 w-4" />
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex min-w-0 items-center gap-1.5">
+                            <h3 className="truncate text-[13px] font-medium text-foreground">
+                              {project.displayName}
+                            </h3>
+                            {projectSessions.length > 0 && (
+                              <span className="flex-shrink-0 rounded-md bg-muted/60 px-1.5 py-0.5 text-[9px] tabular-nums text-muted-foreground">
+                                {projectSessions.length}
+                              </span>
+                            )}
+                          </div>
+                          <p className="mt-0.5 truncate text-[11px] text-muted-foreground/70" title={project.fullPath}>
+                            {project.fullPath}
+                          </p>
                         </div>
-                        <p className="mt-0.5 truncate text-[11px] text-muted-foreground/70" title={project.fullPath}>
-                          {project.fullPath}
-                        </p>
-                      </div>
+                        {projectSessions.length > 0 && (
+                          <ChevronDown
+                            className={`h-4 w-4 flex-shrink-0 text-muted-foreground/60 transition-transform ${isArchivedGroupCollapsed ? '-rotate-90' : ''}`}
+                          />
+                        )}
+                      </button>
                       <button
                         className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-lg border border-emerald-600/15 bg-emerald-500/10 text-emerald-700 transition-all hover:border-emerald-600/25 hover:bg-emerald-500/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40 dark:text-emerald-300"
                         onClick={() => onRestoreArchivedProject(project.projectId)}
@@ -576,7 +608,7 @@ export default function SidebarContent({
                         <Trash2 className="h-3.5 w-3.5" />
                       </button>
                     </div>
-                    {projectSessions.length > 0 && (
+                    {!isArchivedGroupCollapsed && projectSessions.length > 0 && (
                       <div className="border-t border-border/45 bg-muted/[0.08]">
                         {projectSessions.map((session) => {
                           const archivedSession = toArchivedSessionListItem(project, session);
@@ -628,84 +660,102 @@ export default function SidebarContent({
                   </section>
                 );
               })}
-              {groupedArchivedSessions.map((group) => (
-                <section
-                  key={group.key}
-                  className="group/archive overflow-hidden rounded-xl border border-border/70 bg-card/45 shadow-[0_1px_0_hsl(var(--border)/0.2)] transition-colors hover:border-border"
-                >
-                  <div className="flex items-center gap-2.5 px-2.5 py-2.5">
-                    <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg border border-border/60 bg-muted/45 text-muted-foreground">
-                      <Folder className="h-4 w-4" />
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex min-w-0 items-center gap-1.5">
-                        <h3 className="truncate text-[13px] font-medium text-foreground">
-                          {group.projectDisplayName}
-                        </h3>
-                        <span className="flex-shrink-0 rounded-md bg-muted/60 px-1.5 py-0.5 text-[9px] tabular-nums text-muted-foreground">
-                          {group.sessions.length}
-                        </span>
-                      </div>
-                      {group.projectPath && (
-                        <p className="mt-0.5 truncate text-[11px] text-muted-foreground/70" title={group.projectPath}>
-                          {group.projectPath}
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                  <div className="border-t border-border/45 bg-muted/[0.08]">
-                    {group.sessions.map((session) => (
-                      <div
-                        key={session.sessionId}
-                        className="group/session flex items-center gap-1 border-b border-border/35 px-2.5 py-2 last:border-b-0 hover:bg-accent/35"
+              {groupedArchivedSessions.map((group) => {
+                const archivedGroupKey = `group:${group.key}`;
+                const isArchivedGroupCollapsed = collapsedArchivedGroups.has(archivedGroupKey);
+
+                return (
+                  <section
+                    key={group.key}
+                    className="group/archive overflow-hidden rounded-xl border border-border/70 bg-card/45 shadow-[0_1px_0_hsl(var(--border)/0.2)] transition-colors hover:border-border"
+                  >
+                    <div className="flex items-center gap-2.5 px-2.5 py-2.5">
+                      <button
+                        type="button"
+                        className="flex min-w-0 flex-1 items-center gap-2.5 rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        onClick={() => toggleArchivedGroup(archivedGroupKey)}
+                        aria-expanded={!isArchivedGroupCollapsed}
+                        title={t('archived.toggleSessions', 'Show or hide sessions')}
                       >
-                        <button
-                          className="flex min-w-0 flex-1 items-center gap-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                          onClick={() => onArchivedSessionClick(session)}
-                        >
-                          <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md bg-background/70">
-                            <LLMProviderLogo provider={session.provider} className="h-3.5 w-3.5" />
-                          </span>
-                          <div className="min-w-0 flex-1">
-                            <p className="truncate text-xs text-foreground">
-                              {session.sessionTitle}
+                        <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg border border-border/60 bg-muted/45 text-muted-foreground">
+                          <Folder className="h-4 w-4" />
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex min-w-0 items-center gap-1.5">
+                            <h3 className="truncate text-[13px] font-medium text-foreground">
+                              {group.projectDisplayName}
+                            </h3>
+                            <span className="flex-shrink-0 rounded-md bg-muted/60 px-1.5 py-0.5 text-[9px] tabular-nums text-muted-foreground">
+                              {group.sessions.length}
+                            </span>
+                          </div>
+                          {group.projectPath && (
+                            <p className="mt-0.5 truncate text-[11px] text-muted-foreground/70" title={group.projectPath}>
+                              {group.projectPath}
                             </p>
-                            <div className="mt-0.5 flex items-center gap-1 text-[10px] text-muted-foreground/70">
-                              <span className="uppercase tracking-wide">{session.provider}</span>
-                              {session.lastActivity && (
-                                <>
-                                  <span aria-hidden>·</span>
-                                  <span className="tabular-nums">
-                                    {formatCompactAge(session.lastActivity, projectListProps.currentTime)}
-                                  </span>
-                                </>
-                              )}
+                          )}
+                        </div>
+                        <ChevronDown
+                          className={`h-4 w-4 flex-shrink-0 text-muted-foreground/60 transition-transform ${isArchivedGroupCollapsed ? '-rotate-90' : ''}`}
+                        />
+                      </button>
+                    </div>
+                    {!isArchivedGroupCollapsed && (
+                      <div className="border-t border-border/45 bg-muted/[0.08]">
+                        {group.sessions.map((session) => (
+                          <div
+                            key={session.sessionId}
+                            className="group/session flex items-center gap-1 border-b border-border/35 px-2.5 py-2 last:border-b-0 hover:bg-accent/35"
+                          >
+                            <button
+                              className="flex min-w-0 flex-1 items-center gap-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                              onClick={() => onArchivedSessionClick(session)}
+                            >
+                              <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md bg-background/70">
+                                <LLMProviderLogo provider={session.provider} className="h-3.5 w-3.5" />
+                              </span>
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate text-xs text-foreground">
+                                  {session.sessionTitle}
+                                </p>
+                                <div className="mt-0.5 flex items-center gap-1 text-[10px] text-muted-foreground/70">
+                                  <span className="uppercase tracking-wide">{session.provider}</span>
+                                  {session.lastActivity && (
+                                    <>
+                                      <span aria-hidden>·</span>
+                                      <span className="tabular-nums">
+                                        {formatCompactAge(session.lastActivity, projectListProps.currentTime)}
+                                      </span>
+                                    </>
+                                  )}
+                                </div>
+                              </div>
+                            </button>
+                            <div className="flex flex-shrink-0 items-center gap-0.5">
+                              <button
+                                className="flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-emerald-500/10 hover:text-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40 dark:hover:text-emerald-300"
+                                onClick={() => onRestoreArchivedSession(session.sessionId)}
+                                title={t('archived.restore', 'Restore session')}
+                                aria-label={`${t('archived.restore', 'Restore session')}: ${session.sessionTitle}`}
+                              >
+                                <RotateCcw className="h-3.5 w-3.5" />
+                              </button>
+                              <button
+                                className="flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-destructive/40"
+                                onClick={() => onDeleteArchivedSession(session)}
+                                title={t('archived.deletePermanently', 'Delete permanently')}
+                                aria-label={`${t('archived.deletePermanently', 'Delete permanently')}: ${session.sessionTitle}`}
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
                             </div>
                           </div>
-                        </button>
-                        <div className="flex flex-shrink-0 items-center gap-0.5">
-                          <button
-                            className="flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-emerald-500/10 hover:text-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40 dark:hover:text-emerald-300"
-                            onClick={() => onRestoreArchivedSession(session.sessionId)}
-                            title={t('archived.restore', 'Restore session')}
-                            aria-label={`${t('archived.restore', 'Restore session')}: ${session.sessionTitle}`}
-                          >
-                            <RotateCcw className="h-3.5 w-3.5" />
-                          </button>
-                          <button
-                            className="flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-destructive/40"
-                            onClick={() => onDeleteArchivedSession(session)}
-                            title={t('archived.deletePermanently', 'Delete permanently')}
-                            aria-label={`${t('archived.deletePermanently', 'Delete permanently')}: ${session.sessionTitle}`}
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
-                        </div>
+                        ))}
                       </div>
-                    ))}
-                  </div>
-                </section>
-              ))}
+                    )}
+                  </section>
+                );
+              })}
             </div>
           )
         ) : (

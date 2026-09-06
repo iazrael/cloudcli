@@ -164,6 +164,7 @@
     "restoreProject": "恢复工作区",
     "restore": "恢复会话",
     "deletePermanently": "永久删除",
-    "deleteProjectPermanently": "永久删除"
+    "deleteProjectPermanently": "永久删除",
+    "toggleSessions": "展开或收起会话"
   }
 }

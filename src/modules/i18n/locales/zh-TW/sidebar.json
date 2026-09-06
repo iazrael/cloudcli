@@ -163,6 +163,7 @@
     "restoreProject": "還原工作區",
     "restore": "還原工作階段",
     "deletePermanently": "永久刪除",
-    "deleteProjectPermanently": "永久刪除"
+    "deleteProjectPermanently": "永久刪除",
+    "toggleSessions": "展開或收起工作階段"
   }
 }
