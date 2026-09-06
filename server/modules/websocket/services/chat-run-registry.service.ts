@@ -10,6 +10,18 @@ import type {
 type ChatRunStatus = 'running' | 'completed';
 
 /**
+ * Reply payload for `chat.subscribe`'s replay lookup: the missed events, the
+ * session's authoritative sequence watermark (valid even when no run is
+ * tracked), and whether the client's `lastSeq` has fallen out of the buffered
+ * window (see `replayEvents`).
+ */
+export type ChatReplayResult = {
+  events: NormalizedMessage[];
+  lastSeq: number;
+  stale: boolean;
+};
+
+/**
  * One live (or recently finished) provider run for a single app session.
  *
  * State notes — why each mutable field is essential:
@@ -19,9 +31,10 @@ type ChatRunStatus = 'running' | 'completed';
  * - `status`: drives `chat_subscribed.isProcessing`, prevents double sends
  *   into the same session, and guards the synthetic-complete fallback in the
  *   chat handler (only emitted when a runtime died without completing).
- * - `lastSeq` / `events`: the per-run event log. Every live event gets a
- *   monotonically increasing `seq` and is buffered so a reconnecting client
- *   can replay exactly the events it missed via `chat.subscribe`.
+ * - `lastSeq` / `events`: the run's event log. Every live event gets a
+ *   `seq` continuing the session's watermark (see `sessionWatermarks`) and is
+ *   buffered so a reconnecting client can replay exactly the events it missed
+ *   via `chat.subscribe`.
  */
 type ChatRun = {
   appSessionId: string;
@@ -59,6 +72,19 @@ const MAX_BUFFERED_EVENTS_PER_RUN = 5000;
  */
 const runs = new Map<string, ChatRun>();
 
+/**
+ * Per-session monotonic sequence watermark.
+ *
+ * seq is a session-scoped contract: clients keep one `lastSeq` per session and
+ * send it back with `chat.subscribe`, so the counter must never restart when a
+ * new run begins. This map is the single owner of that watermark — `startRun`
+ * seeds the new run's counter from it and every stamped event writes it back.
+ * It deliberately survives run switches and buffer eviction (entries are one
+ * number per session), so a reconnecting client's `lastSeq` stays comparable
+ * even when the previous run's buffer is long gone.
+ */
+const sessionWatermarks = new Map<string, number>();
+
 function evictRunLater(appSessionId: string): void {
   const timer = setTimeout(() => {
     const run = runs.get(appSessionId);
@@ -91,6 +117,7 @@ function decorateAndRecordEvent(run: ChatRun, message: NormalizedMessage): Norma
   }
 
   run.lastSeq += 1;
+  sessionWatermarks.set(run.appSessionId, run.lastSeq);
 
   const outbound: NormalizedMessage = {
     ...message,
@@ -187,7 +214,10 @@ export const chatRunRegistry = {
       provider: input.provider,
       providerSessionId: input.providerSessionId,
       status: 'running',
-      lastSeq: 0,
+      // Continue the session's watermark: a client that watched the previous
+      // run keeps one `lastSeq` per session, so a fresh counter per run would
+      // make its replay filter silently drop the new run's events.
+      lastSeq: sessionWatermarks.get(input.appSessionId) ?? 0,
       events: [],
       writer: null as unknown as ChatSessionWriter,
       startedAt: Date.now(),
@@ -257,18 +287,28 @@ export const chatRunRegistry = {
   },
 
   /**
-   * Returns buffered events with `seq` greater than `afterSeq` for replay.
+   * Returns the events a reconnecting client missed, plus the authoritative
+   * replay state for `chat.subscribe`'s ack.
    *
-   * An empty array with `run.lastSeq > afterSeq` not covered by the buffer
-   * means the buffer was truncated; the client should refresh over REST.
+   * `stale` is true when the client's `afterSeq` predates the oldest buffered
+   * event: the middle of the stream was dropped (the per-run buffer cap or the
+   * completed-run retention window), replay cannot bridge the gap, and the
+   * client must refresh history over REST instead of trusting the replay.
    */
-  replayEvents(appSessionId: string, afterSeq: number): NormalizedMessage[] {
+  replayEvents(appSessionId: string, afterSeq: number): ChatReplayResult {
+    const lastSeq = sessionWatermarks.get(appSessionId) ?? 0;
     const run = runs.get(appSessionId);
     if (!run) {
-      return [];
+      return { events: [], lastSeq, stale: false };
     }
 
-    return run.events.filter((event) => typeof event.seq === 'number' && event.seq > afterSeq);
+    const events = run.events.filter((event) => typeof event.seq === 'number' && event.seq > afterSeq);
+    const oldestBuffered = run.events.find((event) => typeof event.seq === 'number')?.seq;
+    const stale = afterSeq > 0
+      && typeof oldestBuffered === 'number'
+      && oldestBuffered > afterSeq + 1;
+
+    return { events, lastSeq, stale };
   },
 
   /**
@@ -302,9 +342,10 @@ export const chatRunRegistry = {
   },
 
   /**
-   * Test-only escape hatch: clears every tracked run.
+   * Test-only escape hatch: clears every tracked run and sequence watermark.
    */
   clearAll(): void {
     runs.clear();
+    sessionWatermarks.clear();
   },
 };

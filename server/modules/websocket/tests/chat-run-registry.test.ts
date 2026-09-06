@@ -221,8 +221,85 @@ test('replayEvents returns only events after the requested seq', async () => {
     run.writer.send({ kind: 'stream_delta', provider: 'claude', sessionId: 'x', content: 'c' });
 
     const replayed = chatRunRegistry.replayEvents('app-run-4', 1);
-    assert.deepEqual(replayed.map((event) => event.content), ['b', 'c']);
-    assert.deepEqual(replayed.map((event) => event.seq), [2, 3]);
+    assert.deepEqual(replayed.events.map((event) => event.content), ['b', 'c']);
+    assert.deepEqual(replayed.events.map((event) => event.seq), [2, 3]);
+    assert.equal(replayed.lastSeq, 3);
+    assert.equal(replayed.stale, false);
+  });
+});
+
+test('seq continues across runs so a client lastSeq stays comparable', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('app-run-10', 'claude', '/workspace/demo');
+    const connection = new FakeConnection();
+
+    const firstRun = chatRunRegistry.startRun({
+      appSessionId: 'app-run-10',
+      provider: 'claude',
+      providerSessionId: null,
+      connection,
+      userId: null,
+    });
+    assert.ok(firstRun);
+    firstRun.writer.send({ kind: 'stream_delta', provider: 'claude', sessionId: 'x', content: 'a' });
+    firstRun.writer.send({ kind: 'text', provider: 'claude', sessionId: 'x', content: 'done' });
+    firstRun.writer.send({ kind: 'complete', provider: 'claude', sessionId: 'native-10', exitCode: 0 });
+
+    // The next run for the same session continues the session watermark
+    // instead of restarting at 1 — otherwise a reconnecting client that kept
+    // run one's lastSeq would silently drop all of run two's replay.
+    const secondRun = chatRunRegistry.startRun({
+      appSessionId: 'app-run-10',
+      provider: 'claude',
+      providerSessionId: null,
+      connection,
+      userId: null,
+    });
+    assert.ok(secondRun);
+    secondRun.writer.send({ kind: 'stream_delta', provider: 'claude', sessionId: 'x', content: 'b' });
+    secondRun.writer.send({ kind: 'complete', provider: 'claude', sessionId: 'native-10', exitCode: 0 });
+
+    const sequenced = connection.frames.filter((frame) => typeof frame.seq === 'number');
+    assert.deepEqual(sequenced.map((frame) => frame.seq), [1, 2, 3, 4, 5]);
+
+    // A client that saw everything up to run one (lastSeq 3) gets exactly
+    // run two's events replayed, including its terminal complete.
+    const replay = chatRunRegistry.replayEvents('app-run-10', 3);
+    assert.deepEqual(replay.events.map((event) => event.seq), [4, 5]);
+    assert.equal(replay.events[0]?.content, 'b');
+    assert.equal(replay.lastSeq, 5);
+    assert.equal(replay.stale, false);
+  });
+});
+
+test('replay reports stale when the client lastSeq predates the buffer window', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('app-run-11', 'claude', '/workspace/demo');
+    const connection = new FakeConnection();
+    const run = chatRunRegistry.startRun({
+      appSessionId: 'app-run-11',
+      provider: 'claude',
+      providerSessionId: null,
+      connection,
+      userId: null,
+    });
+    assert.ok(run);
+    run.writer.send({ kind: 'stream_delta', provider: 'claude', sessionId: 'x', content: 'a' });
+    run.writer.send({ kind: 'stream_delta', provider: 'claude', sessionId: 'x', content: 'b' });
+
+    // Client saw seq 1 and the buffer starts at seq 2: contiguous, so replay
+    // bridges the reconnect without help.
+    const bridging = chatRunRegistry.replayEvents('app-run-11', 1);
+    assert.equal(bridging.stale, false);
+
+    // Simulate cap/retention truncation (buffer now starts at seq 5): the
+    // gap is unbridgeable and the client must be told to refresh over REST.
+    run.events.splice(0, run.events.length, { ...run.events[1], seq: 5 });
+    const stale = chatRunRegistry.replayEvents('app-run-11', 1);
+    assert.deepEqual(stale.events.map((event) => event.seq), [5]);
+    assert.equal(stale.stale, true);
+    // The watermark is owned by the session, not the buffer contents.
+    assert.equal(stale.lastSeq, 2);
   });
 });
 

@@ -509,7 +509,6 @@ function handleChatSubscribe(
       ? Math.max(0, Math.floor(lastSeqRaw))
       : 0;
 
-    const run = chatRunRegistry.getRun(sessionId);
     const isProcessing = chatRunRegistry.isProcessing(sessionId);
 
     // Future live events for this run should land on the socket that asked —
@@ -522,11 +521,17 @@ function handleChatSubscribe(
     // Claude runtime, so they can be looked up directly.
     const pendingPermissions = dependencies.runtime.getPendingApprovalsForSession(sessionId);
 
+    // `lastSeq` is the session's authoritative watermark (clients realign to
+    // it); `stale` tells the client its `lastSeq` predates the replay buffer
+    // and it must refresh history over REST instead of trusting the replay.
+    const replay = chatRunRegistry.replayEvents(sessionId, lastSeq);
+
     sendJson(ws, {
       kind: 'chat_subscribed',
       sessionId,
       isProcessing,
-      lastSeq: run?.lastSeq ?? 0,
+      lastSeq: replay.lastSeq,
+      stale: replay.stale,
       pendingPermissions,
       timestamp: new Date().toISOString(),
     });
@@ -536,7 +541,7 @@ function handleChatSubscribe(
     // replaying them (e.g. after a page reload where the client's lastSeq is
     // 0) would duplicate messages the history fetch already returned.
     if (isProcessing) {
-      for (const event of chatRunRegistry.replayEvents(sessionId, lastSeq)) {
+      for (const event of replay.events) {
         sendJson(ws, event);
       }
     }

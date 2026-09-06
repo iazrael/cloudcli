@@ -377,10 +377,11 @@ export type NormalizedMessage = {
   provider: LLMProvider;
   kind: MessageKind;
   /**
-   * Monotonic per-run sequence number assigned by the chat run registry when a
-   * live event is forwarded to the websocket. History messages loaded over
-   * REST do not carry it. Clients use it with `chat.subscribe` to replay only
-   * the live events they missed across websocket reconnects.
+   * Monotonic per-session sequence number assigned by the chat run registry
+   * when a live event is forwarded to the websocket. The counter continues
+   * across runs (the registry keeps one watermark per session), so a client's
+   * `lastSeq` stays comparable for `chat.subscribe` replay across websocket
+   * reconnects. History messages loaded over REST do not carry it.
    */
   seq?: number;
   role?: 'user' | 'assistant';
