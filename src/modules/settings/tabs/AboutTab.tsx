@@ -2,7 +2,7 @@ import { Cloud, ExternalLink, MessageSquare, Star, Users } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { BUILD_INFO, CLOUDCLI_WORDMARK_FONT_FAMILY, GITHUB_REPO_NAME, GITHUB_REPO_OWNER, GITHUB_REPO_URL } from '@/shared/constants';
-import { IS_PLATFORM } from '@/shared/utils';
+import { IS_PLATFORM, formatBuildVersion } from '@/shared/utils';
 import { useVersionCheck } from '@/shared/hooks/useVersionCheck';
 import PremiumFeatureCard from '@/modules/settings/PremiumFeatureCard';
 
@@ -53,8 +53,7 @@ export default function AboutTab() {
               rel="noopener noreferrer"
               className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground"
             >
-              v{currentVersion}
-              {BUILD_INFO.commit && `(${BUILD_INFO.commit})`}
+              {formatBuildVersion(currentVersion, BUILD_INFO.commit)}
             </a>
             {BUILD_INFO.buildTime && (
               <span className="text-[11px] text-muted-foreground/60">{BUILD_INFO.buildTime}</span>

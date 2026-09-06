@@ -39,13 +39,14 @@ export const CLOUDCLI_WORDMARK_FONT_FAMILY =
 export const APP_VERSION: string = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : '';
 
 /**
- * Build fingerprint baked into the client bundle at build time: `commit` is the git
- * short hash of the built tree (suffixed `-dirty` for uncommitted changes),
- * `buildTime` the build timestamp, and `describe` the full tag-anchored
- * `git describe` identity (e.g. `v2.0.0-14-g273e294`). Unlike `APP_VERSION`
- * they change on every build, so a stale PWA window can be told apart from
- * the latest deploy. Empty strings outside a Vite build (for example under
- * the `tsx` test runner).
+ * Build fingerprint baked into the client bundle at build time: `commit` is the
+ * annotated-tag-anchored `git describe --always --dirty` of the built tree (e.g.
+ * `v2.1.0`, `v2.1.0-5-g273e294`, or just the short hash when no tag is
+ * reachable, suffixed `-dirty` for uncommitted changes), `buildTime` the build
+ * timestamp, and `describe` the same identity from `git describe --tags`.
+ * Unlike `APP_VERSION` they change on every build, so a stale PWA window can be
+ * told apart from the latest deploy. Empty strings outside a Vite build (for
+ * example under the `tsx` test runner).
  */
 export const BUILD_INFO: { commit: string; buildTime: string; describe: string } =
   typeof __BUILD_INFO__ === 'object' && __BUILD_INFO__ !== null
