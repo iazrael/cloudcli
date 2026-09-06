@@ -13,8 +13,11 @@ import { createCachedDiffCalculator } from '@/modules/chat/utils/messageTransfor
 
 import { normalizedToChatMessages } from '@/modules/chat/hooks/useChatMessages';
 import { useContinuousScrollAnchor } from '@/modules/chat/hooks/useContinuousScrollAnchor';
+import { findSearchTargetIndex, resolveSearchWindowSize } from '@/modules/chat/utils/searchTargetLocator';
 
 const INITIAL_VISIBLE_MESSAGES = 100;
+/** Rows rendered below a search-jump hit; the hit opens the tail slice. */
+const SEARCH_JUMP_TRAILING_CONTEXT = 30;
 
 type UseChatSessionStateArgs = {
   isActive: boolean;
@@ -92,6 +95,41 @@ function chatMessageToNormalized(
     images: Array.isArray(msg.images) && msg.images.length > 0 ? msg.images : undefined,
     files: Array.isArray(msg.files) && msg.files.length > 0 ? msg.files : undefined,
   } as NormalizedMessage;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Helper: Find the rendered row wrapper for a message                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Locates the LazyMessageRow wrapper of `message` inside the scroll container.
+ * The wrapper stays in the DOM with its `data-message-timestamp` even while the
+ * row's content is an unmounted placeholder, so the lookup never needs retries.
+ * A hit collapsed inside a tool group renders under the group's own first
+ * timestamp, so an exact miss falls back to the nearest row.
+ */
+function findMessageRow(container: HTMLElement, message: ChatMessage): Element | null {
+  const timestamp = typeof message.timestamp === 'string' ? message.timestamp : '';
+  if (!timestamp) return null;
+
+  const exact = container.querySelector(`[data-message-timestamp="${CSS.escape(timestamp)}"]`);
+  if (exact) return exact;
+
+  const targetTime = new Date(timestamp).getTime();
+  if (!Number.isFinite(targetTime)) return null;
+
+  let nearest: Element | null = null;
+  let nearestDistance = Infinity;
+  for (const row of container.querySelectorAll('[data-message-timestamp]')) {
+    const rowTime = new Date(row.getAttribute('data-message-timestamp') || '').getTime();
+    if (!Number.isFinite(rowTime)) continue;
+    const distance = Math.abs(rowTime - targetTime);
+    if (distance < nearestDistance) {
+      nearestDistance = distance;
+      nearest = row;
+    }
+  }
+  return nearest;
 }
 
 /* ------------------------------------------------------------------ */
@@ -675,76 +713,76 @@ export function useChatSessionState({
     setSearchTarget(null);
 
     const scrollToTarget = async () => {
+      // The sidebar can point anywhere in the transcript. Hydrate the full
+      // history into the store first, but render only the window that covers
+      // the hit — committing the whole transcript to reach one row was the
+      // most expensive thing the pane could do.
       if (!allMessagesLoadedRef.current && selectedSession && selectedProject) {
-          try {
-            // Load all messages into the store for search navigation
-            const slot = await sessionStore.fetchFromServer(selectedSession.id, {
-              limit: null,
-              offset: 0,
-              canRequest: () => (
-                isActiveRef.current
-                && activeSessionIdRef.current === selectedSession.id
-              ),
-            });
-            if (slot) {
-              syncPaginationFromSlot(slot);
-              setVisibleMessageCount(Infinity);
-              setAllMessagesLoaded(true);
-              allMessagesLoadedRef.current = true;
-              await new Promise(resolve => setTimeout(resolve, 300));
-            } else if (!isActiveRef.current) {
-              setSearchTarget(target);
-              return;
-            }
-          } catch {
-            // Fall through and scroll in current messages
+        try {
+          const slot = await sessionStore.fetchFromServer(selectedSession.id, {
+            limit: null,
+            offset: 0,
+            canRequest: () => (
+              isActiveRef.current
+              && activeSessionIdRef.current === selectedSession.id
+            ),
+          });
+          if (slot) {
+            syncPaginationFromSlot(slot);
+            setAllMessagesLoaded(true);
+            allMessagesLoadedRef.current = true;
+          } else if (!isActiveRef.current) {
+            setSearchTarget(target);
+            return;
           }
+        } catch {
+          // Fall through and search the messages already loaded.
+        }
       }
-      setVisibleMessageCount(Infinity);
 
-      const findAndScroll = (retriesLeft: number) => {
-        const container = scrollContainerRef.current;
-        if (!container) return;
+      // chatMessages in this closure predates the hydration above; re-derive
+      // from the store so the locator sees the full transcript.
+      const sessionId = selectedSession?.id;
+      if (!sessionId) {
+        searchScrollActiveRef.current = false;
+        return;
+      }
+      const messages = normalizedToChatMessages(sessionStore.getMessages(sessionId));
+      const targetIndex = findSearchTargetIndex(messages, target);
+      if (targetIndex < 0) {
+        // A miss is knowable from the data: decline instead of the old
+        // retry loop that eventually gave up silently.
+        searchScrollActiveRef.current = false;
+        return;
+      }
 
-        let targetElement: Element | null = null;
+      setVisibleMessageCount(
+        resolveSearchWindowSize(messages.length, targetIndex, SEARCH_JUMP_TRAILING_CONTEXT),
+      );
 
-        if (target.snippet) {
-          const cleanSnippet = target.snippet.replace(/^\.{3}/, '').replace(/\.{3}$/, '').trim();
-          const searchPhrase = cleanSnippet.slice(0, 80).toLowerCase().trim();
-          if (searchPhrase.length >= 10) {
-            const messageElements = container.querySelectorAll('.chat-message');
-            for (const el of messageElements) {
-              const text = (el.textContent || '').toLowerCase();
-              if (text.includes(searchPhrase)) { targetElement = el; break; }
-            }
-          }
-        }
-
-        if (!targetElement && target.timestamp) {
-          const targetDate = new Date(target.timestamp).getTime();
-          const messageElements = container.querySelectorAll('[data-message-timestamp]');
-          let closestDiff = Infinity;
-          for (const el of messageElements) {
-            const ts = el.getAttribute('data-message-timestamp');
-            if (!ts) continue;
-            const diff = Math.abs(new Date(ts).getTime() - targetDate);
-            if (diff < closestDiff) { closestDiff = diff; targetElement = el; }
-          }
-        }
-
-        if (targetElement) {
-          targetElement.scrollIntoView({ block: 'center', behavior: 'smooth' });
-          targetElement.classList.add('search-highlight-flash');
-          setTimeout(() => targetElement?.classList.remove('search-highlight-flash'), 4000);
+      // The wrapper rows carry the timestamp attribute even while their
+      // content is an unmounted placeholder, so one commit is all the lookup
+      // needs; the second pass just re-centers after row heights settle from
+      // estimates to real measurements.
+      window.setTimeout(() => {
+        const row = scrollContainerRef.current
+          ? findMessageRow(scrollContainerRef.current, messages[targetIndex])
+          : null;
+        if (!row || !scrollContainerRef.current) {
           searchScrollActiveRef.current = false;
-        } else if (retriesLeft > 0) {
-          setTimeout(() => findAndScroll(retriesLeft - 1), 200);
-        } else {
-          searchScrollActiveRef.current = false;
+          return;
         }
-      };
-
-      setTimeout(() => findAndScroll(15), 150);
+        row.scrollIntoView({ block: 'center' });
+        window.setTimeout(() => {
+          const container = scrollContainerRef.current;
+          const settledRow = container ? findMessageRow(container, messages[targetIndex]) : null;
+          const finalRow = settledRow ?? row;
+          finalRow.scrollIntoView({ block: 'center' });
+          finalRow.classList.add('search-highlight-flash');
+          window.setTimeout(() => finalRow.classList.remove('search-highlight-flash'), 4000);
+          searchScrollActiveRef.current = false;
+        }, 300);
+      }, 150);
     };
 
     scrollToTarget();

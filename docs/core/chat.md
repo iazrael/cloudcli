@@ -57,10 +57,11 @@ flowchart LR
 
 模块内还有三条次级排序契约（都曾是真实 bug），见 `sessionTimelineStore.ts` 头注释：服务端覆盖剪枝必须先于内容级短路；旧页拉取期间的偏移漂移要先做一次有界最新页校准；流式行时间戳锚定在分段开始且不刷新。
 
-### 流式渲染优化
+### 渲染性能优化
 
 - 思考块按稳定 id 归组 upsert（`src/modules/chat/utils/sessionThinkingRows.ts`）。
 - 流式文本由 `transcript/StreamingMarkdown.tsx` 渲染：按 `streamingMarkdown.ts` 切"已定稿前缀 + 待定尾块"两段 `MarkdownBody`，前缀字节稳定命中 memo，每 100ms tick 只重解析尾块。
+- 搜索跳转先按 `searchTargetLocator.ts` 在数据上解析命中下标（-1 即确定性放弃），再按 `resolveSearchWindowSize` 只渲染命中窗口（不再整转录渲染），DOM 定位走 `LazyMessageRow` 包装层常驻的时间戳锚。
 - 工具卡片按 toolId upsert，服务端把引擎的流式参数增量累积成稳定快照再发。
 - 视口懒挂载与滚动锚定见 [frontend.md](./frontend.md) 的性能守则。
 

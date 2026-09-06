@@ -17,10 +17,10 @@ import type { ChatMessage } from '@/shared/types';
  *
  * Resolving the index from the message data first is what makes a miss
  * detectable — findSearchTargetIndex returns -1 and the jump declines rather
- * than pretending. The DOM step still ends in a nearest-timestamp match on its
- * final retry (useChatSessionState's findRenderedMessageElement with
- * allowNearest), but only for a target it has already resolved: a hit collapsed
- * inside a tool group is rendered under the group's own first timestamp.
+ * than pretending. The DOM step (useChatSessionState's findMessageRow) prefers
+ * an exact timestamp match on the always-present LazyMessageRow wrapper and
+ * falls back to the nearest row: a hit collapsed inside a tool group is
+ * rendered under the group's own first timestamp.
  */
 
 const message = (content: string, timestamp: string): ChatMessage => ({
