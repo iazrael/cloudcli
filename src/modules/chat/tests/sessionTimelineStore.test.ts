@@ -13,7 +13,7 @@ import assert from 'node:assert/strict';
 
 import { afterEach, test, vi } from 'vitest';
 
-import type { NormalizedMessage } from '@/shared/types';
+import type { NormalizedMessage, ServerEvent } from '@/shared/types';
 import type { SessionHistoryPage, SessionPageFetcher } from '@/modules/chat/utils/sessionTimelineStore';
 import { SessionTimelineStore } from '@/modules/chat/utils/sessionTimelineStore';
 import type { SessionMessagesRequestOptions } from '@/modules/chat/utils/sessionMessagePagination';
@@ -37,6 +37,11 @@ function msg(n: number, overrides: Partial<NormalizedMessage> = {}): NormalizedM
 }
 
 type ScriptedCall = { params: SessionMessagesRequestOptions; page: SessionHistoryPage };
+
+/** Drives one server frame through the store's single entry point. */
+function emit(store: SessionTimelineStore, frame: Record<string, unknown>): void {
+  store.applyServerEvent(frame as ServerEvent, { provider: 'claude' });
+}
 
 /**
  * A scripted transport: each call must match the next entry's limit/offset
@@ -74,12 +79,14 @@ test('an identical latest refresh bails out and keeps every cached identity when
   const store = new SessionTimelineStore({ fetchPage });
 
   await store.fetchFromServer(SESSION_ID, { limit: 20, offset: 0 });
-  store.upsertToolUse(SESSION_ID, {
+  emit(store, {
+    kind: 'tool_use',
     id: 'rt-tool-live',
+    sessionId: SESSION_ID,
     toolId: 'tool-live',
     toolName: 'Bash',
-    input: {},
-  } as NormalizedMessage);
+    toolInput: {},
+  });
 
   const slot = store.getSessionSlot(SESSION_ID)!;
   const serverBefore = slot.serverMessages;
@@ -189,20 +196,20 @@ test('an older-page read waits behind an in-flight latest refresh before calcula
 test('a streaming row anchors its timestamp at segment start and finalizes in place', async () => {
   const store = new SessionTimelineStore();
 
-  store.appendStreamDelta(SESSION_ID, 'Hel', 'claude');
+  emit(store, { kind: 'stream_delta', sessionId: SESSION_ID, content: 'Hel' });
   await tickThrottle();
   let streaming = store.getMessages(SESSION_ID).find((row) => row.id === `__streaming_${SESSION_ID}`);
   assert.ok(streaming);
   const anchoredTimestamp = streaming!.timestamp;
 
-  store.appendStreamDelta(SESSION_ID, 'lo', 'claude');
+  emit(store, { kind: 'stream_delta', sessionId: SESSION_ID, content: 'lo' });
   await tickThrottle();
   streaming = store.getMessages(SESSION_ID).find((row) => row.id === `__streaming_${SESSION_ID}`);
   assert.equal(streaming!.content, 'Hello');
   assert.equal(streaming!.timestamp, anchoredTimestamp, 'later deltas must not refresh the timestamp');
 
   const realtimeCountBefore = store.getSessionSlot(SESSION_ID)!.realtimeMessages.length;
-  store.flushStream(SESSION_ID, 'claude');
+  emit(store, { kind: 'stream_end', sessionId: SESSION_ID });
 
   const finalized = store.getMessages(SESSION_ID).find((row) => row.content === 'Hello');
   assert.ok(finalized);
@@ -212,7 +219,7 @@ test('a streaming row anchors its timestamp at segment start and finalizes in pl
     'finalization replaces the streaming row in place');
 
   // A later segment starts fresh instead of concatenating onto the flushed text.
-  store.appendStreamDelta(SESSION_ID, 'Next', 'claude');
+  emit(store, { kind: 'stream_delta', sessionId: SESSION_ID, content: 'Next' });
   await tickThrottle();
   const nextSegment = store.getMessages(SESSION_ID).find((row) => row.id === `__streaming_${SESSION_ID}`);
   assert.ok(nextSegment);
@@ -271,10 +278,10 @@ test('optimistic user, thinking, and same-turn assistant echoes are absorbed int
 
 test('the resume seq keeps the maximum observed value per session', () => {
   const store = new SessionTimelineStore();
-  store.noteSeq(SESSION_ID, 3);
-  store.noteSeq(SESSION_ID, 7);
-  store.noteSeq(SESSION_ID, 5);
-  store.noteSeq('sess-other', 99);
+  emit(store, { kind: 'status', sessionId: SESSION_ID, seq: 3 });
+  emit(store, { kind: 'status', sessionId: SESSION_ID, seq: 7 });
+  emit(store, { kind: 'status', sessionId: SESSION_ID, seq: 5 });
+  emit(store, { kind: 'status', sessionId: 'sess-other', seq: 99 });
   assert.equal(store.getResumeSeq(SESSION_ID), 7);
   assert.equal(store.getResumeSeq('sess-other'), 99);
   assert.equal(store.getResumeSeq('sess-unknown'), 0);
@@ -322,76 +329,18 @@ const persistedWriteCard = (toolId: string): NormalizedMessage => ({
   toolId,
 });
 
-test('a shadow tool card with a divergent live id is pruned by its persisted twin', async () => {
-  const serverResult = msg(3, {
-    kind: 'tool_result',
-    role: 'assistant',
-    toolId: 'msg_1_part_2',
-    toolResult: { content: 'ok', isError: false },
-  });
-  const fetchPage = scriptedFetcher([
-    {
-      params: { limit: 20, offset: 0 },
-      page: { messages: [msg(1), persistedWriteCard('msg_1_part_2'), serverResult], total: 3, hasMore: false },
-    },
-  ]);
-  const store = new SessionTimelineStore({ fetchPage });
-  store.upsertToolUse(SESSION_ID, liveWriteCard('live_zcode_1'));
-
-  await store.fetchFromServer(SESSION_ID, { limit: 20, offset: 0 });
-
-  const merged = store.getMessages(SESSION_ID);
-  const toolCards = merged.filter((message) => message.kind === 'tool_use');
-  assert.equal(toolCards.length, 1, 'the same logical call must render exactly one card');
-  assert.equal(toolCards[0]?.toolId, 'msg_1_part_2', 'the persisted card is the survivor');
-  assert.ok(!merged.some((message) => message.id === 'rt-live_zcode_1'));
-});
-
 test('a live card whose call is not persisted yet survives the refresh', async () => {
   const fetchPage = scriptedFetcher([
     { params: { limit: 20, offset: 0 }, page: { messages: [msg(1)], total: 1, hasMore: false } },
   ]);
   const store = new SessionTimelineStore({ fetchPage });
-  store.upsertToolUse(SESSION_ID, liveWriteCard('live_zcode_1'));
+  emit(store, liveWriteCard('live_zcode_1'));
 
   await store.fetchFromServer(SESSION_ID, { limit: 20, offset: 0 });
 
   const merged = store.getMessages(SESSION_ID);
   assert.equal(merged.filter((message) => message.kind === 'tool_use').length, 1);
   assert.ok(merged.some((message) => message.id === 'rt-live_zcode_1'));
-});
-
-test('a synthesized finalize row retires once the persisted path owns the call', async () => {
-  const serverResult = msg(3, {
-    kind: 'tool_result',
-    role: 'assistant',
-    toolId: 'msg_1_part_2',
-    toolResult: { content: 'real output', isError: false },
-  });
-  const fetchPage = scriptedFetcher([
-    {
-      params: { limit: 20, offset: 0 },
-      page: { messages: [msg(1), persistedWriteCard('msg_1_part_2'), serverResult], total: 3, hasMore: false },
-    },
-  ]);
-  const store = new SessionTimelineStore({ fetchPage });
-  store.upsertToolUse(SESSION_ID, liveWriteCard('live_zcode_1'));
-
-  store.finalizeRunningTools(SESSION_ID);
-  assert.ok(
-    store.getMessages(SESSION_ID).some((message) => message.id === '__finalized_live_zcode_1'),
-    'the synthetic settles the unpaired card',
-  );
-
-  await store.fetchFromServer(SESSION_ID, { limit: 20, offset: 0 });
-
-  const merged = store.getMessages(SESSION_ID);
-  assert.equal(merged.filter((message) => message.kind === 'tool_use').length, 1);
-  assert.equal(
-    merged.some((message) => message.id.startsWith('__finalized_')),
-    false,
-    'the synthetic must retire with the card it settled',
-  );
 });
 
 test('two identical persisted calls keep both live cards pruned one-to-one', async () => {
@@ -406,8 +355,8 @@ test('two identical persisted calls keep both live cards pruned one-to-one', asy
     },
   ]);
   const store = new SessionTimelineStore({ fetchPage });
-  store.upsertToolUse(SESSION_ID, liveWriteCard('live_zcode_1'));
-  store.upsertToolUse(SESSION_ID, liveWriteCard('live_zcode_2'));
+  emit(store, liveWriteCard('live_zcode_1'));
+  emit(store, liveWriteCard('live_zcode_2'));
 
   await store.fetchFromServer(SESSION_ID, { limit: 20, offset: 0 });
 

@@ -20,6 +20,9 @@
  *    that preserves equivalent rows' identities. There is no third way.
  *
  * Ordering contracts that live INSIDE this module (each was a past bug):
+ * - `applyServerEvent` flushes the buffered stream segment before applying any
+ *   content-bearing frame (the routing table owns the gate), or a whole
+ *   turn's text landed in one streaming bubble.
  * - `pruneRealtimeSupersededByServer` runs before the content-level bail-out
  *   of a latest refresh, or a delayed ws replay row survives forever.
  * - A drifting tail-relative offset during an older-page fetch is realigned
@@ -30,11 +33,12 @@
  *
  * Consumer: `useSessionStore` (the React adapter) is the only production
  * consumer; `sessionTimelineStore.test.ts` and the hook-level
- * `sessionTimelineSequences.test.ts` drive it with scripted pages.
+ * `sessionTimelineSequences.test.ts` drive it with scripted pages — frames go
+ * through `applyServerEvent`, history through the fetch methods.
  */
 
 import { authenticatedFetch } from '@/shared/api';
-import type { LLMProvider, NormalizedMessage } from '@/shared/types';
+import type { LLMProvider, NormalizedMessage, ServerEvent } from '@/shared/types';
 import { removeOptimisticUserEchoes, upsertToolUseRow } from '@/modules/chat/utils/sessionMessageReconciliation';
 import { isThinkingRowEchoOnServer, upsertThinkingRow } from '@/modules/chat/utils/sessionThinkingRows';
 import { claimMatchingServerToolCall, collectServerToolCalls } from '@/modules/chat/utils/toolIdentity';
@@ -390,6 +394,108 @@ function olderPagePrecedesCachedHistory(
 
 // ─── The store ───────────────────────────────────────────────────────────────
 
+/**
+ * What one server event kind means to the timeline. This table is the single
+ * authority on realtime protocol routing — the flush gate, the persistence
+ * decision and the state action all come from here, so adding a kind is one
+ * row instead of a sweep across handler tables.
+ */
+const SERVER_EVENT_ROUTES: Record<string, { flushesStream: boolean; action: ServerEventAction }> = {
+  // Provider timeline rows.
+  text: { flushesStream: true, action: 'append' },
+  tool_result: { flushesStream: true, action: 'append' },
+  error: { flushesStream: true, action: 'append' },
+  interactive_prompt: { flushesStream: true, action: 'append' },
+  task_notification: { flushesStream: true, action: 'append' },
+  session_created: { flushesStream: true, action: 'append' },
+  // Preserved quirk: this frame persists a row that nothing renders. Kept so
+  // the timeline stays a lossless record until a decision retires it.
+  permission_resolved: { flushesStream: true, action: 'append' },
+  thinking: { flushesStream: true, action: 'thinking' },
+  tool_use: { flushesStream: true, action: 'toolUse' },
+  stream_delta: { flushesStream: false, action: 'streamDelta' },
+  stream_end: { flushesStream: false, action: 'streamEnd' },
+  complete: { flushesStream: true, action: 'complete' },
+  // Control frames the gateway owns.
+  history_truncated: { flushesStream: false, action: 'truncate' },
+  protocol_error: { flushesStream: false, action: 'protocolError' },
+  chat_subscribed: { flushesStream: false, action: 'ack' },
+  status: { flushesStream: false, action: 'status' },
+  permission_request: { flushesStream: false, action: 'permissionRequest' },
+  permission_cancelled: { flushesStream: false, action: 'permissionCancelled' },
+  // Sidebar/global events — owned by useProjectsState.
+  session_upserted: { flushesStream: false, action: 'none' },
+  loading_progress: { flushesStream: false, action: 'none' },
+};
+
+/**
+ * Unknown kinds flush and append like any content row: the timeline stays a
+ * lossless record of frames it does not yet understand, exactly as it did
+ * before this table existed.
+ */
+const UNKNOWN_EVENT_ROUTE: { flushesStream: boolean; action: ServerEventAction } = {
+  flushesStream: true,
+  action: 'append',
+};
+
+type ServerEventAction =
+  | 'append'
+  | 'thinking'
+  | 'toolUse'
+  | 'streamDelta'
+  | 'streamEnd'
+  | 'complete'
+  | 'truncate'
+  | 'protocolError'
+  | 'ack'
+  | 'status'
+  | 'permissionRequest'
+  | 'permissionCancelled'
+  | 'none';
+
+/**
+ * The side effects one frame requires from the handler, extracted by
+ * `applyServerEvent`. The store owns what a frame *means*; the handler owns
+ * how the app *reacts* (sounds, permission lists, refreshes) — this union is
+ * the seam between the two.
+ */
+export type ServerEventDirective =
+  | {
+      effect: 'chat_subscribed';
+      sessionId: string;
+      stale: boolean;
+      isProcessing: boolean;
+      pendingPermissions: unknown[] | null;
+    }
+  | { effect: 'protocol_error'; sessionId: string; code: unknown; error: unknown }
+  | { effect: 'complete'; sessionId: string | null; success: boolean; aborted: boolean }
+  | {
+      effect: 'status';
+      sessionId: string | null;
+      text: string | null;
+      canInterrupt: boolean;
+      tokenBudget: unknown;
+    }
+  | {
+      effect: 'permission_request';
+      sessionId: string | null;
+      requestId: string | null;
+      toolName: string;
+      input: unknown;
+      context: unknown;
+    }
+  | { effect: 'permission_cancelled'; sessionId: string | null; requestId: string | null };
+
+export type ApplyServerEventOptions = {
+  /** Where frames without a sessionId attach (the actively viewed session). */
+  fallbackSessionId?: string | null;
+  /**
+   * Authoritative provider identity for rows the store synthesizes (the
+   * streaming row, protocol-error rows).
+   */
+  provider?: LLMProvider;
+};
+
 export type SessionTimelineStoreOptions = {
   /** History-page transport; defaults to the authenticated HTTP transport. */
   fetchPage?: SessionPageFetcher;
@@ -429,7 +535,7 @@ export class SessionTimelineStore {
     this.activeSessionId = sessionId;
   }
 
-  getSlot(sessionId: string): SessionSlot {
+  private getSlot(sessionId: string): SessionSlot {
     const slot = this.slots.get(sessionId);
     if (slot) {
       return slot;
@@ -439,8 +545,161 @@ export class SessionTimelineStore {
     return created;
   }
 
-  has(sessionId: string): boolean {
-    return this.slots.has(sessionId);
+  /**
+   * The one entry point for server frames. Applies the frame's timeline state
+   * — flush gate, upserts, appends, truncation, stream lifecycle, resume seq,
+   * in the order this module's contracts require — and returns the side
+   * effects the handler owes the rest of the app. Frame ordering is the
+   * caller's responsibility: frames must arrive in server order.
+   */
+  applyServerEvent(
+    msg: ServerEvent,
+    options: ApplyServerEventOptions = {},
+  ): ServerEventDirective | null {
+    const sid = (typeof msg.sessionId === 'string' && msg.sessionId)
+      || options.fallbackSessionId
+      || null;
+    const provider = options.provider ?? 'claude';
+
+    // Replay progress first — before any routing (order-sensitive contract).
+    if (sid && typeof msg.seq === 'number') {
+      this.noteSeq(sid, msg.seq);
+    }
+
+    const route = SERVER_EVENT_ROUTES[msg.kind ?? ''] ?? UNKNOWN_EVENT_ROUTE;
+    if (sid && route.flushesStream) {
+      // Any content-bearing frame ends the current text segment: once the
+      // model moves from prose to a tool call or its next thinking block, the
+      // buffered text must finalize as its own message instead of absorbing
+      // whatever comes after it. zcode's engine never emits text-boundary
+      // events, so without this flush a whole turn's text landed in one
+      // streaming bubble.
+      this.flushStream(sid, provider);
+    }
+
+    switch (route.action) {
+      case 'none':
+        return null;
+
+      case 'truncate': {
+        // An already-sent message was replaced. Every client watching this
+        // session drops the superseded turns before the replacement streams
+        // in, so a second tab does not end up showing the question twice.
+        if (sid && typeof msg.anchorId === 'string') {
+          this.truncateAt(sid, msg.anchorId);
+        }
+        return null;
+      }
+
+      case 'protocolError': {
+        if (!sid) return null;
+        // Surface the failure in the conversation — the run never started (or
+        // was rejected), so no `complete` follows.
+        this.appendRealtime(sid, {
+          id: `protocol_error_${Date.now()}`,
+          sessionId: sid,
+          timestamp: new Date().toISOString(),
+          provider,
+          kind: 'error',
+          content: String(msg.error || 'Request failed'),
+        });
+        return { effect: 'protocol_error', sessionId: sid, code: msg.code, error: msg.error };
+      }
+
+      case 'ack': {
+        if (!sid) return null;
+        // The ack's `lastSeq` is the server's per-session watermark (max-
+        // merged in, so the client's replay cursor can only move forward).
+        if (typeof msg.lastSeq === 'number' && msg.lastSeq > 0) {
+          this.noteSeq(sid, msg.lastSeq);
+        }
+        return {
+          effect: 'chat_subscribed',
+          sessionId: sid,
+          stale: msg.stale === true,
+          isProcessing: Boolean(msg.isProcessing),
+          pendingPermissions: Array.isArray(msg.pendingPermissions)
+            ? (msg.pendingPermissions as unknown[])
+            : null,
+        };
+      }
+
+      case 'streamDelta': {
+        const text = (msg.content as string) || '';
+        if (!text || !sid) return null;
+        this.appendStreamDelta(sid, text, provider);
+        return null;
+      }
+
+      case 'streamEnd': {
+        if (!sid) return null;
+        // Flushes the buffered text (finalizing its row when any existed),
+        // then closes the synthetic streaming row even when nothing was
+        // buffered — finalizeStreaming is a no-op when none exists.
+        this.flushStream(sid, provider);
+        this.finalizeStreaming(sid);
+        return null;
+      }
+
+      case 'thinking': {
+        if (!sid) return null;
+        this.upsertThinkingDelta(sid, msg as NormalizedMessage);
+        return null;
+      }
+
+      case 'toolUse': {
+        if (!sid) return null;
+        this.upsertToolUse(sid, msg as NormalizedMessage);
+        return null;
+      }
+
+      case 'complete': {
+        // Terminal state: settle tool cards whose result frame never arrived,
+        // so a lost frame cannot leave a card running forever.
+        if (sid) {
+          this.finalizeRunningTools(sid);
+        }
+        return {
+          effect: 'complete',
+          sessionId: sid,
+          success: msg.success !== false,
+          aborted: msg.aborted === true,
+        };
+      }
+
+      case 'status':
+        return {
+          effect: 'status',
+          sessionId: sid,
+          text: (msg.text as string) || null,
+          canInterrupt: msg.canInterrupt !== false,
+          tokenBudget: msg.tokenBudget,
+        };
+
+      case 'permissionRequest':
+        return {
+          effect: 'permission_request',
+          sessionId: sid,
+          requestId: (msg.requestId as string) || null,
+          toolName: (msg.toolName as string) || 'UnknownTool',
+          input: msg.input,
+          context: msg.context,
+        };
+
+      case 'permissionCancelled':
+        return {
+          effect: 'permission_cancelled',
+          sessionId: sid,
+          requestId: (msg.requestId as string) || null,
+        };
+
+      case 'append':
+      default:
+        if (sid) {
+          this.appendRealtime(sid, msg as NormalizedMessage);
+        }
+        return null;
+    }
   }
 
   /**
@@ -762,24 +1021,6 @@ export class SessionTimelineStore {
     this.notify(sessionId);
   }
 
-  /** Append multiple realtime messages at once (batch). */
-  appendRealtimeBatch(sessionId: string, msgs: NormalizedMessage[]): void {
-    if (msgs.length === 0) return;
-    const slot = this.getSlot(sessionId);
-    const normalizedMessages = msgs.map((msg) =>
-      msg.sessionId === sessionId
-        ? msg
-        : { ...msg, sessionId },
-    );
-    let updated = [...slot.realtimeMessages, ...normalizedMessages];
-    if (updated.length > MAX_REALTIME_MESSAGES) {
-      updated = updated.slice(-MAX_REALTIME_MESSAGES);
-    }
-    slot.realtimeMessages = updated;
-    recomputeMergedIfNeeded(slot);
-    this.notify(sessionId);
-  }
-
   /**
    * Ingest a realtime `thinking` frame. Frames sharing one message id belong
    * to the same reasoning block (zcode emits per-delta frames with a stable
@@ -787,7 +1028,7 @@ export class SessionTimelineStore {
    * receives the frame's content instead of the frame becoming its own
    * transcript entry.
    */
-  upsertThinkingDelta(sessionId: string, msg: NormalizedMessage): void {
+  private upsertThinkingDelta(sessionId: string, msg: NormalizedMessage): void {
     const slot = this.getSlot(sessionId);
     const normalizedMessage =
       msg.sessionId === sessionId
@@ -803,7 +1044,7 @@ export class SessionTimelineStore {
    * of the same call (zcode streams arguments into the announced card), so the
    * matching row is updated in place; see upsertToolUseRow.
    */
-  upsertToolUse(sessionId: string, msg: NormalizedMessage): void {
+  private upsertToolUse(sessionId: string, msg: NormalizedMessage): void {
     const slot = this.getSlot(sessionId);
     const normalizedMessage =
       msg.sessionId === sessionId
@@ -811,13 +1052,6 @@ export class SessionTimelineStore {
         : { ...msg, sessionId };
     slot.realtimeMessages = upsertToolUseRow(slot.realtimeMessages, normalizedMessage);
     recomputeMergedIfNeeded(slot);
-    this.notify(sessionId);
-  }
-
-  /** Update session status. */
-  setStatus(sessionId: string, status: SessionStatus): void {
-    const slot = this.getSlot(sessionId);
-    slot.status = status;
     this.notify(sessionId);
   }
 
@@ -837,7 +1071,7 @@ export class SessionTimelineStore {
    * tool calls the model makes after writing it, not drift to the last
    * update and get pushed below them.
    */
-  updateStreaming(sessionId: string, accumulatedText: string, msgProvider: LLMProvider): void {
+  private updateStreaming(sessionId: string, accumulatedText: string, msgProvider: LLMProvider): void {
     const slot = this.getSlot(sessionId);
     const streamId = `__streaming_${sessionId}`;
     const existing = slot.realtimeMessages.find((m) => m.id === streamId);
@@ -866,7 +1100,7 @@ export class SessionTimelineStore {
    * message ID (the prefix the adjacent-echo dedupe treats as "persisted
    * wins"). A no-op when no streaming row exists.
    */
-  finalizeStreaming(sessionId: string): void {
+  private finalizeStreaming(sessionId: string): void {
     const slot = this.slots.get(sessionId);
     if (!slot) return;
     const streamId = `__streaming_${sessionId}`;
@@ -899,7 +1133,7 @@ export class SessionTimelineStore {
    * result frame is ordered after the synthetic row, so the attachment map's
    * last-write-wins keeps the real content.
    */
-  finalizeRunningTools(sessionId: string): void {
+  private finalizeRunningTools(sessionId: string): void {
     const slot = this.slots.get(sessionId);
     if (!slot) return;
 
@@ -937,9 +1171,9 @@ export class SessionTimelineStore {
   /**
    * Buffers one `stream_delta` text fragment and (re)arms the session's 100ms
    * throttle that pushes the accumulated text into its `__streaming_` row.
-   * Consumer: the realtime handler's stream_delta route.
+   * Consumer: `applyServerEvent`'s stream_delta route.
    */
-  appendStreamDelta(sessionId: string, text: string, msgProvider: LLMProvider): void {
+  private appendStreamDelta(sessionId: string, text: string, msgProvider: LLMProvider): void {
     this.accumulatedStreams.set(sessionId, (this.accumulatedStreams.get(sessionId) ?? '') + text);
     if (!this.streamTimers.has(sessionId)) {
       const timer = window.setTimeout(() => {
@@ -954,9 +1188,9 @@ export class SessionTimelineStore {
    * Drains the session's buffered stream text into its `__streaming_` row and
    * finalizes that row as a regular assistant text message. A no-op when
    * nothing was buffered (the timer, if armed, is still cancelled). Consumer:
-   * the realtime handler's content-frame flush gate and the complete frame.
+   * `applyServerEvent`'s flush gate, stream_end and complete routes.
    */
-  flushStream(sessionId: string, msgProvider: LLMProvider): void {
+  private flushStream(sessionId: string, msgProvider: LLMProvider): void {
     const timer = this.streamTimers.get(sessionId);
     if (timer !== undefined) {
       clearTimeout(timer);
@@ -971,12 +1205,13 @@ export class SessionTimelineStore {
   }
 
   /**
-   * Records the highest live `seq` observed for the session. Consumers: the
-   * realtime handler writes it on every sequenced frame; `chat.subscribe`
-   * sends `getResumeSeq` as `lastSeq` so the server replays only the events
-   * this client actually missed.
+   * Records the highest live `seq` observed for the session. Consumers:
+   * `applyServerEvent` writes it on every sequenced frame and merges the
+   * `chat_subscribed` ack's authoritative watermark; `chat.subscribe` sends
+   * `getResumeSeq` as `lastSeq` so the server replays only the events this
+   * client actually missed.
    */
-  noteSeq(sessionId: string, seq: number): void {
+  private noteSeq(sessionId: string, seq: number): void {
     const known = this.resumeSeqs.get(sessionId) ?? 0;
     if (seq > known) {
       this.resumeSeqs.set(sessionId, seq);
@@ -1008,7 +1243,7 @@ export class SessionTimelineStore {
    * surviving row count so the transcript renderer can tell it apart from the
    * turns it now sits after.
    */
-  truncateAt(sessionId: string, anchorId: string): void {
+  private truncateAt(sessionId: string, anchorId: string): void {
     const slot = this.slots.get(sessionId);
     if (!slot) return;
 
@@ -1028,18 +1263,6 @@ export class SessionTimelineStore {
     slot.offset = slot.serverMessages.length;
     recomputeMergedIfNeeded(slot);
     this.notify(sessionId);
-  }
-
-  /**
-   * Clear realtime messages for a session (e.g., after stream completes and server fetch catches up).
-   */
-  clearRealtime(sessionId: string): void {
-    const slot = this.slots.get(sessionId);
-    if (slot) {
-      slot.realtimeMessages = [];
-      recomputeMergedIfNeeded(slot);
-      this.notify(sessionId);
-    }
   }
 
   /** Merged messages for a session (for rendering). */

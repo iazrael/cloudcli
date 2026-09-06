@@ -230,16 +230,12 @@ function ChatInterface({
   // missed live events, and re-attaches a still-running stream to this socket.
   const handleWebSocketReconnect = useCallback(async () => {
     if (!selectedProject || !selectedSession) return;
+    // Sync the viewed conversation with whatever persisted while the socket
+    // was down. The `chat.subscribe` itself is sent by useChatSessionState's
+    // subscribe effect (the `ws` identity changes on reconnect) — sending it
+    // here too doubled every subscribe frame on each reconnect.
     await requestLatestMessages(selectedSession.id, isActive);
-    statusCheckSentAtRef.current.set(selectedSession.id, Date.now());
-    sendMessage({
-      type: 'chat.subscribe',
-      sessions: [{
-        sessionId: selectedSession.id,
-        lastSeq: sessionStore.getResumeSeq(selectedSession.id),
-      }],
-    });
-  }, [isActive, requestLatestMessages, selectedProject, selectedSession, sendMessage, sessionStore]);
+  }, [isActive, requestLatestMessages, selectedProject, selectedSession]);
 
   useChatRealtimeHandlers({
     isActive,

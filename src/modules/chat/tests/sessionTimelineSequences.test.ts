@@ -70,6 +70,7 @@ type TimelineHarness = {
   sessionStore: ReturnType<typeof useSessionStore>;
   requestLatestMessages: ReturnType<typeof vi.fn>;
   onSessionIdle: ReturnType<typeof vi.fn>;
+  onSessionProcessing: ReturnType<typeof vi.fn>;
   emit: (frame: ServerEvent) => void;
   cleanup: () => void;
 };
@@ -123,124 +124,13 @@ function mountTimeline(activeSessionId: string | null = SESSION_ID): TimelineHar
     storeRoot.unmount();
   };
 
-  return { sessionStore, requestLatestMessages, onSessionIdle, emit, cleanup };
+  return { sessionStore, requestLatestMessages, onSessionIdle, onSessionProcessing, emit, cleanup };
 }
 
 /** Lets the 100ms stream throttle fire exactly once and apply the row. */
 const tickThrottle = () => new Promise((resolve) => setTimeout(resolve, 130));
 
 // ─── prune before the content-level bail-out ─────────────────────────────────
-
-test('an identical latest refresh bails out and keeps every cached identity when nothing is prunable', async () => {
-  stubHistoryFetch([
-    { params: { limit: '20', offset: '0' }, page: { messages: [msg(1), msg(2)], total: 2, hasMore: false } },
-    { params: { limit: '20', offset: '0' }, page: { messages: [msg(1), msg(2)], total: 2, hasMore: false } },
-  ]);
-  const timeline = mountTimeline();
-
-  await act(async () => {
-    await timeline.sessionStore.fetchFromServer(SESSION_ID, { limit: 20, offset: 0 });
-  });
-  // A live tool call the persisted transcript does not own yet: prunable=no.
-  timeline.emit({
-    kind: 'tool_use',
-    id: 'rt-tool-live',
-    sessionId: SESSION_ID,
-    toolId: 'tool-live',
-    toolName: 'Bash',
-    input: { command: 'ls' },
-  } as unknown as ServerEvent);
-
-  const slot = timeline.sessionStore.getSessionSlot(SESSION_ID)!;
-  const serverBefore = slot.serverMessages;
-  const mergedBefore = slot.merged;
-  const realtimeBefore = slot.realtimeMessages;
-
-  let result: { changed: boolean } | undefined;
-  await act(async () => {
-    result = await timeline.sessionStore.refreshLatestFromServer(SESSION_ID);
-  });
-
-  // Bail-out contract: same rows, same pagination, nothing to prune → the
-  // cached arrays keep their identity so consumers skip re-rendering.
-  assert.equal(result!.changed, false);
-  assert.equal(slot.serverMessages, serverBefore, 'server array identity must survive the bail-out');
-  assert.equal(slot.merged, mergedBefore, 'merged must not be recomputed');
-  assert.equal(slot.realtimeMessages, realtimeBefore, 'the live tool row must survive');
-
-  timeline.cleanup();
-});
-
-test('a delayed replay row is pruned by an otherwise identical refresh', async () => {
-  const page = { messages: [msg(1), msg(2)], total: 2, hasMore: false };
-  stubHistoryFetch([
-    { params: { limit: '20', offset: '0' }, page },
-    { params: { limit: '20', offset: '0' }, page: { messages: [msg(1), msg(2)], total: 2, hasMore: false } },
-  ]);
-  const timeline = mountTimeline();
-
-  await act(async () => {
-    await timeline.sessionStore.fetchFromServer(SESSION_ID, { limit: 20, offset: 0 });
-  });
-  // The ws replay re-delivered a row the server already persisted (same id).
-  timeline.emit(msg(2) as unknown as ServerEvent);
-  assert.equal(timeline.sessionStore.getMessages(SESSION_ID).filter((row) => row.id === 'm2').length, 1);
-
-  let result: { changed: boolean } | undefined;
-  await act(async () => {
-    result = await timeline.sessionStore.refreshLatestFromServer(SESSION_ID);
-  });
-
-  // The prune is computed BEFORE the bail-out: even though the refreshed page
-  // is identical, the superseded replay row must disappear.
-  assert.equal(result!.changed, true, 'pruning a replay row counts as a change');
-  const slot = timeline.sessionStore.getSessionSlot(SESSION_ID)!;
-  assert.equal(slot.realtimeMessages.length, 0, 'the replay row must be pruned');
-  assert.equal(timeline.sessionStore.getMessages(SESSION_ID).filter((row) => row.id === 'm2').length, 1);
-
-  timeline.cleanup();
-});
-
-// ─── fetchMore offset drift realignment ──────────────────────────────────────
-
-test('a drifting offset during fetchMore realigns from the tail, then retries with the realigned offset', async () => {
-  stubHistoryFetch([
-    // Initial load: two newest rows of a six-row transcript.
-    { params: { limit: '20', offset: '0' }, page: { messages: [msg(3), msg(4)], total: 6, hasMore: true } },
-    // Older-page request at offset 2, but the transcript grew while the
-    // request was in flight (total 6 → 7): the response is stale.
-    { params: { limit: '20', offset: '2' }, page: { messages: [msg(2)], total: 7, hasMore: true } },
-    // Drift handler: one bounded latest-page reconciliation from offset 0,
-    // which now includes the newly appended m5.
-    { params: { limit: '20', offset: '0' }, page: { messages: [msg(3), msg(4), msg(5)], total: 7, hasMore: true } },
-    // Retry with the realigned raw-row offset (3 cached rows), not the stale 2.
-    { params: { limit: '20', offset: '3' }, page: { messages: [msg(2)], total: 7, hasMore: true } },
-  ]);
-  const timeline = mountTimeline();
-
-  await act(async () => {
-    await timeline.sessionStore.fetchFromServer(SESSION_ID, { limit: 20, offset: 0 });
-  });
-
-  let outcome: { prependedCount: number } | undefined;
-  await act(async () => {
-    outcome = await timeline.sessionStore.fetchMore(SESSION_ID);
-  });
-
-  assert.equal(outcome!.prependedCount, 1);
-  const slot = timeline.sessionStore.getSessionSlot(SESSION_ID)!;
-  assert.deepEqual(
-    slot.serverMessages.map((row) => row.id),
-    ['m2', 'm3', 'm4', 'm5'],
-    'the older row must prepend onto the realigned tail with no gap and no duplicate',
-  );
-  assert.equal(slot.offset, 4);
-  assert.equal(slot.total, 7);
-
-  timeline.cleanup();
-});
-
-// ─── flush gate: any content frame closes the streaming segment ──────────────
 
 test('a content frame finalizes the buffered text segment before entering the store', async () => {
   const timeline = mountTimeline();
@@ -290,106 +180,6 @@ test('a content frame finalizes the buffered text segment before entering the st
 });
 
 // ─── streaming row: anchored timestamp, in-place finalize ────────────────────
-
-test('a streaming row anchors its timestamp at segment start and finalizes in place', async () => {
-  const timeline = mountTimeline();
-
-  timeline.emit({ kind: 'stream_delta', sessionId: SESSION_ID, content: 'Hel' } as unknown as ServerEvent);
-  await tickThrottle();
-  let streaming = timeline.sessionStore.getMessages(SESSION_ID).find((row) => row.id === `__streaming_${SESSION_ID}`);
-  assert.ok(streaming, 'the throttled update must create the streaming row');
-  assert.equal(streaming!.content, 'Hel');
-  const anchoredTimestamp = streaming!.timestamp;
-
-  timeline.emit({ kind: 'stream_delta', sessionId: SESSION_ID, content: 'lo' } as unknown as ServerEvent);
-  await tickThrottle();
-  streaming = timeline.sessionStore.getMessages(SESSION_ID).find((row) => row.id === `__streaming_${SESSION_ID}`);
-  assert.equal(streaming!.content, 'Hello');
-  assert.equal(
-    streaming!.timestamp,
-    anchoredTimestamp,
-    'later deltas must never refresh the row timestamp (finalized text would drift below the turn\'s tool calls)',
-  );
-
-  const realtimeCountBefore = timeline.sessionStore.getSessionSlot(SESSION_ID)!.realtimeMessages.length;
-  timeline.emit({ kind: 'stream_end', sessionId: SESSION_ID } as unknown as ServerEvent);
-
-  const finalized = timeline.sessionStore.getMessages(SESSION_ID).find((row) => row.content === 'Hello');
-  assert.ok(finalized, 'stream_end must finalize the buffered text');
-  assert.match(finalized!.id, /^text_/);
-  assert.equal(finalized!.timestamp, anchoredTimestamp, 'finalization must keep the anchored timestamp');
-  assert.equal(
-    timeline.sessionStore.getSessionSlot(SESSION_ID)!.realtimeMessages.length,
-    realtimeCountBefore,
-    'finalization replaces the streaming row in place — no extra row may appear',
-  );
-  // Buffer drained, proven behaviorally: a later segment starts fresh
-  // instead of concatenating onto the finalized text.
-  timeline.emit({ kind: 'stream_delta', sessionId: SESSION_ID, content: 'Next' } as unknown as ServerEvent);
-  await tickThrottle();
-  const nextSegment = timeline.sessionStore.getMessages(SESSION_ID).find((row) => row.id === `__streaming_${SESSION_ID}`);
-  assert.ok(nextSegment);
-  assert.equal(nextSegment!.content, 'Next');
-
-  timeline.cleanup();
-});
-
-// ─── merged view: the three realtime-echo absorptions ────────────────────────
-
-test('optimistic user, thinking, and same-turn assistant echoes are absorbed into the merged view', async () => {
-  stubHistoryFetch([
-    {
-      params: { limit: '20', offset: '0' },
-      page: {
-        messages: [
-          msg(1, { content: 'what is the answer?' }),
-          msg(2, { kind: 'thinking', role: undefined, content: 'pondering the question carefully' }),
-          msg(4, { content: 'here is a thorough answer spanning plenty of words to be matchable' }),
-        ],
-        total: 3,
-        hasMore: false,
-      },
-    },
-  ]);
-  const timeline = mountTimeline();
-
-  await act(async () => {
-    await timeline.sessionStore.fetchFromServer(SESSION_ID, { limit: 20, offset: 0 });
-  });
-
-  const at = (n: number) => new Date(BASE_TIME + n * 1000).toISOString();
-  // Realtime echoes: the optimistic user row (pre-send), the thinking block,
-  // and the streamed assistant text that the server already persisted.
-  timeline.emit(
-    msg(1, { id: 'local_user_echo', content: 'what is the answer?', timestamp: at(1) }) as unknown as ServerEvent
-  );
-  timeline.emit({
-    kind: 'thinking',
-    sessionId: SESSION_ID,
-    id: 'rt_thinking_echo',
-    content: 'pondering the question carefully',
-    timestamp: at(2),
-  } as unknown as ServerEvent);
-  timeline.emit({
-    kind: 'text',
-    sessionId: SESSION_ID,
-    id: 'text_streamed_echo',
-    role: 'assistant',
-    content: 'here is a thorough answer spanning plenty of words to be matchable',
-    timestamp: at(4),
-  } as unknown as ServerEvent);
-
-  const merged = timeline.sessionStore.getMessages(SESSION_ID);
-  assert.deepEqual(
-    merged.map((row) => row.id),
-    ['m1', 'm2', 'm4'],
-    'the three realtime echoes must be absorbed, leaving only the persisted rows',
-  );
-
-  timeline.cleanup();
-});
-
-// ─── replay progress: seq recording ──────────────────────────────────────────
 
 test('every sequenced frame advances the per-session resume seq, sessionless frames count toward the viewed session', () => {
   const timeline = mountTimeline();
@@ -665,6 +455,47 @@ test('complete + finalize before the refresh still converges to one card', async
   const rows = timeline.sessionStore.getMessages(SESSION_ID);
   assert.equal(rows.filter((row) => row.kind === 'tool_use').length, 1);
   assert.ok(!rows.some((row) => row.id.startsWith('__finalized_')));
+
+  timeline.cleanup();
+});
+
+test('control frames surface as side effects without touching the timeline', () => {
+  const timeline = mountTimeline();
+
+  timeline.emit({ kind: 'status', sessionId: SESSION_ID, text: 'Reading files', canInterrupt: true } as unknown as ServerEvent);
+  timeline.emit({
+    kind: 'permission_request',
+    sessionId: SESSION_ID,
+    requestId: 'req-1',
+    toolName: 'Bash',
+    input: { command: 'ls' },
+  } as unknown as ServerEvent);
+  timeline.emit({ kind: 'permission_cancelled', sessionId: SESSION_ID, requestId: 'req-1' } as unknown as ServerEvent);
+  timeline.emit({ kind: 'protocol_error', sessionId: SESSION_ID, code: -32000, error: 'rejected' } as unknown as ServerEvent);
+
+  // Only the protocol error enters the timeline (as an error row); status and
+  // permission frames are pure side effects.
+  const rows = timeline.sessionStore.getMessages(SESSION_ID);
+  assert.deepEqual(rows.map((row) => row.kind), ['error']);
+  assert.deepEqual(
+    timeline.onSessionProcessing.mock.calls.map((call) => call[0]),
+    [SESSION_ID, SESSION_ID],
+    'status and the permission request both mark the session processing',
+  );
+  assert.deepEqual(timeline.onSessionIdle.mock.calls.map((call) => call[0]), [SESSION_ID]);
+
+  // The subscribe ack merges the authoritative watermark and, when the replay
+  // cursor predates the buffer, owes the app a REST refresh.
+  timeline.emit({
+    kind: 'chat_subscribed',
+    sessionId: SESSION_ID,
+    isProcessing: false,
+    stale: true,
+    lastSeq: 9,
+    pendingPermissions: [],
+  } as unknown as ServerEvent);
+  assert.equal(timeline.sessionStore.getResumeSeq(SESSION_ID), 9, 'the ack watermark merges');
+  assert.equal(timeline.requestLatestMessages.mock.calls.at(-1)?.[0], SESSION_ID, 'stale owes a refresh');
 
   timeline.cleanup();
 });

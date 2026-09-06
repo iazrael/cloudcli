@@ -7,7 +7,8 @@ import { playChatCompletionSound, playNotificationSound } from '@/modules/chat/u
 import type { MarkSessionIdle, MarkSessionProcessing } from '@/shared/types';
 import type { PendingPermissionRequest } from '@/shared/types';
 import type { ProjectSession, LLMProvider } from '@/shared/types';
-import type { SessionStore, NormalizedMessage } from '@/modules/chat/hooks/useSessionStore';
+import type { ServerEventDirective } from '@/modules/chat/utils/sessionTimelineStore';
+import type { SessionStore } from '@/modules/chat/hooks/useSessionStore';
 
 const isActionablePermissionRequest = (request: { toolName?: unknown } | null | undefined): boolean => {
   return request?.toolName !== 'ExitPlanMode' && request?.toolName !== 'exit_plan_mode';
@@ -40,13 +41,13 @@ type UseChatRealtimeHandlersArgs = {
 /* ------------------------------------------------------------------ */
 
 /**
- * Routes server events into the session store and processing-state map.
- *
- * This is intentionally a thin reducer over the unified `kind`-based
- * protocol: every frame is keyed by the stable app session id, so there is
- * no session-id handoff, no provider branching, and no navigation here.
- * Sidebar events (`session_upserted`, `loading_progress`) are handled by
- * `useProjectsState`, not in this hook.
+ * The side-effect layer of the realtime pipeline. Every frame goes through
+ * `sessionStore.applyServerEvent`, which owns what a frame *means* to the
+ * timeline (flush gate, upserts, truncation, stream lifecycle, resume seq —
+ * see the store's routing table); this hook only executes the app reactions
+ * the store reports: sounds, permission lists, processing state, refreshes.
+ * Every frame is keyed by the stable app session id, so there is no
+ * session-id handoff, no provider branching, and no navigation here.
  */
 export function useChatRealtimeHandlers({
   isActive,
@@ -83,65 +84,60 @@ export function useChatRealtimeHandlers({
   }, [pendingPermissionRequests]);
 
   useEffect(() => {
-    const handleEvent = (msg: ServerEvent) => {      if (!msg.kind) {
+    const handleEvent = (msg: ServerEvent) => {
+      if (!msg.kind) {
         return;
       }
 
-      const activeViewSessionId = activeViewSessionIdRef.current;
-      const sid = (typeof msg.sessionId === 'string' && msg.sessionId) || activeViewSessionId;
-
-      // Record replay progress for every sequenced live event.
-      if (sid && typeof msg.seq === 'number') {
-        sessionStore.noteSeq(sid, msg.seq);
+      // Transport-synthesized (no timeline state; the store never sees it).
+      if (msg.kind === 'websocket_reconnected') {
+        onWebSocketReconnect?.();
+        return;
       }
 
-      switch (msg.kind) {
-        case 'websocket_reconnected':
-          onWebSocketReconnect?.();
-          return;
+      // Sidebar/global events — owned by useProjectsState.
+      if (msg.kind === 'session_upserted' || msg.kind === 'loading_progress') {
+        return;
+      }
 
-        case 'history_truncated': {
-          // An already-sent message was replaced. Every client watching this
-          // session drops the superseded turns before the replacement streams
-          // in, so a second tab does not end up showing the question twice.
-          if (sid && typeof msg.anchorId === 'string') {
-            sessionStore.truncateAt(sid, msg.anchorId);
-          }
-          return;
-        }
+      const directive = sessionStore.applyServerEvent(msg, {
+        fallbackSessionId: activeViewSessionIdRef.current,
+        provider,
+      });
+      if (!directive) {
+        return;
+      }
 
+      executeDirective(directive);
+    };
+
+    /** Runs the app reactions one frame requires. No timeline state in here. */
+    function executeDirective(directive: ServerEventDirective): void {
+      switch (directive.effect) {
         case 'chat_subscribed': {
-          // Ack for chat.subscribe: authoritative processing state plus any
-          // pending tool-permission prompts for the run. The ack's `lastSeq`
-          // is the server's per-session watermark (max-merged in, so the
-          // client's replay cursor can only move forward). `stale` means the
-          // client's lastSeq predates the replay buffer, so replay cannot
-          // bridge the reconnect gap and a REST refresh must reconcile.
-          if (!sid) return;
-
-          if (typeof msg.lastSeq === 'number' && msg.lastSeq > 0) {
-            sessionStore.noteSeq(sid, msg.lastSeq);
-          }
-          if (msg.stale === true) {
-            void requestLatestMessages(sid, isActiveRef.current);
+          // The ack's `lastSeq` is already merged into the store. `stale`
+          // means the replay cursor predates the server's replay buffer, so
+          // replay cannot bridge the reconnect gap and a REST refresh must
+          // reconcile.
+          if (directive.stale) {
+            void requestLatestMessages(directive.sessionId, isActiveRef.current);
           }
 
-          if (msg.isProcessing) {
-            onSessionProcessing?.(sid);
+          if (directive.isProcessing) {
+            onSessionProcessing?.(directive.sessionId);
           } else {
             // Idle ack: ignore it if a newer request started after the
             // subscribe was sent — the ack describes the older state.
-            onSessionIdle?.(sid, {
-              ifStartedBefore: statusCheckSentAtRef.current.get(sid),
+            onSessionIdle?.(directive.sessionId, {
+              ifStartedBefore: statusCheckSentAtRef.current.get(directive.sessionId),
             });
           }
 
-          const isViewedSession = sid === activeViewSessionId;
-          if (isViewedSession && Array.isArray(msg.pendingPermissions)) {
+          if (directive.sessionId === activeViewSessionIdRef.current && directive.pendingPermissions) {
             // Shape-check every entry: a bare request-id (or any malformed
             // row) would render a card with an empty tool badge whose buttons
             // are silently dropped because requestId is undefined.
-            const nextPendingPermissionRequests = (msg.pendingPermissions as unknown[]).filter(
+            const nextPendingPermissionRequests = directive.pendingPermissions.filter(
               (entry): entry is PendingPermissionRequest =>
                 typeof entry === 'object' && entry !== null &&
                 typeof (entry as PendingPermissionRequest).requestId === 'string',
@@ -160,138 +156,35 @@ export function useChatRealtimeHandlers({
         }
 
         case 'protocol_error': {
-          console.error('[Chat] Protocol error:', msg.code, msg.error);
-          if (sid) {
-            // Surface the failure in the conversation and stop the spinner —
-            // the run never started (or was rejected), so no `complete` follows.
-            onSessionIdle?.(sid);
-            sessionStore.appendRealtime(sid, {
-              id: `protocol_error_${Date.now()}`,
-              sessionId: sid,
-              timestamp: new Date().toISOString(),
-              provider,
-              kind: 'error',
-              content: String(msg.error || 'Request failed'),
-            } as NormalizedMessage);
-          }
+          // The store already surfaced the failure as an error row and the
+          // spinner must stop — the run never started, so no `complete`
+          // follows.
+          console.error('[Chat] Protocol error:', directive.code, directive.error);
+          onSessionIdle?.(directive.sessionId);
           return;
         }
 
-        // Sidebar/global events — owned by useProjectsState.
-        case 'session_upserted':
-        case 'loading_progress':
-          return;
-
-        default:
-          break;
-      }
-
-      /* -------------------------------------------------------------- */
-      /*  Provider NormalizedMessage handling                            */
-      /* -------------------------------------------------------------- */
-
-      // Any content-bearing frame ends the current text segment: once the
-      // model moves from prose to a tool call or its next thinking block, the
-      // buffered text must finalize as its own message instead of absorbing
-      // whatever comes after it. zcode's engine never emits text-boundary
-      // events, so without this flush a whole turn's text landed in one
-      // streaming bubble. stream_end/complete flush explicitly below.
-      if (
-        sid
-        && msg.kind !== 'stream_delta'
-        && msg.kind !== 'stream_end'
-        && msg.kind !== 'status'
-        && msg.kind !== 'permission_request'
-        && msg.kind !== 'permission_cancelled'
-      ) {
-        sessionStore.flushStream(sid, provider);
-      }
-
-      // --- Streaming: buffer for performance ---
-      // Viewed and background sessions share this path: every run accumulates
-      // into its own single `__streaming_<sid>` store row. Appending each
-      // delta as its own realtime row (the old background path) left fragment
-      // bubbles that no exact-match echo dedupe could ever reconcile.
-      if (msg.kind === 'stream_delta') {
-        const text = (msg.content as string) || '';
-        if (!text || !sid) return;
-        sessionStore.appendStreamDelta(sid, text, provider);
-        return;
-      }
-
-      if (msg.kind === 'stream_end') {
-        if (sid) {
-          // Flushes the buffered text (finalizing its row when any existed),
-          // then closes the synthetic streaming row even when nothing was
-          // buffered — finalizeStreaming is a no-op when none exists.
-          sessionStore.flushStream(sid, provider);
-          sessionStore.finalizeStreaming(sid);
-        }
-        return;
-      }
-
-      // --- Thinking: merge frames of one reasoning block by id ---
-      // Frames sharing a stable message id are deltas of the same thinking
-      // segment; appending each as its own row stacked one collapsed entry
-      // per delta (the zcode reasoning stream).
-      if (msg.kind === 'thinking') {
-        if (sid) {
-          sessionStore.upsertThinkingDelta(sid, msg as unknown as NormalizedMessage);
-        }
-        return;
-      }
-
-      // --- Tool use: merge snapshot frames of one call by toolId ---
-      // zcode streams tool arguments into the already-announced card; frames
-      // sharing a toolId update that card in place instead of stacking
-      // duplicates.
-      if (msg.kind === 'tool_use') {
-        if (sid) {
-          sessionStore.upsertToolUse(sid, msg as unknown as NormalizedMessage);
-        }
-        return;
-      }
-
-      // --- All other messages: route to store ---
-      const shouldPersist =
-        msg.kind !== 'complete'
-        && msg.kind !== 'status'
-        && msg.kind !== 'permission_request'
-        && msg.kind !== 'permission_cancelled';
-
-      if (sid && shouldPersist) {
-        sessionStore.appendRealtime(sid, msg as unknown as NormalizedMessage);
-      }
-
-      // --- UI side effects for specific kinds ---
-      switch (msg.kind) {
         case 'complete': {
-          // Flush any remaining streaming state
-          if (sid) {
-            sessionStore.flushStream(sid, provider);
-            // Terminal state: settle tool cards whose result frame never
-            // arrived, so a lost frame cannot leave a card running forever.
-            sessionStore.finalizeRunningTools(sid);
-          }
-
+          const { sessionId, success, aborted } = directive;
           // `complete` is the unified terminal event — every provider run ends
-          // with exactly one, regardless of success, failure, or abort. The
-          // indicator derives from the processing map, so deleting the entry
-          // hides it immediately and atomically.
-          onSessionIdle?.(sid);
-          if (sid === activeViewSessionId) {
+          // with exactly one, regardless of success, failure, or abort (the
+          // store settled unpaired tool cards before this ran). The indicator
+          // derives from the processing map, so deleting the entry hides it
+          // immediately and atomically.
+          onSessionIdle?.(sessionId);
+          if (sessionId === activeViewSessionIdRef.current) {
             pendingPermissionRequestsRef.current = [];
             setPendingPermissionRequests([]);
           }
 
-          if (msg.aborted) {
+          if (aborted) {
             // Abort was requested — the complete event confirms it. No
             // further UI action is needed beyond clearing the entry above.
-            break;
+            return;
           }
 
           // Celebrate only successful runs (failed runs end with success: false).
-          if (msg.success !== false) {
+          if (success) {
             showCompletionTitleIndicator();
             void playChatCompletionSound();
           }
@@ -299,32 +192,41 @@ export function useChatRealtimeHandlers({
           // The session id is stable for the whole conversation (allocated
           // before the first send), so the only follow-up is syncing the
           // viewed conversation with the now-persisted transcript.
-          if (sid && sid === activeViewSessionId) {
-            void requestLatestMessages(sid, isActiveRef.current);
+          if (sessionId && sessionId === activeViewSessionIdRef.current) {
+            void requestLatestMessages(sessionId, isActiveRef.current);
           }
-
-          break;
+          return;
         }
 
-        // 'error' is an informational message row, not a terminal event —
-        // providers emit it for mid-run stderr output too. Run teardown is
-        // always signalled by the unified 'complete' that follows.
+        case 'status': {
+          if (directive.text === 'token_budget' && directive.tokenBudget) {
+            setTokenBudget(directive.tokenBudget as Record<string, unknown>);
+          } else if (directive.text && directive.sessionId) {
+            onSessionProcessing?.(directive.sessionId, {
+              statusText: directive.text,
+              canInterrupt: directive.canInterrupt,
+            });
+          }
+          return;
+        }
 
         case 'permission_request': {
-          if (!msg.requestId) break;
-          if (isActionablePermissionRequest({ toolName: msg.toolName })) {
+          if (!directive.requestId) {
+            return;
+          }
+          if (isActionablePermissionRequest({ toolName: directive.toolName })) {
             void playNotificationSound();
           }
 
-          if (sid === activeViewSessionId) {
+          if (directive.sessionId === activeViewSessionIdRef.current) {
             const previousPendingPermissionRequests = pendingPermissionRequestsRef.current;
-            if (!previousPendingPermissionRequests.some((request) => request.requestId === msg.requestId)) {
+            if (!previousPendingPermissionRequests.some((request) => request.requestId === directive.requestId)) {
               const nextPendingPermissionRequests = [...previousPendingPermissionRequests, {
-                requestId: msg.requestId as string,
-                toolName: (msg.toolName as string) || 'UnknownTool',
-                input: msg.input,
-                context: msg.context,
-                sessionId: sid || null,
+                requestId: directive.requestId,
+                toolName: directive.toolName,
+                input: directive.input,
+                context: directive.context,
+                sessionId: directive.sessionId,
                 receivedAt: new Date(),
               }];
 
@@ -332,42 +234,25 @@ export function useChatRealtimeHandlers({
               setPendingPermissionRequests(nextPendingPermissionRequests);
             }
           }
-          if (sid) {
-            onSessionProcessing?.(sid);
+          if (directive.sessionId) {
+            onSessionProcessing?.(directive.sessionId);
           }
-          break;
+          return;
         }
 
         case 'permission_cancelled': {
-          if (msg.requestId && sid === activeViewSessionId) {
+          if (directive.requestId && directive.sessionId === activeViewSessionIdRef.current) {
             const nextPendingPermissionRequests = pendingPermissionRequestsRef.current.filter(
-              (request: PendingPermissionRequest) => request.requestId !== msg.requestId,
+              (request: PendingPermissionRequest) => request.requestId !== directive.requestId,
             );
 
             pendingPermissionRequestsRef.current = nextPendingPermissionRequests;
             setPendingPermissionRequests(nextPendingPermissionRequests);
           }
-          break;
+          return;
         }
-
-        case 'status': {
-          if (msg.text === 'token_budget' && msg.tokenBudget) {
-            setTokenBudget(msg.tokenBudget as Record<string, unknown>);
-          } else if (msg.text && sid) {
-            onSessionProcessing?.(sid, {
-              statusText: msg.text as string,
-              canInterrupt: msg.canInterrupt !== false,
-            });
-          }
-          break;
-        }
-
-        // text, tool_use, tool_result, thinking, interactive_prompt, task_notification
-        // → already routed to store above, no UI side effects needed
-        default:
-          break;
       }
-    };
+    }
 
     return subscribe(handleEvent);
   }, [

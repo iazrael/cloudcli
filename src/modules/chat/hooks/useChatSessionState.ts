@@ -384,11 +384,6 @@ export function useChatSessionState({
     }
   }, [activeSessionId, sessionStore]);
 
-  const clearMessages = useCallback(() => {
-    if (!activeSessionId) return;
-    sessionStore.clearRealtime(activeSessionId);
-  }, [activeSessionId, sessionStore]);
-
   const rewindMessages = useCallback((count: number) => setViewHiddenCount(count), []);
 
   const loadOlderMessages = useCallback(
@@ -923,7 +918,6 @@ export function useChatSessionState({
   return {
     chatMessages,
     addMessage,
-    clearMessages,
     rewindMessages,
     sessionActivity,
     isProcessing,
