@@ -557,6 +557,118 @@ test('an aborted complete still settles unmatched tool cards', () => {
   timeline.cleanup();
 });
 
+// ─── tool identity: live id ≠ persisted id ───────────────────────────────────
+
+test('a refresh whose persisted card carries a different toolId replaces the shadow card', async () => {
+  // zcode-style split: the live card holds the engine payload's toolCallId,
+  // the persisted transcript keys the same call by its part id. Before the
+  // identity matcher this refresh produced two Write cards, one of them
+  // "running" forever.
+  stubHistoryFetch([
+    {
+      params: { limit: '20', offset: '0' },
+      page: {
+        messages: [
+          msg(1),
+          msg(2, {
+            kind: 'tool_use',
+            role: 'assistant',
+            toolId: 'msg_1_part_2',
+            toolName: 'Write',
+            toolInput: { file_path: '/a.ts', content: 'hello' },
+          }),
+          msg(3, {
+            kind: 'tool_result',
+            role: 'assistant',
+            content: 'real output',
+            toolId: 'msg_1_part_2',
+            toolResult: { content: 'real output', isError: false },
+          }),
+        ],
+        total: 3,
+        hasMore: false,
+      },
+    },
+  ]);
+  const timeline = mountTimeline();
+
+  timeline.emit({
+    kind: 'tool_use',
+    id: 'rt-tool-shadow',
+    sessionId: SESSION_ID,
+    toolId: 'live_zcode_1',
+    toolName: 'Write',
+    toolInput: { file_path: '/a.ts', content: 'hello' },
+  } as unknown as ServerEvent);
+
+  await act(async () => {
+    await timeline.sessionStore.fetchFromServer(SESSION_ID, { limit: 20, offset: 0 });
+  });
+
+  const rows = timeline.sessionStore.getMessages(SESSION_ID);
+  const toolCards = rows.filter((row) => row.kind === 'tool_use');
+  assert.equal(toolCards.length, 1, 'the same logical call must render exactly one card');
+  assert.equal(toolCards[0]?.toolId, 'msg_1_part_2', 'the persisted card is the survivor');
+  assert.ok(!rows.some((row) => row.id === 'rt-tool-shadow'));
+  assert.ok(!rows.some((row) => row.id.startsWith('__finalized_')), 'no synthetic may linger');
+  const attached = normalizedToChatMessages(rows).find((row) => row.toolId === 'msg_1_part_2');
+  assert.equal(attached!.toolResult?.content, 'real output', 'the real result attaches to the survivor');
+
+  timeline.cleanup();
+});
+
+test('complete + finalize before the refresh still converges to one card', async () => {
+  stubHistoryFetch([
+    {
+      params: { limit: '20', offset: '0' },
+      page: {
+        messages: [
+          msg(2, {
+            kind: 'tool_use',
+            role: 'assistant',
+            toolId: 'msg_1_part_2',
+            toolName: 'Write',
+            toolInput: { file_path: '/a.ts', content: 'hello' },
+          }),
+          msg(3, {
+            kind: 'tool_result',
+            role: 'assistant',
+            toolId: 'msg_1_part_2',
+            toolResult: { content: 'real output', isError: false },
+          }),
+        ],
+        total: 2,
+        hasMore: false,
+      },
+    },
+  ]);
+  const timeline = mountTimeline();
+
+  timeline.emit({
+    kind: 'tool_use',
+    id: 'rt-tool-shadow',
+    sessionId: SESSION_ID,
+    toolId: 'live_zcode_1',
+    toolName: 'Write',
+    toolInput: { file_path: '/a.ts', content: 'hello' },
+  } as unknown as ServerEvent);
+  timeline.emit({ kind: 'complete', sessionId: SESSION_ID, success: true } as unknown as ServerEvent);
+  assert.ok(
+    timeline.sessionStore.getMessages(SESSION_ID).some((row) => row.id === '__finalized_live_zcode_1'),
+    'the synthetic settles the card before the transcript catches up',
+  );
+
+  await act(async () => {
+    await timeline.sessionStore.fetchFromServer(SESSION_ID, { limit: 20, offset: 0 });
+  });
+
+  const rows = timeline.sessionStore.getMessages(SESSION_ID);
+  assert.equal(rows.filter((row) => row.kind === 'tool_use').length, 1);
+  assert.ok(!rows.some((row) => row.id.startsWith('__finalized_')));
+
+  timeline.cleanup();
+});
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });

@@ -297,3 +297,124 @@ test('notify fires only for the active session', async () => {
   assert.deepEqual(notified.filter((sid) => sid === 'sess-background'), []);
   assert.ok(notified.includes(SESSION_ID));
 });
+
+// ─── Tool identity: the two paths mint different ids for one call ────────────
+
+const liveWriteCard = (toolId: string): NormalizedMessage => ({
+  id: `rt-${toolId}`,
+  sessionId: SESSION_ID,
+  timestamp: new Date(BASE_TIME + 60_000).toISOString(),
+  provider: 'zcode',
+  kind: 'tool_use',
+  toolName: 'Write',
+  toolInput: { file_path: '/a.ts', content: 'hello' },
+  toolId,
+});
+
+const persistedWriteCard = (toolId: string): NormalizedMessage => ({
+  id: `m-${toolId}`,
+  sessionId: SESSION_ID,
+  timestamp: new Date(BASE_TIME + 61_000).toISOString(),
+  provider: 'zcode',
+  kind: 'tool_use',
+  toolName: 'Write',
+  toolInput: { file_path: '/a.ts', content: 'hello' },
+  toolId,
+});
+
+test('a shadow tool card with a divergent live id is pruned by its persisted twin', async () => {
+  const serverResult = msg(3, {
+    kind: 'tool_result',
+    role: 'assistant',
+    toolId: 'msg_1_part_2',
+    toolResult: { content: 'ok', isError: false },
+  });
+  const fetchPage = scriptedFetcher([
+    {
+      params: { limit: 20, offset: 0 },
+      page: { messages: [msg(1), persistedWriteCard('msg_1_part_2'), serverResult], total: 3, hasMore: false },
+    },
+  ]);
+  const store = new SessionTimelineStore({ fetchPage });
+  store.upsertToolUse(SESSION_ID, liveWriteCard('live_zcode_1'));
+
+  await store.fetchFromServer(SESSION_ID, { limit: 20, offset: 0 });
+
+  const merged = store.getMessages(SESSION_ID);
+  const toolCards = merged.filter((message) => message.kind === 'tool_use');
+  assert.equal(toolCards.length, 1, 'the same logical call must render exactly one card');
+  assert.equal(toolCards[0]?.toolId, 'msg_1_part_2', 'the persisted card is the survivor');
+  assert.ok(!merged.some((message) => message.id === 'rt-live_zcode_1'));
+});
+
+test('a live card whose call is not persisted yet survives the refresh', async () => {
+  const fetchPage = scriptedFetcher([
+    { params: { limit: 20, offset: 0 }, page: { messages: [msg(1)], total: 1, hasMore: false } },
+  ]);
+  const store = new SessionTimelineStore({ fetchPage });
+  store.upsertToolUse(SESSION_ID, liveWriteCard('live_zcode_1'));
+
+  await store.fetchFromServer(SESSION_ID, { limit: 20, offset: 0 });
+
+  const merged = store.getMessages(SESSION_ID);
+  assert.equal(merged.filter((message) => message.kind === 'tool_use').length, 1);
+  assert.ok(merged.some((message) => message.id === 'rt-live_zcode_1'));
+});
+
+test('a synthesized finalize row retires once the persisted path owns the call', async () => {
+  const serverResult = msg(3, {
+    kind: 'tool_result',
+    role: 'assistant',
+    toolId: 'msg_1_part_2',
+    toolResult: { content: 'real output', isError: false },
+  });
+  const fetchPage = scriptedFetcher([
+    {
+      params: { limit: 20, offset: 0 },
+      page: { messages: [msg(1), persistedWriteCard('msg_1_part_2'), serverResult], total: 3, hasMore: false },
+    },
+  ]);
+  const store = new SessionTimelineStore({ fetchPage });
+  store.upsertToolUse(SESSION_ID, liveWriteCard('live_zcode_1'));
+
+  store.finalizeRunningTools(SESSION_ID);
+  assert.ok(
+    store.getMessages(SESSION_ID).some((message) => message.id === '__finalized_live_zcode_1'),
+    'the synthetic settles the unpaired card',
+  );
+
+  await store.fetchFromServer(SESSION_ID, { limit: 20, offset: 0 });
+
+  const merged = store.getMessages(SESSION_ID);
+  assert.equal(merged.filter((message) => message.kind === 'tool_use').length, 1);
+  assert.equal(
+    merged.some((message) => message.id.startsWith('__finalized_')),
+    false,
+    'the synthetic must retire with the card it settled',
+  );
+});
+
+test('two identical persisted calls keep both live cards pruned one-to-one', async () => {
+  const fetchPage = scriptedFetcher([
+    {
+      params: { limit: 20, offset: 0 },
+      page: {
+        messages: [persistedWriteCard('msg_1_part_2'), persistedWriteCard('msg_3_part_4')],
+        total: 2,
+        hasMore: false,
+      },
+    },
+  ]);
+  const store = new SessionTimelineStore({ fetchPage });
+  store.upsertToolUse(SESSION_ID, liveWriteCard('live_zcode_1'));
+  store.upsertToolUse(SESSION_ID, liveWriteCard('live_zcode_2'));
+
+  await store.fetchFromServer(SESSION_ID, { limit: 20, offset: 0 });
+
+  const toolCards = store.getMessages(SESSION_ID).filter((message) => message.kind === 'tool_use');
+  assert.equal(toolCards.length, 2, 'identical repeat calls stay distinct');
+  assert.deepEqual(
+    toolCards.map((message) => message.toolId).sort(),
+    ['msg_1_part_2', 'msg_3_part_4'],
+  );
+});

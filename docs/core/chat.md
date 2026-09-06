@@ -57,6 +57,8 @@ flowchart LR
 
 模块内还有三条次级排序契约（都曾是真实 bug），见 `sessionTimelineStore.ts` 头注释：服务端覆盖剪枝必须先于内容级短路；旧页拉取期间的偏移漂移要先做一次有界最新页校准；流式行时间戳锚定在分段开始且不刷新。
 
+工具卡的跨路去重按 `toolIdentity.ts` 匹配：精确 toolId，或"工具名 + 完整参数指纹"（claimed 一对一，按 realtime 顺序配对）——两路对同一调用各自发 id（live 引擎 payload 兜底 vs 转录 part id），精确 id 不是身份的全部；`__finalized_` 合成结算行随其卡片退役。
+
 ### 渲染性能优化
 
 - 思考块按稳定 id 归组 upsert（`src/modules/chat/utils/sessionThinkingRows.ts`）。

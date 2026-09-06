@@ -37,6 +37,7 @@ import { authenticatedFetch } from '@/shared/api';
 import type { LLMProvider, NormalizedMessage } from '@/shared/types';
 import { removeOptimisticUserEchoes, upsertToolUseRow } from '@/modules/chat/utils/sessionMessageReconciliation';
 import { isThinkingRowEchoOnServer, upsertThinkingRow } from '@/modules/chat/utils/sessionThinkingRows';
+import { claimMatchingServerToolCall, collectServerToolCalls } from '@/modules/chat/utils/toolIdentity';
 import {
   buildSessionMessagesUrl,
   hasReachedCachedTailTimeBoundary,
@@ -262,8 +263,10 @@ function pruneRealtimeSupersededByServer(
 
   const serverIds = new Set(serverMessages.map((message) => message.id));
   const reconciledRealtimeMessages = removeOptimisticUserEchoes(serverMessages, realtimeMessages);
+  const serverTools = collectServerToolCalls(serverMessages);
+  const claimedServerRowIds = new Set<string>();
 
-  return reconciledRealtimeMessages.filter((message) => {
+  const retained = reconciledRealtimeMessages.filter((message) => {
     if (serverIds.has(message.id)) {
       return false;
     }
@@ -291,11 +294,29 @@ function pruneRealtimeSupersededByServer(
     }
 
     if (message.kind === 'tool_use' && message.toolId) {
-      if (serverMessages.some((serverMessage) => serverMessage.kind === 'tool_use' && serverMessage.toolId === message.toolId)) {
+      // The two paths mint different ids for the same call (engine payload
+      // fallbacks vs transcript part ids), so exact toolId alone is not the
+      // identity — the claim set also pairs on the full call fingerprint.
+      if (claimMatchingServerToolCall(message, serverTools, claimedServerRowIds)) {
         return false;
       }
     }
 
+    return true;
+  });
+
+  // A synthesized finalize row exists to settle one unpaired live card. Once
+  // that card is gone (pruned as an echo above), the synthetic matches no
+  // prune branch and no server id, so it would survive forever.
+  const retainedToolUseIds = new Set(
+    retained
+      .filter((message) => message.kind === 'tool_use' && message.toolId)
+      .map((message) => message.toolId as string),
+  );
+  return retained.filter((message) => {
+    if (message.kind === 'tool_result' && message.id.startsWith('__finalized_')) {
+      return message.toolId !== undefined && retainedToolUseIds.has(message.toolId);
+    }
     return true;
   });
 }
