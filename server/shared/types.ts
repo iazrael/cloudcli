@@ -413,6 +413,14 @@ export type NormalizedMessage = {
     toolUseResult?: unknown;
   };
   isError?: boolean;
+  /**
+   * ZCode only: the engine reported this error as a cancelled model request,
+   * not a failure. The runtime drops it when the user's own stop is on
+   * record and otherwise degrades it to a quiet `task_notification`; history
+   * normalization degrades it the same way, so a reload matches the live
+   * stream. Never set by other providers.
+   */
+  isCancelledError?: boolean;
   text?: string;
   tokens?: number;
   canInterrupt?: boolean;

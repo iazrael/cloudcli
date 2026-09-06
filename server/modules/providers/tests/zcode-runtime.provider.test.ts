@@ -25,6 +25,7 @@ import type {
 import { closeConnection, initializeDatabase } from '@/modules/database/index.js';
 
 import { protocolClient } from '../list/zcode/zcode-protocol.client.js';
+import { ZCODE_CANCELLED_NOTICE } from '../list/zcode/zcode-live-event-normalizer.js';
 import { ZCodeRuntimeProvider, zcodeRuntimePermissions } from '../list/zcode/zcode-runtime.provider.js';
 import { ZCodeSessionsProvider } from '../list/zcode/zcode-sessions.provider.js';
 
@@ -61,6 +62,30 @@ const finishCreate = () => {
 // mode "abort-ok": streams until a session/stop arrives, which both answers
 // and ends the turn — mirroring an engine that honors a delivered stop.
 let abortTicker = null;
+
+// mode "cancel-echo": like abort-ok, but after confirming the stop the engine
+// echoes the cancelled model request as a turn.failed — what real engines do.
+let cancelEchoTicker = null;
+
+// The serialized cancelled-request failure real adapter errors carry
+// (name + data.message/code/turnResult), as a live turn.failed.
+const cancelledTurnFailed = {
+  method: 'session/event',
+  params: {
+    sessionId,
+    type: 'turn.failed',
+    payload: {
+      error: {
+        name: 'AiSdkModelAdapterError',
+        data: {
+          message: 'Model request was cancelled.',
+          code: 'model_request_cancelled',
+          turnResult: 'cancelled',
+        },
+      },
+    },
+  },
+};
 
 // mode "perm-bridge": after session/send, mirrors the engine's blocking
 // permission flow — one interaction/requestPermission server request whose
@@ -223,6 +248,20 @@ rl.on('line', (line) => {
       }, 200);
       return;
     }
+    if (readMode() === 'cancel-echo') {
+      // Streams until a session/stop arrives (see the stop handler above),
+      // then echoes the cancelled-turn failure the way real engines do.
+      cancelEchoTicker = setInterval(() => {
+        send({ method: 'session/event', params: { sessionId, type: 'model_streaming', payload: { kind: 'text_delta', delta: 'streaming' } } });
+      }, 200);
+      return;
+    }
+    if (readMode() === 'cancel-unprompted') {
+      // The engine cancels the turn on its own — no stop was ever requested.
+      send({ method: 'session/event', params: { sessionId, type: 'model_streaming', payload: { kind: 'text_delta', delta: 'starting' } } });
+      setTimeout(() => send(cancelledTurnFailed), 200);
+      return;
+    }
     if (readMode() === 'stop-fail') {
       // Keeps streaming through the refused stop attempts so the run stays
       // alive; the turn only completes when the engine's own work is done.
@@ -262,11 +301,17 @@ rl.on('line', (line) => {
   if (msg.method === 'session/stop') {
     log('stop', msg.params);
     if (abortTicker) { clearInterval(abortTicker); abortTicker = null; }
+    if (cancelEchoTicker) { clearInterval(cancelEchoTicker); cancelEchoTicker = null; }
     if (readMode() === 'stop-fail') {
       send({ id: msg.id, error: { code: -32000, message: 'stop refused' } });
       return;
     }
     send({ id: msg.id, result: {} });
+    if (readMode() === 'cancel-echo') {
+      // Delayed so the runtime records the delivered stop before the failure
+      // echo arrives, the way separate engine messages do in production.
+      setTimeout(() => send(cancelledTurnFailed), 100);
+    }
     return;
   }
 
@@ -632,6 +677,72 @@ test('a delivered session/stop settles the run as aborted with a complete frame'
   assert.ok(complete, 'an aborted run must still end with a complete frame');
   assert.equal(complete.exitCode, 0, 'an abort is not an engine failure');
   assert.equal(messages.filter((msg) => msg.kind === 'error').length, 0, 'an abort must not surface an error bubble');
+});
+
+test('a stop-echoed cancelled turn.failure is dropped instead of surfacing an error bubble', async () => {
+  fsSync.writeFileSync(modeFilePath, 'cancel-echo\n');
+  const runtime = new ZCodeRuntimeProvider();
+  const { messages, writer } = createWriter();
+
+  const runPromise = runtime.run('hello', { sessionId: 'app-sess-cancelecho', cwd: stubDir }, writer, context);
+
+  // Wait until the turn is streaming, then stop it.
+  let streaming = false;
+  for (let i = 0; i < 100 && !streaming; i += 1) {
+    streaming = messages.some((msg) => msg.kind === 'stream_delta');
+    if (!streaming) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+  assert.ok(streaming, 'the stub must be streaming before the abort');
+
+  assert.equal(await runtime.abort('app-sess-cancelecho'), true, 'a delivered stop must report success');
+
+  const result = await runPromise;
+  assert.deepEqual(result, { sessionId: 'sess_stub_1', success: false });
+
+  const complete = messages.find((msg) => msg.kind === 'complete');
+  assert.ok(complete, 'the aborted run must still end with a complete frame');
+  assert.equal(complete.exitCode, 0, 'the cancelled echo must not flip the run to failed');
+  assert.equal(
+    messages.filter((msg) => msg.kind === 'error').length,
+    0,
+    'the engine-cancelled echo of a user stop must be dropped, not rendered as an error'
+  );
+  assert.equal(
+    messages.filter((msg) => msg.kind === 'task_notification').length,
+    0,
+    'a user-initiated stop stays fully silent — no notice either'
+  );
+
+  // The stub's cancelled echo fires 100ms after the stop confirmation, which
+  // can land after this run settled. Let it drain here so it cannot leak into
+  // the next test's run on the same shared engine session.
+  await new Promise((resolve) => setTimeout(resolve, 300));
+});
+
+test('an engine-side cancellation degrades to a quiet notification instead of an error', async () => {
+  fsSync.writeFileSync(modeFilePath, 'cancel-unprompted\n');
+  const runtime = new ZCodeRuntimeProvider();
+  const { messages, writer } = createWriter();
+
+  // Resolves (rather than failing): the cancellation ends the turn without
+  // marking the run failed.
+  const result = await runtime.run('hello', { sessionId: 'app-sess-cancelself', cwd: stubDir }, writer, context);
+  assert.deepEqual(result, { sessionId: 'sess_stub_1', success: true });
+
+  assert.equal(
+    messages.filter((msg) => msg.kind === 'error').length,
+    0,
+    'an engine-side cancellation is not a failure and must not surface an error bubble'
+  );
+  const notice = messages.find((msg) => msg.kind === 'task_notification');
+  assert.ok(notice, 'the cancellation must degrade to a quiet transcript line');
+  assert.equal(notice.summary, ZCODE_CANCELLED_NOTICE);
+  assert.equal(notice.status, 'interrupted');
+  const complete = messages.find((msg) => msg.kind === 'complete');
+  assert.ok(complete, 'the run must terminate with a complete event');
+  assert.equal(complete.exitCode, 0, 'the run must not report a failure exit code');
 });
 
 // Last: the crash mode kills the shared stub subprocess; the supervisor's

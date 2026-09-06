@@ -493,6 +493,52 @@ test('normalizeMessage maps error events', () => {
   assert.equal(messages[0].text, 'boom');
 });
 
+test('normalizeMessage flags cancelled model requests and reads nested adapter messages', () => {
+  const provider = new ZCodeSessionsProvider();
+
+  const cancelled = provider.normalizeMessage(
+    {
+      type: 'turn.failed',
+      payload: {
+        error: {
+          name: 'AiSdkModelAdapterError',
+          data: {
+            message: 'Model request was cancelled.',
+            code: 'model_request_cancelled',
+            turnResult: 'cancelled',
+          },
+        },
+      },
+    },
+    'sess_cancel'
+  );
+  assert.equal(cancelled.length, 1);
+  assert.equal(cancelled[0].kind, 'error');
+  assert.equal(cancelled[0].isCancelledError, true);
+  assert.equal(cancelled[0].text, 'Model request was cancelled.', 'the nested data.message is the display text');
+
+  const rateLimited = provider.normalizeMessage(
+    {
+      type: 'turn.failed',
+      payload: {
+        error: {
+          name: 'AiSdkModelAdapterError',
+          data: { message: 'rate limited', code: 'model_rate_limited' },
+        },
+      },
+    },
+    'sess_cancel'
+  );
+  assert.equal(rateLimited.length, 1);
+  assert.equal(rateLimited[0].isCancelledError, false, 'a rate limit is a real failure, not a cancellation');
+
+  const plain = provider.normalizeMessage(
+    { type: 'error', payload: { message: 'boom' } },
+    'sess_cancel'
+  );
+  assert.equal(plain[0].isCancelledError, false, 'plain errors carry no cancellation flag');
+});
+
 test('normalizeMessage ignores unknown event types', () => {
   const provider = new ZCodeSessionsProvider();
   assert.deepEqual(provider.normalizeMessage({ type: 'model_network_status' }, 'sess_1'), []);
@@ -592,6 +638,63 @@ test('fetchHistory hides model-only injections and surfaces compaction summaries
       result.messages.some((message) => message.role === 'user' && message.content === 'List the files'),
       true
     );
+  });
+});
+
+test('fetchHistory replays cancelled request errors as quiet notifications, real errors as error cards', async () => {
+  await withZCodeStorage(async (storageDir) => {
+    await createFixtureDatabase(storageDir, 'sess_cancel_hist');
+    const db = new Database(path.join(storageDir, 'cli', 'db', 'db.sqlite'));
+    try {
+      const insertMessage = db.prepare(
+        'INSERT INTO message (id, session_id, time_created, time_updated, data, sequence) VALUES (?, ?, ?, ?, ?, ?)'
+      );
+
+      // A cancelled model request, persisted with the serialized adapter
+      // error shape real engines write.
+      insertMessage.run(
+        'msg_cancelled', 'sess_cancel_hist', 4000, 4000,
+        JSON.stringify({
+          role: 'assistant',
+          error: {
+            name: 'AiSdkModelAdapterError',
+            data: {
+              message: 'Model request was cancelled.',
+              code: 'model_request_cancelled',
+              turnResult: 'cancelled',
+            },
+          },
+        }),
+        2
+      );
+
+      // A real failure keeps its error card.
+      insertMessage.run(
+        'msg_failed', 'sess_cancel_hist', 4100, 4100,
+        JSON.stringify({
+          role: 'assistant',
+          error: {
+            name: 'AiSdkModelAdapterError',
+            data: { message: 'rate limited', code: 'model_rate_limited' },
+          },
+        }),
+        3
+      );
+    } finally {
+      db.close();
+    }
+
+    const provider = new ZCodeSessionsProvider();
+    const result = await provider.fetchHistory('sess_cancel_hist');
+
+    const notice = result.messages.find((message) => message.kind === 'task_notification');
+    assert.ok(notice, 'a cancelled request must replay as a quiet notification');
+    assert.equal(notice.summary, '模型请求已取消');
+    assert.equal(notice.status, 'interrupted');
+
+    const errorCard = result.messages.find((message) => message.kind === 'error');
+    assert.ok(errorCard, 'a real failure must keep its error card');
+    assert.match(errorCard.content ?? '', /rate limited/);
   });
 });
 

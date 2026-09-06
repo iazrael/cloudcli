@@ -10,6 +10,50 @@ import {
 const PROVIDER = 'zcode';
 
 /**
+ * The quiet transcript line a cancelled model request degrades to (live and
+ * in replayed history). A user-initiated stop never reaches the stream at
+ * all; this notice only covers cancellations the user did not ask for.
+ */
+export const ZCODE_CANCELLED_NOTICE = '模型请求已取消';
+
+/**
+ * Whether an engine error record denotes a cancelled model request rather
+ * than a real failure. Matches the engine's own cancellation predicates —
+ * `turn_cancelled`/`model_request_cancelled`/`ABORT_ERR` codes, a
+ * `cancelled` turn result, or an `AbortError` name — along the `cause`
+ * chain, accepting both the serialized `{ name, data: { code, turnResult } }`
+ * shape and flat fields. Rate limits and provider faults do not match, so
+ * they keep surfacing as errors.
+ *
+ * Consumed by the live-event error mapping and by history normalization, so
+ * a reload renders the same quiet line the live stream did.
+ */
+export function isZCodeCancelledEngineError(value: unknown): boolean {
+  let current: unknown = value;
+  for (let depth = 0; depth < 5 && current; depth += 1) {
+    const record = readObjectRecord(current);
+    if (!record) {
+      return false;
+    }
+    const nested = readObjectRecord(record.data);
+    const code = readOptionalString(record.code) ?? readOptionalString(nested?.code);
+    const turnResult = readOptionalString(record.turnResult) ?? readOptionalString(nested?.turnResult);
+    if (
+      readOptionalString(record.type) === 'turn_cancelled'
+      || code === 'turn_cancelled'
+      || code === 'model_request_cancelled'
+      || code === 'ABORT_ERR'
+      || turnResult === 'cancelled'
+      || readOptionalString(record.name) === 'AbortError'
+    ) {
+      return true;
+    }
+    current = record.cause;
+  }
+  return false;
+}
+
+/**
  * Engine 0.16.5 renamed these event types. Both engine generations therefore
  * enter the same ZCode real-time event module.
  */
@@ -158,7 +202,11 @@ export class ZCodeLiveEventNormalizer {
 
     if (normalizedType === 'error' || normalizedType === 'fatal' || normalizedType === 'turn.failed') {
       const errorRecord = readObjectRecord(payload.error);
+      // Serialized adapter errors carry their message nested in `data`
+      // (`{ name, data: { message, code, ... } }`); flat records keep the
+      // top-level fields.
       const errorText = readOptionalString(errorRecord?.message)
+        ?? readOptionalString(readObjectRecord(errorRecord?.data)?.message)
         ?? readOptionalString(payload.error)
         ?? readOptionalString(payload.message)
         ?? 'Unknown ZCode error';
@@ -171,6 +219,10 @@ export class ZCodeLiveEventNormalizer {
         isError: true,
         content: errorText,
         text: errorText,
+        // The runtime decides per run whether a cancellation is the user's
+        // own stop (drop the frame) or an engine-side one (degrade to a
+        // quiet line); the flag only carries the engine's verdict here.
+        isCancelledError: isZCodeCancelledEngineError(payload.error),
       })];
     }
 

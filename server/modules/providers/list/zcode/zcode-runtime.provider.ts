@@ -38,6 +38,7 @@ import { sessionsDb } from '@/modules/database/index.js';
 
 import { SESSION_LOST_METHOD } from './zcode-codec.js';
 import { protocolClient } from './zcode-protocol.client.js';
+import { ZCODE_CANCELLED_NOTICE } from './zcode-live-event-normalizer.js';
 import { buildZCodeRuntimeModel, readZCodeSessionModelInfoFromDb, resolveZCodeModelRef } from './zcode-models.provider.js';
 import { EngineSilenceTimeoutError, ZCodeRunLifecycle, resolveSilenceTimeoutMs } from './zcode-run-lifecycle.js';
 import type { RunHandle, RunSettle } from './zcode-run-lifecycle.js';
@@ -723,6 +724,34 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
           }
 
           if (message.kind === 'error') {
+            // A terminal error can outlive its run: the engine's cancelled
+            // echo (or any late turn.failed) may arrive after this run
+            // settled and a newer run already owns the session. Attributing
+            // it to the live run would fail or finish someone else's turn.
+            if (!runLifecycle.isActiveRun(handle)) {
+              continue;
+            }
+            if (message.isCancelledError) {
+              // A cancelled model request is not an engine failure. When the
+              // user's own stop is on record the echo is expected noise —
+              // drop the frame and let the settle wait report the abort. An
+              // engine-side cancellation the user did not ask for degrades
+              // to a quiet transcript line and ends the run as a non-failure
+              // instead of a red error bubble plus a "run failed" notice.
+              if (handle.abortRequested) {
+                continue;
+              }
+              writer.send(createNormalizedMessage({
+                id: generateMessageId('zcode'),
+                sessionId: handle.sessionId,
+                provider: 'zcode',
+                kind: 'task_notification',
+                summary: ZCODE_CANCELLED_NOTICE,
+                status: 'interrupted',
+              }));
+              runLifecycle.recordCompletion(handle);
+              continue;
+            }
             // Terminal error events (turn.failed / fatal) end the turn; mark
             // the run completed-as-failed so the settle wait and the final
             // complete message reflect it instead of timing out after 10 min.

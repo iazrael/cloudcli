@@ -27,7 +27,7 @@ import {
 import { getGlobalImageAssetsDir } from '@/shared/image-attachments.js';
 
 import { getZCodeDatabasePath, getZCodeStorageDir } from './zcode-data-root.js';
-import { readZCodeTokenUsedCount, ZCodeLiveEventNormalizer } from './zcode-live-event-normalizer.js';
+import { isZCodeCancelledEngineError, readZCodeTokenUsedCount, ZCodeLiveEventNormalizer, ZCODE_CANCELLED_NOTICE } from './zcode-live-event-normalizer.js';
 
 const PROVIDER = 'zcode';
 
@@ -429,14 +429,28 @@ export class ZCodeSessionsProvider implements IProviderSessions {
         && !emittedMessageErrors.has(row.message_id)
       ) {
         emittedMessageErrors.add(row.message_id);
-        normalized.push(createNormalizedMessage({
-          id: `${baseId}_error`,
-          sessionId,
-          timestamp,
-          provider: PROVIDER,
-          kind: 'error',
-          content: formatToolContent(messageInfo.error),
-        }));
+        if (isZCodeCancelledEngineError(messageInfo.error)) {
+          // A cancelled model request is not a failure: replay it as the same
+          // quiet line the live stream degrades it to, not a red error card.
+          normalized.push(createNormalizedMessage({
+            id: `${baseId}_cancelled`,
+            sessionId,
+            timestamp,
+            provider: PROVIDER,
+            kind: 'task_notification',
+            summary: ZCODE_CANCELLED_NOTICE,
+            status: 'interrupted',
+          }));
+        } else {
+          normalized.push(createNormalizedMessage({
+            id: `${baseId}_error`,
+            sessionId,
+            timestamp,
+            provider: PROVIDER,
+            kind: 'error',
+            content: formatToolContent(messageInfo.error),
+          }));
+        }
       }
 
       // Skip rows without part data
