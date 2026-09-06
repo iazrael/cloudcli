@@ -57,7 +57,7 @@ flowchart LR
 
 模块内还有三条次级排序契约（都曾是真实 bug），见 `sessionTimelineStore.ts` 头注释：服务端覆盖剪枝必须先于内容级短路；旧页拉取期间的偏移漂移要先做一次有界最新页校准；流式行时间戳锚定在分段开始且不刷新。
 
-工具卡的跨路去重按 `toolIdentity.ts` 匹配：精确 toolId，或"工具名 + 完整参数指纹"（claimed 一对一，按 realtime 顺序配对）——两路对同一调用各自发 id（live 引擎 payload 兜底 vs 转录 part id），精确 id 不是身份的全部；`__finalized_` 合成结算行随其卡片退役。
+工具卡的跨路去重按 `toolIdentity.ts` 匹配：精确 toolId，或"工具名 + 完整参数指纹"（claimed 一对一，按 realtime 顺序配对）——两路对同一调用各自发 id（live 引擎 payload 兜底 vs 转录 part id），精确 id 不是身份的全部；`__finalized_` 合成结算行随其卡片退役。逐引擎定论（2026-09 可行域调查）：claude（共用归一化器）与 zcode（引擎持久化 `callID = toolCallId`，28k 真实行 0 缺失）两路 id 天然同源，有 parity 测试钉住；codex（live `item_<n>` 本地合成、rollout `call_id` 不在 wire 格式）、antigravity（live 锚执行步/历史锚 planner 步+下标）、opencode（无真实 live 样本）**结构性无法对齐，指纹层是其永久机制**，勿再立项对齐。
 
 ### 渲染性能优化
 

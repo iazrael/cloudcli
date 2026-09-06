@@ -826,3 +826,33 @@ test('synchronizer maps fixture rows through the shared SQLite skeleton', async 
     });
   });
 });
+
+test('live and history mint the same toolId for one call (engine callID == toolCallId)', async () => {
+  // The engine persists `callID: y.toolCallId` on the tool part itself —
+  // 0 missing across 28k real parts — so the realtime path (payload
+  // toolCallId) and the transcript path (part callID) must agree
+  // byte-for-byte. This parity is what lets the timeline's exact-id pruning
+  // work for zcode; the fingerprint matcher in toolIdentity.ts exists for the
+  // engines that cannot promise it (codex, antigravity, opencode edges).
+  await withZCodeStorage(async (storageDir) => {
+    await createFixtureDatabase(storageDir, 'sess_parity');
+    const provider = new ZCodeSessionsProvider();
+
+    const live = provider.normalizeMessage(
+      { type: 'model_streaming', payload: { kind: 'tool_call', toolCallId: 'call_1', toolName: 'Bash', input: {} } },
+      'sess_parity'
+    );
+    assert.equal(live.length, 1);
+    assert.equal(live[0].kind, 'tool_use');
+    assert.equal(live[0].toolId, 'call_1');
+
+    const history = await provider.fetchHistory('sess_parity');
+    const historyToolRow = history.messages.find((message) => message.kind === 'tool_use');
+    assert.ok(historyToolRow, 'the fixture must carry a persisted tool row');
+    assert.equal(
+      historyToolRow.toolId,
+      live[0].toolId,
+      'the persisted toolId must equal the live one, or exact-id pruning breaks',
+    );
+  });
+});
