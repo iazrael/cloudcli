@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { isNearBottom as isViewportNearBottom, prependScrollAdjustment } from '@/modules/chat/utils/chatScrollMath';
+
 export type UseContinuousScrollAnchorOptions = {
   isActive: boolean;
   hasMoreMessages: boolean;
@@ -109,8 +111,7 @@ export function useContinuousScrollAnchor({
   const isNearBottom = useCallback((): boolean => {
     const container = scrollContainerRef.current;
     if (!container) return true;
-    const { scrollTop, scrollHeight, clientHeight } = container;
-    return scrollHeight - scrollTop - clientHeight <= bottomThreshold;
+    return isViewportNearBottom(container, bottomThreshold);
   }, [bottomThreshold]);
 
   const scrollToBottom = useCallback((smooth = false) => {
@@ -142,7 +143,7 @@ export function useContinuousScrollAnchor({
       requestAnimationFrame(() => {
         const container = scrollContainerRef.current;
         if (!container || container.scrollTop > 1) return;
-        const heightDiff = container.scrollHeight - prevHeight;
+        const heightDiff = prependScrollAdjustment(prevHeight, container.scrollHeight);
         if (heightDiff > 0) {
           container.scrollTop += heightDiff;
         }
@@ -190,8 +191,7 @@ export function useContinuousScrollAnchor({
     const container = scrollContainerRef.current;
     if (!container || !isActiveRef.current) return;
 
-    const nearBottom =
-      container.scrollHeight - container.scrollTop - container.clientHeight <= bottomThreshold;
+    const nearBottom = isViewportNearBottom(container, bottomThreshold);
 
     if (Date.now() < smoothScrollUntilRef.current) {
       if (nearBottom) smoothScrollUntilRef.current = 0;

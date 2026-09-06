@@ -13,6 +13,7 @@ import { createCachedDiffCalculator } from '@/modules/chat/utils/messageTransfor
 
 import { normalizedToChatMessages } from '@/modules/chat/hooks/useChatMessages';
 import { useContinuousScrollAnchor } from '@/modules/chat/hooks/useContinuousScrollAnchor';
+import { expandVisibleCount, sliceVisibleMessages } from '@/modules/chat/utils/chatScrollMath';
 import { findSearchTargetIndex, resolveSearchWindowSize } from '@/modules/chat/utils/searchTargetLocator';
 
 const INITIAL_VISIBLE_MESSAGES = 100;
@@ -848,14 +849,14 @@ export function useChatSessionState({
     const diff = chatMessages.length - previousMessagesLengthRef.current;
     previousMessagesLengthRef.current = chatMessages.length;
     if (diff > 0 && isUserScrolledUp && !isLoadingMoreRef.current) {
-      setVisibleMessageCount((prev) => (prev === Infinity ? Infinity : prev + diff));
+      setVisibleMessageCount((prev) => expandVisibleCount(prev, diff));
     }
   }, [chatMessages.length, isUserScrolledUp]);
 
-  const visibleMessages = useMemo(() => {
-    if (chatMessages.length <= visibleMessageCount) return chatMessages;
-    return chatMessages.slice(-visibleMessageCount);
-  }, [chatMessages, visibleMessageCount]);
+  const visibleMessages = useMemo(
+    () => sliceVisibleMessages(chatMessages, visibleMessageCount),
+    [chatMessages, visibleMessageCount],
+  );
 
   // "Load all" overlay visibility is driven by scroll-to-top in handleScroll;
   // timers are cleared on session change via the reset effect above.
