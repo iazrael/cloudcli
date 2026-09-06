@@ -1,4 +1,4 @@
-import { memo, useCallback } from 'react';
+import { memo, useCallback, useRef } from 'react';
 import type {
   MouseEvent as ReactMouseEvent,
   TouchEvent as ReactTouchEvent,
@@ -6,6 +6,7 @@ import type {
 import { useTranslation } from 'react-i18next';
 
 import { useProjectSidebarState } from '@/modules/project-workspace/context/ProjectsStateContext';
+import { useSidebarSwipeToOpen } from '@/modules/project-workspace/hooks/useSidebarSwipeToOpen';
 import { Sidebar } from '@/modules/sidebar';
 import type { ProjectWorkspaceShellProps } from '@/shared/types';
 
@@ -15,6 +16,24 @@ function ProjectSidebarRegion({
 }: Pick<ProjectWorkspaceShellProps, 'isMobile'>) {
   const { t } = useTranslation('common');
   const { sidebarOpen, setSidebarOpen, sidebarSharedProps } = useProjectSidebarState();
+
+  // Refs for the mobile drawer so the edge-swipe gesture can drive transform/opacity imperatively.
+  const containerRef = useRef<HTMLDivElement>(null);
+  const backdropRef = useRef<HTMLButtonElement>(null);
+  const drawerRef = useRef<HTMLDivElement>(null);
+
+  const openSidebar = useCallback(() => {
+    setSidebarOpen(true);
+  }, [setSidebarOpen]);
+
+  // Left-edge swipe only exists while the mobile drawer is closed; desktop never enables it.
+  useSidebarSwipeToOpen({
+    enabled: isMobile && !sidebarOpen,
+    onOpen: openSidebar,
+    containerRef,
+    backdropRef,
+    drawerRef,
+  });
 
   const handleBackdropClick = useCallback((event: ReactMouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
@@ -37,17 +56,20 @@ function ProjectSidebarRegion({
 
   return (
     <div
+      ref={containerRef}
       className={`fixed inset-0 z-50 flex transition-all duration-150 ease-out ${
         sidebarOpen ? 'visible opacity-100' : 'invisible opacity-0'
       }`}
     >
       <button
+        ref={backdropRef}
         className="fixed inset-0 bg-background/60 backdrop-blur-sm transition-opacity duration-150 ease-out"
         onClick={handleBackdropClick}
         onTouchStart={handleBackdropTouch}
         aria-label={t('versionUpdate.ariaLabels.closeSidebar')}
       />
       <div
+        ref={drawerRef}
         className={`relative h-full w-[85vw] max-w-sm transform border-r border-border/40 bg-card transition-transform duration-150 ease-out sm:w-80 ${
           sidebarOpen ? 'translate-x-0' : '-translate-x-full'
         }`}
