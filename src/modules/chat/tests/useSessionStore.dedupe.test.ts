@@ -179,6 +179,25 @@ test('identical assistant replies across different user turns are not treated as
   assert.equal(isAssistantTextEchoedInSameTurnOnServer(realtime[0], server, realtime), false);
 });
 
+test('a server clock ahead of the client still recognises the echo via the text scan', () => {
+  // The finalized row anchors to the client clock while the transcript stamps
+  // with the engine clock; when the engine runs ahead, both the preceding-user
+  // scan and the turn-ordinal count break out empty and the ordinal lands on
+  // an older turn. A found-but-unmatched turn used to return false instead of
+  // falling through to the content-level scan.
+  const server = [
+    msg('text', 'user', 'first question', '2026-01-01T01:00:00Z'),
+    msg('text', 'assistant', 'older reply', '2026-01-01T01:00:01Z'),
+    msg('text', 'user', 'second question', '2026-01-01T01:20:00Z'),
+    msg('text', 'assistant', 'the actual reply', '2026-01-01T01:20:01Z'),
+  ];
+  const realtime = [
+    msg('text', 'assistant', 'the actual reply', '2026-01-01T00:20:05Z'),
+  ];
+
+  assert.equal(isAssistantTextEchoedInSameTurnOnServer(realtime[0], server, realtime), true);
+});
+
 test('anchored turns match accurately using transcriptAnchorId', () => {
   const serverUser: NormalizedMessage = {
     ...msg('text', 'user', 'anchor question', '2026-01-01T00:00:01Z'),

@@ -241,6 +241,84 @@ test('complete flushes the stream and requests the persisted tail only for the v
   timeline.cleanup();
 });
 
+// ─── suspension return: a pruned streaming row must not revive ───────────────
+
+test('returning from a suspension must not revive pruned stream text as a duplicate bubble', async () => {
+  // The production shape of the "two identical replies after leaving the PWA
+  // mid-stream" bug: a long agent turn pushed the current user row past the
+  // 20-row tail page, so the return refresh lands a server view whose only
+  // user rows belong to OLDER turns, while the raw local user echo survives
+  // (the server row it could reconcile with was never fetched). In that shape
+  // the echo matcher misses, the pruned streaming row revives from the stale
+  // delta buffer, and the revived bubble renders next to its transcript copy.
+  const now = Date.now();
+  const at = (secondsAgo: number) => new Date(now - secondsAgo * 1000).toISOString();
+  const transcriptPage = {
+    messages: [
+      msg(1, { content: 'earlier question', timestamp: at(60) }),
+      msg(2, { content: 'older answer', timestamp: at(59) }),
+      msg(4, { content: 'Segment one.', timestamp: at(30) }),
+      msg(6, { content: 'Segment two.', timestamp: at(20) }),
+    ],
+    total: 4,
+    hasMore: false,
+  };
+  stubHistoryFetch([
+    { params: { limit: '20', offset: '0' }, page: transcriptPage },
+    { params: { limit: '20', offset: '0' }, page: transcriptPage },
+  ]);
+  const timeline = mountTimeline();
+
+  // The question's local echo (its server row is beyond the tail page) and the
+  // first segment streaming in.
+  timeline.emit({
+    kind: 'text',
+    id: 'local_question',
+    sessionId: SESSION_ID,
+    role: 'user',
+    content: 'analyze codegraph',
+    timestamp: at(45),
+  } as unknown as ServerEvent);
+  timeline.emit({ kind: 'stream_delta', sessionId: SESSION_ID, content: 'Segment one.' } as unknown as ServerEvent);
+  await tickThrottle();
+  assert.ok(
+    timeline.sessionStore.getMessages(SESSION_ID).some((row) => row.id === `__streaming_${SESSION_ID}`),
+    'precondition: the segment is on screen as the streaming row',
+  );
+
+  // The user leaves; on return the reconnect refresh lands the tail page
+  // without the current turn's user row.
+  await act(async () => {
+    await timeline.sessionStore.fetchFromServer(SESSION_ID, { limit: 20, offset: 0 });
+  });
+
+  // Replayed deltas for the missed segment arrive on top of the stale buffer,
+  // then the replayed stream_end flushes and finalizes whatever accumulated.
+  timeline.emit({ kind: 'stream_delta', sessionId: SESSION_ID, content: 'Segment two.' } as unknown as ServerEvent);
+  await tickThrottle();
+  timeline.emit({ kind: 'stream_end', sessionId: SESSION_ID } as unknown as ServerEvent);
+
+  const renderedTexts = () => timeline.sessionStore.getMessages(SESSION_ID)
+    .filter((row) => row.kind === 'text' && row.role === 'assistant')
+    .map((row) => row.content);
+  assert.equal(
+    renderedTexts().filter((content) => content.includes('Segment one.')).length,
+    1,
+    `'Segment one.' must render exactly once after the return, got: ${JSON.stringify(renderedTexts())}`,
+  );
+
+  // The complete-driven tail refresh must converge to one row per segment.
+  await act(async () => {
+    await timeline.sessionStore.fetchFromServer(SESSION_ID, { limit: 20, offset: 0 });
+  });
+  assert.deepEqual(
+    renderedTexts().filter((content) => content.includes('Segment')),
+    ['Segment one.', 'Segment two.'],
+  );
+
+  timeline.cleanup();
+});
+
 // ─── complete: settle unmatched tool cards ───────────────────────────────────
 
 test('complete settles a tool card whose result frame never arrived', () => {
