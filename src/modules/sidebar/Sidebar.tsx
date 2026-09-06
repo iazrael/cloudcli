@@ -245,6 +245,7 @@ function Sidebar({
         currentVersion={currentVersion}
         latestVersion={latestVersion}
         installMode={installMode}
+        updateAvailable={updateAvailable}
         t={t}
       />
 

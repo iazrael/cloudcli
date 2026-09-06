@@ -14,6 +14,8 @@ type VersionUpgradeModalProps = {
     currentVersion: string;
     latestVersion: string | null;
     installMode: InstallMode;
+    /** Whether the version check found a release newer than the running one. Drives whether the upgrade flow renders at all. */
+    updateAvailable: boolean;
 };
 
 const RELOAD_COUNTDOWN_START = 120;
@@ -25,9 +27,13 @@ export function VersionUpgradeModal({
     releaseInfo,
     currentVersion,
     latestVersion,
-    installMode
+    installMode,
+    updateAvailable
 }: VersionUpgradeModalProps) {
     const { t } = useTranslation('common');
+    // The modal also opens as a plain "what version am I on" viewer from the
+    // sidebar footer, so everything upgrade-specific keys off this.
+    const hasUpdate = updateAvailable && Boolean(latestVersion);
     const upgradeCommand = installMode === 'npm'
         ? t('versionUpdate.npmUpgradeCommand')
         : IS_PLATFORM
@@ -149,9 +155,11 @@ export function VersionUpgradeModal({
                             </svg>
                         </div>
                         <div>
-                            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">{t('versionUpdate.title')}</h2>
+                            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
+                                {t(hasUpdate ? 'versionUpdate.title' : 'versionUpdate.upToDate')}
+                            </h2>
                             <p className="text-sm text-gray-500 dark:text-gray-400">
-                                {releaseInfo?.title || t('versionUpdate.newVersionReady')}
+                                {releaseInfo?.title || (hasUpdate ? t('versionUpdate.newVersionReady') : currentVersion)}
                             </p>
                         </div>
                     </div>
@@ -171,9 +179,22 @@ export function VersionUpgradeModal({
                         <span className="text-sm font-medium text-gray-700 dark:text-gray-300">{t('versionUpdate.currentVersion')}</span>
                         <span className="font-mono text-sm text-gray-900 dark:text-white">{currentVersion}</span>
                     </div>
-                    <div className="flex items-center justify-between rounded-lg border border-blue-200 bg-blue-50 p-3 dark:border-blue-700 dark:bg-blue-900/20">
-                        <span className="text-sm font-medium text-blue-700 dark:text-blue-300">{t('versionUpdate.latestVersion')}</span>
-                        <span className="font-mono text-sm text-blue-900 dark:text-blue-100">{latestVersion}</span>
+                    <div className={hasUpdate
+                        ? 'flex items-center justify-between rounded-lg border border-blue-200 bg-blue-50 p-3 dark:border-blue-700 dark:bg-blue-900/20'
+                        : 'flex items-center justify-between rounded-lg bg-gray-50 p-3 dark:bg-gray-700/50'}
+                    >
+                        <span className={hasUpdate
+                            ? 'text-sm font-medium text-blue-700 dark:text-blue-300'
+                            : 'text-sm font-medium text-gray-700 dark:text-gray-300'}
+                        >
+                            {t('versionUpdate.latestVersion')}
+                        </span>
+                        <span className={hasUpdate
+                            ? 'font-mono text-sm text-blue-900 dark:text-blue-100'
+                            : 'font-mono text-sm text-gray-900 dark:text-white'}
+                        >
+                            {latestVersion}
+                        </span>
                     </div>
                 </div>
 
@@ -229,7 +250,7 @@ export function VersionUpgradeModal({
                 )}
 
                 {/* Upgrade Instructions */}
-                {!isUpdating && !updateOutput && (
+                {hasUpdate && !isUpdating && !updateOutput && (
                     <div className="space-y-3">
                         <h3 className="text-sm font-medium text-gray-900 dark:text-white">{t('versionUpdate.manualUpgrade')}</h3>
                         <div className="rounded-lg border bg-gray-100 p-3 dark:bg-gray-800">
@@ -247,22 +268,22 @@ export function VersionUpgradeModal({
                 <div className="flex gap-2 pt-2">
                     <button
                         onClick={onClose}
-                        className="flex-1 rounded-md bg-gray-100 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+                        className="flex-1 whitespace-nowrap rounded-md bg-gray-100 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
                     >
-                        {updateOutput ? t('versionUpdate.buttons.close') : t('versionUpdate.buttons.later')}
+                        {updateOutput || !hasUpdate ? t('versionUpdate.buttons.close') : t('versionUpdate.buttons.later')}
                     </button>
-                    {!updateOutput && (
+                    {hasUpdate && !updateOutput && (
                         <>
                             <button
                                 onClick={() => copyTextToClipboard(upgradeCommand)}
-                                className="flex-1 rounded-md bg-gray-100 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+                                className="flex-1 whitespace-nowrap rounded-md bg-gray-100 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
                             >
                                 {t('versionUpdate.buttons.copyCommand')}
                             </button>
                             <button
                                 onClick={handleUpdateNow}
                                 disabled={isUpdating}
-                                className="flex flex-1 items-center justify-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-400"
+                                className="flex flex-1 items-center justify-center gap-2 whitespace-nowrap rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-400"
                             >
                                 {isUpdating ? (
                                     <>

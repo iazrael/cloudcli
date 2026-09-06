@@ -243,6 +243,7 @@
     "newVersionReady": "新版本已准备就绪",
     "currentVersion": "当前版本",
     "latestVersion": "最新版本",
+    "upToDate": "已是最新版本",
     "whatsNew": "新内容：",
     "viewFullRelease": "查看完整发布",
     "updateProgress": "更新进度：",

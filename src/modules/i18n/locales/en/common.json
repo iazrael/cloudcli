@@ -244,6 +244,7 @@
     "newVersionReady": "A new version is ready",
     "currentVersion": "Current Version",
     "latestVersion": "Latest Version",
+    "upToDate": "You’re up to date",
     "whatsNew": "What's New:",
     "viewFullRelease": "View full release",
     "updateProgress": "Update Progress:",
