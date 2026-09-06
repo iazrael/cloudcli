@@ -6,6 +6,16 @@ import test from 'node:test';
 
 import { closeConnection, initializeDatabase, projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { sessionsService } from '@/modules/providers/services/sessions.service.js';
+import { connectedClients } from '@/modules/websocket/index.js';
+
+class FakeConnection {
+  readyState = 1; // WS_OPEN_STATE
+  frames: Array<Record<string, unknown>> = [];
+
+  send(data: string): void {
+    this.frames.push(JSON.parse(data) as Record<string, unknown>);
+  }
+}
 
 async function withIsolatedDatabase(runTest: () => void | Promise<void>): Promise<void> {
   const previousDatabasePath = process.env.DATABASE_PATH;
@@ -18,6 +28,7 @@ async function withIsolatedDatabase(runTest: () => void | Promise<void>): Promis
   try {
     await runTest();
   } finally {
+    connectedClients.clear();
     closeConnection();
     if (previousDatabasePath === undefined) {
       delete process.env.DATABASE_PATH;
@@ -197,6 +208,9 @@ test('deleteOrArchiveSessionById deletes session when given provider_session_id'
     sessionsDb.createAppSession('app-id-1', 'codex', '/tmp/delete-test');
     sessionsDb.assignProviderSessionId('app-id-1', 'native-id-1');
 
+    const connection = new FakeConnection();
+    connectedClients.add(connection as never);
+
     const result = await sessionsService.deleteOrArchiveSessionById('native-id-1', {
       force: true,
       deletedFromDisk: false,
@@ -205,5 +219,24 @@ test('deleteOrArchiveSessionById deletes session when given provider_session_id'
     assert.equal(result.sessionId, 'app-id-1');
     assert.equal(result.action, 'deleted');
     assert.equal(sessionsDb.getSessionById('app-id-1'), null);
+    assert.equal(connection.frames.length, 1);
+    assert.equal(connection.frames[0].kind, 'session_removed');
+    assert.deepEqual(connection.frames[0].sessionIds, ['app-id-1']);
+  });
+});
+
+test('deleteOrArchiveSessionById archives without force and broadcasts the removal', { concurrency: false }, async () => {
+  await withIsolatedDatabase(async () => {
+    sessionsDb.createAppSession('app-id-2', 'codex', '/tmp/archive-test');
+
+    const connection = new FakeConnection();
+    connectedClients.add(connection as never);
+
+    const result = await sessionsService.deleteOrArchiveSessionById('app-id-2', {});
+
+    assert.equal(result.action, 'archived');
+    assert.equal(sessionsDb.getSessionById('app-id-2')?.isArchived, 1);
+    assert.equal(connection.frames.length, 1);
+    assert.deepEqual(connection.frames[0].sessionIds, ['app-id-2']);
   });
 });

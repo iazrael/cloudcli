@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
-import { broadcastSessionUpserted, chatRunRegistry } from '@/modules/websocket/index.js';
+import { broadcastSessionRemoved, broadcastSessionUpserted, chatRunRegistry } from '@/modules/websocket/index.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import { sessionHistoryCache } from '@/modules/providers/services/session-history-cache.service.js';
 import type {
@@ -632,6 +632,9 @@ export const sessionsService = {
 
     if (!options.force) {
       sessionsDb.updateSessionIsArchived(resolvedSessionId, true);
+      // The initiating client cleans up its own list; the broadcast is for the
+      // other connected clients (idempotent for the initiator).
+      broadcastSessionRemoved([resolvedSessionId]);
       return {
         sessionId: resolvedSessionId,
         action: 'archived',
@@ -665,6 +668,7 @@ export const sessionsService = {
       });
     }
 
+    broadcastSessionRemoved([resolvedSessionId]);
     return {
       sessionId: resolvedSessionId,
       action: 'deleted',

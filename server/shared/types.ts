@@ -309,6 +309,7 @@ export type MessageKind =
 export type GatewayEventKind =
   | 'chat_subscribed'
   | 'session_upserted'
+  | 'session_removed'
   | 'loading_progress'
   | 'protocol_error';
 
@@ -354,6 +355,25 @@ export type SessionUpsertedEvent = {
     lastActivity: string;
   };
   project: SessionUpsertedProject | null;
+  timestamp: string;
+};
+
+/**
+ * Announces that sessions left the active sidebar list because they were
+ * archived (batch auto-archive, manual run, or single-session archive) or
+ * permanently deleted.
+ *
+ * There is deliberately no singular `sessionId` field: clients must key the
+ * removal off `sessionIds`, which also keeps generic per-session event
+ * handling (attention marks, unread badges) from firing for rows that are
+ * gone. Removal is idempotent — a client that already removed the row locally
+ * (the delete initiator) just drops the frame.
+ *
+ * Built only by `modules/websocket/services/session-upsert-broadcast.service.ts`.
+ */
+export type SessionRemovedEvent = {
+  kind: 'session_removed';
+  sessionIds: string[];
   timestamp: string;
 };
 

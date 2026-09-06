@@ -1,4 +1,5 @@
 import { appConfigDb, sessionsDb } from '@/modules/database/index.js';
+import { broadcastSessionRemoved } from '@/modules/websocket/index.js';
 
 /**
  * Auto-archive configuration options.
@@ -93,11 +94,15 @@ export const sessionsAutoArchiveService = {
       const days = retentionDaysOverride ?? settings.retentionDays;
       const cutoff = calculateCutoffDate(days);
 
-      const archivedCount = sessionsDb.archiveSessionsOlderThanCutoff(cutoff);
-      if (archivedCount > 0) {
-        console.log(`[SessionsAutoArchive] Archived ${archivedCount} session(s) older than ${cutoff}`);
+      const archivedSessionIds = sessionsDb.archiveSessionsOlderThanCutoff(cutoff);
+      if (archivedSessionIds.length > 0) {
+        console.log(`[SessionsAutoArchive] Archived ${archivedSessionIds.length} session(s) older than ${cutoff}`);
+        // Manual runs and the hourly scheduler both land here, so every path
+        // that empties the sidebar tells connected clients at once instead of
+        // leaving them stale until a full refetch.
+        broadcastSessionRemoved(archivedSessionIds);
       }
-      return { archivedCount, cutoff };
+      return { archivedCount: archivedSessionIds.length, cutoff };
     } finally {
       isArchiveRunning = false;
     }

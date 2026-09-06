@@ -6,6 +6,7 @@ import test from 'node:test';
 
 import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
 import {
+  broadcastSessionRemoved,
   broadcastSessionUpserted,
   broadcastSessionUpsertedBatch,
 } from '@/modules/websocket/services/session-upsert-broadcast.service.js';
@@ -135,4 +136,27 @@ test('a closed socket is skipped', async () => {
     assert.equal(open.frames.length, 1);
     assert.deepEqual(closing.frames, []);
   });
+});
+
+test('a removal carries every id in one frame', () => {
+  const connection = new FakeConnection();
+  connectedClients.clear();
+  connectedClients.add(connection as never);
+
+  broadcastSessionRemoved(['app-7', 'app-8']);
+
+  assert.equal(connection.frames.length, 1);
+  assert.equal(connection.frames[0].kind, 'session_removed');
+  assert.deepEqual(connection.frames[0].sessionIds, ['app-7', 'app-8']);
+  assert.equal(typeof connection.frames[0].timestamp, 'string');
+});
+
+test('an empty removal list broadcasts nothing', () => {
+  const connection = new FakeConnection();
+  connectedClients.clear();
+  connectedClients.add(connection as never);
+
+  broadcastSessionRemoved([]);
+
+  assert.deepEqual(connection.frames, []);
 });

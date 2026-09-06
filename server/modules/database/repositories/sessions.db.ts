@@ -705,12 +705,13 @@ export const sessionsDb = {
   /**
    * Batch-archives unarchived sessions whose last activity (updated_at or created_at)
    * occurred before the specified cutoff timestamp string (or is null/invalid).
-   * Returns the count of newly archived session rows.
+   * Returns the session_id of every row newly archived by this call, so the
+   * caller can broadcast the removal to websocket clients.
    * Used by Providers module (sessionsAutoArchiveService).
    */
-  archiveSessionsOlderThanCutoff(cutoffIsoString: string): number {
+  archiveSessionsOlderThanCutoff(cutoffIsoString: string): string[] {
     const db = getConnection();
-    const result = db
+    const rows = db
       .prepare(
         `UPDATE sessions
          SET isArchived = 1
@@ -718,10 +719,11 @@ export const sessionsDb = {
            AND (
              datetime(COALESCE(updated_at, created_at)) < datetime(?)
              OR datetime(COALESCE(updated_at, created_at)) IS NULL
-           )`
+           )
+         RETURNING session_id`
       )
-      .run(cutoffIsoString);
-    return result.changes;
+      .all(cutoffIsoString) as { session_id: string }[];
+    return rows.map((row) => row.session_id);
   },
 
   /**

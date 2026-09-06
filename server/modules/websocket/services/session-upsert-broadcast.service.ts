@@ -3,7 +3,7 @@ import path from 'node:path';
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { generateDisplayName } from '@/modules/projects/index.js';
 import { connectedClients, WS_OPEN_STATE } from '@/modules/websocket/services/websocket-state.service.js';
-import type { SessionUpsertedEvent } from '@/shared/types.js';
+import type { SessionRemovedEvent, SessionUpsertedEvent } from '@/shared/types.js';
 
 /**
  * The single producer of the `session_upserted` delta.
@@ -83,6 +83,25 @@ export async function broadcastSessionUpserted(sessionIdOrProviderSessionId: str
   if (event) {
     sendToConnectedClients([JSON.stringify(event)]);
   }
+}
+
+/**
+ * Announces that sessions left the active list (archived or deleted). Used by
+ * the providers module — the auto-archive runner (manual run + hourly
+ * scheduler) and the single-session archive/delete service. One frame carries
+ * the whole batch so a 22-session archive is a single fan-out.
+ */
+export function broadcastSessionRemoved(sessionIds: string[]): void {
+  if (sessionIds.length === 0) {
+    return;
+  }
+
+  const event: SessionRemovedEvent = {
+    kind: 'session_removed',
+    sessionIds,
+    timestamp: new Date().toISOString(),
+  };
+  sendToConnectedClients([JSON.stringify(event)]);
 }
 
 /**

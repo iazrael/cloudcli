@@ -10,6 +10,16 @@ import {
   DEFAULT_AUTO_ARCHIVE_SETTINGS,
   sessionsAutoArchiveService,
 } from '@/modules/providers/services/sessions-auto-archive.service.js';
+import { connectedClients } from '@/modules/websocket/index.js';
+
+class FakeConnection {
+  readyState = 1; // WS_OPEN_STATE
+  frames: Array<Record<string, unknown>> = [];
+
+  send(data: string): void {
+    this.frames.push(JSON.parse(data) as Record<string, unknown>);
+  }
+}
 
 async function withIsolatedDatabase(runTest: () => void | Promise<void>): Promise<void> {
   const previousDatabasePath = process.env.DATABASE_PATH;
@@ -22,6 +32,7 @@ async function withIsolatedDatabase(runTest: () => void | Promise<void>): Promis
   try {
     await runTest();
   } finally {
+    connectedClients.clear();
     closeConnection();
     if (previousDatabasePath === undefined) {
       delete process.env.DATABASE_PATH;
@@ -89,11 +100,17 @@ test('runAutoArchive archives old sessions and preserves fresh sessions', async 
        VALUES (?, ?, ?, 0, ?, ?)`
     ).run('session-fresh', 'claude', 'Fresh Session', freshNow, freshNow);
 
-    // Run auto-archive with retentionDays = 1
+    // Run auto-archive with retentionDays = 1, with one client connected to
+    // observe the removal broadcast.
+    const connection = new FakeConnection();
+    connectedClients.add(connection as never);
     sessionsAutoArchiveService.updateSettings({ enabled: true, retentionDays: 1 });
     const result = await sessionsAutoArchiveService.runAutoArchive(1);
 
     assert.equal(result.archivedCount, 1);
+    assert.equal(connection.frames.length, 1);
+    assert.equal(connection.frames[0].kind, 'session_removed');
+    assert.deepEqual(connection.frames[0].sessionIds, ['session-old']);
 
     const oldSession = sessionsDb.getSessionById('session-old');
     assert.equal(oldSession?.isArchived, 1);

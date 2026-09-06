@@ -71,6 +71,23 @@ test('createSession preserves archived state of existing rows', async () => {
   });
 });
 
+test('archiveSessionsOlderThanCutoff returns the ids it archived and only those', async () => {
+  await withIsolatedDatabase(() => {
+    const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+    sessionsDb.createSession('session-stale-1', 'claude', '/workspace/demo-project', 'Stale 1', twoDaysAgo, twoDaysAgo);
+    sessionsDb.createSession('session-stale-2', 'claude', '/workspace/demo-project', 'Stale 2', twoDaysAgo, twoDaysAgo);
+    sessionsDb.createSession('session-fresh', 'claude', '/workspace/demo-project', 'Fresh');
+    sessionsDb.createSession('session-already-archived', 'claude', '/workspace/demo-project', 'Archived', twoDaysAgo, twoDaysAgo);
+    sessionsDb.updateSessionIsArchived('session-already-archived', true);
+
+    const archivedIds = sessionsDb.archiveSessionsOlderThanCutoff(new Date().toISOString());
+
+    assert.deepEqual(archivedIds.sort(), ['session-stale-1', 'session-stale-2']);
+    // A second run finds nothing left to archive.
+    assert.deepEqual(sessionsDb.archiveSessionsOlderThanCutoff(new Date().toISOString()), []);
+  });
+});
+
 test('repository reads normalize SQLite UTC timestamps to ISO strings', async () => {
   await withIsolatedDatabase(() => {
     sessionsDb.createAppSession('session-timezone', 'claude', '/workspace/demo-project');
