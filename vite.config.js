@@ -27,10 +27,14 @@ export default defineConfig(({ mode }) => {
 
   // Build fingerprint shown in the UI (splash + About). It changes on every build,
   // so a long-lived PWA window can be told apart from the latest deploy. `-dirty`
-  // marks builds made from a tree with uncommitted changes.
+  // marks builds made from a tree with uncommitted changes. `buildDescribe` keeps
+  // the full tag-anchored form (v2.0.0-14-g273e294) so a row can identify the
+  // exact build without repeating the package version next to it.
   let buildCommit = 'unknown'
+  let buildDescribe = buildCommit
   try {
     buildCommit = execSync('git describe --always --dirty', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim()
+    buildDescribe = execSync('git describe --tags --dirty --always', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim()
   } catch {
     // Outside a git repository (e.g. building from a release tarball)
   }
@@ -42,7 +46,7 @@ export default defineConfig(({ mode }) => {
     plugins: [react()],
     define: {
       __APP_VERSION__: JSON.stringify(pkg.version),
-      __BUILD_INFO__: JSON.stringify({ commit: buildCommit, buildTime })
+      __BUILD_INFO__: JSON.stringify({ commit: buildCommit, buildTime, describe: buildDescribe })
     },
     resolve: {
       alias: {

@@ -120,10 +120,12 @@ export default function SidebarFooter({
         </button>
       </div>
 
-      {/* Version brand line, all layouts: the one always-visible version readout
-          (about-tab style vX.Y.Z(hash)). It intentionally does not open the
-          version modal — that is reserved for the update banner, which only
-          appears when the update check actually finds a newer release. */}
+      {/* Version brand line, all layouts: the one always-visible version readout —
+          the full `git describe` identity (v2.0.0-14-g273e294), which already
+          carries the tag/version, so no separate version number next to it.
+          It intentionally does not open the version modal — that is reserved
+          for the update banner, which only appears when the update check
+          actually finds a newer release. */}
       {!IS_PLATFORM && (
         <div className="px-3 pb-3 pt-1 text-center md:py-2">
           <a
@@ -132,8 +134,9 @@ export default function SidebarFooter({
             rel="noopener noreferrer"
             className="text-[10px] text-muted-foreground/40 transition-colors hover:text-muted-foreground"
           >
-            CloudCLI v{currentVersion}
-            {BUILD_INFO.commit && `(${BUILD_INFO.commit})`} – {t('branding.openSource')}
+            {BUILD_INFO.describe && BUILD_INFO.describe !== 'unknown'
+              ? BUILD_INFO.describe
+              : `v${currentVersion}`}
           </a>
         </div>
       )}
