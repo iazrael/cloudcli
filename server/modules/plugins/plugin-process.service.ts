@@ -21,6 +21,9 @@ const startingPlugins = new Map();
  * site-packages and fails to import; SystemRoot, PATHEXT and TEMP are needed to
  * resolve system DLLs, executable extensions and a temp directory. None of
  * these carry secrets, so the ones that are set get passed straight through.
+ * SHELL names the user's login shell; terminal-style plugins spawn it for PTY
+ * sessions, and without it they fall back to a default that may not match the
+ * user's interactive shell.
  */
 function buildPluginEnv(name) {
   const env = {
@@ -29,6 +32,10 @@ function buildPluginEnv(name) {
     NODE_ENV: process.env.NODE_ENV || 'production',
     PLUGIN_NAME: name,
   };
+
+  if (process.env.SHELL !== undefined) {
+    env.SHELL = process.env.SHELL;
+  }
 
   if (process.platform === 'win32') {
     const WINDOWS_ESSENTIALS = [
