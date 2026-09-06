@@ -112,8 +112,19 @@ export function useChatRealtimeHandlers({
 
         case 'chat_subscribed': {
           // Ack for chat.subscribe: authoritative processing state plus any
-          // pending tool-permission prompts for the run.
+          // pending tool-permission prompts for the run. The ack's `lastSeq`
+          // is the server's per-session watermark (max-merged in, so the
+          // client's replay cursor can only move forward). `stale` means the
+          // client's lastSeq predates the replay buffer, so replay cannot
+          // bridge the reconnect gap and a REST refresh must reconcile.
           if (!sid) return;
+
+          if (typeof msg.lastSeq === 'number' && msg.lastSeq > 0) {
+            sessionStore.noteSeq(sid, msg.lastSeq);
+          }
+          if (msg.stale === true) {
+            void requestLatestMessages(sid, isActiveRef.current);
+          }
 
           if (msg.isProcessing) {
             onSessionProcessing?.(sid);

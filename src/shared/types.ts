@@ -402,9 +402,10 @@ export type NormalizedMessage = {
   provider: LLMProvider;
   kind: MessageKind;
   /**
-   * Per-run monotonic sequence number assigned by the backend to live
-   * websocket events. Used to compute `lastSeq` for `chat.subscribe` replay;
-   * REST history messages do not carry it.
+   * Per-session monotonic sequence number assigned by the backend to live
+   * websocket events (the counter continues across runs). Used to compute
+   * `lastSeq` for `chat.subscribe` replay; REST history messages do not carry
+   * it.
    */
   seq?: number;
 
