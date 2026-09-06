@@ -300,7 +300,7 @@ test('returning from a suspension must not revive pruned stream text as a duplic
 
   const renderedTexts = () => timeline.sessionStore.getMessages(SESSION_ID)
     .filter((row) => row.kind === 'text' && row.role === 'assistant')
-    .map((row) => row.content);
+    .map((row) => row.content ?? '');
   assert.equal(
     renderedTexts().filter((content) => content.includes('Segment one.')).length,
     1,

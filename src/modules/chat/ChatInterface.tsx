@@ -229,8 +229,18 @@ function ChatInterface({
   // while Chat is hidden), then re-subscribe — the
   // `chat_subscribed` ack restores or clears the activity indicator, replays
   // missed live events, and re-attaches a still-running stream to this socket.
+  // Read mid-run state through a ref: the handler's effect re-subscribes when
+  // this callback's identity changes, so isProcessing must not be a dep.
+  const isProcessingRef = useRef(isProcessing);
+  isProcessingRef.current = isProcessing;
   const handleWebSocketReconnect = useCallback(async () => {
     if (!selectedProject || !selectedSession) return;
+    // Mid-run, skip the REST sync: the `chat.subscribe` replay (lastSeq) re-
+    // delivers everything the socket missed, and refreshing a streaming
+    // timeline mid-turn is what used to duplicate replies after the PWA
+    // returned from a suspension. A replay that cannot bridge the gap is
+    // flagged `stale` in the ack, and that path still refreshes unconditionally.
+    if (isProcessingRef.current) return;
     // Sync the viewed conversation with whatever persisted while the socket
     // was down. The `chat.subscribe` itself is sent by useChatSessionState's
     // subscribe effect (the `ws` identity changes on reconnect) — sending it
