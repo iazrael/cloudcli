@@ -1,10 +1,9 @@
 import { Settings, ArrowUpCircle, AlertTriangle } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
+import { GITHUB_REPO_URL } from '@/shared/constants';
 import { IS_PLATFORM } from '@/shared/utils';
 import type { ReleaseInfo } from '@/shared/types';
-
-const GITHUB_REPO_URL = 'https://github.com/siteboon/claudecodeui';
 
 type SidebarFooterProps = {
   updateAvailable: boolean;

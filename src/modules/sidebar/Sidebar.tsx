@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { useDeviceSettings } from '@/shared/hooks/useDeviceSettings';
 import { useVersionCheck } from '@/shared/hooks/useVersionCheck';
 import { useUiPreferences, useSetUiPreference } from '@/shared/context/UiPreferencesContext';
+import { GITHUB_REPO_NAME, GITHUB_REPO_OWNER } from '@/shared/constants';
 import { useSidebarController } from '@/modules/sidebar/hooks/useSidebarController';
 import { useTaskMaster, useTasksSettings } from '@/modules/task-master';
 import { usePaletteOps } from '@/modules/command-palette';
@@ -65,8 +66,8 @@ function Sidebar({
   const { t } = useTranslation(['sidebar', 'common']);
   const { isPWA } = useDeviceSettings({ trackMobile: false });
   const { updateAvailable, restartRequired, latestVersion, currentVersion, releaseInfo, installMode } = useVersionCheck(
-    'siteboon',
-    'claudecodeui',
+    GITHUB_REPO_OWNER,
+    GITHUB_REPO_NAME,
   );
   const preferences = useUiPreferences();
   const setPreference = useSetUiPreference();
