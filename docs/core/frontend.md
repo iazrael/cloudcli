@@ -37,7 +37,7 @@ React 18 + TypeScript + Vite 7（`vite.config.js`，别名 `@` → `src/`），�
 2. **滚动**：`useContinuousScrollAnchor.ts` 用 ResizeObserver 钉底；顶部链式加载旧页。**禁止给消息行加 `content-visibility: auto`**（估高↔真高翻转 + 锚定补偿会自持振荡，已实锤移除）；行为契约测试在 `src/modules/chat/utils/chatScrollStability.test.ts`。
 3. **懒挂载**：`transcript/LazyMessageRow.tsx` + 共享 IntersectionObserver（`useLazyRowObserver.ts`，1200px 边距）——视口附近才挂真实内容，占位行与实测高度常驻。
 4. **高亮**：`src/shared/syntaxHighlighter.ts` 用 PrismLight + 显式语言注册表（`codeHighlightLanguages.ts`），不要换回全量 Prism。
-5. **流式**：流式 Markdown 走 `streamingMarkdown.ts` 的前缀缓存 + 100ms tick，别在每 delta 上重解析全文。
+5. **流式**：流式行必须经 `StreamingMarkdown`（前缀/尾块两段 `MarkdownBody`，前缀 memo 命中）+ store 的 100ms tick，别在每 delta 上重解析全文。
 6. **WS 帧**：任何新功能不得在帧回调里直接 setState；进 store，靠 notify 批量提交。
 
 ## i18n

@@ -20,6 +20,7 @@ import { Reasoning, ReasoningTrigger, ReasoningContent } from '@/shared/ui/Reaso
 import ChatMessageImages from '@/modules/chat/transcript/ChatMessageImages';
 import ChatMessageFiles from '@/modules/chat/transcript/ChatMessageFiles';
 import { Markdown } from '@/modules/chat/transcript/Markdown';
+import { StreamingMarkdown } from '@/modules/chat/transcript/StreamingMarkdown';
 import MessageCopyControl from '@/modules/chat/transcript/MessageCopyControl';
 import MessageSpeakControl from '@/modules/chat/transcript/MessageSpeakControl';
 
@@ -422,9 +423,15 @@ const MessageComponent = memo(({ message, prevMessage, turnAnchorMessage, create
 
                   // Normal rendering for non-JSON content
                   return message.type === 'assistant' ? (
-                    <Markdown className="prose prose-sm prose-gray max-w-none font-serif dark:prose-invert">
-                      {content}
-                    </Markdown>
+                    message.isStreaming ? (
+                      <StreamingMarkdown className="prose prose-sm prose-gray max-w-none font-serif dark:prose-invert">
+                        {content}
+                      </StreamingMarkdown>
+                    ) : (
+                      <Markdown className="prose prose-sm prose-gray max-w-none font-serif dark:prose-invert">
+                        {content}
+                      </Markdown>
+                    )
                   ) : (
                     <div className="whitespace-pre-wrap">
                       {content}

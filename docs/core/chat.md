@@ -60,7 +60,7 @@ flowchart LR
 ### 流式渲染优化
 
 - 思考块按稳定 id 归组 upsert（`src/modules/chat/utils/sessionThinkingRows.ts`）。
-- 流式文本切"已定稿前缀 + 待定尾块"，每 100ms tick 只重解析尾部（`src/modules/chat/utils/streamingMarkdown.ts`）。
+- 流式文本由 `transcript/StreamingMarkdown.tsx` 渲染：按 `streamingMarkdown.ts` 切"已定稿前缀 + 待定尾块"两段 `MarkdownBody`，前缀字节稳定命中 memo，每 100ms tick 只重解析尾块。
 - 工具卡片按 toolId upsert，服务端把引擎的流式参数增量累积成稳定快照再发。
 - 视口懒挂载与滚动锚定见 [frontend.md](./frontend.md) 的性能守则。
 

@@ -228,11 +228,22 @@ const markdownComponents = {
   ),
 };
 
+type MarkdownBodyProps = {
+  children: string;
+  /** Render single newlines as hard line breaks (for user-typed messages). */
+  breaks?: boolean;
+};
+
 // Memoized: a re-render of an unchanged message must not re-parse its
 // markdown (react-markdown runs the whole remark/rehype pipeline
 // synchronously, plus KaTeX and Prism highlighting).
-export const Markdown = memo(function Markdown({ children, className, breaks = false }: MarkdownProps) {
-  const content = useMemo(() => normalizeInlineCodeFences(String(children ?? '')), [children]);
+//
+// Renders the markdown AST without a wrapper element so StreamingMarkdown can
+// place the settled and pending halves of a streaming reply side by side as
+// direct children of one prose container, keeping block spacing identical to a
+// single-document render.
+export const MarkdownBody = memo(function MarkdownBody({ children, breaks = false }: MarkdownBodyProps) {
+  const content = useMemo(() => normalizeInlineCodeFences(children), [children]);
   const remarkPlugins = useMemo(
     () => (breaks
       ? [remarkGfm, [remarkMath, { singleDollarTextMath: false }], remarkBreaks]
@@ -285,15 +296,23 @@ export const Markdown = memo(function Markdown({ children, className, breaks = f
   );
 
   return (
+    <ReactMarkdown
+      remarkPlugins={remarkPlugins}
+      rehypePlugins={rehypePlugins}
+      urlTransform={markdownUrlTransform}
+      components={components as any}
+    >
+      {content}
+    </ReactMarkdown>
+  );
+});
+
+// Memoized shell: children/className/breaks are compared shallowly, so an
+// unchanged message re-renders neither the shell nor the parse inside.
+export const Markdown = memo(function Markdown({ children, className, breaks = false }: MarkdownProps) {
+  return (
     <div className={className}>
-      <ReactMarkdown
-        remarkPlugins={remarkPlugins}
-        rehypePlugins={rehypePlugins}
-        urlTransform={markdownUrlTransform}
-        components={components as any}
-      >
-        {content}
-      </ReactMarkdown>
+      <MarkdownBody breaks={breaks}>{String(children ?? '')}</MarkdownBody>
     </div>
   );
 });

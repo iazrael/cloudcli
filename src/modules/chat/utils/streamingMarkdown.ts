@@ -7,7 +7,8 @@
  * a second — O(length) per tick and O(length²) over a reply. Splitting at a
  * block boundary lets the prefix render through a memoized <MarkdownBody>,
  * whose input only changes when a block completes, so each tick only parses the
- * tail.
+ * tail. StreamingMarkdown (transcript/) is the consumer that renders the two
+ * halves; MessageComponent routes streaming rows through it.
  *
  * Correctness rests on markdown blocks being independent across a blank line:
  * rendering `settled` and `pending` as two documents must equal rendering their
