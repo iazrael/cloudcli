@@ -734,10 +734,12 @@ export class SessionTimelineStore {
         slot.offset = (requestOptions.offset ?? 0) + data.messages.length;
         slot.fetchedAt = Date.now();
         slot.status = 'idle';
+        const realtimeBeforePrune = slot.realtimeMessages;
         slot.realtimeMessages = pruneRealtimeSupersededByServer(
           slot.serverMessages,
           slot.realtimeMessages,
         );
+        this.discardStreamBufferIfPruned(sessionId, realtimeBeforePrune, slot.realtimeMessages);
         recomputeMergedIfNeeded(slot);
         if (data.tokenUsage !== undefined) {
           slot.tokenUsage = data.tokenUsage;
@@ -996,6 +998,7 @@ export class SessionTimelineStore {
     slot.offset = nextServerMessages.length;
     slot.hasMore = nextHasMore;
     slot.fetchedAt = Date.now();
+    this.discardStreamBufferIfPruned(sessionId, slot.realtimeMessages, prunedRealtimeMessages);
     slot.realtimeMessages = prunedRealtimeMessages;
     recomputeMergedIfNeeded(slot);
 
@@ -1182,6 +1185,34 @@ export class SessionTimelineStore {
       }, 100);
       this.streamTimers.set(sessionId, timer);
     }
+  }
+
+  /**
+   * Drops the session's pending stream buffer and throttle timer when a
+   * refresh pruned the streaming row as a transcript echo. The server now owns
+   * that text, so the buffer must die with its row: a later flush (replayed
+   * `stream_end`, a content frame) would otherwise re-append the stale
+   * accumulated text as a brand-new bubble — the duplicate reply seen after
+   * leaving the PWA mid-stream and coming back.
+   */
+  private discardStreamBufferIfPruned(
+    sessionId: string,
+    realtimeBefore: NormalizedMessage[],
+    realtimeAfter: NormalizedMessage[],
+  ): void {
+    const streamId = `__streaming_${sessionId}`;
+    if (!realtimeBefore.some((message) => message.id === streamId)) {
+      return;
+    }
+    if (realtimeAfter.some((message) => message.id === streamId)) {
+      return;
+    }
+    const timer = this.streamTimers.get(sessionId);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      this.streamTimers.delete(sessionId);
+    }
+    this.accumulatedStreams.delete(sessionId);
   }
 
   /**

@@ -228,9 +228,36 @@ export function isAssistantTextEchoedInSameTurnOnServer(
   // 2. Fallback to turn-ordinal lookup for historical or legacy layouts
   const turnOrdinal = getUserTurnOrdinalBefore(message, serverMessages, realtimeMessages);
   const turnRange = findServerTurnRangeByOrdinal(serverMessages, turnOrdinal);
-  if (!turnRange) {
-    // 3. Robust fallback: If user turn could not be found (e.g. paginated away by tool calls),
-    // and serverMessages already has this exact assistant text after the user prompt, it is an echo.
+  let ordinalTurnMatched = false;
+  if (turnRange) {
+    const turnSegments = serverMessages
+      .slice(turnRange.start + 1, turnRange.end)
+      .filter((serverMessage) =>
+        serverMessage.kind === 'text'
+        && serverMessage.role === 'assistant'
+        && (serverMessage.content || '').length > 0,
+      );
+
+    ordinalTurnMatched = turnSegments.some((serverMessage) =>
+      isAssistantTextMatch(serverMessage.content || '', assistantText),
+    );
+
+    // Segments are joined on their raw content so inter-segment whitespace
+    // survives, matching how the live deltas concatenated; only the outer
+    // edges are trimmed, same as `assistantText` above.
+    if (!ordinalTurnMatched) {
+      const joinedText = turnSegments.map((serverMessage) => serverMessage.content || '').join('');
+      ordinalTurnMatched = isAssistantTextMatch(joinedText, assistantText);
+    }
+  }
+
+  if (!turnRange || !ordinalTurnMatched) {
+    // 3. Robust fallback: the ordinal count breaks out empty under engine-vs-
+    // client clock skew or a paginated-away / never-fetched user row, which
+    // lands the range on an older turn. A found-but-unmatched range used to
+    // return false here, so the echo survived every prune and rendered next to
+    // its transcript copy. Scan the text instead — the `precedingUserTime`
+    // guard still keeps echoes from a turn older than the row's own.
     for (const sm of serverMessages) {
       if (sm.kind === 'text' && sm.role === 'assistant' && isAssistantTextMatch(sm.content || '', assistantText)) {
         const smTime = readMessageTime(sm);
@@ -242,21 +269,5 @@ export function isAssistantTextEchoedInSameTurnOnServer(
     return false;
   }
 
-  const turnSegments = serverMessages
-    .slice(turnRange.start + 1, turnRange.end)
-    .filter((serverMessage) =>
-      serverMessage.kind === 'text'
-      && serverMessage.role === 'assistant'
-      && (serverMessage.content || '').length > 0,
-    );
-
-  if (turnSegments.some((serverMessage) => isAssistantTextMatch(serverMessage.content || '', assistantText))) {
-    return true;
-  }
-
-  // Segments are joined on their raw content so inter-segment whitespace
-  // survives, matching how the live deltas concatenated; only the outer
-  // edges are trimmed, same as `assistantText` above.
-  const joinedText = turnSegments.map((serverMessage) => serverMessage.content || '').join('');
-  return isAssistantTextMatch(joinedText, assistantText);
+  return true;
 }
