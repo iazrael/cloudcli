@@ -9,6 +9,15 @@ import type { ServerEvent,
   Project,
   ProjectSession,IsSessionProcessing } from '@/shared/types';
 import { mergeProjectSelectionMetadata } from '@/modules/project-workspace/utils/projectSelectionMetadata';
+import {
+  countLoadedProjectSessions,
+  getProjectSessions,
+  mergeExpandedSessionPages,
+  mergeSessionProviderLists,
+  projectsHaveChanges,
+  removeSessionFromProject,
+  serialize,
+} from '@/modules/project-workspace/utils/projectsMerge';
 import { readSelectedProvider } from '@/shared/selectedProvider';
 
 type UseProjectsStateArgs = {
@@ -41,6 +50,17 @@ type SessionUpsertedEvent = ServerEvent & {
     displayName: string;
     isStarred: boolean;
   } | null;
+};
+
+/**
+ * Wire shape of the `session_removed` gateway delta — sessions that left the
+ * active list because they were archived (auto-archive run, single-session
+ * archive) or deleted, announced by the same broadcast service as
+ * `session_upserted`. Deliberately plural-only: a singular `sessionId` field
+ * would trip the generic per-session handling below for rows that are gone.
+ */
+type SessionRemovedEvent = ServerEvent & {
+  sessionIds?: string[];
 };
 
 type FetchProjectsOptions = {
@@ -80,8 +100,6 @@ type ProjectSessionPage = Pick<Project, 'sessions' | 'sessionMeta'>;
 
 const DEFAULT_PROVIDER: LLMProvider = 'claude';
 
-const serialize = (value: unknown) => JSON.stringify(value ?? null);
-
 const getSessionProvider = (session: ProjectSession): LLMProvider => {
   const provider = session.__provider ?? session.provider;
   return typeof provider === 'string' && provider.trim()
@@ -93,32 +111,6 @@ const normalizeSessionProvider = (session: ProjectSession): ProjectSession => ({
   ...session,
   __provider: getSessionProvider(session),
 });
-
-const projectsHaveChanges = (
-  prevProjects: Project[],
-  nextProjects: Project[],
-): boolean => {
-  if (prevProjects.length !== nextProjects.length) {
-    return true;
-  }
-
-  return nextProjects.some((nextProject, index) => {
-    const prevProject = prevProjects[index];
-    if (!prevProject) {
-      return true;
-    }
-
-    return (
-      nextProject.projectId !== prevProject.projectId ||
-      nextProject.displayName !== prevProject.displayName ||
-      nextProject.fullPath !== prevProject.fullPath ||
-      Boolean(nextProject.isStarred) !== Boolean(prevProject.isStarred) ||
-      serialize(nextProject.sessionMeta) !== serialize(prevProject.sessionMeta) ||
-      serialize(nextProject.sessions) !== serialize(prevProject.sessions) ||
-      serialize(nextProject.taskmaster) !== serialize(prevProject.taskmaster)
-    );
-  });
-};
 
 const mergeTaskMasterCache = (nextProjects: Project[], previousProjects: Project[]): Project[] => {
   if (previousProjects.length === 0) {
@@ -143,64 +135,6 @@ const mergeTaskMasterCache = (nextProjects: Project[], previousProjects: Project
       ...project,
       taskmaster: cachedTaskMasterInfo,
     };
-  });
-};
-
-const getProjectSessions = (project: Project): ProjectSession[] => {
-  return project.sessions ?? [];
-};
-
-const countLoadedProjectSessions = (project: Project): number => getProjectSessions(project).length;
-
-const mergeSessionProviderLists = (baseSessions: ProjectSession[], additionalSessions: ProjectSession[]): ProjectSession[] => {
-  const merged = [...baseSessions];
-  const seenSessionIds = new Set(baseSessions.map((session) => String(session.id)));
-
-  for (const session of additionalSessions) {
-    const sessionId = String(session.id);
-    if (seenSessionIds.has(sessionId)) {
-      continue;
-    }
-
-    merged.push(session);
-    seenSessionIds.add(sessionId);
-  }
-
-  return merged;
-};
-
-const mergeExpandedSessionPages = (previousProjects: Project[], incomingProjects: Project[]): Project[] => {
-  if (previousProjects.length === 0) {
-    return incomingProjects;
-  }
-
-  const previousByProjectId = new Map(previousProjects.map((project) => [project.projectId, project]));
-
-  return incomingProjects.map((incomingProject) => {
-    const previousProject = previousByProjectId.get(incomingProject.projectId);
-    if (!previousProject) {
-      return incomingProject;
-    }
-
-    const previousLoadedCount = countLoadedProjectSessions(previousProject);
-    const incomingLoadedCount = countLoadedProjectSessions(incomingProject);
-    if (previousLoadedCount <= incomingLoadedCount) {
-      return incomingProject;
-    }
-
-    const mergedProject: Project = {
-      ...incomingProject,
-      sessions: mergeSessionProviderLists(incomingProject.sessions ?? [], previousProject.sessions ?? []),
-    };
-
-    const totalSessions = Number(incomingProject.sessionMeta?.total ?? previousLoadedCount);
-    mergedProject.sessionMeta = {
-      ...incomingProject.sessionMeta,
-      total: totalSessions,
-      hasMore: countLoadedProjectSessions(mergedProject) < totalSessions,
-    };
-
-    return mergedProject;
   });
 };
 
@@ -323,28 +257,6 @@ const projectFromRegistration = (project: Project): Project => ({
   sessionMeta: project.sessionMeta ?? { hasMore: false, total: countLoadedProjectSessions(project) },
   taskmaster: project.taskmaster,
 });
-
-const removeSessionFromProject = (project: Project, sessionIdToDelete: string): Project => {
-  const sessions = project.sessions ?? [];
-  const nextSessions = sessions.filter((session) => session.id !== sessionIdToDelete);
-  if (nextSessions.length === sessions.length) {
-    return project;
-  }
-
-  const updatedProject: Project = {
-    ...project,
-    sessions: nextSessions,
-  };
-
-  const totalSessions = Math.max(0, Number(project.sessionMeta?.total ?? 0) - 1);
-  updatedProject.sessionMeta = {
-    ...project.sessionMeta,
-    total: totalSessions,
-    hasMore: countLoadedProjectSessions(updatedProject) < totalSessions,
-  };
-
-  return updatedProject;
-};
 
 const VALID_TABS: Set<string> = new Set(['chat', 'files', 'shell', 'git', 'tasks', 'browser']);
 
@@ -717,6 +629,47 @@ export function useProjectsState({
         return;
       }
 
+      // Sessions archived (auto-archive run, single-session archive) or
+      // deleted elsewhere leave the active list immediately, mirroring what
+      // the initiating client already did locally.
+      if (event.kind === 'session_removed') {
+        const removal = event as SessionRemovedEvent;
+        const removedIds = Array.isArray(removal.sessionIds)
+          ? removal.sessionIds.filter((id) => typeof id === 'string' && id)
+          : [];
+        if (removedIds.length === 0) {
+          return;
+        }
+
+        const removedIdSet = new Set(removedIds);
+        for (const removedId of removedIds) {
+          clearSessionAttention(removedId);
+        }
+
+        const currentSelectedSession = selectedSessionRef.current;
+        if (currentSelectedSession && removedIdSet.has(currentSelectedSession.id)) {
+          setSelectedSession(null);
+          navigate('/');
+        }
+
+        setProjects((previousProjects) => {
+          let changed = false;
+          const nextProjects = previousProjects.map((project) => {
+            let nextProject = project;
+            for (const removedId of removedIds) {
+              nextProject = removeSessionFromProject(nextProject, removedId);
+            }
+            if (nextProject !== project) {
+              changed = true;
+            }
+            return nextProject;
+          });
+
+          return changed ? nextProjects : previousProjects;
+        });
+        return;
+      }
+
       if (event.kind === 'loading_progress') {
         if (loadingProgressTimeoutRef.current) {
           clearTimeout(loadingProgressTimeoutRef.current);
@@ -859,7 +812,7 @@ export function useProjectsState({
     };
 
     return subscribe(handleEvent);
-  }, [isSessionProcessing, markSessionAttention, navigate, refreshProjectsSilently, sessionId, subscribe]);
+  }, [clearSessionAttention, isSessionProcessing, markSessionAttention, navigate, refreshProjectsSilently, sessionId, subscribe]);
 
   useEffect(() => {
     return () => {
