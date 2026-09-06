@@ -118,6 +118,14 @@ const STREAM_INTERRUPTED_NOTICE = 'The stream was interrupted. Please continue t
 const STREAM_INTERRUPTED_SUMMARY = '会话中断，已自动重试';
 
 /**
+ * i18n key paired with {@link STREAM_INTERRUPTED_SUMMARY}: the client renders
+ * the notice through `taskNotices.sessionInterruptedRetried` in its own locale
+ * (chat namespace); the Chinese literal is the fallback for consumers that do
+ * not resolve keys (transcript export, older clients).
+ */
+const STREAM_INTERRUPTED_SUMMARY_KEY = 'taskNotices.sessionInterruptedRetried';
+
+/**
  * True when a result error is agy's interrupted-stream auto-resume notice
  * rather than a real failure. Matches the bare sentence and its rendered
  * `Error: `-prefixed variant.
@@ -455,6 +463,7 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
                 id: generateMessageId(PROVIDER),
                 kind: 'task_notification',
                 summary: STREAM_INTERRUPTED_SUMMARY,
+                summaryKey: STREAM_INTERRUPTED_SUMMARY_KEY,
                 status: 'interrupted',
                 sessionId: capturedSessionId || sessionId || null,
                 provider: PROVIDER,

@@ -14,7 +14,15 @@ const PROVIDER = 'zcode';
  * in replayed history). A user-initiated stop never reaches the stream at
  * all; this notice only covers cancellations the user did not ask for.
  */
-export const ZCODE_CANCELLED_NOTICE = '模型请求已取消';
+export const ZCODE_CANCELLED_NOTICE = '回复已中断';
+
+/**
+ * i18n key paired with {@link ZCODE_CANCELLED_NOTICE}: the client renders the
+ * notice through `taskNotices.replyInterrupted` in its own locale (chat
+ * namespace); the Chinese literal above is only the fallback for consumers
+ * that do not resolve keys (transcript export, older clients).
+ */
+export const ZCODE_CANCELLED_NOTICE_KEY = 'taskNotices.replyInterrupted';
 
 /**
  * Whether an engine error record denotes a cancelled model request rather

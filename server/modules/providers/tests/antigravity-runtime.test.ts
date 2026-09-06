@@ -433,6 +433,7 @@ test('runtime degrades agy interrupted-stream notices to a quiet task notificati
       const notice = messages.find((msg) => msg.kind === 'task_notification');
       assert.ok(notice, `${mode}: a task notification must reach the writer`);
       assert.equal(notice?.summary, '会话中断，已自动重试');
+      assert.equal(notice?.summaryKey, 'taskNotices.sessionInterruptedRetried');
       assert.equal(notice?.status, 'interrupted');
       const complete = messages.find((msg) => msg.kind === 'complete');
       assert.equal(complete?.exitCode, 0, mode);

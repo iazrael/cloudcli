@@ -689,7 +689,8 @@ test('fetchHistory replays cancelled request errors as quiet notifications, real
 
     const notice = result.messages.find((message) => message.kind === 'task_notification');
     assert.ok(notice, 'a cancelled request must replay as a quiet notification');
-    assert.equal(notice.summary, '模型请求已取消');
+    assert.equal(notice.summary, '回复已中断');
+    assert.equal(notice.summaryKey, 'taskNotices.replyInterrupted');
     assert.equal(notice.status, 'interrupted');
 
     const errorCard = result.messages.find((message) => message.kind === 'error');

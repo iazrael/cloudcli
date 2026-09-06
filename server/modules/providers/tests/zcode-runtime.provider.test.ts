@@ -25,7 +25,7 @@ import type {
 import { closeConnection, initializeDatabase } from '@/modules/database/index.js';
 
 import { protocolClient } from '../list/zcode/zcode-protocol.client.js';
-import { ZCODE_CANCELLED_NOTICE } from '../list/zcode/zcode-live-event-normalizer.js';
+import { ZCODE_CANCELLED_NOTICE, ZCODE_CANCELLED_NOTICE_KEY } from '../list/zcode/zcode-live-event-normalizer.js';
 import { ZCodeRuntimeProvider, zcodeRuntimePermissions } from '../list/zcode/zcode-runtime.provider.js';
 import { ZCodeSessionsProvider } from '../list/zcode/zcode-sessions.provider.js';
 
@@ -739,6 +739,7 @@ test('an engine-side cancellation degrades to a quiet notification instead of an
   const notice = messages.find((msg) => msg.kind === 'task_notification');
   assert.ok(notice, 'the cancellation must degrade to a quiet transcript line');
   assert.equal(notice.summary, ZCODE_CANCELLED_NOTICE);
+  assert.equal(notice.summaryKey, ZCODE_CANCELLED_NOTICE_KEY);
   assert.equal(notice.status, 'interrupted');
   const complete = messages.find((msg) => msg.kind === 'complete');
   assert.ok(complete, 'the run must terminate with a complete event');

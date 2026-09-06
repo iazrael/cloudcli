@@ -431,6 +431,14 @@ export type NormalizedMessage = {
   newSessionId?: string;
   status?: string;
   summary?: string;
+  /**
+   * i18n key for the summary, resolved by the client against its own locale
+   * (chat namespace). Providers set it on task notifications whose wording is
+   * ours, not the engine's; `summary` stays as the verbatim fallback so older
+   * clients and transcript exports still show sensible text. Keys live under
+   * `taskNotices` in each locale's chat.json.
+   */
+  summaryKey?: string;
   tokenBudget?: unknown;
   /**
    * Timeline of everything a subagent did, attached to the `tool_use` that

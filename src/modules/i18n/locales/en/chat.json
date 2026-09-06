@@ -22,6 +22,10 @@
     "antigravity": "Antigravity",
     "compactSummary": "Conversation summary"
   },
+  "taskNotices": {
+    "replyInterrupted": "Reply was interrupted",
+    "sessionInterruptedRetried": "Session interrupted, retried automatically"
+  },
   "tools": {
     "settings": "Tool Settings",
     "error": "Tool Error",

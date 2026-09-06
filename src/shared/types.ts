@@ -304,6 +304,12 @@ export type ChatMessage = {
   isToolUse?: boolean;
   /** Set on assistant rows synthesized from `<task-notification>` XML. */
   isTaskNotification?: boolean;
+  /**
+   * i18n key resolving the row's display text in the viewer's locale (chat
+   * namespace). Set by the server on task notices whose wording is ours;
+   * when absent the row renders its `content` verbatim.
+   */
+  summaryKey?: string;
   toolName?: string;
   toolInput?: unknown;
   toolResult?: ToolResult | null;
@@ -440,6 +446,12 @@ export type NormalizedMessage = {
   newSessionId?: string;
   status?: string;
   summary?: string;
+  /**
+   * i18n key resolving `summary` in the viewer's locale (chat namespace),
+   * set by the server on task notices whose wording is ours. When absent the
+   * row renders the verbatim summary.
+   */
+  summaryKey?: string;
   exitCode?: number;
   actualSessionId?: string;
   parentToolUseId?: string;

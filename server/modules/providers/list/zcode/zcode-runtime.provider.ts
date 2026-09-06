@@ -38,7 +38,7 @@ import { sessionsDb } from '@/modules/database/index.js';
 
 import { SESSION_LOST_METHOD } from './zcode-codec.js';
 import { protocolClient } from './zcode-protocol.client.js';
-import { ZCODE_CANCELLED_NOTICE } from './zcode-live-event-normalizer.js';
+import { ZCODE_CANCELLED_NOTICE, ZCODE_CANCELLED_NOTICE_KEY } from './zcode-live-event-normalizer.js';
 import { buildZCodeRuntimeModel, readZCodeSessionModelInfoFromDb, resolveZCodeModelRef } from './zcode-models.provider.js';
 import { EngineSilenceTimeoutError, ZCodeRunLifecycle, resolveSilenceTimeoutMs } from './zcode-run-lifecycle.js';
 import type { RunHandle, RunSettle } from './zcode-run-lifecycle.js';
@@ -747,6 +747,7 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
                 provider: 'zcode',
                 kind: 'task_notification',
                 summary: ZCODE_CANCELLED_NOTICE,
+                summaryKey: ZCODE_CANCELLED_NOTICE_KEY,
                 status: 'interrupted',
               }));
               runLifecycle.recordCompletion(handle);

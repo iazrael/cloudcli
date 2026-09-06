@@ -27,7 +27,7 @@ import {
 import { getGlobalImageAssetsDir } from '@/shared/image-attachments.js';
 
 import { getZCodeDatabasePath, getZCodeStorageDir } from './zcode-data-root.js';
-import { isZCodeCancelledEngineError, readZCodeTokenUsedCount, ZCodeLiveEventNormalizer, ZCODE_CANCELLED_NOTICE } from './zcode-live-event-normalizer.js';
+import { isZCodeCancelledEngineError, readZCodeTokenUsedCount, ZCodeLiveEventNormalizer, ZCODE_CANCELLED_NOTICE, ZCODE_CANCELLED_NOTICE_KEY } from './zcode-live-event-normalizer.js';
 
 const PROVIDER = 'zcode';
 
@@ -439,6 +439,7 @@ export class ZCodeSessionsProvider implements IProviderSessions {
             provider: PROVIDER,
             kind: 'task_notification',
             summary: ZCODE_CANCELLED_NOTICE,
+            summaryKey: ZCODE_CANCELLED_NOTICE_KEY,
             status: 'interrupted',
           }));
         } else {

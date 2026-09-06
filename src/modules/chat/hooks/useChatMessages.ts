@@ -248,6 +248,7 @@ function convertRow(
         outputs.push({
           type: 'assistant',
           content: msg.summary || 'Background task update',
+          summaryKey: msg.summaryKey,
           timestamp: msg.timestamp,
           isTaskNotification: true,
           taskStatus: msg.status || 'completed',

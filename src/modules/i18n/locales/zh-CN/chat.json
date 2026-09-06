@@ -22,6 +22,10 @@
     "antigravity": "Antigravity",
     "compactSummary": "会话摘要"
   },
+  "taskNotices": {
+    "replyInterrupted": "回复已中断",
+    "sessionInterruptedRetried": "会话中断，已自动重试"
+  },
   "tools": {
     "settings": "工具设置",
     "error": "工具错误",
