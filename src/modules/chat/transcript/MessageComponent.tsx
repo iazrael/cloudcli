@@ -13,7 +13,7 @@ import type {DiffLine,
 } from '@/shared/types';
 import { formatUsageLimitText, stripProposedPlanEnvelope } from '@/modules/chat/utils/chatFormatting';
 import type { Project } from '@/shared/types';
-import { getToolConfig, ToolRenderer, ToolErrorDisplay, shouldHideToolResult } from '@/modules/chat/tools';
+import { getToolConfig, isCommandTool, ToolRenderer, ToolErrorDisplay, shouldHideToolResult } from '@/modules/chat/tools';
 import { useIsExportingTranscript } from '@/modules/chat/context/TranscriptRenderContext';
 import { Reasoning, ReasoningTrigger, ReasoningContent } from '@/shared/ui/ReasoningFork';
 
@@ -250,7 +250,7 @@ const MessageComponent = memo(({ message, prevMessage, turnAnchorMessage, create
                 {/* Tool Result Section — Bash/run_command/exec renders its output inside the command row above, and
                     collapsible-config tools (MCP runners, Edit/Write…) inline it under their input content; only
                     the remaining shapes need a separate result row. */}
-                {message.toolResult && !['Bash', 'run_command', 'exec', 'command_execution'].includes(message.toolName || '') && !shouldHideToolResult(message.toolName || 'UnknownTool', message.toolResult) && (
+                {message.toolResult && !isCommandTool(message.toolName || '') && !shouldHideToolResult(message.toolName || 'UnknownTool', message.toolResult) && (
                   message.toolResult.isError ? (
                     // Error results — collapsed red row that expands to the content
                     <div id={`tool-result-${message.toolId}`} className="scroll-mt-4">

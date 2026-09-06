@@ -16,6 +16,7 @@ import { PlanDisplay } from '@/modules/chat/tools/PlanDisplay';
 import { ToolStatusBadge } from '@/modules/chat/tools/ToolStatusBadge';
 import { DiffStatsBadge } from '@/modules/chat/tools/DiffStatsBadge';
 import { parseToolPayload, summarizeDiff } from '@/modules/chat/utils/messageTransforms';
+import { getToolDisplayCategory, isCommandTool, isEditTool, pickCommandField, unwrapNestedCommand } from '@/modules/chat/tools/toolTaxonomy';
 
 type ToolRendererProps = {
   toolName: string;
@@ -31,18 +32,6 @@ type ToolRendererProps = {
   /** Lifecycle the provider reported, when it reports one. Overrides the result-based inference. */
   toolStatus?: string;
 };
-
-function getToolCategory(toolName: string): string {
-  if (['Edit', 'Write', 'ApplyPatch', 'replace_file_content', 'write_to_file'].includes(toolName)) return 'edit';
-  if (['Grep', 'Glob', 'grep_search', 'find_by_name', 'list_dir'].includes(toolName)) return 'search';
-  if (toolName === 'Bash' || toolName === 'run_command') return 'bash';
-  if (['TodoWrite', 'TodoRead'].includes(toolName)) return 'todo';
-  if (['TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet', 'manage_task'].includes(toolName)) return 'task';
-  if (['Task', 'invoke_subagent', 'manage_subagents', 'send_message'].includes(toolName)) return 'agent';
-  if (toolName === 'exit_plan_mode' || toolName === 'ExitPlanMode') return 'plan';
-  if (toolName === 'AskUserQuestion') return 'question';
-  return 'default';
-}
 
 // Exact denial messages from the Claude runtime adapter — other providers can't reliably signal denial
 const CLAUDE_DENIAL_MESSAGES = [
@@ -117,26 +106,17 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
   // Bash / run_command / exec / command_execution renders as a Codex-style command row: the command on a single line with
   // a chevron that expands to show the output inline. The combined view lives on
   // the input render; the separate result section is suppressed in MessageComponent.
-  const isCommandTool = ['Bash', 'run_command', 'exec', 'command_execution'].includes(toolName);
-  if (isCommandTool && mode === 'input') {
-    let command = typeof parsedData === 'object' && parsedData !== null
-      ? String((parsedData as Record<string, unknown>).command || (parsedData as Record<string, unknown>).cmd || (parsedData as Record<string, unknown>).CommandLine || '')
-      : typeof toolInput === 'string'
-        ? toolInput
-        : typeof rawToolInput === 'string'
-          ? rawToolInput
-          : '';
-
-    if (!command || command.includes('tools.exec_command') || command.includes('tools.shell_command')) {
-      const match = (rawToolInput || command).match(/(?:["'](?:cmd|command)["']|\b(?:cmd|command))\s*:\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`)/s);
-      if (match) {
-        try {
-          command = JSON.parse(match[1]);
-        } catch {
-          command = match[1].slice(1, -1);
-        }
-      }
-    }
+  if (isCommandTool(toolName) && mode === 'input') {
+    const command = unwrapNestedCommand(
+      typeof parsedData === 'object' && parsedData !== null
+        ? pickCommandField(parsedData)
+        : typeof toolInput === 'string'
+          ? toolInput
+          : typeof rawToolInput === 'string'
+            ? rawToolInput
+            : '',
+      rawToolInput,
+    );
 
     const description = typeof parsedData === 'object' && parsedData !== null
       ? String((parsedData as Record<string, unknown>).description || (parsedData as Record<string, unknown>).toolAction || (parsedData as Record<string, unknown>).toolSummary || '')
@@ -316,7 +296,7 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
       }
     }
 
-    const isEditOrWrite = ['Edit', 'Write', 'ApplyPatch', 'replace_file_content', 'write_to_file'].includes(toolName);
+    const isEditOrWrite = isEditTool(toolName);
     // A snapshot with no content on either side (codex live file_change rows
     // carry empty strings until the rollout row lands) would make the editor
     // skip the disk read and render a blank document; open the file plainly then.
@@ -380,7 +360,7 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
         inlineOutput={inlineOutput}
         showRawParameters={mode === 'input' && showRawParameters}
         rawContent={rawToolInput}
-        toolCategory={getToolCategory(toolName)}
+        toolCategory={getToolDisplayCategory(toolName)}
       >
         {contentComponent}
       </CollapsibleDisplay>

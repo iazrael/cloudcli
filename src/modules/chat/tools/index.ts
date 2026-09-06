@@ -11,3 +11,12 @@ export { ToolRenderer } from '@/modules/chat/tools/ToolRenderer';
 export { SubagentPanel } from '@/modules/chat/tools/SubagentPanel';
 export { ToolErrorDisplay } from '@/modules/chat/tools/ToolErrorDisplay';
 export { getToolConfig, shouldHideToolResult } from '@/modules/chat/tools/configs/toolConfigs';
+export {
+  canonicalToolName,
+  getToolDisplayCategory,
+  isCommandTool,
+  isEditTool,
+  isFilePreviewTool,
+  pickCommandField,
+  unwrapNestedCommand,
+} from '@/modules/chat/tools/toolTaxonomy';

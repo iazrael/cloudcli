@@ -5,7 +5,7 @@ import type { DiffLine,  ChatMessage, ClaudePermissionSuggestion, PermissionGran
 import type { Project } from '@/shared/types';
 import type { ToolGroupItem } from '@/modules/chat/utils/toolGrouping';
 import { useIsExportingTranscript } from '@/modules/chat/context/TranscriptRenderContext';
-import { getToolConfig } from '@/modules/chat/tools';
+import { getToolConfig, isCommandTool, isFilePreviewTool, pickCommandField, unwrapNestedCommand } from '@/modules/chat/tools';
 import { formatToolDisplayName, getMcpExecHint } from '@/modules/chat/tools/configs/toolConfigs';
 import LLMProviderLogo from '@/shared/ui/LLMProviderLogo';
 import { getProviderDisplayName } from '@/shared/providerDisplay';
@@ -70,24 +70,12 @@ function getToolInputPreview(message: ChatMessage): string {
   const value = config.getValue?.(parsedInput);
   const raw = String(value || title || message.displayText || message.content || '').trim();
 
-  if (['Bash', 'run_command', 'exec', 'command_execution'].includes(toolName)) {
-    let cmd = (parsedInput && typeof parsedInput === 'object' && (parsedInput.command || parsedInput.cmd || parsedInput.CommandLine)) || raw;
-    const cmdStr = String(cmd || '');
-    if (cmdStr.includes('tools.exec_command') || cmdStr.includes('tools.shell_command')) {
-      const match = cmdStr.match(/(?:["'](?:cmd|command)["']|\b(?:cmd|command))\s*:\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`)/s);
-      if (match) {
-        try {
-          cmd = JSON.parse(match[1]);
-        } catch {
-          cmd = match[1].slice(1, -1);
-        }
-      }
-    }
-    return cleanCommandPreview(String(cmd));
+  if (isCommandTool(toolName)) {
+    const cmd = unwrapNestedCommand(String(pickCommandField(parsedInput) || raw));
+    return cleanCommandPreview(cmd);
   }
 
-  const isFileTool = ['Read', 'view_file', 'Edit', 'replace_file_content', 'Write', 'write_to_file', 'ApplyPatch', 'LS', 'list_dir'].includes(toolName);
-  if (isFileTool && raw) {
+  if (isFilePreviewTool(toolName) && raw) {
     return raw.split('/').pop() || raw;
   }
 
@@ -95,7 +83,7 @@ function getToolInputPreview(message: ChatMessage): string {
 }
 
 function getToolGroupIcon(icon: string | undefined, toolName: string): React.ReactNode {
-  if (icon === 'terminal' || ['Bash', 'run_command', 'exec', 'command_execution'].includes(toolName)) {
+  if (icon === 'terminal' || isCommandTool(toolName)) {
     return '$';
   }
   if (['Read', 'view_file'].includes(toolName)) {

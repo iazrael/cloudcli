@@ -1,4 +1,5 @@
 import type { ChatMessage } from '@/shared/types';
+import { canonicalToolName } from '@/modules/chat/tools/toolTaxonomy';
 
 export const TOOL_GROUP_THRESHOLD = 2;
 
@@ -27,19 +28,7 @@ function rendersNothing(message: ChatMessage, showThinking: boolean): boolean {
 }
 
 export function getNormalizedToolGroupKey(toolName: string): string {
-  if (toolName === 'run_command' || toolName === 'Bash' || toolName === 'exec' || toolName === 'command_execution') return 'Bash';
-  if (toolName === 'view_file' || toolName === 'Read') return 'Read';
-  if (toolName === 'replace_file_content' || toolName === 'Edit' || toolName === 'ApplyPatch' || toolName === 'apply_patch') return 'Edit';
-  if (toolName === 'write_to_file' || toolName === 'Write') return 'Write';
-  if (toolName === 'find_by_name' || toolName === 'Glob') return 'Glob';
-  if (toolName === 'grep_search' || toolName === 'Grep') return 'Grep';
-  if (toolName === 'list_dir' || toolName === 'LS') return 'LS';
-  if (toolName === 'search_web' || toolName === 'WebSearch') return 'WebSearch';
-  if (toolName === 'read_url_content' || toolName === 'WebFetch') return 'WebFetch';
-  if (toolName === 'manage_task' || toolName === 'Task') return 'Task';
-  if (toolName === 'manage_subagents' || toolName === 'invoke_subagent') return 'Subagent';
-  if (toolName === 'ExitPlanMode' || toolName === 'exit_plan_mode' || toolName === 'Plan' || toolName === 'update_plan') return 'Plan';
-  return toolName;
+  return canonicalToolName(toolName);
 }
 
 export function groupConsecutiveTools(
