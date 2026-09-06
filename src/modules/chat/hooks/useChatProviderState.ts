@@ -125,6 +125,10 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     Partial<Record<LLMProvider, ProviderModelsDefinition>>
   >({});
   const [providerModelsLoading, setProviderModelsLoading] = useState(true);
+  // Tracks a exhausted model-catalog load so the composer menu can offer a retry
+  // instead of staying silently blank (fresh PWA installs can mount during a
+  // server restart and lose the only fetch).
+  const [providerModelsError, setProviderModelsError] = useState(false);
 
   const providerModelsRequestIdRef = useRef(0);
   const sessionSelectionLoadRequestIdRef = useRef(0);
@@ -153,38 +157,68 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     const requestId = providerModelsRequestIdRef.current + 1;
     providerModelsRequestIdRef.current = requestId;
     setProviderModelsLoading(true);
+    setProviderModelsError(false);
 
-    try {
-      const results = await Promise.all(
-        PROVIDERS.map(async (p) => {
-          const response = await authenticatedFetch(`/api/providers/${p}/models`);
-          const body = (await response.json()) as ProviderModelsApiResponse;
-          if (!body.success || !body.data?.models) {
-            return null;
-          }
+    // A failed load auto-retries before surfacing an error: fresh installs and
+    // page loads that land in a server-restart window would otherwise keep the
+    // model menu blank until the whole page is reloaded.
+    const retryDelaysMs = [2_000, 8_000];
 
-          return body.data.models;
-        }),
-      );
-
-      if (providerModelsRequestIdRef.current !== requestId) {
-        return;
+    const fetchCatalogEntry = async (p: LLMProvider) => {
+      const response = await authenticatedFetch(`/api/providers/${p}/models`);
+      const body = (await response.json()) as ProviderModelsApiResponse;
+      if (!body.success || !body.data?.models) {
+        return null;
       }
 
-      const nextCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>> = {};
+      return body.data.models;
+    };
 
-      PROVIDERS.forEach((p, i) => {
-        const entry = results[i];
-        if (!entry) {
+    try {
+      for (let attempt = 0; ; attempt++) {
+        let nextCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>> = {};
+        let failed = false;
+
+        try {
+          const results = await Promise.all(PROVIDERS.map(fetchCatalogEntry));
+          if (providerModelsRequestIdRef.current !== requestId) {
+            return;
+          }
+
+          PROVIDERS.forEach((p, i) => {
+            const entry = results[i];
+            if (entry) {
+              nextCatalog[p] = entry;
+            }
+          });
+        } catch {
+          failed = true;
+        }
+
+        // An all-empty catalog counts as a failure too: providers respond with
+        // success:false instead of throwing on auth/server errors.
+        if (!failed && Object.keys(nextCatalog).length > 0) {
+          if (providerModelsRequestIdRef.current !== requestId) {
+            return;
+          }
+          setProviderModelCatalog(nextCatalog);
           return;
         }
 
-        nextCatalog[p] = entry;
-      });
-
-      setProviderModelCatalog(nextCatalog);
+        if (attempt >= retryDelaysMs.length) {
+          if (failed) {
+            throw new Error('Provider model catalog unreachable');
+          }
+          setProviderModelsError(true);
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, retryDelaysMs[attempt]));
+      }
     } catch (error) {
       console.error('Error loading provider models:', error);
+      if (providerModelsRequestIdRef.current === requestId) {
+        setProviderModelsError(true);
+      }
     } finally {
       if (providerModelsRequestIdRef.current === requestId) {
         setProviderModelsLoading(false);
@@ -785,6 +819,8 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     cyclePermissionMode,
     providerModelCatalog,
     providerModelsLoading,
+    providerModelsError,
+    providerModelsReload: loadProviderModels,
     providerModelActions,
     selectProviderModel,
     selectProviderEffort,

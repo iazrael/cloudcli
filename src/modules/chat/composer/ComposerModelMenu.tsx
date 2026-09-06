@@ -25,6 +25,9 @@ type ComposerModelMenuProps = {
   modelOptions: ProviderModelOption[];
   onSelectModel: (model: string) => void;
   modelsLoading: boolean;
+  /** The catalog load exhausted its retries; the menu offers a manual retry row. */
+  modelsError: boolean;
+  onReloadModels: () => void;
 };
 
 /**
@@ -39,6 +42,8 @@ function ComposerModelMenu({
   modelOptions,
   onSelectModel,
   modelsLoading,
+  modelsError,
+  onReloadModels,
 }: ComposerModelMenuProps) {
   const { t } = useTranslation('chat');
   const [isOpen, setIsOpen] = useState(false);
@@ -68,7 +73,7 @@ function ComposerModelMenu({
   const modelLabel = selectedModelOption?.label || model;
 
   const hasEffortSection = resolvedEffortOptions.length > 0;
-  const hasModelSection = modelOptions.length > 0 || modelsLoading;
+  const hasModelSection = modelOptions.length > 0 || modelsLoading || modelsError;
   if (!hasEffortSection && !hasModelSection) {
     return null;
   }
@@ -147,6 +152,17 @@ function ComposerModelMenu({
                     <p className="px-2.5 py-1.5 text-sm text-muted-foreground">
                       {t('composer.loadingModels', { defaultValue: 'Loading models…' })}
                     </p>
+                  )}
+                  {modelOptions.length === 0 && !modelsLoading && modelsError && (
+                    <button
+                      type="button"
+                      onClick={onReloadModels}
+                      className="w-full px-2.5 py-1.5 text-left text-sm text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
+                    >
+                      {t('composer.loadModelsFailed', {
+                        defaultValue: 'Failed to load models — click to retry',
+                      })}
+                    </button>
                   )}
                   {modelOptions.map((option) => (
                     <ComposerMenuItem

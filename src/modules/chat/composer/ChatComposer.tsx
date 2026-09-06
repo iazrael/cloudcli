@@ -77,6 +77,8 @@ type ChatComposerProps = {
   availableModelOptions: ProviderModelOption[];
   onSelectModel: (model: string) => void;
   modelsLoading: boolean;
+  modelsError: boolean;
+  onReloadModels: () => void;
   tokenBudget: Record<string, unknown> | null;
   onShowTokenUsage: () => void;
   slashCommandsCount: number;
@@ -147,6 +149,8 @@ function ChatComposer({
   availableModelOptions,
   onSelectModel,
   modelsLoading,
+  modelsError,
+  onReloadModels,
   tokenBudget,
   onShowTokenUsage,
   slashCommandsCount,
@@ -505,6 +509,8 @@ function ChatComposer({
               modelOptions={availableModelOptions}
               onSelectModel={onSelectModel}
               modelsLoading={modelsLoading}
+              modelsError={modelsError}
+              onReloadModels={onReloadModels}
             />
 
             <ComposerPermissionMenu

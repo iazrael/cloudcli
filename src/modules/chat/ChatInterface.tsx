@@ -82,6 +82,8 @@ function ChatInterface({
     cyclePermissionMode,
     providerModelCatalog,
     providerModelsLoading,
+    providerModelsError,
+    providerModelsReload,
     providerModelActions,
     selectProviderModel,
     selectProviderEffort,
@@ -461,6 +463,8 @@ function ChatInterface({
           availableModelOptions={currentProviderModelOptions}
           onSelectModel={handleSelectComposerModel}
           modelsLoading={providerModelsLoading}
+          modelsError={providerModelsError}
+          onReloadModels={() => void providerModelsReload()}
           tokenBudget={tokenBudget}
           onShowTokenUsage={showCostModal}
           slashCommandsCount={slashCommandsCount}
