@@ -449,7 +449,7 @@
   },
   "pluginSettings": {
     "title": "外掛",
-    "description": "透過自訂外掛擴充介面。從 git 安裝或直接將資料夾放入 ~/.claude-code-ui/plugins/",
+    "description": "透過自訂外掛擴充介面。從 git 安裝或直接將資料夾放入 ~/.cloudcli/plugins/",
     "installPlaceholder": "https://github.com/user/my-plugin",
     "installButton": "安裝",
     "installing": "安裝中…",

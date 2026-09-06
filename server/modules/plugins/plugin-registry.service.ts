@@ -5,8 +5,49 @@ import os from 'os';
 
 import { spawn } from 'cross-spawn';
 
-const PLUGINS_DIR = path.join(os.homedir(), '.claude-code-ui', 'plugins');
-const PLUGINS_CONFIG_PATH = path.join(os.homedir(), '.claude-code-ui', 'plugins.json');
+const PLUGINS_DIR = path.join(os.homedir(), '.cloudcli', 'plugins');
+const PLUGINS_CONFIG_PATH = path.join(os.homedir(), '.cloudcli', 'plugins.json');
+const LEGACY_PLUGINS_DIR = path.join(os.homedir(), '.claude-code-ui', 'plugins');
+const LEGACY_PLUGINS_CONFIG_PATH = path.join(os.homedir(), '.claude-code-ui', 'plugins.json');
+
+let legacyMigrationDone = false;
+
+/**
+ * One-time relocation of plugin data from the legacy ~/.claude-code-ui root into
+ * ~/.cloudcli. Paths are injectable so plugin-registry tests can drive the
+ * migration against a temp directory. Best-effort: failures only warn so a
+ * broken legacy tree never blocks plugin scanning.
+ */
+export function migrateLegacyPluginPaths(options = {}) {
+  if (legacyMigrationDone && !options.force) return;
+  legacyMigrationDone = true;
+  const fromDir = options.fromDir || LEGACY_PLUGINS_DIR;
+  const fromConfig = options.fromConfig || LEGACY_PLUGINS_CONFIG_PATH;
+  const toDir = options.toDir || PLUGINS_DIR;
+  const toConfig = options.toConfig || PLUGINS_CONFIG_PATH;
+  try {
+    fs.mkdirSync(path.dirname(toConfig), { recursive: true });
+    if (fs.existsSync(fromDir) && !fs.existsSync(toDir)) {
+      fs.renameSync(fromDir, toDir);
+    }
+    if (fs.existsSync(fromConfig) && !fs.existsSync(toConfig)) {
+      fs.renameSync(fromConfig, toConfig);
+    }
+    // Remove the legacy root when we emptied it; keep it if anything else lives there.
+    const legacyRoot = path.dirname(fromConfig);
+    try { fs.rmdirSync(legacyRoot); } catch { /* not empty or missing */ }
+  } catch (err) {
+    console.warn('[Plugins] Legacy ~/.claude-code-ui migration failed:', err.message);
+  }
+}
+
+export function getPluginsDir() {
+  migrateLegacyPluginPaths();
+  if (!fs.existsSync(PLUGINS_DIR)) {
+    fs.mkdirSync(PLUGINS_DIR, { recursive: true });
+  }
+  return PLUGINS_DIR;
+}
 
 const REQUIRED_MANIFEST_FIELDS = ['name', 'displayName', 'entry'];
 
@@ -25,14 +66,8 @@ function sanitizeRepoUrl(raw) {
 const ALLOWED_TYPES = ['react', 'module'];
 const ALLOWED_SLOTS = ['tab'];
 
-export function getPluginsDir() {
-  if (!fs.existsSync(PLUGINS_DIR)) {
-    fs.mkdirSync(PLUGINS_DIR, { recursive: true });
-  }
-  return PLUGINS_DIR;
-}
-
 export function getPluginsConfig() {
+  migrateLegacyPluginPaths();
   try {
     if (fs.existsSync(PLUGINS_CONFIG_PATH)) {
       return JSON.parse(fs.readFileSync(PLUGINS_CONFIG_PATH, 'utf-8'));

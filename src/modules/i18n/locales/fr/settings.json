@@ -450,7 +450,7 @@
   },
   "pluginSettings": {
     "title": "Plugins",
-    "description": "Étendez l'interface avec des plugins personnalisés. Installez depuis git ou déposez un dossier dans ~/.claude-code-ui/plugins/",
+    "description": "Étendez l'interface avec des plugins personnalisés. Installez depuis git ou déposez un dossier dans ~/.cloudcli/plugins/",
     "installPlaceholder": "https://github.com/utilisateur/mon-plugin",
     "installButton": "Installer",
     "installing": "Installation…",
