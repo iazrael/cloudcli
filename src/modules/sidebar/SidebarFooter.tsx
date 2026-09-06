@@ -1,7 +1,7 @@
 import { Settings, ArrowUpCircle, AlertTriangle } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
-import { GITHUB_REPO_URL } from '@/shared/constants';
+import { BUILD_INFO, GITHUB_REPO_URL } from '@/shared/constants';
 import { IS_PLATFORM } from '@/shared/utils';
 import type { ReleaseInfo } from '@/shared/types';
 
@@ -135,8 +135,9 @@ export default function SidebarFooter({
       </div>
 
       {/* Mobile version line: the quick-glance counterpart of the desktop brand
-          line above. Tap opens the version modal so checking the running
-          version does not require a detour through settings → about. */}
+          line above, in the about tab's `vX.Y.Z(hash)` format. Tap opens the
+          version modal so checking the running version does not require a
+          detour through settings → about. */}
       <div className="px-3 pb-3 md:hidden">
         <button
           className="w-full text-center text-[10px] text-muted-foreground/40 transition-colors active:text-muted-foreground"
@@ -144,6 +145,7 @@ export default function SidebarFooter({
           aria-label={t('version.title', 'Version')}
         >
           v{currentVersion}
+          {BUILD_INFO.commit && `(${BUILD_INFO.commit})`}
         </button>
       </div>
     </div>
