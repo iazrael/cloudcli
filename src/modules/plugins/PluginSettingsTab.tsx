@@ -25,7 +25,7 @@ import type { Plugin } from '@/shared/types';
 import PluginIcon from '@/modules/plugins/PluginIcon';
 
 const STARTER_PLUGIN_URL = 'https://github.com/cloudcli-ai/cloudcli-plugin-starter';
-const TERMINAL_PLUGIN_URL = 'https://github.com/cloudcli-ai/cloudcli-plugin-terminal';
+const TERMINAL_PLUGIN_URL = 'https://github.com/iazrael/cloudcli-plugin-terminal';
 const SCHEDULED_PROMPT_PLUGIN_URL = 'https://github.com/grostim/cloudcli-cron';
 const CLAUDE_WATCH_PLUGIN_URL = 'https://github.com/satsuki19980613/cloudcli-claude-watch';
 const PRISM_CLOUDCLI_PLUGIN_URL = 'https://github.com/jakeefr/cloudcli-plugin-prism';
