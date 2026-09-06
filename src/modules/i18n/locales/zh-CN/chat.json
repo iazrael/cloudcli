@@ -20,7 +20,8 @@
     "codex": "Codex",
     "opencode": "OpenCode",
     "antigravity": "Antigravity",
-    "compactSummary": "会话摘要"
+    "compactSummary": "会话摘要",
+    "errorDetails": "错误详情"
   },
   "taskNotices": {
     "replyInterrupted": "回复已中断",

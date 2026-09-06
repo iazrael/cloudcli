@@ -20,7 +20,8 @@
     "codex": "Codex",
     "opencode": "OpenCode",
     "antigravity": "Antigravity",
-    "compactSummary": "Conversation summary"
+    "compactSummary": "Conversation summary",
+    "errorDetails": "Error details"
   },
   "taskNotices": {
     "replyInterrupted": "Reply was interrupted",

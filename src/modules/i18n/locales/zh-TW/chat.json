@@ -19,7 +19,8 @@
     "cursor": "Cursor",
     "codex": "Codex",
     "antigravity": "Antigravity",
-    "compactSummary": "會話摘要"
+    "compactSummary": "會話摘要",
+    "errorDetails": "錯誤詳情"
   },
   "taskNotices": {
     "replyInterrupted": "回覆已中斷",

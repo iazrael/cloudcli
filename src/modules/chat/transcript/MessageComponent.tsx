@@ -12,6 +12,7 @@ import type {DiffLine,
   Provider,
 } from '@/shared/types';
 import { formatUsageLimitText, stripProposedPlanEnvelope } from '@/modules/chat/utils/chatFormatting';
+import { parseErrorCardContent } from '@/modules/chat/utils/errorCardContent';
 import type { Project } from '@/shared/types';
 import { getToolConfig, isCommandTool, ToolRenderer, ToolErrorDisplay, shouldHideToolResult } from '@/modules/chat/tools';
 import { useIsExportingTranscript } from '@/modules/chat/context/TranscriptRenderContext';
@@ -369,6 +370,35 @@ const MessageComponent = memo(({ message, prevMessage, turnAnchorMessage, create
               <div dir="auto" className="text-sm text-gray-700 dark:text-gray-300">
                 {(() => {
                   const content = formattedMessageContent;
+
+                  // Serialized error objects (zcode history persists the
+                  // engine's adapter error as pretty JSON) lead with their
+                  // message; the full JSON folds away into a detail block.
+                  if (message.type === 'error') {
+                    const parsedError = parseErrorCardContent(content);
+                    if (parsedError) {
+                      return (
+                        <div>
+                          <div className="whitespace-pre-wrap">{parsedError.message}</div>
+                          <Collapsible className="mt-1 w-full" nativeDetails={isExporting}>
+                            <CollapsibleTrigger className="group flex cursor-pointer items-center gap-1.5 py-0.5 text-left text-xs text-gray-400 transition-colors hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300">
+                              <span>{t('messageTypes.errorDetails')}</span>
+                              <ChevronDownIcon className="h-3 w-3 transition-transform group-data-[state=open]:rotate-180" />
+                            </CollapsibleTrigger>
+                            <CollapsibleContent>
+                              <div className="mt-1 overflow-hidden rounded-lg border border-border bg-muted">
+                                <pre className="overflow-x-auto p-3">
+                                  <code className="block whitespace-pre font-mono text-xs text-foreground">
+                                    {parsedError.detailJson}
+                                  </code>
+                                </pre>
+                              </div>
+                            </CollapsibleContent>
+                          </Collapsible>
+                        </div>
+                      );
+                    }
+                  }
 
                   // Detect if content is pure JSON (starts with { or [)
                   const trimmedContent = content.trim();
