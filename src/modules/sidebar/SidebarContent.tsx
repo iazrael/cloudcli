@@ -1,5 +1,5 @@
 import { type ReactNode, useState } from 'react';
-import { Activity, Archive, ChevronDown, Folder, MessageSquare, RotateCcw, Search, Trash2 } from 'lucide-react';
+import { Activity, Archive, ChevronDown, ChevronRight, Folder, MessageSquare, RotateCcw, Search, Trash2 } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
 import { LLMProviderLogo, ScrollArea } from '@/shared/ui';
@@ -585,11 +585,6 @@ export default function SidebarContent({
                             {project.fullPath}
                           </p>
                         </div>
-                        {projectSessions.length > 0 && (
-                          <ChevronDown
-                            className={`h-4 w-4 flex-shrink-0 text-muted-foreground/60 transition-transform ${isArchivedGroupCollapsed ? '-rotate-90' : ''}`}
-                          />
-                        )}
                       </button>
                       <button
                         className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-lg border border-emerald-600/15 bg-emerald-500/10 text-emerald-700 transition-all hover:border-emerald-600/25 hover:bg-emerald-500/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40 dark:text-emerald-300"
@@ -607,6 +602,19 @@ export default function SidebarContent({
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </button>
+                      {projectSessions.length > 0 && (
+                        <div
+                          className="flex h-6 w-6 flex-shrink-0 cursor-pointer items-center justify-center rounded"
+                          onClick={() => toggleArchivedGroup(archivedGroupKey)}
+                          title={t('archived.toggleSessions', 'Show or hide sessions')}
+                        >
+                          {isArchivedGroupCollapsed ? (
+                            <ChevronRight className="h-4 w-4 text-muted-foreground transition-colors group-hover/archive:text-foreground" />
+                          ) : (
+                            <ChevronDown className="h-4 w-4 text-muted-foreground transition-colors group-hover/archive:text-foreground" />
+                          )}
+                        </div>
+                      )}
                     </div>
                     {!isArchivedGroupCollapsed && projectSessions.length > 0 && (
                       <div className="border-t border-border/45 bg-muted/[0.08]">
@@ -695,10 +703,18 @@ export default function SidebarContent({
                             </p>
                           )}
                         </div>
-                        <ChevronDown
-                          className={`h-4 w-4 flex-shrink-0 text-muted-foreground/60 transition-transform ${isArchivedGroupCollapsed ? '-rotate-90' : ''}`}
-                        />
                       </button>
+                      <div
+                        className="flex h-6 w-6 flex-shrink-0 cursor-pointer items-center justify-center rounded"
+                        onClick={() => toggleArchivedGroup(archivedGroupKey)}
+                        title={t('archived.toggleSessions', 'Show or hide sessions')}
+                      >
+                        {isArchivedGroupCollapsed ? (
+                          <ChevronRight className="h-4 w-4 text-muted-foreground transition-colors group-hover/archive:text-foreground" />
+                        ) : (
+                          <ChevronDown className="h-4 w-4 text-muted-foreground transition-colors group-hover/archive:text-foreground" />
+                        )}
+                      </div>
                     </div>
                     {!isArchivedGroupCollapsed && (
                       <div className="border-t border-border/45 bg-muted/[0.08]">
