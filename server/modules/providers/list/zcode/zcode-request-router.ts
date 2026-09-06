@@ -193,13 +193,13 @@ export class RequestRouter {
    * fast instead of timing out against an engine that no longer knows their
    * sessions.
    */
-  notifySessionLost(code: number | null, signal: NodeJS.Signals | null): void {
+  notifySessionLost(code: number | null, signal: NodeJS.Signals | null, stderrTail = ''): void {
     for (const [sessionId, listeners] of this.sessionListeners) {
       for (const listener of listeners) {
         try {
           listener({
             method: SESSION_LOST_METHOD,
-            params: { sessionId, code, signal },
+            params: { sessionId, code, signal, stderrTail },
           });
         } catch (error) {
           console.error(`[ZCode Protocol] Session-lost listener error for ${sessionId}:`, error);

@@ -34,6 +34,7 @@ function makeFakeProcess(): FakeProcess {
     end: () => {
       stdinEnded = true;
     },
+    on: () => undefined,
   };
   (proc as unknown as { killed: boolean }).killed = false;
   (proc as unknown as { kill: () => void }).kill = () => {
@@ -178,4 +179,36 @@ test('writeLine writes to the engine stdin and shutdown closes it', async () => 
 
   await supervisor.shutdown();
   assert.equal(processes[0].stdinEnded(), true);
+});
+
+test('stderr lines land in the tail and ride on the crash payload', async () => {
+  const processes: FakeProcess[] = [];
+  const supervisor = createSupervisor({}, processes);
+  const crashes: Array<{ code: number | null; stderrTail: string }> = [];
+  supervisor.onCrash((info) => crashes.push({ code: info.code, stderrTail: info.stderrTail }));
+
+  await supervisor.ensureRunning();
+  processes[0].stderr.emit('data', Buffer.from('EADDRINUSE: port already in use\nstack frame 2\n'));
+  processes[0].exit(1);
+
+  assert.equal(crashes.length, 1);
+  assert.equal(crashes[0].code, 1);
+  assert.ok(crashes[0].stderrTail.includes('EADDRINUSE'), 'the crash explains itself with the engine stderr');
+  assert.ok(crashes[0].stderrTail.includes('stack frame 2'));
+});
+
+test('the stderr tail resets on respawn so a crash explains the current process', async () => {
+  const processes: FakeProcess[] = [];
+  const supervisor = createSupervisor({}, processes);
+  const crashes: Array<{ stderrTail: string }> = [];
+  supervisor.onCrash((info) => crashes.push({ stderrTail: info.stderrTail }));
+
+  await supervisor.ensureRunning();
+  processes[0].stderr.emit('data', Buffer.from('first process noise\n'));
+  processes[0].exit(1);
+  await supervisor.ensureRunning();
+  processes[1].exit(1);
+
+  assert.equal(crashes.length, 2);
+  assert.equal(crashes[1].stderrTail, '', 'the old process stderr must not explain the new one');
 });

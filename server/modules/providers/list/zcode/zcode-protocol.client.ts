@@ -73,10 +73,14 @@ class ZCodeProtocolClient {
     this.supervisor.onLine((line) => this.router.handleLine(line));
 
     // Engine crash: fail in-flight requests and tell every waiting session
-    // that its engine-side session is gone.
-    this.supervisor.onCrash(({ code, signal }) => {
-      this.router.failAllPending(new Error('ZCode process terminated unexpectedly'));
-      this.router.notifySessionLost(code, signal);
+    // that its engine-side session is gone. The stderr tail is the only
+    // explanation the engine ever gave, so it rides on every failure.
+    this.supervisor.onCrash(({ code, signal, stderrTail }) => {
+      const tail = stderrTail.trim();
+      this.router.failAllPending(new Error(
+        'ZCode process terminated unexpectedly' + (tail ? `\nstderr:\n${tail}` : ''),
+      ));
+      this.router.notifySessionLost(code, signal, tail);
     });
   }
 

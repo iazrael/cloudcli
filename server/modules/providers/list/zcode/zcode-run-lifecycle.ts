@@ -276,15 +276,18 @@ export class ZCodeRunLifecycle {
 
   /**
    * Records engine-process death for this session. Guarded: a run that
-   * already reached a terminal state keeps it.
+   * already reached a terminal state keeps it. `stderrTail` (when the
+   * supervisor captured engine output before the death) is appended so the
+   * failure the user sees explains itself instead of a generic line.
    */
-  recordSessionLost(handle: RunHandle): void {
+  recordSessionLost(handle: RunHandle, stderrTail?: string): void {
     if (handle.state.completed) {
       return;
     }
     handle.state.failed = true;
     handle.state.completed = true;
-    handle.state.failedMessage = 'ZCode engine connection was lost';
+    handle.state.failedMessage = 'ZCode engine connection was lost'
+      + (stderrTail ? `\nstderr:\n${stderrTail}` : '');
   }
 
   /**

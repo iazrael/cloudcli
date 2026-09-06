@@ -28,6 +28,9 @@ import { setTimeout as setTimeoutFn, clearTimeout as clearTimeoutFn } from 'node
 import { getZCodeStorageDir } from './zcode-data-root.js';
 import { tryResolveEnginePath } from './zcode-engine-path.js';
 
+/** How much of the engine's stderr to keep for crash explanations. */
+const STDERR_TAIL_LIMIT = 4000;
+
 /**
  * Tunables for the supervisor; defaults match the original client behavior.
  */
@@ -74,9 +77,16 @@ export class EngineSupervisor {
   private stdoutBuffer = '';
   private stderrBuffer = '';
 
+  /**
+   * Tail of the engine's stderr, kept so a crash can explain itself: the
+   * engine's real death reason (stack traces, port errors) only ever
+   * appears here, and without it every failure surfaces as a generic
+   * "terminated unexpectedly". Cleared on each spawn.
+   */
+  private stderrTail = '';
+
   private lineListener: ((line: string) => void) | null = null;
-  private stderrLineListener: ((line: string) => void) | null = null;
-  private crashListeners: Array<(info: { code: number | null; signal: NodeJS.Signals | null }) => void> = [];
+  private crashListeners: Array<(info: { code: number | null; signal: NodeJS.Signals | null; stderrTail: string }) => void> = [];
 
   constructor(options: EngineSupervisorOptions = {}, dependencies: EngineSupervisorDependencies = {}) {
     this.options = {
@@ -110,17 +120,11 @@ export class EngineSupervisor {
   }
 
   /**
-   * Subscribes to complete stderr lines (diagnostics logging).
-   */
-  onStderrLine(listener: (line: string) => void): void {
-    this.stderrLineListener = listener;
-  }
-
-  /**
    * Subscribes to engine crashes. Fires once per unexpected exit, before the
-   * restart is scheduled.
+   * restart is scheduled; `stderrTail` carries the last stderr bytes the
+   * engine printed, which is usually the only explanation it ever gave.
    */
-  onCrash(listener: (info: { code: number | null; signal: NodeJS.Signals | null }) => void): void {
+  onCrash(listener: (info: { code: number | null; signal: NodeJS.Signals | null; stderrTail: string }) => void): void {
     this.crashListeners.push(listener);
   }
 
@@ -143,8 +147,8 @@ export class EngineSupervisor {
 
     if (this.isCrashLooping()) {
       throw new Error(
-        'ZCode engine is crash-looping; giving up until the restart window resets. '
-        + 'Check the server logs for the underlying engine errors.'
+        'ZCode engine is crash-looping; giving up until the restart window resets.'
+        + this.describeStderrTail()
       );
     }
 
@@ -255,6 +259,7 @@ export class EngineSupervisor {
     console.debug(`[ZCode Protocol] Engine path: ${enginePath}`);
 
     this.process = this.dependencies.spawnProcess(enginePath);
+    this.stderrTail = '';
     this.setupProcessHandlers();
 
     // The restart window only resets once the process has proven stable, so a
@@ -284,7 +289,24 @@ export class EngineSupervisor {
     this.process.stderr?.on('data', (data: Buffer) => {
       this.handleFramedLines(data, () => this.stderrBuffer, (buffer) => {
         this.stderrBuffer = buffer;
-      }, (line) => this.stderrLineListener?.(line));
+      }, (line) => {
+        // Ring-buffer the tail instead of forwarding line by line: an
+        // app-server chatters on stderr (sandbox/skill warnings), and the
+        // tail is all a crash explanation ever needs.
+        this.stderrTail = `${this.stderrTail}${line}\n`.slice(-STDERR_TAIL_LIMIT);
+      });
+    });
+
+    // A stream dying mid-flight (child killed between write and read) must
+    // not raise an unhandled 'error' event — that would take down the server.
+    this.process.stdin?.on('error', (error) => {
+      console.warn('[ZCode Protocol] stdin stream error:', error.message);
+    });
+    this.process.stdout?.on('error', (error) => {
+      console.warn('[ZCode Protocol] stdout stream error:', error.message);
+    });
+    this.process.stderr?.on('error', (error) => {
+      console.warn('[ZCode Protocol] stderr stream error:', error.message);
     });
 
     this.process.on('exit', (code: number | null, signal: NodeJS.Signals | null) => {
@@ -294,6 +316,11 @@ export class EngineSupervisor {
     this.process.on('error', (error: Error) => {
       console.error('[ZCode Protocol] Process error:', error);
     });
+  }
+
+  /** The stderr tail formatted for appending to an error message. */
+  private describeStderrTail(): string {
+    return this.stderrTail.trim() ? `\nstderr:\n${this.stderrTail.trim()}` : '';
   }
 
   private handleFramedLines(
@@ -319,7 +346,10 @@ export class EngineSupervisor {
    * schedules a restart with exponential backoff inside a one-minute window.
    */
   private handleProcessExit(code: number | null, signal: NodeJS.Signals | null): void {
-    console.warn(`[ZCode Protocol] Process exited (code: ${code}, signal: ${signal})`);
+    console.warn(
+      `[ZCode Protocol] Process exited (code: ${code}, signal: ${signal})`
+      + this.describeStderrTail(),
+    );
     this.process = null;
 
     if (this.stabilityTimer) {
@@ -329,7 +359,7 @@ export class EngineSupervisor {
 
     for (const listener of this.crashListeners) {
       try {
-        listener({ code, signal });
+        listener({ code, signal, stderrTail: this.stderrTail.trim() });
       } catch (error) {
         console.error('[ZCode Protocol] Crash listener error:', error);
       }

@@ -699,7 +699,10 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
         // (once) so the settle wait returns instead of timing out against a
         // dead engine.
         if (method === SESSION_LOST_METHOD) {
-          runLifecycle.recordSessionLost(handle);
+          const stderrTail = readOptionalString(
+            (notification.params as Record<string, unknown> | undefined)?.stderrTail,
+          );
+          runLifecycle.recordSessionLost(handle, stderrTail);
           return;
         }
 

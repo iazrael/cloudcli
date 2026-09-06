@@ -120,6 +120,24 @@ test('session-lost fails a waiting run but never overwrites a reached terminal s
   assert.equal(lifecycle.completionOf(completedFirst).tokenUsage, 7);
 });
 
+test('session-lost carries the engine stderr tail into the failure message', () => {
+  const lifecycle = new ZCodeRunLifecycle();
+  const { writer } = createWriter();
+
+  const lost = lifecycle.startRun({ abortKey: 'app-lost-stderr', sessionId: 'sess_engine_1', appSessionId: 'app-lost-stderr', writer });
+  lifecycle.recordSessionLost(lost, 'EADDRINUSE: port already in use');
+  assert.deepEqual(lifecycle.completionOf(lost), {
+    failed: true,
+    failedMessage: 'ZCode engine connection was lost\nstderr:\nEADDRINUSE: port already in use',
+    tokenUsage: undefined,
+  });
+
+  // No tail captured: the plain message stays.
+  const silent = lifecycle.startRun({ abortKey: 'app-lost-plain', sessionId: 'sess_engine_1', appSessionId: 'app-lost-plain', writer });
+  lifecycle.recordSessionLost(silent);
+  assert.equal(lifecycle.completionOf(silent).failedMessage, 'ZCode engine connection was lost');
+});
+
 test('one decision satisfies every stacked permission announcement', async () => {
   const lifecycle = new ZCodeRunLifecycle();
   const { messages, writer } = createWriter();
