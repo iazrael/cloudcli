@@ -28,7 +28,7 @@
  */
 
 import type { ProviderPermissionDecision, ProviderRuntimeWriter } from '@/shared/types.js';
-import { createNormalizedMessage, generateMessageId, readOptionalString } from '@/shared/utils.js';
+import { createNormalizedMessage, generateMessageId, readJsonRecord, readOptionalString } from '@/shared/utils.js';
 
 import type { ProtocolServerRequest } from './zcode-codec.js';
 import { defaultServerRequestHandler } from './zcode-request-router.js';
@@ -351,11 +351,18 @@ export class ZCodeRunLifecycle {
   }
 
   /**
-   * Bridges the engine's `interaction/requestPermission` server request to
-   * the owning run's chat stream. Installed once over the router's default
-   * policy; every other method falls through unchanged.
+   * Bridges the engine's interaction server requests to the owning run's chat
+   * stream. `interaction/requestPermission` carries tool approvals;
+   * `interaction/requestUserInput` carries the AskUserQuestion tool (and plan
+   * approval) since the engine moved it off the permission channel — an
+   * unbridged request gets answered `Method not found` and the tool fails
+   * instantly with "Permission request failed". Installed once over the
+   * router's default policy; every other method falls through unchanged.
    */
   handleServerRequest(request: ProtocolServerRequest): ServerRequestAnswer | Promise<ServerRequestAnswer> {
+    if (request.method === 'interaction/requestUserInput') {
+      return this.handleUserInputRequest(request);
+    }
     if (request.method !== 'interaction/requestPermission') {
       return defaultServerRequestHandler(request);
     }
@@ -474,6 +481,83 @@ export class ZCodeRunLifecycle {
   }
 
   /**
+   * Bridges `interaction/requestUserInput` onto the same pending-card flow as
+   * tool approvals: the card renders by toolName (AskUserQuestion's panel
+   * collects `answers`), the decision arrives through the shared
+   * `resolvePermission`, and the parked promise below reshapes that
+   * `{decision}` answer into the strict `{action, content}` shape the engine's
+   * requestUserInput schema parses before it goes back to the engine. The
+   * answered-decision record and the stacked-resolver re-announcement flow are
+   * shared verbatim with the permission bridge.
+   */
+  private handleUserInputRequest(request: ProtocolServerRequest): ServerRequestAnswer | Promise<ServerRequestAnswer> {
+    const params = request.params ?? {};
+    const requestId = readOptionalString(params.requestId);
+    const sessionId = readOptionalString(params.sessionId);
+    if (!requestId) {
+      return { error: { code: -32602, message: 'interaction/requestUserInput is missing requestId' } };
+    }
+
+    this.sweepExpiredPermissions();
+    const answered = this.answeredPermissions.get(requestId);
+    if (answered && answered.toolCallId === readOptionalString(params.toolCallId)) {
+      return translateAnswerToUserInputShape(answered.answer);
+    }
+
+    const stack = this.pendingPermissionResolvers.get(requestId);
+    if (stack) {
+      const pending = this.pendingPermissionDetails.get(requestId);
+      if (pending) {
+        pending.lastAnnouncedAt = Date.now();
+      }
+      return new Promise<ServerRequestAnswer>((resolve) => {
+        stack.push((answer) => resolve(translateAnswerToUserInputShape(answer)));
+      });
+    }
+
+    const handle = sessionId ? this.runsByEngineSession.get(sessionId) : undefined;
+    if (!sessionId || !handle) {
+      return { result: { action: 'cancel', reason: 'No active chat stream for this session' } };
+    }
+
+    const toolName = readOptionalString(params.toolName) ?? 'Tool';
+    const toolId = readOptionalString(params.toolCallId);
+
+    // Same register-before-send consistency as the permission bridge: if the
+    // send throws, the parked resolver and details still form a consistent,
+    // answerable pending entry (the engine will re-announce onto it).
+    this.pendingPermissionDetails.set(requestId, {
+      toolName,
+      toolId,
+      input: params.input,
+      context: { reason: readOptionalString(params.prompt) },
+      sessionId,
+      appSessionId: handle.appSessionId ?? undefined,
+      receivedAt: new Date(),
+      lastAnnouncedAt: Date.now(),
+    });
+    this.pendingPermissionResolvers.set(requestId, []);
+
+    handle.writer.send(createNormalizedMessage({
+      id: generateMessageId('zcode'),
+      sessionId,
+      provider: 'zcode',
+      kind: 'permission_request',
+      requestId,
+      toolName,
+      toolId,
+      input: params.input,
+      context: { reason: readOptionalString(params.prompt) },
+      canInterrupt: true,
+    }));
+
+    return new Promise<ServerRequestAnswer>((resolve) => {
+      const resolvers = this.pendingPermissionResolvers.get(requestId);
+      resolvers?.push((answer) => resolve(translateAnswerToUserInputShape(answer)));
+    });
+  }
+
+  /**
    * The pending cards for one session, matched in both id spaces: the
    * gateway subscribes by app-facing session id, while the bridge keys its
    * writer by the engine's native id.
@@ -577,4 +661,29 @@ export class ZCodeRunLifecycle {
       }
     }
   }
+}
+
+/**
+ * Reshapes a `{decision}` permission answer into the strict
+ * `{action, content?, reason?}` shape the engine's requestUserInput schema
+ * parses — an unexpected key there fails validation and would fail the tool
+ * with "Permission request failed". `modify` is how the AskUserQuestion panel
+ * delivers its collected `answers` (via `updatedInput`), so it maps to accept
+ * plus content; deny maps to decline; anything else cancels, which the engine
+ * reads as "the question was never answered".
+ */
+function translateAnswerToUserInputShape(answer: ServerRequestAnswer): ServerRequestAnswer {
+  const decision = 'result' in answer ? readJsonRecord(answer.result) : null;
+  if (!decision) {
+    return { result: { action: 'cancel' } };
+  }
+  if (decision.decision === 'modify') {
+    const modifiedInput = readJsonRecord(decision.modifiedInput);
+    const answers = readJsonRecord(modifiedInput?.answers) ?? {};
+    return { result: { action: 'accept', content: { answers } } };
+  }
+  if (decision.decision === 'allow') {
+    return { result: { action: 'accept', content: {} } };
+  }
+  return { result: { action: 'decline', reason: typeof decision.reason === 'string' ? decision.reason : undefined } };
 }

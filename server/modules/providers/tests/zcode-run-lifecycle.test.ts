@@ -40,6 +40,27 @@ const permissionRequest = (id: number, params: Record<string, unknown>): Protoco
   },
 });
 
+const userInputRequest = (id: number, params: Record<string, unknown>): ProtocolServerRequest => ({
+  id,
+  method: 'interaction/requestUserInput',
+  params: {
+    requestId: 'perm_req_1',
+    sessionId: 'sess_engine_1',
+    toolCallId: 'call_1',
+    toolName: 'AskUserQuestion',
+    prompt: 'Tool AskUserQuestion requires approval',
+    input: {
+      questions: [{
+        question: 'Which scope?',
+        header: 'Scope',
+        multiSelect: false,
+        options: [{ label: 'All 19', description: 'Fill every title' }],
+      }],
+    },
+    ...params,
+  },
+});
+
 test('a run settles completed and dispose clears both registries', async () => {
   const lifecycle = new ZCodeRunLifecycle();
   const { writer } = createWriter();
@@ -277,4 +298,67 @@ test('non-permission server requests fall through to the default policy', () => 
     lifecycle.handleServerRequest({ id: 'server-2', method: 'session/unknownCallback', params: {} }),
     { error: { code: -32601, message: 'Method not found: session/unknownCallback' } }
   );
+});
+
+test('an AskUserQuestion bridges to a card and answers the engine in the requestUserInput shape', async () => {
+  const lifecycle = new ZCodeRunLifecycle();
+  const { messages, writer } = createWriter();
+  const handle = lifecycle.startRun({ abortKey: 'app-ask', sessionId: 'sess_engine_1', appSessionId: 'app-ask', writer });
+
+  const parked = lifecycle.handleServerRequest(userInputRequest(1, {}));
+
+  const request = messages.find((msg) => msg.kind === 'permission_request') as NormalizedMessage | undefined;
+  assert.ok(request, 'the question must reach the chat stream as an answerable card');
+  assert.equal(request.toolName, 'AskUserQuestion');
+  assert.equal(lifecycle.listPendingPermissions('app-ask').length, 1);
+
+  lifecycle.resolvePermission('perm_req_1', {
+    allow: true,
+    updatedInput: { questions: [{ question: 'Which scope?' }], answers: { 'Which scope?': 'All 19' } },
+  });
+
+  assert.deepEqual(
+    await parked,
+    { result: { action: 'accept', content: { answers: { 'Which scope?': 'All 19' } } } },
+    'the engine must receive the strict action/content shape, not the permission decision'
+  );
+  assert.ok(messages.some((msg) => msg.kind === 'permission_cancelled' && msg.requestId === 'perm_req_1'));
+
+  lifecycle.dispose(handle);
+});
+
+test('a denied question declines in the engine shape; a session without a run cancels', async () => {
+  const lifecycle = new ZCodeRunLifecycle();
+  const { writer } = createWriter();
+  const handle = lifecycle.startRun({ abortKey: 'app-ask-deny', sessionId: 'sess_engine_1', appSessionId: 'app-ask-deny', writer });
+
+  const parked = lifecycle.handleServerRequest(userInputRequest(1, {}));
+  lifecycle.resolvePermission('perm_req_1', { allow: false, message: 'Not now' });
+  assert.deepEqual(await parked, { result: { action: 'decline', reason: 'Not now' } });
+
+  // A fresh request id (the answered-decision record only covers perm_req_1)
+  // for a session without a live run cancels instead of parking a card.
+  const orphan = await lifecycle.handleServerRequest(userInputRequest(2, { requestId: 'perm_req_2', sessionId: 'sess_unknown' }));
+  assert.deepEqual(orphan, { result: { action: 'cancel', reason: 'No active chat stream for this session' } });
+
+  lifecycle.dispose(handle);
+});
+
+test('a requestUserInput re-announcement is served from the record without a second card', async () => {
+  const lifecycle = new ZCodeRunLifecycle();
+  const { messages, writer } = createWriter();
+  const handle = lifecycle.startRun({ abortKey: 'app-ask-re', sessionId: 'sess_engine_1', appSessionId: 'app-ask-re', writer });
+
+  const first = lifecycle.handleServerRequest(userInputRequest(1, {}));
+  lifecycle.resolvePermission('perm_req_1', {
+    allow: true,
+    updatedInput: { answers: { 'Which scope?': 'All 19' } },
+  });
+  await first;
+
+  const late = await lifecycle.handleServerRequest(userInputRequest(2, {}));
+  assert.deepEqual(late, { result: { action: 'accept', content: { answers: { 'Which scope?': 'All 19' } } } });
+  assert.equal(messages.filter((msg) => msg.kind === 'permission_request').length, 1, 'no second card may appear');
+
+  lifecycle.dispose(handle);
 });
