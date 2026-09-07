@@ -15,7 +15,7 @@ React 18 + TypeScript + Vite 7（`vite.config.js`，别名 `@` → `src/`），�
 | --- | --- | --- |
 | `WebSocketContext` | `src/shared/context/WebSocketContext.tsx` | WS 单例；帧同步分发给订阅者，**帧不进 React state** |
 | `AuthContext` | `src/modules/auth/context/AuthContext.tsx` | token、登录态 |
-| `ThemeContext` / `UiPreferencesContext` | `src/shared/context/` | 主题与 UI 偏好（`userSettings.ts` 持久化到 localStorage） |
+| `ThemeContext` / `UiPreferencesContext` | `src/shared/context/` | 主题与 UI 偏好（`userSettings.ts` 统一读写：服务端 `auth.db` 是 source of truth，localStorage 只做首屏镜像；主题、语言、六家引擎权限、代码编辑器设置、`uiPreferences` 开关包都归它） |
 | `SessionProtectionContext` | `src/shared/context/SessionProtectionContext.tsx` | 会话保护 / PWA 冷启动恢复 |
 | `ProjectsStateContext` | `src/modules/project-workspace/context/ProjectsStateContext.tsx` | 项目/会话列表（消费 `session_upserted` 等侧边栏 WS 帧） |
 | `PermissionContext` | `src/modules/chat/context/PermissionContext.tsx` | 聊天权限批准 |
@@ -27,7 +27,7 @@ React 18 + TypeScript + Vite 7（`vite.config.js`，别名 `@` → `src/`），�
 
 - **能力/目录的唯一来源是后端**：`useProviderCapabilities`（`GET /api/providers/capabilities`）+ `useChatProviderState`（`GET /api/providers/<p>/models` 拉统一模型目录，合成 `providerModelCatalog`）。
 - **回退镜像**：`src/shared/providerCatalogFallback.ts` 只用于首屏与请求失败兜底，由 parity 测试钉住与后端一致；**其 key 顺序是全应用引擎规范顺序**（一处改动不要在别处另排顺序）。
-- 本地选择持久化为 `<provider>-model` / `<provider>-effort`（localStorage，经 `userSettings.ts`）。
+- 本地选择持久化为 `<provider>-model` / `<provider>-effort`（`useChatProviderState` 直接读写 localStorage，设备本地，不经 preference store）。
 - 引擎外观：`src/shared/providerDisplay.ts`（显示名）、`src/shared/ui/LLMProviderLogo.tsx`（Logo）。
 - 新增引擎的前端步骤见 [providers.md](./providers.md) 第六步——composer 不写 provider 分支，一切按能力矩阵渲染。
 
