@@ -79,6 +79,14 @@ type ToolInputStream = {
 };
 
 /**
+ * Stream key for engine generations whose `tool_input_*` events carry no
+ * `toolCallId`. Those generations announce exactly one call at a time, so a
+ * single fallback slot reproduces the old single-stream behavior; keyed
+ * engines never collide with it because real ids are longer identifiers.
+ */
+const LEGACY_SINGLE_STREAM_KEY = '_';
+
+/**
  * Reads ZCode's streaming or persisted token shapes into one used-token count.
  * ZCode history normalization also consumes this helper for identical tokens.
  */
@@ -132,7 +140,14 @@ function tryParseJsonObject(text: string): Record<string, unknown> | null {
  */
 export class ZCodeLiveEventNormalizer {
   private readonly reasoningBlockIds = new Map<string, string>();
-  private readonly toolInputStreams = new Map<string, ToolInputStream>();
+  /**
+   * Per-toolCallId parameter streams, keyed by session first. The engine
+   * streams several parallel calls' arguments interleaved (each
+   * `tool_input_*` event names its own `toolCallId`), so a session-wide
+   * single stream would misattribute every fragment after the second
+   * announce and leave all but one tool card permanently blank.
+   */
+  private readonly toolInputStreams = new Map<string, Map<string, ToolInputStream>>();
 
   normalize(rawMessage: unknown, sessionId: string | null): NormalizedMessage[] {
     const raw = readObjectRecord(rawMessage);
@@ -274,7 +289,7 @@ export class ZCodeLiveEventNormalizer {
 
     const toolName = readOptionalString(payload.toolName) ?? 'Tool';
     const toolId = readOptionalString(payload.toolCallId) ?? baseId;
-    this.toolInputStreams.set(sessionId ?? '', { toolCallId: toolId, toolName, buffer: '' });
+    this.registerToolInputStream(sessionId ?? '', toolId, toolName);
     return [createNormalizedMessage({
       id: baseId,
       sessionId,
@@ -358,7 +373,7 @@ export class ZCodeLiveEventNormalizer {
     if (kind === 'tool_call') {
       const toolCallId = readOptionalString(payload.toolCallId) ?? baseId;
       const toolName = readOptionalString(payload.toolName) ?? 'Tool';
-      this.toolInputStreams.set(stateKey, { toolCallId, toolName, buffer: '' });
+      this.registerToolInputStream(stateKey, toolCallId, toolName);
       return [createNormalizedMessage({
         id: baseId,
         sessionId,
@@ -399,6 +414,28 @@ export class ZCodeLiveEventNormalizer {
     return id;
   }
 
+  private registerToolInputStream(stateKey: string, toolCallId: string, toolName: string): ToolInputStream {
+    let perSession = this.toolInputStreams.get(stateKey);
+    if (!perSession) {
+      perSession = new Map<string, ToolInputStream>();
+      this.toolInputStreams.set(stateKey, perSession);
+    }
+    const stream: ToolInputStream = { toolCallId, toolName, buffer: '' };
+    perSession.set(toolCallId, stream);
+    return stream;
+  }
+
+  private deleteToolInputStream(stateKey: string, toolCallId: string): void {
+    const perSession = this.toolInputStreams.get(stateKey);
+    if (!perSession) {
+      return;
+    }
+    perSession.delete(toolCallId);
+    if (perSession.size === 0) {
+      this.toolInputStreams.delete(stateKey);
+    }
+  }
+
   private normalizeToolInputEvent(
     payload: AnyRecord,
     sessionId: string | null,
@@ -406,9 +443,31 @@ export class ZCodeLiveEventNormalizer {
     kind: string,
   ): NormalizedMessage[] {
     const stateKey = sessionId ?? '';
-    const stream = this.toolInputStreams.get(stateKey);
+    const toolCallId = readOptionalString(payload.toolCallId) ?? LEGACY_SINGLE_STREAM_KEY;
+    let stream = this.toolInputStreams.get(stateKey)?.get(toolCallId);
+
+    if (!stream && toolCallId === LEGACY_SINGLE_STREAM_KEY) {
+      // Un-keyed fragments belong to the session's only open call (legacy
+      // engines announce one call at a time), so borrow that stream instead
+      // of opening an unattributable one.
+      const solo = this.toolInputStreams.get(stateKey);
+      if (solo?.size === 1) {
+        stream = [...solo.values()][0];
+      }
+    }
+
     if (!stream) {
-      return [];
+      // An announce can be absent when the engine skips the scheduled stage;
+      // `tool_input_start` carries the call's name and id, so it may open the
+      // stream itself. Unannounced delta/end fragments stay ignored.
+      if (kind !== 'tool_input_start') {
+        return [];
+      }
+      stream = this.registerToolInputStream(
+        stateKey,
+        toolCallId,
+        readOptionalString(payload.toolName) ?? 'Tool',
+      );
     }
 
     const deltaText = typeof payload.delta === 'string' ? payload.delta : undefined;
@@ -417,6 +476,10 @@ export class ZCodeLiveEventNormalizer {
     }
     if (kind === 'tool_input_start') {
       stream.buffer = '';
+      const named = readOptionalString(payload.toolName);
+      if (named) {
+        stream.toolName = named;
+      }
       return [];
     }
 
@@ -424,12 +487,12 @@ export class ZCodeLiveEventNormalizer {
     const parsedInput = engineInput ?? tryParseJsonObject(stream.buffer);
     if (!parsedInput) {
       if (kind === 'tool_input_end') {
-        this.toolInputStreams.delete(stateKey);
+        this.deleteToolInputStream(stateKey, stream.toolCallId);
       }
       return [];
     }
     if (kind === 'tool_input_end') {
-      this.toolInputStreams.delete(stateKey);
+      this.deleteToolInputStream(stateKey, stream.toolCallId);
     }
 
     return [createNormalizedMessage({

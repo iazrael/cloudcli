@@ -266,6 +266,75 @@ test('tool input fragments without an announced call are ignored', () => {
   assert.deepEqual(messages, []);
 });
 
+test('parallel calls keep per-call streams so interleaved snapshots stay attributed', () => {
+  const provider = new ZCodeSessionsProvider();
+  provider.normalizeMessage(
+    { type: 'model_streaming', payload: { kind: 'tool_call', toolCallId: 'call_a', toolName: 'Bash', input: {} } },
+    'sess_1'
+  );
+  provider.normalizeMessage(
+    { type: 'model_streaming', payload: { kind: 'tool_call', toolCallId: 'call_b', toolName: 'Bash', input: {} } },
+    'sess_1'
+  );
+
+  // The second announce must not evict the first call's stream.
+  assert.deepEqual(provider.normalizeMessage(
+    { type: 'model_streaming', payload: { kind: 'tool_input_start', toolCallId: 'call_a' } },
+    'sess_1'
+  ), []);
+  assert.deepEqual(provider.normalizeMessage(
+    { type: 'model_streaming', payload: { kind: 'tool_input_delta', toolCallId: 'call_a', delta: '{"command":"g' } },
+    'sess_1'
+  ), []);
+
+  // call_b opens while call_a's buffer is mid-fragment...
+  assert.deepEqual(provider.normalizeMessage(
+    { type: 'model_streaming', payload: { kind: 'tool_input_start', toolCallId: 'call_b' } },
+    'sess_1'
+  ), []);
+  assert.deepEqual(provider.normalizeMessage(
+    { type: 'model_streaming', payload: { kind: 'tool_input_delta', toolCallId: 'call_b', delta: '{"command":"l' } },
+    'sess_1'
+  ), []);
+
+  // ...and call_b finishing must not consume call_a's fragments.
+  const bDone = provider.normalizeMessage(
+    { type: 'model_streaming', payload: { kind: 'tool_input_end', toolCallId: 'call_b', input: { command: 'ls' } } },
+    'sess_1'
+  );
+  assert.equal(bDone.length, 1);
+  assert.equal(bDone[0].toolId, 'call_b');
+  assert.deepEqual(bDone[0].toolInput, { command: 'ls' });
+
+  const aDone = provider.normalizeMessage(
+    { type: 'model_streaming', payload: { kind: 'tool_input_delta', toolCallId: 'call_a', delta: 'it -1"}' } },
+    'sess_1'
+  );
+  assert.equal(aDone.length, 1);
+  assert.equal(aDone[0].toolId, 'call_a');
+  assert.deepEqual(aDone[0].toolInput, { command: 'git -1' });
+});
+
+test('tool_input_start opens an unannounced stream under its own toolCallId', () => {
+  const provider = new ZCodeSessionsProvider();
+  assert.deepEqual(provider.normalizeMessage(
+    { type: 'model_streaming', payload: { kind: 'tool_input_start', toolCallId: 'call_c', toolName: 'Bash' } },
+    'sess_1'
+  ), []);
+  assert.deepEqual(provider.normalizeMessage(
+    { type: 'model_streaming', payload: { kind: 'tool_input_delta', toolCallId: 'call_c', delta: '{"command":"pw' } },
+    'sess_1'
+  ), []);
+  const done = provider.normalizeMessage(
+    { type: 'model_streaming', payload: { kind: 'tool_input_delta', toolCallId: 'call_c', delta: 'd"}' } },
+    'sess_1'
+  );
+  assert.equal(done.length, 1);
+  assert.equal(done[0].toolId, 'call_c');
+  assert.equal(done[0].toolName, 'Bash');
+  assert.deepEqual(done[0].toolInput, { command: 'pwd' });
+});
+
 test('text segment boundaries surface as stream_end so clients finalize each segment', () => {
   const provider = new ZCodeSessionsProvider();
   for (const kind of ['text_start', 'text_end']) {
