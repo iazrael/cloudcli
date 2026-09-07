@@ -539,6 +539,78 @@ function extractCumulativeTokenBudget(sdkMessage) {
   };
 }
 
+// The whole-assistant-output regex a turn must match to count as a
+// notification-only acknowledgement. The engine tells the model to answer
+// injected task-notifications with this placeholder when no action is needed.
+const NO_RESPONSE_PLACEHOLDER_RE = /^no response requested\.?$/i;
+
+/**
+ * True when an SDK user message is an engine-injected task notification.
+ *
+ * On resume, the CLI reconciles the transcript and injects a user frame whose
+ * text starts with `<task-notification>` for background tasks that ended
+ * without a completion record (killed at teardown, orphaned across CLI
+ * processes). Detecting it at the runtime layer (instead of relying on the
+ * sessions normalizer) keeps the swallowed-prompt detection self-contained.
+ * @param {Object} sdkMessage - SDK stream message
+ * @returns {boolean}
+ */
+export function isTaskNotificationUserMessage(sdkMessage) {
+  if (!sdkMessage || sdkMessage.type !== 'user') {
+    return false;
+  }
+  const content = sdkMessage.message?.content;
+  let text = '';
+  if (typeof content === 'string') {
+    text = content;
+  } else if (Array.isArray(content)) {
+    text = content
+      .filter((block) => block?.type === 'text')
+      .map((block) => block.text || '')
+      .join('\n');
+  }
+  return text.trimStart().startsWith('<task-notification>');
+}
+
+/**
+ * True when a turn's whole assistant output is the notification placeholder.
+ * Markdown emphasis wrappers are stripped so `*No response requested.*`
+ * still matches.
+ * @param {string} text - Concatenated assistant text of the turn
+ * @returns {boolean}
+ */
+function isNoResponsePlaceholder(text) {
+  const stripped = String(text || '').trim().replace(/^[\s*_`]+|[\s*_`]+$/g, '');
+  return NO_RESPONSE_PLACEHOLDER_RE.test(stripped);
+}
+
+/**
+ * True when a turn swallowed the user's prompt and must be re-sent.
+ *
+ * When the CLI injects a task-notification into the same turn as the user's
+ * prompt, the model can answer only the notification ("No response
+ * requested.") and end the turn, leaving the prompt unacted upon. All four
+ * conditions together are required: with no notification present, a short
+ * placeholder-like reply is a legitimate answer to a prompt like "don't
+ * reply"; with any tool call, the turn did act on something.
+ *
+ * Consumed by queryClaudeSDK to trigger its one-shot idle-turn resend.
+ * @param {Object} signals - Turn signals collected across the stream
+ * @param {boolean} signals.hasPrompt - The run was started with a non-empty prompt
+ * @param {boolean} signals.sawTaskNotification - An injected task-notification was received
+ * @param {string} signals.assistantText - All main-thread assistant text of the turn
+ * @param {number} signals.toolUseCount - Main-thread tool calls made during the turn
+ * @returns {boolean}
+ */
+export function shouldResendPromptForIdleTurn({ hasPrompt, sawTaskNotification, assistantText, toolUseCount }) {
+  return Boolean(
+    hasPrompt
+    && sawTaskNotification
+    && toolUseCount === 0
+    && isNoResponsePlaceholder(assistantText)
+  );
+}
+
 // Tool calls that leave work running past the end of a turn. Bash only counts
 // when it is explicitly backgrounded; the rest defer or watch work by nature.
 const DEFERRED_WORK_TOOLS = new Set(['Monitor', 'ScheduleWakeup', 'CronCreate', 'TaskCreate']);
@@ -730,6 +802,15 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
   // Set once a turn publishes a budget read from an assistant message, so the
   // turn-ending `result` is only mined for usage when nothing better arrived.
   let assistantBudgetSent = false;
+  // Idle-turn detection: a resumed turn that only acknowledges an injected
+  // task-notification ("No response requested.") leaves the user's prompt
+  // unacted upon. Signals are collected across the stream and evaluated once
+  // at the turn's `result`; when they all line up, the prompt is re-sent on a
+  // fresh CLI process after this generator winds down.
+  let turnSawTaskNotification = false;
+  let turnAssistantText = '';
+  let turnToolUseCount = 0;
+  let pendingIdleResend = false;
 
   // A new turn supersedes any earlier one still holding this session's process
   // open, so held runs cannot stack up across a conversation.
@@ -968,6 +1049,26 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         ws.send(createNormalizedMessage({ kind: 'status', text: 'token_budget', tokenBudget: tokenBudgetData, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
       }
 
+      if (isTaskNotificationUserMessage(message)) {
+        turnSawTaskNotification = true;
+      }
+
+      // Main-thread assistant blocks only: subagent traffic (parent_tool_use_id
+      // set) is reported through the main thread's own tool calls, which are
+      // counted there.
+      if (message.type === 'assistant' && !message.parent_tool_use_id) {
+        const content = message.message?.content;
+        if (Array.isArray(content)) {
+          for (const block of content) {
+            if (block?.type === 'text') {
+              turnAssistantText += (turnAssistantText ? '\n' : '') + (block.text || '');
+            } else if (block?.type === 'tool_use') {
+              turnToolUseCount += 1;
+            }
+          }
+        }
+      }
+
       if (startsBackgroundWork(message)) {
         backgroundWorkPending = true;
       }
@@ -976,15 +1077,23 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         // The turn is done as far as the client is concerned.
         const abortPending = sessionKey() ? abortedSessionIds.has(sessionKey()) : false;
         if (!turnCompleteSent && !abortPending) {
+          pendingIdleResend = shouldResendPromptForIdleTurn({
+            hasPrompt: typeof command === 'string' && command.trim().length > 0,
+            sawTaskNotification: turnSawTaskNotification,
+            assistantText: turnAssistantText,
+            toolUseCount: turnToolUseCount
+          });
           turnCompleteSent = true;
           ws.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: 0 }));
-          notifyRunStopped({
-            userId: ws?.userId || null,
-            provider: 'claude',
-            sessionId: sessionId || capturedSessionId || null,
-            sessionName: sessionSummary,
-            stopReason: 'completed'
-          });
+          if (!pendingIdleResend) {
+            notifyRunStopped({
+              userId: ws?.userId || null,
+              provider: 'claude',
+              sessionId: sessionId || capturedSessionId || null,
+              sessionName: sessionSummary,
+              stopReason: 'completed'
+            });
+          }
         } else if (heldForBackgroundWork && !abortPending) {
           // A result after the turn already reported complete means the work we
           // held the process open for has finished and pushed a follow-up turn.
@@ -1029,6 +1138,30 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
     // terminal `complete` (aborted: true) was already sent by abort-session, and
     // for runs that already reported completion when their `result` arrived.
     const wasAborted = !superseded && sessionKey() ? abortedSessionIds.delete(sessionKey()) : false;
+
+    // The turn only acknowledged the injected task-notification and swallowed
+    // the user's prompt. Re-run the prompt once on a fresh CLI process: the
+    // notification now has its response recorded in the transcript, so the
+    // resumed turn sees just the prompt and acts on it. Capped at one resend
+    // so a CLI that keeps emitting placeholder turns cannot loop.
+    if (pendingIdleResend && !superseded && !wasAborted && capturedSessionId && !options.idleResendAttempt) {
+      console.log(`[Claude SDK] Session ${capturedSessionId} turn only acknowledged a task-notification; resending the prompt once`);
+      return queryClaudeSDK(
+        command,
+        {
+          ...options,
+          providerSessionId: capturedSessionId,
+          // The resend continues from the swallowed turn as-is; edit anchors
+          // and scratch restarts belong to the original attempt only.
+          resumeAnchorId: undefined,
+          resumeFromScratch: undefined,
+          idleResendAttempt: true
+        },
+        ws,
+        context
+      );
+    }
+
     if (!turnCompleteSent && !superseded) {
       turnCompleteSent = true;
       if (!wasAborted) {
