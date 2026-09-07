@@ -6,6 +6,7 @@ import type { ChatMessage } from '@/shared/types';
 import type { Project, ProjectSession, LLMProvider } from '@/shared/types';
 import { getIntrinsicMessageKey } from '@/modules/chat/utils/messageKeys';
 import { groupConsecutiveTools, isToolGroupItem } from '@/modules/chat/utils/toolGrouping';
+import type { MessageListItem } from '@/modules/chat/utils/toolGrouping';
 
 import MessageComponent from '@/modules/chat/transcript/MessageComponent';
 import ToolGroupContainer from '@/modules/chat/transcript/ToolGroupContainer';
@@ -48,6 +49,35 @@ type ChatMessagesPaneProps = {
   showRawParameters?: boolean;
   showThinking?: boolean;
   selectedProject: Project;
+}
+
+/**
+ * True when the plain row at `index` is the last assistant message of its
+ * turn: no other assistant message stands between it and the next user row
+ * (or the end of the list). Tool groups don't count — only prose rows carry
+ * the per-turn fork control, so interleaved tool runs can't displace it.
+ *
+ * Consumed by ChatMessagesPane to decide which single row of a turn renders
+ * the fork entry point.
+ */
+function isTurnFinalAssistantRow(items: MessageListItem[], index: number): boolean {
+  const item = items[index];
+  if (isToolGroupItem(item) || item.type !== 'assistant') {
+    return false;
+  }
+  for (let later = index + 1; later < items.length; later++) {
+    const next = items[later];
+    if (isToolGroupItem(next)) {
+      continue;
+    }
+    if (next.type === 'assistant') {
+      return false;
+    }
+    if (next.type === 'user') {
+      break;
+    }
+  }
+  return true;
 }
 
 function ChatMessagesPane({
@@ -253,6 +283,7 @@ function ChatMessagesPane({
                     message={item}
                     prevMessage={messagePrevMessage}
                     turnAnchorMessage={currentTurnAnchor}
+                    isTurnFinalAssistant={isTurnFinalAssistantRow(groupedVisibleMessages, index)}
                     createDiff={createDiff}
                     onFileOpen={onFileOpen}
                     showRawParameters={showRawParameters}

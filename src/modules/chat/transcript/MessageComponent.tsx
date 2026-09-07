@@ -35,6 +35,13 @@ type MessageComponentProps = {
   message: ChatMessage;
   prevMessage: ChatMessage | null;
   turnAnchorMessage?: ChatMessage | null;
+  /**
+   * True when no assistant message follows this row within the same turn.
+   * The per-turn fork entry renders only on that final row so a turn with
+   * thinking blocks or interleaved prose shows one fork, not one per segment.
+   * Export rendering omits it (defaults true) and renders no fork at all.
+   */
+  isTurnFinalAssistant?: boolean;
   createDiff: (oldStr: string, newStr: string) => DiffLine[];
   onFileOpen?: (filePath: string, diffInfo?: unknown) => void;
   showRawParameters?: boolean;
@@ -55,7 +62,7 @@ type InteractiveOption = {
 
 const COPY_HIDDEN_TOOL_NAMES = new Set(['Bash', 'Edit', 'Write', 'ApplyPatch']);
 
-const MessageComponent = memo(({ message, prevMessage, turnAnchorMessage, createDiff, onFileOpen, showRawParameters, showThinking, isThinkingStreaming, selectedProject, provider, onEditMessage, onForkFromMessage }: MessageComponentProps) => {
+const MessageComponent = memo(({ message, prevMessage, turnAnchorMessage, isTurnFinalAssistant = true, createDiff, onFileOpen, showRawParameters, showThinking, isThinkingStreaming, selectedProject, provider, onEditMessage, onForkFromMessage }: MessageComponentProps) => {
   const { t } = useTranslation('chat');
   // Folds (thinking, compaction summary) render as native <details> here so
   // they stay expandable in the statically rendered exported document.
@@ -450,7 +457,7 @@ const MessageComponent = memo(({ message, prevMessage, turnAnchorMessage, create
               </div>
             )}
 
-            {(shouldShowAssistantCopyControl || !isGrouped) && (
+            {(shouldShowAssistantCopyControl || (!isGrouped && !message.isThinking)) && (
               <div className="mt-1 flex w-full items-center gap-2 text-[11px] text-gray-400 dark:text-gray-500">
                 {shouldShowAssistantCopyControl && (
                   <MessageCopyControl content={assistantCopyContent} messageType="assistant" />
@@ -458,7 +465,7 @@ const MessageComponent = memo(({ message, prevMessage, turnAnchorMessage, create
                 {shouldShowAssistantCopyControl && (
                   <MessageSpeakControl content={assistantCopyContent} />
                 )}
-                {onForkFromMessage && turnAnchorMessage?.transcriptAnchorId && (
+                {onForkFromMessage && turnAnchorMessage?.transcriptAnchorId && isTurnFinalAssistant && (
                   <button
                     type="button"
                     onClick={() => onForkFromMessage(turnAnchorMessage)}
@@ -470,7 +477,7 @@ const MessageComponent = memo(({ message, prevMessage, turnAnchorMessage, create
                     <span>{t('message.fork', { defaultValue: 'Fork' })}</span>
                   </button>
                 )}
-                {!isGrouped && <span>{formattedTime}</span>}
+                {(!isGrouped || isTurnFinalAssistant) && <span>{formattedTime}</span>}
               </div>
             )}
           </div>
