@@ -148,3 +148,20 @@ test('auto-save writes the preference store and leaves legacy keys untouched', a
   assert.equal(localStorage.getItem('claude-settings'), null);
   assert.equal(localStorage.getItem('codex-settings'), null);
 });
+
+test('editor setting changes land in the preference store, not legacy keys', async () => {
+  const { useSettingsController, userSettings } = await load();
+
+  const { result } = renderHook(() => useSettingsController({ isOpen: true, initialTab: 'appearance' }));
+  await waitFor(() => assert.equal(result.current.projectSortOrder, 'name'));
+
+  act(() => {
+    result.current.updateCodeEditorSetting('fontSize', '18');
+  });
+
+  assert.equal(
+    (userSettings.readUserPreference<Record<string, unknown>>('codeEditorSettings', {}) as Record<string, unknown>).fontSize,
+    '18',
+  );
+  assert.equal(localStorage.getItem('codeEditorFontSize'), null);
+});

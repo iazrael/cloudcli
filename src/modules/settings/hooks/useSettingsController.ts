@@ -4,9 +4,12 @@ import { useTheme } from '@/shared/context/ThemeContext';
 import { authenticatedFetch } from '@/shared/api';
 import { readProviderToolsSettings, setNotificationSoundEnabled } from '@/modules/chat';
 import { useProviderAuthStatus } from '@/modules/provider-auth';
+import {
+  readCodeEditorSettings as readStoredCodeEditorSettings,
+  writeCodeEditorSettings,
+} from '@/shared/codeEditorSettings';
 import { readUserPreference, writeUserPreference } from '@/shared/userSettings';
 import {
-  DEFAULT_CODE_EDITOR_SETTINGS,
   DEFAULT_CURSOR_PERMISSIONS,
 } from '@/modules/settings/constants/constants';
 import type {
@@ -74,13 +77,6 @@ const toZcodePermissionMode = (value: unknown): ZcodePermissionMode => {
   return 'default';
 };
 
-const readCodeEditorSettings = (): CodeEditorSettingsState => ({
-  wordWrap: localStorage.getItem('codeEditorWordWrap') === 'true',
-  showMinimap: localStorage.getItem('codeEditorShowMinimap') !== 'false',
-  lineNumbers: localStorage.getItem('codeEditorLineNumbers') !== 'false',
-  fontSize: localStorage.getItem('codeEditorFontSize') ?? DEFAULT_CODE_EDITOR_SETTINGS.fontSize,
-});
-
 const toResponseJson = async <T>(response: Response): Promise<T> => response.json() as Promise<T>;
 
 const createEmptyClaudePermissions = (): ClaudePermissionsState => ({
@@ -135,7 +131,7 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
   const [saveStatus, setSaveStatus] = useState<'success' | 'error' | null>(null);
   const [projectSortOrder, setProjectSortOrder] = useState<ProjectSortOrder>('name');
   const [codeEditorSettings, setCodeEditorSettings] = useState<CodeEditorSettingsState>(() => (
-    readCodeEditorSettings()
+    readStoredCodeEditorSettings()
   ));
 
   const [claudePermissions, setClaudePermissions] = useState<ClaudePermissionsState>(() => (
@@ -323,11 +319,10 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
   }, [notificationPreferences.channels.sound]);
 
   useEffect(() => {
-    localStorage.setItem('codeEditorWordWrap', String(codeEditorSettings.wordWrap));
-    localStorage.setItem('codeEditorShowMinimap', String(codeEditorSettings.showMinimap));
-    localStorage.setItem('codeEditorLineNumbers', String(codeEditorSettings.lineNumbers));
-    localStorage.setItem('codeEditorFontSize', codeEditorSettings.fontSize);
-    window.dispatchEvent(new Event('codeEditorSettingsChanged'));
+    // The shared helper lands in the preference store and notifies subscribers
+    // synchronously, so the editor (here and on other devices) re-reads
+    // without a separate same-tab event. Unchanged values write nothing.
+    writeCodeEditorSettings(codeEditorSettings);
   }, [codeEditorSettings]);
 
   // Auto-save permissions and sort order with debounce
