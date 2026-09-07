@@ -27,17 +27,14 @@ let initialRunTimer: ReturnType<typeof setTimeout> | null = null;
 let isArchiveRunning = false;
 
 /**
- * Calculates the cutoff ISO string based on natural day boundaries.
- * For retentionDays = 1, cutoff is local midnight (00:00:00) of the current day.
- * For retentionDays = N, cutoff is local midnight N - 1 days prior to today.
+ * Calculates the cutoff ISO string as a rolling window: exactly
+ * retentionDays × 24h before `now`. A session is archived only when its last
+ * activity is older than that full duration, regardless of calendar boundaries.
  * Used by sessionsAutoArchiveService and unit tests.
  */
 export function calculateCutoffDate(retentionDays: number, now = new Date()): string {
   const safeDays = Math.max(1, Math.floor(retentionDays));
-  // Create date anchored at today's local midnight
-  const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
-  midnight.setDate(midnight.getDate() - (safeDays - 1));
-  return midnight.toISOString();
+  return new Date(now.getTime() - safeDays * 24 * 60 * 60 * 1000).toISOString();
 }
 
 /**

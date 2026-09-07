@@ -121,7 +121,7 @@
       "enableLabel": "自动归档历史会话",
       "enableDescription": "定期将长时间未活跃的会话自动移入归档，保持侧边栏清爽顺畅。",
       "retentionLabel": "归档时间阈值",
-      "retentionDescription": "选择超过多长时间没有新活跃记录的会话会被归档（例如选择“1天”即归档今天之前的所有会话）。"
+      "retentionDescription": "选择超过多长时间没有新活跃记录的会话会被归档（例如选择“1天”即归档已闲置超过 24 小时的会话）。"
     },
     "retention": {
       "1day": "1 天（今天之前）",

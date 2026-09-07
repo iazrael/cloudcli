@@ -486,7 +486,7 @@
       "enableLabel": "Auto-archive historical sessions",
       "enableDescription": "Automatically archives inactive sessions periodically to keep your sidebar clean and responsive.",
       "retentionLabel": "Archive threshold",
-      "retentionDescription": "Choose how long a session can remain inactive before being archived (e.g. 1 day archives all sessions before today)."
+      "retentionDescription": "Choose how long a session can remain inactive before being archived (e.g. 1 day archives sessions inactive for over 24 hours)."
     },
     "retention": {
       "1day": "1 day (before today)",

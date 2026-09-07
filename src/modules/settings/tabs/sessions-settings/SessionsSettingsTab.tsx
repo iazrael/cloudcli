@@ -147,7 +147,7 @@ export default function SessionsSettingsTab() {
               <p className="mt-0.5 text-xs text-muted-foreground">
                 {t(
                   'sessions.autoArchive.retentionDescription',
-                  '选择超过多长时间没有新活跃记录的会话会被归档（例如选择“1天”即归档今天之前的所有会话）。'
+                  '选择超过多长时间没有新活跃记录的会话会被归档（例如选择“1天”即归档已闲置超过 24 小时的会话）。'
                 )}
               </p>
 

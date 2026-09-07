@@ -43,21 +43,14 @@ async function withIsolatedDatabase(runTest: () => void | Promise<void>): Promis
   }
 }
 
-test('calculateCutoffDate correctly aligns to local midnight boundary', () => {
+test('calculateCutoffDate returns cutoff exactly retentionDays × 24h before now', () => {
   const fixedNow = new Date('2026-09-03T14:30:00.000Z');
-  const cutoff1Day = calculateCutoffDate(1, fixedNow);
-  const cutoffDate1 = new Date(cutoff1Day);
+  const dayMs = 24 * 60 * 60 * 1000;
 
-  // Expect hours, minutes, seconds to be 0 in local time
-  assert.equal(cutoffDate1.getHours(), 0);
-  assert.equal(cutoffDate1.getMinutes(), 0);
-  assert.equal(cutoffDate1.getSeconds(), 0);
-
-  const cutoff3Days = calculateCutoffDate(3, fixedNow);
-  const cutoffDate3 = new Date(cutoff3Days);
-  // Difference between 1 day cutoff and 3 day cutoff should be 2 whole days
-  const diffDays = Math.round((cutoffDate1.getTime() - cutoffDate3.getTime()) / (24 * 60 * 60 * 1000));
-  assert.equal(diffDays, 2);
+  assert.equal(new Date(calculateCutoffDate(1, fixedNow)).getTime(), fixedNow.getTime() - dayMs);
+  assert.equal(new Date(calculateCutoffDate(3, fixedNow)).getTime(), fixedNow.getTime() - 3 * dayMs);
+  // Sub-day values clamp up to a full day
+  assert.equal(new Date(calculateCutoffDate(0.5, fixedNow)).getTime(), fixedNow.getTime() - dayMs);
 });
 
 test('getSettings returns defaults when not configured', async () => {
@@ -100,6 +93,14 @@ test('runAutoArchive archives old sessions and preserves fresh sessions', async 
        VALUES (?, ?, ?, 0, ?, ?)`
     ).run('session-fresh', 'claude', 'Fresh Session', freshNow, freshNow);
 
+    // Insert a session last active 23h ago: idle almost a full day but not
+    // past the retentionDays = 1 rolling window — must survive.
+    const twentyThreeHoursAgo = new Date(Date.now() - 23 * 60 * 60 * 1000).toISOString();
+    db.prepare(
+      `INSERT INTO sessions (session_id, provider, custom_name, isArchived, created_at, updated_at)
+       VALUES (?, ?, ?, 0, ?, ?)`
+    ).run('session-recent', 'claude', 'Almost A Day Old', twentyThreeHoursAgo, twentyThreeHoursAgo);
+
     // Run auto-archive with retentionDays = 1, with one client connected to
     // observe the removal broadcast.
     const connection = new FakeConnection();
@@ -117,6 +118,9 @@ test('runAutoArchive archives old sessions and preserves fresh sessions', async 
 
     const freshSession = sessionsDb.getSessionById('session-fresh');
     assert.equal(freshSession?.isArchived, 0);
+
+    const recentSession = sessionsDb.getSessionById('session-recent');
+    assert.equal(recentSession?.isArchived, 0);
   });
 });
 
