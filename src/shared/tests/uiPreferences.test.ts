@@ -38,6 +38,7 @@ test('a fresh install gets the documented defaults', () => {
     sidebarVisible: true,
     voiceEnabled: false,
     showTerminalTab: true,
+    showQuickSettingsPanel: true,
   });
 });
 

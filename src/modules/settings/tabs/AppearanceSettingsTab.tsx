@@ -30,7 +30,7 @@ export default function AppearanceSettingsTab({
   onCodeEditorFontSizeChange,
 }: AppearanceSettingsTabProps) {
   const { t } = useTranslation('settings');
-  const { showTerminalTab } = useUiPreferences();
+  const { showTerminalTab, showQuickSettingsPanel } = useUiPreferences();
   const setUiPreference = useSetUiPreference();
 
   return (
@@ -71,7 +71,7 @@ export default function AppearanceSettingsTab({
       </SettingsSection>
 
       <SettingsSection title={t('appearanceSettings.workspaceTab.title')}>
-        <SettingsCard>
+        <SettingsCard divided>
           <SettingsRow
             label={t('appearanceSettings.terminalTab.label')}
             description={t('appearanceSettings.terminalTab.description')}
@@ -80,6 +80,17 @@ export default function AppearanceSettingsTab({
               checked={showTerminalTab}
               onChange={(value) => setUiPreference('showTerminalTab', value)}
               ariaLabel={t('appearanceSettings.terminalTab.label')}
+            />
+          </SettingsRow>
+
+          <SettingsRow
+            label={t('appearanceSettings.quickSettingsPanel.label')}
+            description={t('appearanceSettings.quickSettingsPanel.description')}
+          >
+            <SettingsToggle
+              checked={showQuickSettingsPanel}
+              onChange={(value) => setUiPreference('showQuickSettingsPanel', value)}
+              ariaLabel={t('appearanceSettings.quickSettingsPanel.label')}
             />
           </SettingsRow>
         </SettingsCard>

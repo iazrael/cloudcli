@@ -134,6 +134,10 @@
       "label": "顯示終端機標籤頁",
       "description": "關閉後僅隱藏工作區的終端機標籤入口，終端機功能保留，隨時可回來重新開啟。"
     },
+    "quickSettingsPanel": {
+      "label": "顯示快捷設定面板",
+      "description": "關閉後隱藏工作區右側的快捷設定抽屉和拖曳把手，隨時可回來重新開啟。"
+    },
     "projectSorting": {
       "label": "專案排序",
       "description": "專案在側邊欄中的排列方式",

@@ -17,6 +17,8 @@ export type UiPreferences = {
   voiceEnabled: boolean;
   /** Hides the workspace terminal tab entry while keeping the terminal itself functional. */
   showTerminalTab: boolean;
+  /** Hides the workspace quick settings drawer and its draggable edge handle. */
+  showQuickSettingsPanel: boolean;
 };
 
 export type UiPreferenceKey = keyof UiPreferences;
@@ -32,6 +34,7 @@ const DEFAULTS: UiPreferences = {
   sidebarVisible: true,
   voiceEnabled: false,
   showTerminalTab: true,
+  showQuickSettingsPanel: true,
 };
 
 const PREFERENCE_KEYS = Object.keys(DEFAULTS) as UiPreferenceKey[];

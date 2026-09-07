@@ -189,6 +189,10 @@
       "label": "显示终端标签页",
       "description": "关闭后仅隐藏工作区的终端标签入口，终端功能保留，随时可回来重新打开。"
     },
+    "quickSettingsPanel": {
+      "label": "显示快捷设置面板",
+      "description": "关闭后隐藏工作区右侧的快捷设置抽屉和拖拽把手，随时可回来重新打开。"
+    },
     "projectSorting": {
       "label": "项目排序",
       "description": "项目在侧边栏中的排列方式",

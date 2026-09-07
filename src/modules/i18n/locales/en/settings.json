@@ -189,6 +189,10 @@
       "label": "Show terminal tab",
       "description": "Hides the terminal entry from the workspace tab bar. The terminal keeps working; turn this back on to restore the tab."
     },
+    "quickSettingsPanel": {
+      "label": "Show quick settings panel",
+      "description": "Hides the quick settings drawer and its draggable edge handle on the right side of the workspace. Turn this back on to restore them."
+    },
     "projectSorting": {
       "label": "Project Sorting",
       "description": "How projects are ordered in the sidebar",

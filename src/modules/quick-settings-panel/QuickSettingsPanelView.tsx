@@ -56,6 +56,11 @@ function QuickSettingsPanelView() {
     [consumeSuppressedClick],
   );
 
+  // All hooks above run unconditionally; the preference only gates rendering.
+  if (!preferences.showQuickSettingsPanel) {
+    return null;
+  }
+
   return (
     <>
       <QuickSettingsHandle
