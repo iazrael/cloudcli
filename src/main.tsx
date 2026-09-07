@@ -3,6 +3,17 @@ import ReactDOM from 'react-dom/client'
 import { scan } from 'react-scan'
 
 import App from '@/App'
+// Self-hosted fonts (formerly Google Fonts CDN): a render-blocking stylesheet
+// from fonts.googleapis.com stalls first paint on networks where Google is
+// unreachable (e.g. iPhone via cellular/direct link, tens of seconds).
+import '@fontsource/encode-sans/400.css'
+import '@fontsource/encode-sans/500.css'
+import '@fontsource/encode-sans/600.css'
+import '@fontsource/encode-sans/700.css'
+import '@fontsource/merriweather/400.css'
+import '@fontsource/merriweather/700.css'
+import '@fontsource/merriweather/400-italic.css'
+import '@fontsource/merriweather/700-italic.css'
 import '@/index.css'
 import 'katex/dist/katex.min.css'
 

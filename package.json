@@ -149,6 +149,8 @@
     "@codemirror/lang-python": "^6.2.1",
     "@codemirror/merge": "^6.11.1",
     "@codemirror/theme-one-dark": "^6.1.2",
+    "@fontsource/encode-sans": "^5.3.0",
+    "@fontsource/merriweather": "^5.3.0",
     "@iarna/toml": "^2.2.5",
     "@octokit/rest": "^22.0.0",
     "@openai/codex": "0.153.4",
