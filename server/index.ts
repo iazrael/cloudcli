@@ -8,6 +8,7 @@ import http from 'http';
 
 import express, { type NextFunction, type Request, type Response } from 'express';
 import cors from 'cors';
+import compression from 'compression';
 
 import { AppError, findApplicationRoot, getModuleDirectory, IS_PLATFORM, terminalTextStyles } from '@/shared/utils.js';
 import {
@@ -137,6 +138,10 @@ app.use(express.json({
     }
 }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
+// Compress text responses (gzip/brotli by Accept-Encoding). Critical for
+// Cloudflare tunnel origins: uncompressed 4MB asset pushes saturate the
+// home upstream link (~160KB/s measured) and stall cold PWA starts.
+app.use(compression());
 
 // Public health check endpoint (no authentication required)
 app.get('/health', (req, res) => {
