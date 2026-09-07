@@ -2,8 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { useTheme } from '@/shared/context/ThemeContext';
 import { authenticatedFetch } from '@/shared/api';
-import { setNotificationSoundEnabled } from '@/modules/chat';
+import { readProviderToolsSettings, setNotificationSoundEnabled } from '@/modules/chat';
 import { useProviderAuthStatus } from '@/modules/provider-auth';
+import { readUserPreference, writeUserPreference } from '@/shared/userSettings';
 import {
   DEFAULT_CODE_EDITOR_SETTINGS,
   DEFAULT_CURSOR_PERMISSIONS,
@@ -31,31 +32,6 @@ type UseSettingsControllerArgs = {
   initialTab: string;
 };
 
-type ClaudeSettingsStorage = {
-  allowedTools?: string[];
-  disallowedTools?: string[];
-  skipPermissions?: boolean;
-  projectSortOrder?: ProjectSortOrder;
-};
-
-type CursorSettingsStorage = {
-  allowedCommands?: string[];
-  disallowedCommands?: string[];
-  skipPermissions?: boolean;
-};
-
-type CodexSettingsStorage = {
-  permissionMode?: CodexPermissionMode;
-};
-
-type AntigravitySettingsStorage = {
-  permissionMode?: AntigravityPermissionMode;
-};
-
-type ZcodeSettingsStorage = {
-  permissionMode?: ZcodePermissionMode;
-};
-
 type NotificationPreferencesResponse = {
   success?: boolean;
   preferences?: NotificationPreferencesState;
@@ -72,18 +48,6 @@ const normalizeMainTab = (tab: string): SettingsMainTab => {
   }
 
   return KNOWN_MAIN_TABS.includes(tab as SettingsMainTab) ? (tab as SettingsMainTab) : 'agents';
-};
-
-const parseJson = <T>(value: string | null, fallback: T): T => {
-  if (!value) {
-    return fallback;
-  }
-
-  try {
-    return JSON.parse(value) as T;
-  } catch {
-    return fallback;
-  }
 };
 
 const toCodexPermissionMode = (value: unknown): CodexPermissionMode => {
@@ -197,44 +161,40 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
 
   const loadSettings = useCallback(async () => {
     try {
-      const savedClaudeSettings = parseJson<ClaudeSettingsStorage>(
-        localStorage.getItem('claude-settings'),
-        {},
-      );
+      // Permissions live in the preference store (auth.db) — the same copy the
+      // in-chat grants write — so the dialog shows and saves what is actually
+      // in effect, on any device.
+      const storedClaudePermissions = readUserPreference<Partial<ClaudePermissionsState>>('claudePermissions', {});
       setClaudePermissions({
-        allowedTools: savedClaudeSettings.allowedTools || [],
-        disallowedTools: savedClaudeSettings.disallowedTools || [],
-        skipPermissions: Boolean(savedClaudeSettings.skipPermissions),
+        allowedTools: Array.isArray(storedClaudePermissions.allowedTools)
+          ? storedClaudePermissions.allowedTools
+          : [],
+        disallowedTools: Array.isArray(storedClaudePermissions.disallowedTools)
+          ? storedClaudePermissions.disallowedTools
+          : [],
+        skipPermissions: Boolean(storedClaudePermissions.skipPermissions),
       });
-      setProjectSortOrder(savedClaudeSettings.projectSortOrder === 'date' ? 'date' : 'name');
+      setProjectSortOrder(readUserPreference<ProjectSortOrder>('projectSortOrder', 'name'));
 
-      const savedCursorSettings = parseJson<CursorSettingsStorage>(
-        localStorage.getItem('cursor-tools-settings'),
-        {},
-      );
+      const storedCursorPermissions = readUserPreference<Partial<CursorPermissionsState>>('cursorPermissions', {});
       setCursorPermissions({
-        allowedCommands: savedCursorSettings.allowedCommands || [],
-        disallowedCommands: savedCursorSettings.disallowedCommands || [],
-        skipPermissions: Boolean(savedCursorSettings.skipPermissions),
+        allowedCommands: Array.isArray(storedCursorPermissions.allowedCommands)
+          ? storedCursorPermissions.allowedCommands
+          : [],
+        disallowedCommands: Array.isArray(storedCursorPermissions.disallowedCommands)
+          ? storedCursorPermissions.disallowedCommands
+          : [],
+        skipPermissions: Boolean(storedCursorPermissions.skipPermissions),
       });
 
-      const savedCodexSettings = parseJson<CodexSettingsStorage>(
-        localStorage.getItem('codex-settings'),
-        {},
-      );
-      setCodexPermissionMode(toCodexPermissionMode(savedCodexSettings.permissionMode));
+      const storedCodexSettings = readProviderToolsSettings('codex');
+      setCodexPermissionMode(toCodexPermissionMode(storedCodexSettings.permissionMode));
 
-      const savedAntigravitySettings = parseJson<AntigravitySettingsStorage>(
-        localStorage.getItem('antigravity-settings'),
-        {},
-      );
-      setAntigravityPermissionMode(toAntigravityPermissionMode(savedAntigravitySettings.permissionMode));
+      const storedAntigravitySettings = readProviderToolsSettings('antigravity');
+      setAntigravityPermissionMode(toAntigravityPermissionMode(storedAntigravitySettings.permissionMode));
 
-      const savedZcodeSettings = parseJson<ZcodeSettingsStorage>(
-        localStorage.getItem('zcode-settings'),
-        {},
-      );
-      setZcodePermissionMode(toZcodePermissionMode(savedZcodeSettings.permissionMode));
+      const storedZcodeSettings = readProviderToolsSettings('zcode');
+      setZcodePermissionMode(toZcodePermissionMode(storedZcodeSettings.permissionMode));
 
       try {
         const notificationResponse = await authenticatedFetch('/api/settings/notification-preferences');
@@ -293,36 +253,26 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
     setSaveStatus(null);
 
     try {
-      const now = new Date().toISOString();
-      localStorage.setItem('claude-settings', JSON.stringify({
+      // Mirror of loadSettings: every write lands in the preference store, so
+      // the settings survive a device switch and stay visible to the send path.
+      writeUserPreference('claudePermissions', {
         allowedTools: claudePermissions.allowedTools,
         disallowedTools: claudePermissions.disallowedTools,
         skipPermissions: claudePermissions.skipPermissions,
-        projectSortOrder,
-        lastUpdated: now,
-      }));
+      });
+      writeUserPreference('projectSortOrder', projectSortOrder);
 
-      localStorage.setItem('cursor-tools-settings', JSON.stringify({
+      writeUserPreference('cursorPermissions', {
         allowedCommands: cursorPermissions.allowedCommands,
         disallowedCommands: cursorPermissions.disallowedCommands,
         skipPermissions: cursorPermissions.skipPermissions,
-        lastUpdated: now,
-      }));
+      });
 
-      localStorage.setItem('codex-settings', JSON.stringify({
-        permissionMode: codexPermissionMode,
-        lastUpdated: now,
-      }));
+      writeUserPreference('codexPermissions', { permissionMode: codexPermissionMode });
 
-      localStorage.setItem('antigravity-settings', JSON.stringify({
-        permissionMode: antigravityPermissionMode,
-        lastUpdated: now,
-      }));
+      writeUserPreference('antigravityPermissions', { permissionMode: antigravityPermissionMode });
 
-      localStorage.setItem('zcode-settings', JSON.stringify({
-        permissionMode: zcodePermissionMode,
-        lastUpdated: now,
-      }));
+      writeUserPreference('zcodePermissions', { permissionMode: zcodePermissionMode });
 
       const notificationResponse = await authenticatedFetch('/api/settings/notification-preferences', {
         method: 'PUT',

@@ -1,4 +1,5 @@
-import type { ClaudeSettings } from '@/shared/types';
+import { PROVIDER_PERMISSION_PREFERENCE_KEYS } from '@/shared/constants';
+import type { ClaudeSettings, LLMProvider } from '@/shared/types';
 import { readUserPreference, writeUserPreference } from '@/shared/userSettings';
 
 import { safeLocalStorage } from '@/shared/utils';
@@ -31,6 +32,20 @@ export function saveClaudePermissions(permissions: {
   skipPermissions: boolean;
 }): void {
   writeUserPreference('claudePermissions', permissions);
+}
+
+/**
+ * Reads a provider's tool-permission settings for `chat.send` from the one
+ * store every writer shares — the settings dialog and in-chat grants both
+ * write these keys — so what goes out matches what the user configured, on
+ * any device. An unset provider comes back empty; callers apply their own
+ * fallback shape.
+ */
+export function readProviderToolsSettings(provider: LLMProvider): Record<string, unknown> {
+  return readUserPreference<Record<string, unknown>>(
+    PROVIDER_PERMISSION_PREFERENCE_KEYS[provider],
+    {},
+  );
 }
 
 export type StoredQueuedMessage = {
