@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'vitest';
 
 import type { NormalizedMessage } from '@/shared/types';
-import { removeOptimisticUserEchoes } from '@/modules/chat/utils/sessionMessageReconciliation';
+import { removeOptimisticUserEchoes, upsertToolUseRow } from '@/modules/chat/utils/sessionMessageReconciliation';
 
 const createUserMessage = (
   id: string,
@@ -98,4 +98,31 @@ test('a replacement echo survives a kept turn that repeats its text', () => {
   // keep, so it retires the echo.
   const persisted = [...kept, userRow('persisted', 'continue', '2026-01-01T00:00:25.000Z')];
   assert.deepEqual(removeOptimisticUserEchoes(persisted, [echo]), []);
+});
+
+test('upsertToolUseRow: a blank re-announce frame never blanks a populated card', () => {
+  const toolRow = (id: string, toolId: string, toolInput: Record<string, unknown>) => ({
+    id,
+    kind: 'tool_use',
+    provider: 'zcode',
+    sessionId: 's1',
+    toolName: 'Bash',
+    toolId,
+    toolInput,
+    timestamp: '2026-01-01T00:00:00.000Z',
+  }) as NormalizedMessage;
+
+  const rows = [toolRow('row_1', 'call_1', { command: 'echo hello' })];
+
+  // zcode's post-stream `scheduled` frame arrives last with empty arguments.
+  const blanked = upsertToolUseRow(rows, toolRow('row_2', 'call_1', {}));
+  assert.deepEqual(blanked[0].toolInput, { command: 'echo hello' });
+
+  // A real snapshot with different arguments still overwrites.
+  const updated = upsertToolUseRow(blanked, toolRow('row_3', 'call_1', { command: 'pwd' }));
+  assert.deepEqual(updated[0].toolInput, { command: 'pwd' });
+
+  // A fresh toolId appends as before.
+  const appended = upsertToolUseRow(updated, toolRow('row_4', 'call_2', {}));
+  assert.equal(appended.length, 2);
 });

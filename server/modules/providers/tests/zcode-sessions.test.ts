@@ -335,6 +335,53 @@ test('tool_input_start opens an unannounced stream under its own toolCallId', ()
   assert.deepEqual(done[0].toolInput, { command: 'pwd' });
 });
 
+test('the real engine sequence ends with a scheduled re-announce that must not blank the card', () => {
+  // Probe-verified 0.16.5 order: the parameter stream and tool_call snapshot
+  // precede `tool.updated kind=scheduled`, which carries no input at all.
+  const provider = new ZCodeSessionsProvider();
+  const stream = (payload: Record<string, unknown>) =>
+    provider.normalizeMessage({ type: 'model_streaming', payload }, 'sess_1');
+
+  assert.deepEqual(stream({ kind: 'tool_input_start', toolCallId: 'call_1', toolName: 'Bash' }), []);
+  assert.deepEqual(stream({ kind: 'tool_input_delta', toolCallId: 'call_1', delta: '{"command":"echo hi",' }), []);
+  const midSnapshot = stream({ kind: 'tool_input_delta', toolCallId: 'call_1', delta: '"description":"greet"}' });
+  assert.equal(midSnapshot.length, 1);
+  assert.deepEqual(midSnapshot[0].toolInput, { command: 'echo hi', description: 'greet' });
+
+  // end re-emits the (unchanged) final snapshot and closes the stream.
+  const endSnapshot = stream({ kind: 'tool_input_end', toolCallId: 'call_1' });
+  assert.equal(endSnapshot.length, 1);
+  assert.deepEqual(endSnapshot[0].toolInput, { command: 'echo hi', description: 'greet' });
+
+  const callSnapshot = stream({ kind: 'tool_call', toolCallId: 'call_1', toolName: 'Bash', input: { command: 'echo hi', description: 'greet' } });
+  assert.equal(callSnapshot.length, 1);
+  assert.deepEqual(callSnapshot[0].toolInput, { command: 'echo hi', description: 'greet' });
+
+  // The scheduled re-announce (no input, only inputByteLength/inputRef) must
+  // not emit a frame: previously it upserted `{}` over the populated card and
+  // left every tool blank until the next history reload.
+  const scheduled = provider.normalizeMessage(
+    {
+      type: 'tool_call_scheduled',
+      payload: { kind: 'scheduled', toolCallId: 'call_1', toolName: 'Bash', inputByteLength: 42, inputOmitted: true },
+    },
+    'sess_1'
+  );
+  assert.deepEqual(scheduled, []);
+
+  // Execution bookkeeping keeps working around the silent announce.
+  assert.deepEqual(provider.normalizeMessage(
+    { type: 'tool_call_scheduled', payload: { kind: 'started', toolCallId: 'call_1', toolName: 'Bash' } },
+    'sess_1'
+  ), []);
+  const result = provider.normalizeMessage(
+    { type: 'tool_call_scheduled', payload: { kind: 'result', toolCallId: 'call_1', resultPartId: 'part_9' } },
+    'sess_1'
+  );
+  assert.equal(result.length, 1);
+  assert.equal(result[0].kind, 'tool_result');
+});
+
 test('text segment boundaries surface as stream_end so clients finalize each segment', () => {
   const provider = new ZCodeSessionsProvider();
   for (const kind of ['text_start', 'text_end']) {

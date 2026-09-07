@@ -127,6 +127,17 @@ export function removeOptimisticUserEchoes(
  * are unique per call only ever hit the append path, so this is safe for every
  * provider.
  */
+/**
+ * Whether a frame's toolInput carries usable arguments. An empty object is
+ * treated as "not provided": engines re-announce already-streamed calls with
+ * blank arguments (zcode's post-stream `scheduled` frame), and letting that
+ * overwrite a populated card is exactly the blank-card bug.
+ */
+function hasUsableToolInput(frame: NormalizedMessage): boolean {
+  const input = frame.toolInput;
+  return !!input && typeof input === 'object' && Object.keys(input).length > 0;
+}
+
 export function upsertToolUseRow(rows: NormalizedMessage[], frame: NormalizedMessage): NormalizedMessage[] {
   if (!frame.toolId) {
     return [...rows, frame];
@@ -141,7 +152,7 @@ export function upsertToolUseRow(rows: NormalizedMessage[], frame: NormalizedMes
   next[index] = {
     ...next[index],
     toolName: frame.toolName || next[index].toolName,
-    toolInput: frame.toolInput ?? next[index].toolInput,
+    toolInput: hasUsableToolInput(frame) ? frame.toolInput : next[index].toolInput,
     content: frame.content || next[index].content,
   };
   return next;

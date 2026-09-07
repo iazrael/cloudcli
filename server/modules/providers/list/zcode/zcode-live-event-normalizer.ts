@@ -287,6 +287,16 @@ export class ZCodeLiveEventNormalizer {
       })];
     }
 
+    // Announce (`tool.updated` kind=scheduled) arrives AFTER the call's
+    // parameter stream and `tool_call` snapshot have already been streamed,
+    // and carries no `input` (only inputByteLength/inputRef). Emitting a
+    // frame here would upsert-blank the already-populated card, so the
+    // announce only frames when it actually carries the input (older engine
+    // generations schedule non-streamed calls this way); the parameter
+    // stream itself re-opens the per-call stream when needed.
+    if (!readObjectRecord(payload.input)) {
+      return [];
+    }
     const toolName = readOptionalString(payload.toolName) ?? 'Tool';
     const toolId = readOptionalString(payload.toolCallId) ?? baseId;
     this.registerToolInputStream(sessionId ?? '', toolId, toolName);
@@ -297,7 +307,7 @@ export class ZCodeLiveEventNormalizer {
       provider: PROVIDER,
       kind: 'tool_use',
       toolName,
-      toolInput: payload.input ?? {},
+      toolInput: payload.input,
       toolId,
     })];
   }
