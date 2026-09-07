@@ -1,8 +1,8 @@
-import { useState } from 'react';
-import { Download, FileJson, FileText } from 'lucide-react';
+import { Download, FileJson, FileText, type LucideIcon } from 'lucide-react';
 
 import type { ChatMessage, DiffLine } from '@/shared/types';
-import { downloadTranscriptExport, downloadPDF, getAvailableExportFormats } from '@/modules/chat/utils/chatExport';
+import { ActionMenu, type ActionMenuItem } from '@/shared/ui/ActionMenu';
+import { downloadTranscriptExport, downloadPDF, getAvailableExportFormats, type EXPORT_FORMATS } from '@/modules/chat/utils/chatExport';
 
 type ChatExportMenuProps = {
   messages: ChatMessage[];
@@ -11,9 +11,20 @@ type ChatExportMenuProps = {
   createDiff: (oldStr: string, newStr: string) => DiffLine[];
 };
 
-export default function ChatExportMenu({ messages, sessionTitle, provider, createDiff }: ChatExportMenuProps) {
-  const [isOpen, setIsOpen] = useState(false);
+const FORMAT_ICONS: Record<(typeof EXPORT_FORMATS)[number]['id'], LucideIcon> = {
+  markdown: FileText,
+  html: FileJson,
+  pdf: FileJson,
+};
 
+/**
+ * Used by ChatMessagesPane as the transcript download control above the
+ * message list. The menu itself is the shared ActionMenu: a document-level
+ * outside-click listener closes it, which a fixed full-screen overlay inside
+ * the scroll container could not be trusted to do (stacking contexts and
+ * containing blocks quietly break that trick).
+ */
+export default function ChatExportMenu({ messages, sessionTitle, provider, createDiff }: ChatExportMenuProps) {
   if (messages.length === 0) {
     return null;
   }
@@ -36,53 +47,31 @@ export default function ChatExportMenu({ messages, sessionTitle, provider, creat
         });
       }
     } catch (error) {
-      // The menu button drops the returned promise, so without this the export
-      // would fail silently — no download and no sign anything was attempted.
+      // ActionMenu drops onSelect's returned promise, so without this the
+      // export would fail silently — no download and no sign anything was attempted.
       console.error(`Chat export as ${format} failed`, error);
       window.alert(`Export as ${format} failed: ${error instanceof Error ? error.message : 'unknown error'}`);
-    } finally {
-      setIsOpen(false);
     }
   };
 
+  const items: ActionMenuItem[] = getAvailableExportFormats().map((format) => ({
+    key: format.id,
+    label: format.label,
+    icon: FORMAT_ICONS[format.id],
+    onSelect: () => void handleExport(format.id),
+  }));
+
   return (
-    <div className="relative">
-      <button
-        type="button"
-        onClick={() => setIsOpen((prev) => !prev)}
-        aria-label="Export chat"
-        title="Export chat"
-        className="flex h-8 w-8 items-center justify-center rounded-lg border border-border/50 text-muted-foreground transition-all hover:bg-accent hover:text-foreground"
-      >
-        <Download className="h-4 w-4" />
-      </button>
-
-      {isOpen && (
-        <div className="absolute right-0 top-full z-50 mt-2 w-48 rounded-lg border border-border/50 bg-card shadow-lg">
-          <div className="p-2">
-            <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground">Export as:</div>
-            {getAvailableExportFormats().map((fmt) => (
-              <button
-                key={fmt.id}
-                type="button"
-                onClick={() => void handleExport(fmt.id)}
-                className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-foreground transition-colors hover:bg-muted"
-              >
-                {fmt.id === 'markdown' ? (
-                  <FileText className="h-4 w-4" />
-                ) : (
-                  <FileJson className="h-4 w-4" />
-                )}
-                <span>{fmt.label}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {isOpen && (
-        <div className="fixed inset-0" onClick={() => setIsOpen(false)} />
-      )}
-    </div>
+    <ActionMenu
+      label="Export chat"
+      ariaLabel="Export chat"
+      items={items}
+      icon={Download}
+      iconOnly
+      variant="outline"
+      size="sm"
+      triggerClassName="h-8 w-8 rounded-lg border-border/50 p-0 text-muted-foreground hover:text-foreground"
+      header={<div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground">Export as:</div>}
+    />
   );
 }
