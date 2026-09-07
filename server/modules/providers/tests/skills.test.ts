@@ -395,6 +395,54 @@ test('providerSkillsService lists codex repository, user, and system skills', { 
 });
 
 /**
+ * This test covers ZCode workspace skills plus both user-level roots: the
+ * engine-native storage directory (`~/.zcode/skills`) and the shared
+ * `~/.agents/skills` fallback.
+ */
+test('providerSkillsService lists zcode project, native storage, and shared agents skills', { concurrency: false }, async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'llm-skills-zcode-'));
+  const workspacePath = path.join(tempRoot, 'workspace');
+  await fs.mkdir(workspacePath, { recursive: true });
+
+  const restoreHomeDir = patchHomeDir(tempRoot);
+  try {
+    await writeSkill(
+      path.join(workspacePath, '.agents', 'skills'),
+      'zcode-project-dir',
+      'zcode-project',
+      'ZCode project skill',
+    );
+    await writeSkill(
+      path.join(tempRoot, '.zcode', 'skills'),
+      'zcode-native-dir',
+      'zcode-native',
+      'ZCode native user skill',
+    );
+    await writeSkill(
+      path.join(tempRoot, '.agents', 'skills'),
+      'zcode-shared-dir',
+      'zcode-shared',
+      'ZCode shared user skill',
+    );
+
+    const skills = await providerSkillsService.listProviderSkills('zcode', { workspacePath });
+    const byName = new Map(skills.map((skill) => [skill.name, skill]));
+
+    assert.equal(byName.get('zcode-project')?.scope, 'project');
+    assert.equal(byName.get('zcode-native')?.scope, 'user');
+    assert.equal(
+      byName.get('zcode-native')?.sourcePath,
+      path.join(tempRoot, '.zcode', 'skills', 'zcode-native-dir', 'SKILL.md'),
+    );
+    assert.equal(byName.get('zcode-shared')?.scope, 'user');
+    assert.equal(byName.get('zcode-native')?.command, '/zcode-native');
+  } finally {
+    restoreHomeDir();
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+/**
  * This test covers OpenCode skill lookup across cwd-to-git-root project folders
  * plus the global OpenCode/Claude/Agents compatibility locations.
  */

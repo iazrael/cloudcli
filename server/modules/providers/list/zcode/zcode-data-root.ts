@@ -16,8 +16,8 @@ import path from 'node:path';
  * Resolves the ZCode storage directory (`~/.zcode` by default).
  *
  * Consumers: zcode auth (credentials), zcode models (v2 config), zcode
- * sessions and session synchronizer (database path), zcode protocol client
- * (subprocess environment).
+ * skills (user-level skill listing), zcode sessions and session synchronizer
+ * (database path), zcode protocol client (subprocess environment).
  */
 export function getZCodeStorageDir(): string {
   const override = process.env.ZCODE_STORAGE_DIR?.trim();

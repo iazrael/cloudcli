@@ -4,13 +4,16 @@ import path from 'node:path';
 import { SkillsProvider } from '@/modules/providers/shared/skills/skills.provider.js';
 import type { ProviderSkillSource } from '@/shared/types.js';
 
+import { getZCodeStorageDir } from './zcode-data-root.js';
+
 /**
  * ZCode skills provider implementing ZCode-native skill discovery.
  *
- * Per integration plan §3.2.7, ZCode reads the same `.agents/skills`
- * SKILL.md ecosystem as the other CLI providers for project and user
- * scopes. Plugin skills under the ZCode plugin cache are a deliberate
- * second-phase enhancement and are not listed in v1.
+ * ZCode discovers user-level skills from its own storage directory
+ * (`<storage>/skills`, `~/.zcode/skills` by default) before falling back to
+ * the shared `.agents/skills` ecosystem, so both roots are listed in engine
+ * discovery order. Plugin skills under the ZCode plugin cache are a
+ * deliberate second-phase enhancement and are not listed yet.
  */
 export class ZCodeSkillsProvider extends SkillsProvider {
   constructor() {
@@ -18,14 +21,20 @@ export class ZCodeSkillsProvider extends SkillsProvider {
   }
 
   /**
-   * Returns ZCode skill sources for project and user scopes.
-   * Based on integration plan §3.2.7 with .agents/skills structure.
+   * Returns ZCode skill sources for project and user scopes in engine
+   * discovery order: native storage skills shadow shared `.agents` skills
+   * of the same name.
    */
   protected async getSkillSources(workspacePath: string): Promise<ProviderSkillSource[]> {
     return [
       {
         scope: 'project',
         rootDir: path.join(workspacePath, '.agents', 'skills'),
+        commandPrefix: '/',
+      },
+      {
+        scope: 'user',
+        rootDir: path.join(getZCodeStorageDir(), 'skills'),
         commandPrefix: '/',
       },
       {
