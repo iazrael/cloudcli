@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { ChatMessage } from '@/shared/types';
 import type * as UiPreferencesContext from '@/shared/context/UiPreferencesContext';
-import { buildTranscriptExport, downloadPDF, toExportFileStem } from '@/modules/chat/utils/chatExport';
+import { buildTranscriptExport, downloadPDF, downloadTranscriptExport, toExportFileStem } from '@/modules/chat/utils/chatExport';
 import { createCachedDiffCalculator } from '@/modules/chat/utils/messageTransforms';
 
 const createDiff = createCachedDiffCalculator();
@@ -310,6 +310,80 @@ describe('pdf export', () => {
     } finally {
       openSpy.mockRestore();
       alertSpy.mockRestore();
+    }
+  });
+});
+
+// On iOS (the installed PWA especially) an <a download> click navigates the
+// webview to the blob URL and returning reloads the app, so the hand-off must
+// prefer the Web Share API whenever the platform can share files.
+describe('download hand-off', () => {
+  function stubShareApis(supported: boolean, share?: (data: ShareData) => Promise<void>): void {
+    Object.defineProperty(navigator, 'canShare', {
+      configurable: true,
+      value: (data?: ShareData) => supported && (data?.files?.length ?? 0) > 0,
+    });
+    Object.defineProperty(navigator, 'share', {
+      configurable: true,
+      value: share ?? (() => Promise.resolve()),
+    });
+  }
+
+  function restoreShareApis(): void {
+    Reflect.deleteProperty(navigator, 'canShare');
+    Reflect.deleteProperty(navigator, 'share');
+  }
+
+  it('shares a real file instead of navigating when the platform can', async () => {
+    const shared: ShareData[] = [];
+    stubShareApis(true, (data) => {
+      shared.push(data);
+      return Promise.resolve();
+    });
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+
+    try {
+      await downloadTranscriptExport('markdown', input);
+
+      assert.equal(shared.length, 1);
+      assert.match(shared[0].files?.[0]?.name ?? '', /^rename-the-helper-\d{4}-\d{2}-\d{2}\.md$/);
+      // The blob link is what navigates iOS away; it must never be created.
+      assert.equal(clickSpy.mock.calls.length, 0);
+    } finally {
+      clickSpy.mockRestore();
+      restoreShareApis();
+    }
+  });
+
+  it('treats dismissing the share sheet as done, not as a failure', async () => {
+    stubShareApis(true, () => Promise.reject(new DOMException('dismissed', 'AbortError')));
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+
+    try {
+      await downloadTranscriptExport('markdown', input);
+
+      assert.equal(clickSpy.mock.calls.length, 0);
+    } finally {
+      clickSpy.mockRestore();
+      restoreShareApis();
+    }
+  });
+
+  it('falls back to the download link when file sharing is unavailable', async () => {
+    stubShareApis(false);
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: () => 'blob:mock' });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: () => undefined });
+
+    try {
+      await downloadTranscriptExport('markdown', input);
+
+      assert.equal(clickSpy.mock.calls.length, 1);
+    } finally {
+      clickSpy.mockRestore();
+      Reflect.deleteProperty(URL, 'createObjectURL');
+      Reflect.deleteProperty(URL, 'revokeObjectURL');
+      restoreShareApis();
     }
   });
 });

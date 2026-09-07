@@ -3,9 +3,26 @@ import { buildTranscriptHtml } from '@/modules/chat/export/buildTranscriptHtml';
 import { buildTranscriptMarkdown } from '@/modules/chat/export/buildTranscriptMarkdown';
 
 /**
- * Helper to download a blob as a file.
+ * Hands the blob to the user. On iOS — the installed PWA especially — an
+ * <a download> click navigates the webview to the blob URL instead of
+ * downloading, and coming back reloads the whole app. The Web Share API is
+ * the platform answer there (Save to Files, AirDrop, …) and never navigates
+ * away; desktop browsers without file sharing keep the classic download link.
  */
-function downloadBlob(blob: Blob, filename: string): void {
+async function saveOrShareBlob(blob: Blob, filename: string): Promise<void> {
+  const file = new File([blob], filename, { type: blob.type });
+
+  if (navigator.canShare?.({ files: [file] })) {
+    try {
+      await navigator.share({ files: [file] });
+      return;
+    } catch (error) {
+      // Dismissing the sheet is a normal outcome, not a failure.
+      if (error instanceof DOMException && error.name === 'AbortError') return;
+      // Anything else (e.g. a stale user gesture) falls through to the link.
+    }
+  }
+
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
@@ -111,7 +128,7 @@ export async function downloadTranscriptExport(
   const content = await buildTranscriptExport(format, input, exportedAt);
   const filename = `${toExportFileStem(input.sessionTitle, exportedAt)}.${EXPORT_EXTENSIONS[format]}`;
 
-  downloadBlob(new Blob([content], { type: EXPORT_MIME_TYPES[format] }), filename);
+  await saveOrShareBlob(new Blob([content], { type: EXPORT_MIME_TYPES[format] }), filename);
 }
 
 /**
