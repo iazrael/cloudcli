@@ -186,6 +186,7 @@ rl.on('line', (line) => {
         return;
       }
     }
+    log('session_send', msg.params);
     send({ id: msg.id, result: {} });
     if (readMode() === 'send-fail') {
       send({ method: 'session/event', params: { sessionId, type: 'turn.failed', payload: { error: { message: 'provider auth failed', attribution: { statusCode: 401, reason: 'auth_failed' } } } } });
@@ -749,6 +750,41 @@ test('an engine-side cancellation degrades to a quiet notification instead of an
 // Last: the crash mode kills the shared stub subprocess; the supervisor's
 // restart circuit breaker brings it back, but later tests should not have to
 // race the restart.
+test('attachments reach the engine in its native item shape, not as app descriptors', async () => {
+  fsSync.writeFileSync(modeFilePath, 'ok\n');
+  const runtime = new ZCodeRuntimeProvider();
+  const { writer } = createWriter();
+
+  await runtime.run('summarize the files', {
+    sessionId: 'app-sess-attach',
+    cwd: stubDir,
+    attachments: [
+      { path: '/tmp/assets/1-abc/photo.png', name: 'photo.png', mimeType: 'image/png', size: 1024 },
+      { path: '/tmp/assets/1-def/report.pdf', name: 'report.pdf', mimeType: 'application/pdf', size: 20480 },
+      { path: '/tmp/assets/1-ghi/notes.txt', name: 'notes.txt', mimeType: 'text/plain', size: 33 },
+      { path: '/tmp/assets/1-jkl/blob.bin', mimeType: 'application/octet-stream', size: 8 },
+      { path: 'assets/relative/evil.txt', name: 'evil.txt', mimeType: 'text/plain', size: 3 },
+    ],
+  }, writer, context);
+
+  const sendEntry = readStubLog()
+    .filter((entry) => entry.name === 'session_send')
+    .map((entry) => entry.value as { attachments?: unknown[] })
+    .find((params) => Array.isArray(params.attachments));
+  assert.ok(sendEntry, 'session/send must carry the attachments param');
+
+  // The engine mapper (0.16.5) reads kind/filename/mimeType/sizeBytes/localPath
+  // and silently DROPS any item it cannot map — the app descriptor shape
+  // {path,name,mimeType,size} never reaches the model. Relative paths are
+  // refused too: the engine would resolve them against the session workspace.
+  assert.deepEqual(sendEntry.attachments, [
+    { kind: 'image', filename: 'photo.png', mimeType: 'image/png', sizeBytes: 1024, localPath: '/tmp/assets/1-abc/photo.png' },
+    { kind: 'pdf', filename: 'report.pdf', mimeType: 'application/pdf', sizeBytes: 20480, localPath: '/tmp/assets/1-def/report.pdf' },
+    { kind: 'file', filename: 'notes.txt', mimeType: 'text/plain', sizeBytes: 33, localPath: '/tmp/assets/1-ghi/notes.txt' },
+    { kind: 'file', filename: 'blob.bin', mimeType: 'application/octet-stream', sizeBytes: 8, localPath: '/tmp/assets/1-jkl/blob.bin' },
+  ], 'descriptors must be mapped to the engine item shape; relative paths must be dropped');
+});
+
 test('a failed session/stop keeps the run running to its true completion instead of reporting aborted', async () => {
   fsSync.writeFileSync(modeFilePath, 'stop-fail\n');
   const runtime = new ZCodeRuntimeProvider();

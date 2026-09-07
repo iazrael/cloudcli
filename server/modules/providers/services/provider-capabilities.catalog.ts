@@ -95,9 +95,12 @@ export const PROVIDER_CATALOG = {
     permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
     defaultPermissionMode: 'default',
     defaultModel: 'GLM-5.3',
-    // Attachment parameters are not confirmed by the Phase 0 spike yet.
-    supportsImages: false,
-    supportsFiles: false,
+    // Confirmed on engine 0.16.5: session/send takes native attachment items
+    // ({kind, filename, mimeType, sizeBytes, localPath}); the runtime maps
+    // app descriptors onto them. Whether an image reaches the model inline
+    // still depends on the model's input modality.
+    supportsImages: true,
+    supportsFiles: true,
     supportsAbort: true,
     supportsEffort: true,
   },

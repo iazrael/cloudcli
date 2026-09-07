@@ -25,6 +25,7 @@
  */
 
 import type { IProviderRuntime } from '@/shared/interfaces.js';
+import type { ChatAttachmentDescriptor } from '@/shared/image-attachments.js';
 import type {
   AnyRecord,
   NormalizedMessage,
@@ -35,6 +36,8 @@ import type {
 import { createCompleteMessage, createNormalizedMessage, generateMessageId, readOptionalString } from '@/shared/utils.js';
 import { notifyRunFailed, notifyRunStopped } from '@/modules/notifications/index.js';
 import { sessionsDb } from '@/modules/database/index.js';
+
+import path from 'node:path';
 
 import { SESSION_LOST_METHOD } from './zcode-codec.js';
 import { protocolClient } from './zcode-protocol.client.js';
@@ -88,6 +91,72 @@ export const zcodeRuntimePermissions = {
     return runLifecycle.listPendingPermissions(sessionId);
   },
 };
+
+/**
+ * Attachment item shape the engine's `session/send` mapper accepts (verified
+ * against engine 0.16.5). The mapper reads `kind`/`filename`/`mimeType`/
+ * `sizeBytes` plus exactly one source field — `localPath`, `dataBase64` or
+ * `textContent` — and silently DROPS any item it cannot map, so a wrong shape
+ * never errors: the model just receives plain text without the attachment.
+ */
+type ZcodeEngineAttachment = {
+  kind: 'image' | 'video' | 'pdf' | 'audio' | 'file';
+  filename: string;
+  localPath: string;
+  mimeType?: string;
+  sizeBytes?: number;
+};
+
+/** Derives the engine's attachment kind from the descriptor's MIME type. */
+function resolveEngineAttachmentKind(mimeType: string | undefined): ZcodeEngineAttachment['kind'] {
+  if (!mimeType) {
+    return 'file';
+  }
+  if (mimeType.startsWith('image/')) {
+    return 'image';
+  }
+  if (mimeType.startsWith('video/')) {
+    return 'video';
+  }
+  if (mimeType.startsWith('audio/')) {
+    return 'audio';
+  }
+  if (mimeType === 'application/pdf') {
+    return 'pdf';
+  }
+  return 'file';
+}
+
+/**
+ * Maps app attachment descriptors into the engine's native `session/send`
+ * item shape. The gateway (`filterAttachmentsToUploadStore`) only forwards
+ * direct children of the upload store, so paths arrive absolute — anything
+ * else is dropped here because the engine resolves relative `localPath`
+ * values against the session workspace and would report a bogus read failure
+ * instead of the file.
+ */
+function toEngineAttachments(descriptors: ChatAttachmentDescriptor[]): ZcodeEngineAttachment[] {
+  const items: ZcodeEngineAttachment[] = [];
+  for (const descriptor of descriptors) {
+    if (!path.isAbsolute(descriptor.path)) {
+      console.warn(`[ZCodeRuntime] Dropping attachment with non-absolute path: ${descriptor.path}`);
+      continue;
+    }
+    const item: ZcodeEngineAttachment = {
+      kind: resolveEngineAttachmentKind(descriptor.mimeType),
+      filename: descriptor.name ?? path.basename(descriptor.path),
+      localPath: descriptor.path,
+    };
+    if (descriptor.mimeType) {
+      item.mimeType = descriptor.mimeType;
+    }
+    if (typeof descriptor.size === 'number') {
+      item.sizeBytes = descriptor.size;
+    }
+    items.push(item);
+  }
+  return items;
+}
 
 /**
  * ZCode Runtime Provider Implementation
@@ -618,6 +687,11 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
    * by the engine (validated against engine 0.16.3 and 0.16.5), so only
    * `sessionId`, `content`, `attachments`, and the `runtimeModel` catalog
    * seed are sent.
+   *
+   * Attachments arrive as app descriptors `{path, name, mimeType, size}` and
+   * must be re-shaped into the engine's native items before sending — the
+   * engine silently drops items it cannot map, which used to make every
+   * attachment invisible to the model.
    */
   private async sendUserMessage(
     sessionId: string,
@@ -632,7 +706,10 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
     };
 
     if (Array.isArray(options.attachments)) {
-      messagePayload.attachments = options.attachments;
+      const engineAttachments = toEngineAttachments(options.attachments as ChatAttachmentDescriptor[]);
+      if (engineAttachments.length > 0) {
+        messagePayload.attachments = engineAttachments;
+      }
     }
 
     if (runtimeModel) {

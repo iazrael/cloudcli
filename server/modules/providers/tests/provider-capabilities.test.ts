@@ -87,8 +87,10 @@ const BASELINE: Record<string, Omit<ProviderCapabilities, 'provider'>> = {
   zcode: {
     permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
     defaultPermissionMode: 'default',
-    supportsImages: false,
-    supportsFiles: false,
+    // Native session/send attachment items, mapped by the runtime from app
+    // descriptors (verified on engine 0.16.5).
+    supportsImages: true,
+    supportsFiles: true,
     supportsAbort: true,
     // The zcode runtime carries the engine permission bridge (interaction/
     // requestPermission → chat cards), so its runtime.permissions facet is
