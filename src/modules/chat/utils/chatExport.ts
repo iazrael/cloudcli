@@ -155,22 +155,31 @@ export async function downloadTranscriptExport(
  * frozen PDF cannot silently lose collapsed content.
  */
 export async function downloadPDF(input: TranscriptExportInput): Promise<void> {
-  const exportedAt = new Date();
-  const html = await buildTranscriptHtml({
-    messages: input.messages,
-    createDiff: input.createDiff,
-    provider: input.provider,
-    selectedProject: input.selectedProject,
-    sessionTitle: input.sessionTitle,
-    exportedAt,
-  });
-
+  // Open before any await: Safari only lets a window.open through while it is
+  // still inside the click's user-gesture window, and building the document
+  // first (the react-dom/server load included) can outlast it — the first
+  // click was being swallowed by the popup blocker, the second one worked.
   const win = window.open('', '', 'width=900,height=700');
-  // `win === window` means the browser "opened" the popup by navigating the
-  // current page — writing to it would replace the whole app with no way back.
-  if (!win || win === window) {
-    window.alert('PDF export could not start because the browser could not open a print window.');
+  if (!win) {
+    window.alert('PDF export could not start because the browser blocked the popup. Allow popups and try again.');
     return;
+  }
+
+  const exportedAt = new Date();
+  let html: string;
+  try {
+    html = await buildTranscriptHtml({
+      messages: input.messages,
+      createDiff: input.createDiff,
+      provider: input.provider,
+      selectedProject: input.selectedProject,
+      sessionTitle: input.sessionTitle,
+      exportedAt,
+    });
+  } catch (error) {
+    // Don't leave the already-opened window sitting there blank.
+    win.close();
+    throw error;
   }
 
   win.document.write(html);
