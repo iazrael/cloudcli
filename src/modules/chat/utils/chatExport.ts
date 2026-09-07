@@ -42,6 +42,23 @@ export const EXPORT_FORMATS = [
   { id: 'pdf', label: 'PDF (Print to File)', ext: '.pdf' },
 ] as const;
 
+/**
+ * The PDF export prints from a window.open popup, and a popup only exists
+ * outside the installed app: in standalone mode iOS "opens" it by navigating
+ * the current webview, replacing the whole app with a page that has no way
+ * back. Offer the option only where a print window can actually appear.
+ */
+export function isPrintExportSupported(): boolean {
+  return !window.matchMedia?.('(display-mode: standalone)').matches;
+}
+
+/** The export formats this environment can actually deliver. */
+export function getAvailableExportFormats() {
+  return isPrintExportSupported()
+    ? EXPORT_FORMATS
+    : EXPORT_FORMATS.filter((format) => format.id !== 'pdf');
+}
+
 // ─── Unified transcript export (upstream API) ───────────────────────────────
 
 export type TranscriptExportFormat = 'html' | 'markdown' | 'json';
@@ -149,8 +166,10 @@ export async function downloadPDF(input: TranscriptExportInput): Promise<void> {
   });
 
   const win = window.open('', '', 'width=900,height=700');
-  if (!win) {
-    window.alert('PDF export could not start because the browser blocked the popup. Allow popups and try again.');
+  // `win === window` means the browser "opened" the popup by navigating the
+  // current page — writing to it would replace the whole app with no way back.
+  if (!win || win === window) {
+    window.alert('PDF export could not start because the browser could not open a print window.');
     return;
   }
 

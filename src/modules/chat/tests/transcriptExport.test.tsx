@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { ChatMessage } from '@/shared/types';
 import type * as UiPreferencesContext from '@/shared/context/UiPreferencesContext';
-import { buildTranscriptExport, downloadPDF, downloadTranscriptExport, toExportFileStem } from '@/modules/chat/utils/chatExport';
+import { buildTranscriptExport, downloadPDF, downloadTranscriptExport, getAvailableExportFormats, isPrintExportSupported, toExportFileStem } from '@/modules/chat/utils/chatExport';
 import { createCachedDiffCalculator } from '@/modules/chat/utils/messageTransforms';
 
 const createDiff = createCachedDiffCalculator();
@@ -384,6 +384,52 @@ describe('download hand-off', () => {
       Reflect.deleteProperty(URL, 'createObjectURL');
       Reflect.deleteProperty(URL, 'revokeObjectURL');
       restoreShareApis();
+    }
+  });
+});
+
+// The PDF export needs a real popup window; in the installed PWA iOS "opens"
+// it by navigating the current page, so the option must not be offered there.
+describe('pdf availability', () => {
+  const setDisplayMode = (standalone: boolean) => {
+    vi.spyOn(window, 'matchMedia').mockReturnValue({ matches: standalone } as MediaQueryList);
+  };
+
+  it('is hidden in the installed app (display-mode: standalone)', () => {
+    setDisplayMode(true);
+
+    assert.equal(isPrintExportSupported(), false);
+    assert.deepEqual(
+      getAvailableExportFormats().map((format) => format.id),
+      ['markdown', 'html'],
+    );
+  });
+
+  it('is offered in a regular browser tab', () => {
+    setDisplayMode(false);
+
+    assert.equal(isPrintExportSupported(), true);
+    assert.deepEqual(
+      getAvailableExportFormats().map((format) => format.id),
+      ['markdown', 'html', 'pdf'],
+    );
+  });
+
+  it('refuses to print when the popup resolves to the current window', async () => {
+    setDisplayMode(false);
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue(window);
+    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => undefined);
+
+    try {
+      await downloadPDF(input);
+
+      expect(alertSpy.mock.calls.length).toBe(1);
+      // Nothing was written: the app page must survive a hostile environment
+      // that turns window.open into a same-window navigation.
+      expect(openSpy.mock.calls.length).toBe(1);
+    } finally {
+      openSpy.mockRestore();
+      alertSpy.mockRestore();
     }
   });
 });

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Download, FileJson, FileText } from 'lucide-react';
 
 import type { ChatMessage, DiffLine } from '@/shared/types';
-import { downloadTranscriptExport, downloadPDF, EXPORT_FORMATS } from '@/modules/chat/utils/chatExport';
+import { downloadTranscriptExport, downloadPDF, getAvailableExportFormats } from '@/modules/chat/utils/chatExport';
 
 type ChatExportMenuProps = {
   messages: ChatMessage[];
@@ -61,7 +61,7 @@ export default function ChatExportMenu({ messages, sessionTitle, provider, creat
         <div className="absolute right-0 top-full z-50 mt-2 w-48 rounded-lg border border-border/50 bg-card shadow-lg">
           <div className="p-2">
             <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground">Export as:</div>
-            {EXPORT_FORMATS.map((fmt) => (
+            {getAvailableExportFormats().map((fmt) => (
               <button
                 key={fmt.id}
                 type="button"
