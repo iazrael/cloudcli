@@ -81,7 +81,11 @@ const DEFAULT_SETTINGS: BrowserUseSettings = {
   enabled: false,
 };
 const AGENT_OWNER_ID = 'agent';
-const PROFILE_ROOT = path.join(os.homedir(), '.cloudcli', 'browser-use', 'profiles');
+const BROWSER_USE_ROOT = path.join(os.homedir(), '.cloudcli', 'browser-use');
+const PROFILE_ROOT = path.join(BROWSER_USE_ROOT, 'profiles');
+// Dedicated out-of-repo npm project. Playwright installed here survives the
+// repository's npm install/prune cycles, which drop the --no-save copy.
+const RUNTIME_INSTALL_DIR = path.join(BROWSER_USE_ROOT, 'runtime');
 const MCP_SERVER_NAME = 'cloudcli-browser';
 const LEGACY_MCP_SERVER_NAMES = ['cloudcli-browser-use'];
 const RUNTIME_READINESS_CACHE_TTL_MS = 30_000;
@@ -142,8 +146,32 @@ function getPlaywright(): any | null {
   try {
     return require('playwright');
   } catch {
+    // Not in the repository's node_modules; fall through to the
+    // out-of-repo runtime install under ~/.cloudcli.
+  }
+
+  try {
+    // Anchoring resolution at the runtime dir's package.json (which does not
+    // need to exist) resolves playwright from ~/.cloudcli/browser-use/runtime.
+    return createRequire(path.join(RUNTIME_INSTALL_DIR, 'package.json'))('playwright');
+  } catch {
     return null;
   }
+}
+
+function ensureRuntimeInstallDir(): string {
+  fs.mkdirSync(RUNTIME_INSTALL_DIR, { recursive: true });
+  const manifestPath = path.join(RUNTIME_INSTALL_DIR, 'package.json');
+  if (!fs.existsSync(manifestPath)) {
+    // Without a package.json npm walks up to the nearest ancestor project
+    // root and would install playwright somewhere unrelated.
+    fs.writeFileSync(manifestPath, `${JSON.stringify({
+      name: 'cloudcli-browser-runtime',
+      private: true,
+      version: '1.0.0',
+    }, null, 2)}\n`);
+  }
+  return RUNTIME_INSTALL_DIR;
 }
 
 function getMcpCommand(): { command: string; args: string[] } {
@@ -241,10 +269,10 @@ const INSTALL_COMMAND_TIMEOUT_MS = Number.parseInt(
   10,
 );
 
-function runCommand(command: string, args: string[]): Promise<void> {
+function runCommand(command: string, args: string[], cwd: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
-      cwd: process.cwd(),
+      cwd,
       env: process.env,
       shell: false,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -302,15 +330,18 @@ async function installRuntime(): Promise<{ success: boolean; message: string }> 
   installPromise = (async () => {
     try {
       lastInstallMessage = 'Installing Playwright package...';
-      await runCommand(npmCommand, ['install', '--no-save', '--no-package-lock', 'playwright']);
+      const installDir = ensureRuntimeInstallDir();
+      // The runtime dir has its own package.json, so letting npm save keeps
+      // it self-describing; nothing ever reconciles this directory.
+      await runCommand(npmCommand, ['install', 'playwright'], installDir);
 
       if (process.platform === 'linux') {
         lastInstallMessage = 'Installing Chromium system dependencies...';
-        await runCommand(npmCommand, ['exec', '--', 'playwright', 'install-deps', 'chromium']);
+        await runCommand(npmCommand, ['exec', '--', 'playwright', 'install-deps', 'chromium'], installDir);
       }
 
       lastInstallMessage = 'Installing Chromium runtime...';
-      await runCommand(npmCommand, ['exec', '--', 'playwright', 'install', 'chromium']);
+      await runCommand(npmCommand, ['exec', '--', 'playwright', 'install', 'chromium'], installDir);
 
       lastInstallMessage = 'Browser runtime installed.';
       return { success: true, message: lastInstallMessage };
