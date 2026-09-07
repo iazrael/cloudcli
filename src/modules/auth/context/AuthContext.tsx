@@ -208,7 +208,17 @@ export function AuthProvider({ children }: AuthProviderProps) {
       setIsLoading(true);
       setError(null);
 
-      const statusResponse = await api.auth.status();
+      // All three requests resolve the user from the JWT server-side, so none
+      // of them needs another one's response. Fire them in parallel to save
+      // two network round-trips on cold starts (each RTT costs ~0.5-1s through
+      // the Cloudflare tunnel). Side effects stay ordered below.
+      const onboardingPromise = token ? checkOnboardingStatus() : Promise.resolve();
+      const [statusResponse, userResponse] = await Promise.all([
+        api.auth.status(),
+        token ? api.auth.user() : Promise.resolve(null),
+      ]);
+      await onboardingPromise;
+
       const statusPayload = await parseJsonSafely<AuthStatusPayload>(statusResponse);
 
       if (statusPayload?.needsSetup) {
@@ -218,11 +228,10 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
       setNeedsSetup(false);
 
-      if (!token) {
+      if (!userResponse) {
         return;
       }
 
-      const userResponse = await api.auth.user();
       if (!userResponse.ok) {
         clearSession();
         return;
@@ -235,7 +244,6 @@ export function AuthProvider({ children }: AuthProviderProps) {
       }
 
       setUser(userPayload.user);
-      await checkOnboardingStatus();
     } catch (caughtError) {
       console.error('[Auth] Auth status check failed:', caughtError);
       setError(AUTH_ERROR_MESSAGES.authStatusCheckFailed);
