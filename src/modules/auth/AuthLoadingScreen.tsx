@@ -1,3 +1,5 @@
+import { useTranslation } from 'react-i18next';
+
 import { APP_VERSION, BUILD_INFO, CLOUDCLI_WORDMARK_FONT_FAMILY } from '@/shared/constants';
 import { formatBuildVersion } from '@/shared/utils';
 
@@ -6,7 +8,7 @@ const loadingDotAnimationDelays = ['0s', '0.15s', '0.3s'];
 /** Rendered by the auth module's ProtectedRoute while the initial auth status check is in flight. */
 export default function AuthLoadingScreen() {
   const versionLine = formatBuildVersion(APP_VERSION, BUILD_INFO.commit);
-
+  const { t } = useTranslation('auth');
   return (
     <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-background p-4">
       <div aria-hidden className="pointer-events-none absolute inset-0">
@@ -26,7 +28,7 @@ export default function AuthLoadingScreen() {
         >
           CloudCLI
         </h1>
-        <p className="sr-only">Loading authentication state…</p>
+        <p className="sr-only">{t('misc.loadingState')}</p>
         <div aria-hidden className="flex items-center justify-center gap-2">
           {loadingDotAnimationDelays.map((delay) => (
             <div

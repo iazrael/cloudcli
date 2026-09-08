@@ -79,7 +79,8 @@ const writeClaudePluginCommand = async (
 
 /**
  * This test covers Claude user/project skill folders plus plugin discovery from
- * installed plugin command files and fallback plugin skill files.
+ * installed plugin command files and plugin skill files, including a plugin that
+ * ships both.
  */
 test('providerSkillsService lists claude user, project, and enabled plugin skills', { concurrency: false }, async () => {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'llm-skills-claude-'));
@@ -154,11 +155,19 @@ test('providerSkillsService lists claude user, project, and enabled plugin skill
     );
     await writeSkill(
       path.join(commandPluginInstallPath, 'skills'),
-      'ignored-command-plugin-skill-dir',
-      'ignored-command-plugin-skill',
-      'Command plugin fallback skill should be ignored',
+      'command-plugin-skill-dir',
+      'command-plugin-skill',
+      'Skill shipped beside plugin commands',
     );
     await writeClaudePluginManifest(skillPluginInstallPath, 'ExampleSkills');
+    // A commands folder holding nothing this reader takes must not hide the
+    // skills beside it: plugins do ship commands in other agents' formats.
+    await fs.mkdir(path.join(skillPluginInstallPath, 'commands'), { recursive: true });
+    await fs.writeFile(
+      path.join(skillPluginInstallPath, 'commands', 'other-agent.toml'),
+      'description = "Command for another agent"\n',
+      'utf8',
+    );
     await writeSkill(
       path.join(skillPluginInstallPath, 'skills'),
       'claude-plugin-dir',
@@ -290,7 +299,14 @@ test('providerSkillsService lists claude user, project, and enabled plugin skill
     assert.equal(pluginCommand?.command, '/Notion:insert-row');
     assert.equal(pluginCommand?.description, 'Insert a Notion database row');
     assert.match(pluginCommand?.sourcePath ?? '', /commands[\\/]insert-row\.md$/);
-    assert.equal(byName.has('ignored-command-plugin-skill'), false);
+    // A plugin that ships commands keeps its skills: the CLI offers both, so
+    // the menu lists both rather than letting the commands folder hide them.
+    const commandPluginSkill = byName.get('command-plugin-skill');
+    assert.equal(commandPluginSkill?.scope, 'plugin');
+    assert.equal(commandPluginSkill?.pluginName, 'Notion');
+    assert.equal(commandPluginSkill?.pluginId, 'notion@notion-marketplace');
+    assert.equal(commandPluginSkill?.command, '/Notion:command-plugin-skill');
+    assert.equal(commandPluginSkill?.description, 'Skill shipped beside plugin commands');
 
     const pluginSkill = byName.get('claude-plugin');
     assert.equal(pluginSkill?.scope, 'plugin');
@@ -405,6 +421,11 @@ test('providerSkillsService lists zcode project, native storage, and shared agen
   await fs.mkdir(workspacePath, { recursive: true });
 
   const restoreHomeDir = patchHomeDir(tempRoot);
+  // getZCodeStorageDir reads the real home through node:os in a way the
+  // homedir patch above does not intercept, so route it explicitly through
+  // its documented ZCODE_STORAGE_DIR test override instead.
+  const previousStorageDir = process.env.ZCODE_STORAGE_DIR;
+  process.env.ZCODE_STORAGE_DIR = path.join(tempRoot, '.zcode');
   try {
     await writeSkill(
       path.join(workspacePath, '.agents', 'skills'),
@@ -437,6 +458,11 @@ test('providerSkillsService lists zcode project, native storage, and shared agen
     assert.equal(byName.get('zcode-shared')?.scope, 'user');
     assert.equal(byName.get('zcode-native')?.command, '/zcode-native');
   } finally {
+    if (previousStorageDir === undefined) {
+      delete process.env.ZCODE_STORAGE_DIR;
+    } else {
+      process.env.ZCODE_STORAGE_DIR = previousStorageDir;
+    }
     restoreHomeDir();
     await fs.rm(tempRoot, { recursive: true, force: true });
   }

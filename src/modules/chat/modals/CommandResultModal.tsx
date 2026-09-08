@@ -73,16 +73,17 @@ type CommandResultModalProps = {
 type CommandEntry = {
   name: string;
   description?: string;
+  descriptionKey?: string;
   namespace?: string;
 };
 
 const FALLBACK_COMMANDS: CommandEntry[] = [
-  { name: '/models', description: 'Browse available models for the active provider.' },
-  { name: '/cost', description: 'Review token usage for the active session.' },
-  { name: '/status', description: 'Inspect runtime, version, provider, and environment status.' },
-  { name: '/memory', description: 'Open the project CLAUDE.md memory file.' },
-  { name: '/config', description: 'Open settings and configuration.' },
-  { name: '/help', description: 'Show command documentation and syntax.' },
+  { name: '/models', descriptionKey: 'chat:misc.fallbackCommands.models' },
+  { name: '/cost', descriptionKey: 'chat:misc.fallbackCommands.cost' },
+  { name: '/status', descriptionKey: 'chat:misc.fallbackCommands.status' },
+  { name: '/memory', descriptionKey: 'chat:misc.fallbackCommands.memory' },
+  { name: '/config', descriptionKey: 'chat:misc.fallbackCommands.config' },
+  { name: '/help', descriptionKey: 'chat:misc.fallbackCommands.help' },
 ];
 
 // Unknown provider values echo through unchanged instead of falling back to
@@ -160,6 +161,7 @@ function SearchField({
 }
 
 function HelpContent({ data }: { data: HelpCommandData }) {
+  const { t } = useTranslation();
   const [query, setQuery] = useState('');
   const commands = (Array.isArray(data.commands) && data.commands.length > 0
     ? data.commands
@@ -172,15 +174,17 @@ function HelpContent({ data }: { data: HelpCommandData }) {
     }
 
     return commands.filter((command) => {
-      const haystack = `${command.name} ${command.description || ''} ${command.namespace || ''}`.toLowerCase();
+      const haystack = `${command.name} ${command.description || ''} ${
+        command.descriptionKey ? t(command.descriptionKey) : ''
+      } ${command.namespace || ''}`.toLowerCase();
       return haystack.includes(normalized);
     });
-  }, [commands, query]);
+  }, [commands, query, t]);
 
   return (
     <div className="grid h-full min-h-0 gap-4 lg:grid-cols-[minmax(0,1fr)_18rem]">
       <div className="flex min-h-0 flex-col gap-3">
-        <SearchField value={query} onChange={setQuery} placeholder="Filter commands..." />
+        <SearchField value={query} onChange={setQuery} placeholder={t('chat:misc.filterCommands')} />
 
         <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto pr-1">
           <div className="grid gap-2 sm:grid-cols-2">
@@ -199,7 +203,8 @@ function HelpContent({ data }: { data: HelpCommandData }) {
                   </Badge>
                 </div>
                 <p className="mt-3 text-sm leading-5 text-muted-foreground">
-                  {command.description || 'No description available.'}
+                  {command.description
+                    || (command.descriptionKey ? t(command.descriptionKey) : t('chat:misc.noDescription'))}
                 </p>
               </div>
             ))}
@@ -258,6 +263,7 @@ function ModelsContent({
   currentSessionId: string | null;
   onSelectProviderModel: CommandResultModalProps['onSelectProviderModel'];
 }) {
+  const { t } = useTranslation();
   const [query, setQuery] = useState('');
   const [changingModel, setChangingModel] = useState<string | null>(null);
   const [pendingSessionModel, setPendingSessionModel] = useState<string | null>(null);
@@ -309,7 +315,7 @@ function ModelsContent({
       setPendingSessionModel(null);
       setSelectionNotice(`Default ${providerLabel} model set to ${result.model}.`);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unable to change the model right now.';
+      const message = error instanceof Error ? error.message : t('chat:misc.modelChangeFailed');
       setSelectionNotice(message);
     } finally {
       setChangingModel(null);
@@ -423,9 +429,9 @@ function ModelsContent({
         {selectionNotice ? (
           <span className="text-foreground">{selectionNotice}</span>
         ) : hasConcreteSessionId ? (
-          'Your choice is saved for this session and becomes the default for new chats.'
+          t('chat:misc.choiceSavedSession')
         ) : (
-          'Your choice becomes the default model for new chats.'
+          t('chat:misc.choiceSavedDefault')
         )}
       </p>
     </div>
@@ -918,33 +924,34 @@ export default function CommandResultModal({
   currentSessionId,
   onSelectProviderModel,
 }: CommandResultModalProps) {
+  const { t } = useTranslation();
   const isOpen = Boolean(payload);
   const kind = payload?.kind;
   const isModelsModal = kind === 'models';
 
   const modalMeta = {
     help: {
-      eyebrow: 'Command center',
-      title: 'Help & Shortcuts',
-      subtitle: 'Search built-ins, syntax patterns, and command usage without leaving the chat.',
+      eyebrow: t('chat:misc.modalMeta.helpEyebrow'),
+      title: t('chat:misc.modalMeta.helpTitle'),
+      subtitle: t('chat:misc.modalMeta.helpSubtitle'),
       icon: CircleHelp,
     },
     models: {
-      eyebrow: 'Model selection',
-      title: 'Choose a Model',
-      subtitle: 'Pick the model this provider should use.',
+      eyebrow: t('chat:misc.modalMeta.modelsEyebrow'),
+      title: t('chat:misc.modalMeta.modelsTitle'),
+      subtitle: t('chat:misc.modalMeta.modelsSubtitle'),
       icon: Cpu,
     },
     cost: {
-      eyebrow: 'Session telemetry',
-      title: 'Token Usage',
-      subtitle: 'Input, output, and total token counts for this session.',
+      eyebrow: t('chat:misc.modalMeta.costEyebrow'),
+      title: t('chat:misc.modalMeta.costTitle'),
+      subtitle: t('chat:misc.modalMeta.costSubtitle'),
       icon: Coins,
     },
     status: {
-      eyebrow: 'Runtime health',
-      title: 'System Status',
-      subtitle: 'Version, provider, runtime, and environment details in one place.',
+      eyebrow: t('chat:misc.modalMeta.statusEyebrow'),
+      title: t('chat:misc.modalMeta.statusTitle'),
+      subtitle: t('chat:misc.modalMeta.statusSubtitle'),
       icon: Activity,
     },
   } as const;
@@ -955,7 +962,7 @@ export default function CommandResultModal({
   return (
     <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="flex h-[min(92dvh,48rem)] w-[calc(100vw-1rem)] max-w-5xl flex-col overflow-hidden rounded-3xl border-border/80 bg-popover/95 p-0 shadow-2xl backdrop-blur-xl sm:w-[min(94vw,64rem)]">
-        <DialogTitle>{activeMeta?.title || 'Command Result'}</DialogTitle>
+        <DialogTitle>{activeMeta?.title || t('chat:misc.modalMeta.commandResult')}</DialogTitle>
 
         <div
           className={`flex shrink-0 items-start justify-between gap-3 border-b border-border bg-popover ${
@@ -989,7 +996,7 @@ export default function CommandResultModal({
             size="icon"
             onClick={onClose}
             className="h-8 w-8 shrink-0 rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
-            aria-label="Close command result modal"
+            aria-label={t('chat:misc.closeModal')}
           >
             <X className="h-4 w-4" />
           </Button>
@@ -1015,10 +1022,10 @@ export default function CommandResultModal({
         <div className="flex shrink-0 flex-col gap-3 border-t border-border/70 bg-muted/20 px-4 py-3 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between sm:px-6">
           <div className="flex items-center gap-2">
             <Gauge className="h-3.5 w-3.5" />
-            <span>Esc closes the modal.</span>
+            {t('chat:misc.escClosesModal')}
           </div>
           <Button type="button" variant="outline" size="sm" onClick={onClose} className="rounded-xl">
-            Close
+            {t('chat:misc.close')}
           </Button>
         </div>
       </DialogContent>

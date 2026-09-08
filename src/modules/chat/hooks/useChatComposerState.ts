@@ -34,6 +34,7 @@ import { escapeRegExp } from '@/modules/chat/utils/chatFormatting';
 
 import { useFileMentions } from '@/modules/chat/hooks/useFileMentions';
 import type { SlashCommand } from '@/shared/types';
+import { useInputHistory } from '@/modules/chat/hooks/useInputHistory';
 import { useSlashCommands } from '@/modules/chat/hooks/useSlashCommands';
 
 type UseChatComposerStateArgs = {
@@ -313,6 +314,22 @@ export function useChatComposerState({
   const processingSessionsRef = useRef<SessionActivityMap | undefined>(processingSessions);
   sessionKeyRef.current = sessionKey;
   processingSessionsRef.current = processingSessions;
+
+  // Recall writes go through the same pair of stores a send reads: the state
+  // (for the render) and inputValueRef (so an immediate Enter submits the
+  // recalled text, not a stale value).
+  const setInputFromHistory = useCallback((value: string) => {
+    setInput(value);
+    inputValueRef.current = value;
+  }, [setInput]);
+  // The chat scope a draft belongs to: the open session, or the project for a
+  // chat that has not been sent yet and so has no session id.
+  const draftScope = sessionKey ?? (selectedProjectId ? `project:${selectedProjectId}` : null);
+  const { recordSentMessage, handleHistoryKeyDown } = useInputHistory({
+    setInput: setInputFromHistory,
+    textareaRef,
+    scope: draftScope,
+  });
 
   const [queuedDraft, setQueuedDraft] = useState<QueuedDraft | null>(() => {
     if (typeof window === 'undefined' || !sessionKey) {
@@ -747,6 +764,11 @@ export function useChatComposerState({
           });
         }
 
+        // Recorded under the session the message was queued FOR, and before
+        // the session-switch return below — the queued text must be
+        // recallable even when it dispatches without this composer.
+        recordSentMessage(currentInput, queuedSessionKey);
+
         // The upload is asynchronous. If the user changed sessions while it
         // was running, persist/send against the session where Queue was
         // pressed rather than putting the draft into the newly opened chat.
@@ -808,6 +830,7 @@ export function useChatComposerState({
             : undefined);
         if (matchedCommand && matchedCommand.type !== 'skill') {
           executeCommand(matchedCommand, isHelpAlias ? '/help' : commandInput);
+          recordSentMessage(currentInput);
           setInput('');
           inputValueRef.current = '';
           setAttachedFiles([]);
@@ -940,6 +963,11 @@ export function useChatComposerState({
       });
       setEditingAnchorId(null);
 
+      // Recorded under the (possibly just-allocated) session id, so the first
+      // message of a new chat lands in the history of the session the user is
+      // navigated to. Queued drafts were recorded when they were queued; the
+      // consecutive-duplicate check keeps this second call a no-op.
+      recordSentMessage(currentInput, targetSessionId);
       setInput('');
       inputValueRef.current = '';
       resetCommandMenuState();
@@ -964,6 +992,7 @@ export function useChatComposerState({
       onSessionProcessing,
       onSessionEstablished,
       provider,
+      recordSentMessage,
       resetCommandMenuState,
       stickToBottomAfterSend,
       selectedProject,
@@ -1161,6 +1190,10 @@ export function useChatComposerState({
         return;
       }
 
+      if (handleHistoryKeyDown(event)) {
+        return;
+      }
+
       if (event.key === 'Tab' && !showFileDropdown && !showCommandMenu) {
         event.preventDefault();
         cyclePermissionMode();
@@ -1185,6 +1218,7 @@ export function useChatComposerState({
       cyclePermissionMode,
       handleCommandMenuKeyDown,
       handleFileMentionsKeyDown,
+      handleHistoryKeyDown,
       handleSubmit,
       sendByCtrlEnter,
       showCommandMenu,

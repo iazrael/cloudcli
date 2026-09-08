@@ -46,12 +46,18 @@ test('archived session is not reactivated when synchronizer calls createSession'
     sessionsDb.updateSessionIsArchived(sessionId, true);
     assert.equal(sessionsDb.getSessionById(sessionId)?.isArchived, 1);
 
-    // 3. Background synchronizer rescans and calls createSession again
+    // 3. Background synchronizer rescans and calls createSession again. The
+    // synchronizer passes the transcript's file timestamps; a stale timestamp
+    // is not new activity, so the archive survives. (An omitted timestamp
+    // would count as fresh activity and legitimately unarchive the row.)
+    const staleTimestamp = new Date(Date.now() - 60_000).toISOString();
     sessionsDb.createSession(
       'session-archived-1',
       'claude',
       '/tmp/test-archive-project',
       'Scanned Title',
+      staleTimestamp,
+      staleTimestamp,
     );
 
     // 4. Invariant: User archive state MUST be preserved!

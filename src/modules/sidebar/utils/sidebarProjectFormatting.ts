@@ -207,3 +207,13 @@ export const normalizeProjectForSettings = (project: Project): SettingsProject =
         : fallbackPath,
   };
 };
+
+/** Display names for the providers a session row can belong to. */
+export const PROVIDER_LABELS: Record<LLMProvider, string> = {
+  claude: 'Claude',
+  codex: 'Codex',
+  cursor: 'Cursor',
+  opencode: 'OpenCode',
+  zcode: 'ZCode',
+  antigravity: 'Antigravity',
+};
