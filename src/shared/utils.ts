@@ -271,11 +271,11 @@ export const safeLocalStorage = {
 
 /**
  * Formats the version line shown by the auth loading screen and the settings
- * About tab. `commit` comes from `git describe --always --dirty`: when it is
- * tag-anchored (`v2.1.0`, `v2.1.0-5-g273e294`) it already carries the version,
- * so it is shown alone — prefixing the package version would read
+ * About tab. `commit` comes from `git describe --tags --always --dirty`: when
+ * it is tag-anchored (`v2.1.0`, `v2.1.0-5-g273e294`) it already carries the
+ * version, so it is shown alone — prefixing the package version would read
  * "v2.1.0(v2.1.0)" on release day. Only the bare `--always` hash fallback
- * (built from a tree no annotated tag can reach) is shown next to the package
+ * (built from a tree no tag can reach) is shown next to the package
  * version, and an absent commit leaves the plain package version.
  */
 export function formatBuildVersion(version: string, commit: string): string {

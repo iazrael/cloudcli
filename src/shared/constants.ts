@@ -40,10 +40,10 @@ export const APP_VERSION: string = typeof __APP_VERSION__ === 'string' ? __APP_V
 
 /**
  * Build fingerprint baked into the client bundle at build time: `commit` is the
- * annotated-tag-anchored `git describe --always --dirty` of the built tree (e.g.
+ * tag-anchored `git describe --tags --always --dirty` of the built tree (e.g.
  * `v2.1.0`, `v2.1.0-5-g273e294`, or just the short hash when no tag is
  * reachable, suffixed `-dirty` for uncommitted changes), `buildTime` the build
- * timestamp, and `describe` the same identity from `git describe --tags`.
+ * timestamp, and `describe` the same identity from the same command.
  * Unlike `APP_VERSION` they change on every build, so a stale PWA window can be
  * told apart from the latest deploy. Empty strings outside a Vite build (for
  * example under the `tsx` test runner).
