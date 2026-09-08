@@ -18,7 +18,7 @@ const HARD_EXCLUDED_DIRECTORY_NAMES = new Set([
 
 const IGNORED_DIRECTORY_NAMES = new Set([
   ...HARD_EXCLUDED_DIRECTORY_NAMES,
-  'dist', 'build', '.next', '.nuxt', '.cache', '.parcel-cache',
+  'dist', 'build', '.next', '.nuxt', '.cache', '.parcel-cache', '.vercel',
   '__pycache__', '.pytest_cache', '.mypy_cache', '.tox', 'venv', '.venv',
   'target', 'vendor',
   '.gradle', '.idea', 'coverage', '.nyc_output',
