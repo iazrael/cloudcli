@@ -20,6 +20,7 @@ import type {
   CodexPermissionMode,
   CursorPermissionsState,
   NotificationPreferencesState,
+  PermissionMode,
   ProjectSortOrder,
   SettingsMainTab,
   ZcodePermissionMode,
@@ -77,9 +78,18 @@ const toZcodePermissionMode = (value: unknown): ZcodePermissionMode => {
   return 'default';
 };
 
+const toClaudePermissionMode = (value: unknown): PermissionMode => {
+  if (value === 'acceptEdits' || value === 'auto' || value === 'plan' || value === 'bypassPermissions') {
+    return value;
+  }
+
+  return 'default';
+};
+
 const toResponseJson = async <T>(response: Response): Promise<T> => response.json() as Promise<T>;
 
 const createEmptyClaudePermissions = (): ClaudePermissionsState => ({
+  permissionMode: 'default',
   allowedTools: [],
   disallowedTools: [],
   skipPermissions: false,
@@ -162,6 +172,7 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
       // in effect, on any device.
       const storedClaudePermissions = readUserPreference<Partial<ClaudePermissionsState>>('claudePermissions', {});
       setClaudePermissions({
+        permissionMode: toClaudePermissionMode(storedClaudePermissions.permissionMode),
         allowedTools: Array.isArray(storedClaudePermissions.allowedTools)
           ? storedClaudePermissions.allowedTools
           : [],
@@ -252,6 +263,7 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
       // Mirror of loadSettings: every write lands in the preference store, so
       // the settings survive a device switch and stay visible to the send path.
       writeUserPreference('claudePermissions', {
+        permissionMode: claudePermissions.permissionMode,
         allowedTools: claudePermissions.allowedTools,
         disallowedTools: claudePermissions.disallowedTools,
         skipPermissions: claudePermissions.skipPermissions,
@@ -286,6 +298,7 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
   }, [
     antigravityPermissionMode,
     claudePermissions.allowedTools,
+    claudePermissions.permissionMode,
     claudePermissions.disallowedTools,
     claudePermissions.skipPermissions,
     codexPermissionMode,

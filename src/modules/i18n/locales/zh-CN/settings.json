@@ -537,6 +537,41 @@
         "overrideNote": "聊天输入框旁的会话权限选择器可为当前回合覆盖此默认值。"
       }
     },
+    "claude": {
+      "permissionMode": "权限模式",
+      "description": "控制 Claude 执行工具前如何请求批准；新会话默认从此模式开始。",
+      "modes": {
+        "default": {
+          "title": "默认",
+          "description": "执行命令和编辑文件前先请求批准（允许清单内的工具除外）。"
+        },
+        "auto": {
+          "title": "自动判断",
+          "description": "由内置分类器自动放行或拒绝每次工具调用——无需确认，但不安全的调用仍会被拒绝。"
+        },
+        "acceptEdits": {
+          "title": "自动接受编辑",
+          "description": "自动接受文件编辑；其他工具仍需批准。"
+        },
+        "bypassPermissions": {
+          "title": "跳过所有权限",
+          "description": "所有工具直接执行，不再弹出批准提示。请谨慎使用。"
+        },
+        "plan": {
+          "title": "计划模式",
+          "description": "只读分析与规划，不修改文件和系统状态。"
+        }
+      },
+      "technicalDetails": "技术细节",
+      "technicalInfo": {
+        "default": "不设置 SDK 权限模式：工具执行前 Claude 会先请求批准（允许清单内的除外）。",
+        "auto": "对应 SDK 的 auto 模式：由分类器在 SDK 内裁定放行，AskUserQuestion、计划批准等交互提示会被跳过。",
+        "acceptEdits": "对应 SDK 的 acceptEdits 模式：文件编辑自动接受，其他工具仍会提示。",
+        "bypassPermissions": "对应 SDK 的 bypassPermissions 模式：所有操作直接执行，不再提示。",
+        "plan": "对应 SDK 的 plan 模式：只读工具（Read、WebFetch 等）与计划工具集可用，写入被禁止。",
+        "overrideNote": "聊天输入框中的会话级权限选择会临时覆盖此默认值。"
+      }
+    },
     "actions": {
       "add": "添加"
     }

@@ -1135,8 +1135,9 @@ export type AgentSettingsProject = {
   path?: string;
 };
 
-/** Claude's persisted permission settings: the allowed and disallowed tool patterns and whether permission prompts are skipped; read and written as one unit by the settings controller. */
+/** Claude's persisted permission settings: the default permission mode new sessions start in, the allowed and disallowed tool patterns and whether permission prompts are skipped; read and written as one unit by the settings controller. */
 export type ClaudePermissionsState = {
+  permissionMode: PermissionMode;
   allowedTools: string[];
   disallowedTools: string[];
   skipPermissions: boolean;

@@ -554,6 +554,41 @@
         "overrideNote": "The per-session permission selector in the chat composer overrides this default for the current turn."
       }
     },
+    "claude": {
+      "permissionMode": "Permission Mode",
+      "description": "Controls how Claude asks for approval before running tools; new sessions start in this mode.",
+      "modes": {
+        "default": {
+          "title": "Default",
+          "description": "Asks for approval before commands and file edits, unless a tool is on the allowed list."
+        },
+        "auto": {
+          "title": "Auto",
+          "description": "A built-in classifier approves or denies each tool call automatically — hands-off, but unsafe calls are still denied."
+        },
+        "acceptEdits": {
+          "title": "Accept Edits",
+          "description": "Automatically accepts file edits; other tools still ask for approval."
+        },
+        "bypassPermissions": {
+          "title": "Bypass Permissions",
+          "description": "All tools run without approval prompts. Use with caution."
+        },
+        "plan": {
+          "title": "Plan Mode",
+          "description": "Read-only analysis and planning; no file edits or state changes."
+        }
+      },
+      "technicalDetails": "Technical details",
+      "technicalInfo": {
+        "default": "Leaves the SDK permission mode unset: Claude prompts before tools run unless allow-listed.",
+        "auto": "Maps to the SDK's auto mode: a classifier resolves approval inside the SDK, so interactive prompts (AskUserQuestion, plan approval) are skipped.",
+        "acceptEdits": "Maps to the SDK's acceptEdits mode: file edits are auto-accepted, other tools still prompt.",
+        "bypassPermissions": "Maps to the SDK's bypassPermissions mode: everything runs without approval prompts.",
+        "plan": "Maps to the SDK's plan mode: read-only tools (Read, WebFetch, ...) plus the plan toolset run; writes are blocked.",
+        "overrideNote": "The per-session permission selector in the chat composer overrides this default."
+      }
+    },
     "actions": {
       "add": "Add"
     }

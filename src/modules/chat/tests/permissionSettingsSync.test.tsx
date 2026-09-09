@@ -4,7 +4,8 @@ import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, test, vi } from 'vitest';
 
 import type { LLMProvider, ProjectSession } from '@/shared/types';
-import { resetUserPreferences, writeUserPreference } from '@/shared/userSettings';
+import { readUserPreference, resetUserPreferences, writeUserPreference } from '@/shared/userSettings';
+import { saveClaudePermissions } from '@/modules/chat/utils/chatStorage';
 
 vi.mock('@/shared/api', () => ({
   authenticatedFetch: vi.fn(() => new Promise<Response>(() => {})),
@@ -18,7 +19,7 @@ vi.mock('@/shared/api', () => ({
 vi.mock('@/shared/hooks/useProviderCapabilities', () => ({
   useProviderCapabilitiesMap: () => ({
     capabilities: {
-      claude: { permissionModes: ['default', 'acceptEdits'], defaultPermissionMode: 'default' },
+      claude: { permissionModes: ['default', 'auto', 'acceptEdits', 'bypassPermissions', 'plan'], defaultPermissionMode: 'default' },
       cursor: { permissionModes: ['default', 'acceptEdits'], defaultPermissionMode: 'default' },
       codex: { permissionModes: ['default', 'acceptEdits', 'bypassPermissions'], defaultPermissionMode: 'default' },
       opencode: { permissionModes: ['default', 'plan'], defaultPermissionMode: 'default' },
@@ -152,4 +153,37 @@ test('设置页保存后会刷新当前空白新会话', async () => {
   });
 
   assert.equal(result.current.permissionMode, 'acceptEdits');
+});
+
+test('新 Claude 会话读取设置页保存的权限模式', async () => {
+  writeUserPreference('claudePermissions', {
+    permissionMode: 'auto',
+    allowedTools: [],
+    disallowedTools: [],
+    skipPermissions: false,
+  });
+
+  const { result } = renderProviderState('claude');
+  await act(async () => {});
+
+  assert.equal(result.current.permissionMode, 'auto');
+});
+
+test('会话内授权保存工具清单时保留已存的权限模式', () => {
+  writeUserPreference('claudePermissions', {
+    permissionMode: 'auto',
+    allowedTools: [],
+    disallowedTools: [],
+    skipPermissions: false,
+  });
+
+  saveClaudePermissions({
+    allowedTools: ['Bash(git log:*)'],
+    disallowedTools: [],
+    skipPermissions: false,
+  });
+
+  const stored = readUserPreference<{ permissionMode?: string; allowedTools?: string[] }>('claudePermissions', {});
+  assert.equal(stored.permissionMode, 'auto');
+  assert.deepEqual(stored.allowedTools, ['Bash(git log:*)']);
 });

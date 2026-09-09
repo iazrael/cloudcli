@@ -124,6 +124,7 @@ test('auto-save writes the preference store and leaves legacy keys untouched', a
 
   act(() => {
     result.current.setClaudePermissions({
+      permissionMode: 'acceptEdits',
       allowedTools: ['Bash(npm run:*)'],
       disallowedTools: [],
       skipPermissions: false,
@@ -137,6 +138,7 @@ test('auto-save writes the preference store and leaves legacy keys untouched', a
   await new Promise((resolve) => setTimeout(resolve, 800));
 
   assert.deepEqual(userSettings.readUserPreference('claudePermissions', null), {
+    permissionMode: 'acceptEdits',
     allowedTools: ['Bash(npm run:*)'],
     disallowedTools: [],
     skipPermissions: false,

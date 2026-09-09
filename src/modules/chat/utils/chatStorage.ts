@@ -25,13 +25,22 @@ export function getClaudeSettings(): ClaudeSettings {
   };
 }
 
-/** Persists Claude's tool permissions after the user grants one from the chat. */
+/**
+ * Persists Claude's tool permissions after the user grants one from the chat.
+ * The grant only carries the tool lists, so the stored default permission mode
+ * is carried over untouched — a write that dropped it would reset the default
+ * configured in the settings dialog.
+ */
 export function saveClaudePermissions(permissions: {
   allowedTools: string[];
   disallowedTools: string[];
   skipPermissions: boolean;
 }): void {
-  writeUserPreference('claudePermissions', permissions);
+  const stored = readUserPreference<Partial<ClaudeSettings>>('claudePermissions', {});
+  writeUserPreference('claudePermissions', {
+    permissionMode: stored.permissionMode,
+    ...permissions,
+  });
 }
 
 /**
