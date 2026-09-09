@@ -10,7 +10,7 @@
 
 `claude | codex | cursor | opencode | zcode | antigravity`，联合类型定义在 `server/shared/types.ts` 的 `LLMProvider`。注册表 `server/modules/providers/provider.registry.ts` 用 `Record<LLMProvider, IProvider>` 硬编码六家实例——漏一家直接编译报错。
 
-每家一个目录：`server/modules/providers/list/<name>/`，由 `<name>.provider.ts` 组装各切面。前四家 runtime 是遗留 `.js` 适配器（`claude-runtime.provider.js` 等），zcode / antigravity 是 TS（含协议客户端、配额、运行生命周期等更多切面文件）。
+每家一个目录：`server/modules/providers/list/<name>/`，由 `<name>.provider.ts` 组装各切面。claude / cursor / opencode 的 runtime 是遗留 `.js` 适配器（`claude-runtime.provider.js` 等），codex、zcode / antigravity 是 TS（含协议客户端、配额、运行生命周期等更多切面文件）。
 
 ## IProvider 七切面
 

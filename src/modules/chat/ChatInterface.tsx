@@ -79,6 +79,7 @@ function ChatInterface({
     setPendingPermissionRequests,
     availablePermissionModes,
     selectPermissionMode,
+    persistPermissionModeForSession,
     cyclePermissionMode,
     providerModelCatalog,
     providerModelsLoading,
@@ -91,6 +92,7 @@ function ChatInterface({
   } = useChatProviderState({
     selectedSession,
     selectedProject,
+    newSessionTrigger,
   });
 
   const {
@@ -142,10 +144,16 @@ function ChatInterface({
   // the session gateway before the first send. Record it locally and put it
   // in the URL — this id never changes again, so there is no later handoff.
   const handleSessionEstablished = useCallback<NonNullable<ChatInterfaceProps['onSessionEstablished']>>((sessionId, context) => {
+    persistPermissionModeForSession(sessionId);
     setCurrentSessionId(sessionId);
     onSessionEstablished?.(sessionId, context);
     onNavigateToSession?.(sessionId);
-  }, [setCurrentSessionId, onSessionEstablished, onNavigateToSession]);
+  }, [
+    persistPermissionModeForSession,
+    setCurrentSessionId,
+    onSessionEstablished,
+    onNavigateToSession,
+  ]);
 
   const {
     input,

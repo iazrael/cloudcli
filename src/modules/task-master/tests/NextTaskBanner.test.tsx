@@ -6,6 +6,8 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import NextTaskBanner from '@/modules/task-master/NextTaskBanner';
 import TaskMasterContext from '@/modules/task-master/context/TaskMasterContext';
 import type { TaskMasterContextValue, TaskMasterProject, TaskMasterTask } from '@/modules/task-master/types';
+import { I18nextProvider } from 'react-i18next';
+import { i18n } from '@/modules/i18n';
 
 function renderWithContext(contextOverrides: Partial<TaskMasterContextValue> = {}) {
   const defaultContext: TaskMasterContextValue = {
@@ -29,9 +31,13 @@ function renderWithContext(contextOverrides: Partial<TaskMasterContextValue> = {
 
   return renderToStaticMarkup(
     React.createElement(
-      TaskMasterContext.Provider,
-      { value: defaultContext },
-      React.createElement(NextTaskBanner, { className: 'mt-5' })
+      I18nextProvider,
+      { i18n },
+      React.createElement(
+        TaskMasterContext.Provider,
+        { value: defaultContext },
+        React.createElement(NextTaskBanner, { className: 'mt-5' })
+      )
     )
   );
 }

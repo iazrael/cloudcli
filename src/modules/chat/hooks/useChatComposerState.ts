@@ -34,6 +34,7 @@ import { escapeRegExp } from '@/modules/chat/utils/chatFormatting';
 
 import { useFileMentions } from '@/modules/chat/hooks/useFileMentions';
 import type { SlashCommand } from '@/shared/types';
+import { useInputHistory } from '@/modules/chat/hooks/useInputHistory';
 import { useSlashCommands } from '@/modules/chat/hooks/useSlashCommands';
 
 type UseChatComposerStateArgs = {
@@ -314,6 +315,23 @@ export function useChatComposerState({
   sessionKeyRef.current = sessionKey;
   processingSessionsRef.current = processingSessions;
 
+  // Every programmatic input write goes through the same pair of stores a send
+  // reads: the state (for the render) and inputValueRef (so an immediate Enter
+  // submits the new text, not a stale value). setInput and the ref are both
+  // stable, so this callback never changes identity.
+  const updateInput = useCallback((value: string) => {
+    setInput(value);
+    inputValueRef.current = value;
+  }, []);
+  // The chat scope a draft belongs to: the open session, or the project for a
+  // chat that has not been sent yet and so has no session id.
+  const draftScope = sessionKey ?? (selectedProjectId ? `project:${selectedProjectId}` : null);
+  const { recordSentMessage, handleHistoryKeyDown } = useInputHistory({
+    setInput: updateInput,
+    textareaRef,
+    scope: draftScope,
+  });
+
   const [queuedDraft, setQueuedDraft] = useState<QueuedDraft | null>(() => {
     if (typeof window === 'undefined' || !sessionKey) {
       return null;
@@ -422,8 +440,7 @@ export function useChatComposerState({
     }
 
     const commandContent = content || '';
-    setInput(commandContent);
-    inputValueRef.current = commandContent;
+    updateInput(commandContent);
 
     // Defer submit to next tick so the command text is reflected in UI before dispatching.
     setTimeout(() => {
@@ -431,7 +448,7 @@ export function useChatComposerState({
         handleSubmitRef.current(createFakeSubmitEvent());
       }
     }, 0);
-  }, [addMessage]);
+  }, [addMessage, updateInput]);
 
   const executeCommand = useCallback(
     async (command: SlashCommand, rawInput?: string, options?: { preserveInput?: boolean }) => {
@@ -484,8 +501,7 @@ export function useChatComposerState({
         if (result.type === 'builtin') {
           handleBuiltInCommand(result);
           if (!options?.preserveInput) {
-            setInput('');
-            inputValueRef.current = '';
+            updateInput('');
           }
         } else if (result.type === 'custom') {
           await handleCustomCommand(result);
@@ -511,6 +527,7 @@ export function useChatComposerState({
       selectedSession?.id,
       addMessage,
       tokenBudget,
+      updateInput,
     ],
   );
 
@@ -657,20 +674,28 @@ export function useChatComposerState({
   // it is later dispatched outside this composer (app-level auto-send).
   const buildSendOptions = useCallback((currentInput: string): QueuedSendOptions => {
     const storedToolsSettings = readProviderToolsSettings(provider);
-    const toolsSettings = Object.keys(storedToolsSettings).length > 0
-      ? storedToolsSettings
-      : {
-          allowedTools: [],
-          disallowedTools: [],
-          skipPermissions: false,
-        };
+    // Claude's skip-permissions checkbox is retired: its stale stored flag must
+    // not keep overriding the mode choice, so only the tool lists leave the
+    // client. Other providers still pass their stored settings through as-is.
+    const toolsSettings = provider === 'claude'
+      ? {
+          allowedTools: Array.isArray(storedToolsSettings.allowedTools) ? storedToolsSettings.allowedTools : [],
+          disallowedTools: Array.isArray(storedToolsSettings.disallowedTools) ? storedToolsSettings.disallowedTools : [],
+        }
+      : Object.keys(storedToolsSettings).length > 0
+        ? storedToolsSettings
+        : {
+            allowedTools: [],
+            disallowedTools: [],
+            skipPermissions: false,
+          };
 
     return {
       model: currentProviderModel,
       effort: currentProviderEffort,
       permissionMode: resolvePermissionModeForProvider(provider, permissionMode),
       toolsSettings,
-      skipPermissions: toolsSettings?.skipPermissions || false,
+      skipPermissions: 'skipPermissions' in toolsSettings ? Boolean(toolsSettings.skipPermissions) : false,
       sessionSummary: getNotificationSessionSummary(selectedSession, currentInput),
     };
   }, [
@@ -747,6 +772,11 @@ export function useChatComposerState({
           });
         }
 
+        // Recorded under the session the message was queued FOR, and before
+        // the session-switch return below — the queued text must be
+        // recallable even when it dispatches without this composer.
+        recordSentMessage(currentInput, queuedSessionKey);
+
         // The upload is asynchronous. If the user changed sessions while it
         // was running, persist/send against the session where Queue was
         // pressed rather than putting the draft into the newly opened chat.
@@ -772,8 +802,7 @@ export function useChatComposerState({
 
         queuedDraftSessionRef.current = queuedSessionKey;
         setQueuedDraft(durableDraft);
-        setInput('');
-        inputValueRef.current = '';
+        updateInput('');
         setAttachedFiles([]);
         setUploadingFiles(new Map());
         setFileErrors(new Map());
@@ -808,8 +837,8 @@ export function useChatComposerState({
             : undefined);
         if (matchedCommand && matchedCommand.type !== 'skill') {
           executeCommand(matchedCommand, isHelpAlias ? '/help' : commandInput);
-          setInput('');
-          inputValueRef.current = '';
+          recordSentMessage(currentInput);
+          updateInput('');
           setAttachedFiles([]);
           setUploadingFiles(new Map());
           setFileErrors(new Map());
@@ -940,8 +969,12 @@ export function useChatComposerState({
       });
       setEditingAnchorId(null);
 
-      setInput('');
-      inputValueRef.current = '';
+      // Recorded under the (possibly just-allocated) session id, so the first
+      // message of a new chat lands in the history of the session the user is
+      // navigated to. Queued drafts were recorded when they were queued; the
+      // consecutive-duplicate check keeps this second call a no-op.
+      recordSentMessage(currentInput, targetSessionId);
+      updateInput('');
       resetCommandMenuState();
       setAttachedFiles([]);
       setUploadingFiles(new Map());
@@ -964,6 +997,7 @@ export function useChatComposerState({
       onSessionProcessing,
       onSessionEstablished,
       provider,
+      recordSentMessage,
       resetCommandMenuState,
       stickToBottomAfterSend,
       selectedProject,
@@ -971,6 +1005,7 @@ export function useChatComposerState({
       sessionKey,
       addMessage,
       slashCommands,
+      updateInput,
     ],
   );
 
@@ -1014,39 +1049,36 @@ export function useChatComposerState({
         return;
       }
       setQueuedDraft(null);
-      setInput(queuedDraft.content);
-      inputValueRef.current = queuedDraft.content;
+      updateInput(queuedDraft.content);
       setAttachedFiles(queuedDraft.attachments);
       handleSubmitRef.current?.(createFakeSubmitEvent(), queuedDraft);
     }, delay);
     return () => clearTimeout(timer);
-  }, [isLoading, queuedDraft, sessionKey, setInput]);
+  }, [isLoading, queuedDraft, sessionKey, updateInput]);
 
   const editQueuedDraft = useCallback(() => {
     if (!queuedDraft) {
       return;
     }
     setQueuedDraft(null);
-    setInput(queuedDraft.content);
-    inputValueRef.current = queuedDraft.content;
+    updateInput(queuedDraft.content);
     setAttachedFiles(queuedDraft.attachments);
     textareaRef.current?.focus();
-  }, [queuedDraft]);
+  }, [queuedDraft, updateInput]);
 
   const deleteQueuedDraft = useCallback(() => {
     setQueuedDraft(null);
   }, []);
 
   // A voice transcript either fills the input (to edit before sending) or, when the
-  // user tapped "stop and send", is submitted straight away. Mirror the value into
-  // inputValueRef synchronously so handleSubmit reads the new text, not the stale state.
+  // user tapped "stop and send", is submitted straight away. updateInput mirrors
+  // the value into inputValueRef synchronously so handleSubmit reads the new text.
   const handleVoiceTranscript = useCallback((text: string, send?: boolean) => {
     const base = inputValueRef.current.trim();
     const next = base ? `${base} ${text}` : text;
-    setInput(next);
-    inputValueRef.current = next;
+    updateInput(next);
     if (send) handleSubmitRef.current?.(createFakeSubmitEvent());
-  }, [setInput]);
+  }, [updateInput]);
 
   useEffect(() => {
     inputValueRef.current = input;
@@ -1135,8 +1167,7 @@ export function useChatComposerState({
       const newValue = event.target.value;
       const cursorPos = event.target.selectionStart;
 
-      setInput(newValue);
-      inputValueRef.current = newValue;
+      updateInput(newValue);
       setCursorPosition(cursorPos);
 
       if (!newValue.trim()) {
@@ -1148,7 +1179,7 @@ export function useChatComposerState({
 
       handleCommandInputChange(newValue, cursorPos);
     },
-    [handleCommandInputChange, resetCommandMenuState, setCursorPosition],
+    [handleCommandInputChange, resetCommandMenuState, setCursorPosition, updateInput],
   );
 
   const handleKeyDown = useCallback(
@@ -1158,6 +1189,10 @@ export function useChatComposerState({
       }
 
       if (handleFileMentionsKeyDown(event)) {
+        return;
+      }
+
+      if (handleHistoryKeyDown(event)) {
         return;
       }
 
@@ -1185,6 +1220,7 @@ export function useChatComposerState({
       cyclePermissionMode,
       handleCommandMenuKeyDown,
       handleFileMentionsKeyDown,
+      handleHistoryKeyDown,
       handleSubmit,
       sendByCtrlEnter,
       showCommandMenu,
@@ -1210,15 +1246,14 @@ export function useChatComposerState({
   );
 
   const handleClearInput = useCallback(() => {
-    setInput('');
-    inputValueRef.current = '';
+    updateInput('');
     resetCommandMenuState();
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
       textareaRef.current.focus();
     }
     setIsTextareaExpanded(false);
-  }, [resetCommandMenuState]);
+  }, [resetCommandMenuState, updateInput]);
 
   const handleAbortSession = useCallback(() => {
     if (!canAbortSession) {
@@ -1292,16 +1327,14 @@ export function useChatComposerState({
   const beginEditMessage = useCallback((message: ChatMessage) => {
     if (!message.transcriptAnchorId) return;
     setEditingAnchorId(message.transcriptAnchorId);
-    setInput(message.content || '');
-    inputValueRef.current = message.content || '';
+    updateInput(message.content || '');
     textareaRef.current?.focus();
-  }, [setInput]);
+  }, [updateInput]);
 
   const cancelEditMessage = useCallback(() => {
     setEditingAnchorId(null);
-    setInput('');
-    inputValueRef.current = '';
-  }, [setInput]);
+    updateInput('');
+  }, [updateInput]);
 
   return {
     input,

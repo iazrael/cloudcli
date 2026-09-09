@@ -1451,6 +1451,36 @@ async function getCodexSessionMessages(sessionId: string): Promise<CodexHistoryR
         continue;
       }
 
+      // Codex >=0.153 stopped writing `user_message` events; the typed prompt
+      // arrives as an `item_completed` whose item is a `UserMessage`. Only real
+      // prompts get one — injected context (AGENTS.md, plugin lists) rides
+      // unnamed `response_item` user messages, which stay unparsed — so the
+      // leak guard the old `kind` check provided holds by construction.
+      if (payload.type === 'item_completed') {
+        const completedItem = readObjectRecord(payload.item);
+        if (completedItem && completedItem.type === 'UserMessage') {
+          const content = extractCodexTextContent(completedItem.content);
+          if (content.trim()) {
+            // Same anchor discipline as the legacy branch below: only the
+            // first prompt of a turn anchors it, so a per-turn cut never
+            // takes a follow-up queued prompt with it.
+            const turnId = turns.getCurrentTurnId();
+            const isFirstPromptOfTurn = Boolean(turnId) && !anchoredTurnIds.has(turnId as string);
+            if (isFirstPromptOfTurn) {
+              anchoredTurnIds.add(turnId as string);
+            }
+            messages.push({
+              type: 'user',
+              timestamp,
+              message: { role: 'user', content },
+              images: extractCodexUserImages(completedItem),
+              ...(isFirstPromptOfTurn ? { turnId } : {}),
+            });
+          }
+        }
+        continue;
+      }
+
       if (isVisibleCodexUserMessage(payload)) {
         // Only the first prompt of a turn is anchored. A turn can hold more
         // than one — a follow-up queued while the turn was running is written

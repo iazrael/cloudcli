@@ -78,14 +78,54 @@ const query = (params: Record<string, QueryValue>): string => {
  * payload, abort-aware reads in the git panel); this is the shared form for
  * callers that want a failed request to throw.
  */
+export class ApiRequestError extends Error {
+  readonly code?: string;
+  readonly details?: unknown;
+  readonly status: number;
+
+  constructor(message: string, options: { code?: string; details?: unknown; status: number }) {
+    super(message);
+    this.name = 'ApiRequestError';
+    this.code = options.code;
+    this.details = options.details;
+    this.status = options.status;
+  }
+}
+
+/**
+ * Reads a `{ success, error, details }` envelope response, throwing an
+ * ApiRequestError carrying the server's machine-readable error code when one
+ * is present. Accepts both legacy string envelopes (`error: 'message'`) and
+ * the structured AppError envelope (`error: { code, message, details }`).
+ */
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null;
+
 export async function readApiJson<T>(response: Response): Promise<T> {
-  const data = await response.json();
-  if (!response.ok || data.success === false) {
-    throw new Error(data.error || data.details || `Request failed (${response.status})`);
+  let data: unknown;
+  try {
+    data = await response.json();
+  } catch {
+    const fallbackMessage = response.statusText || `Request failed (${response.status})`;
+    throw new ApiRequestError(fallbackMessage, {
+      status: response.status,
+    });
+  }
+  const envelope = isRecord(data) ? data : {};
+  if (!response.ok || envelope.success === false) {
+    const raw = envelope.error ?? envelope.details;
+    const payload: Record<string, unknown> = isRecord(raw) ? raw : {};
+    const text = (value: unknown): string => (typeof value === 'string' ? value : '');
+    const message = text(raw) || text(payload.message) || text(envelope.details) ||
+      `Request failed (${response.status})`;
+    throw new ApiRequestError(message, {
+      code: text(payload.code) || undefined,
+      details: payload.details ?? envelope.details,
+      status: response.status,
+    });
   }
   return data as T;
 }
-
 const get = (url: string, options: ApiRequestOptions = {}) => authenticatedFetch(url, options);
 
 const withBody =
@@ -589,68 +629,6 @@ export function synthesizeVoice(text: string, signal: AbortSignal): Promise<Resp
 
   return api.voice.tts(text, { headers: voiceConfigHeaders(), signal });
 }
-
-// ─── Fork additions (error extraction & token skew) ───
-
-export const extractApiErrorMessage = (data: any, fallback = 'Operation failed') => {
-  if (!data) return fallback;
-  if (typeof data === 'string' && data.trim()) return data;
-
-  if (typeof data === 'object') {
-    if (typeof data.details === 'string' && data.details.trim()) {
-      return data.details;
-    }
-    if (
-      data.details &&
-      typeof data.details === 'object' &&
-      typeof data.details.message === 'string' &&
-      data.details.message.trim()
-    ) {
-      return data.details.message;
-    }
-
-    if (typeof data.error === 'string' && data.error.trim()) {
-      return data.error;
-    }
-    if (data.error && typeof data.error === 'object') {
-      if (typeof data.error.details === 'string' && data.error.details.trim()) {
-        return data.error.details;
-      }
-      if (typeof data.error.message === 'string' && data.error.message.trim()) {
-        return data.error.message;
-      }
-      if (typeof data.error.code === 'string' && data.error.code.trim()) {
-        return data.error.code;
-      }
-    }
-
-    if (typeof data.message === 'string' && data.message.trim()) {
-      return data.message;
-    }
-  }
-
-  return fallback;
-};
-
-/**
- * Asynchronously extracts an error message from a fetch Response object.
- *
- * @param {Response} res
- * @param {string} [fallbackPrefix='Request failed']
- * @returns {Promise<string>}
- */
-
-export const extractResponseError = async (res: Response, fallbackPrefix = 'Request failed'): Promise<string> => {
-  const fallback = `${fallbackPrefix} (${res.status})`;
-  try {
-    const data = await res.json();
-    return extractApiErrorMessage(data, fallback);
-  } catch {
-    return res.statusText || fallback;
-  }
-};
-
-
 
 /** Fork: fetches one external (outside-project) file's content for the code editor document. */
 export const readExternalFile = (filePath: string): Promise<Response> =>

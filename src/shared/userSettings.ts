@@ -237,10 +237,10 @@ function readLegacyPreference(key: UserPreferenceKey): unknown {
     if (!isRecord(parsed)) {
       return undefined;
     }
-    // The sort order rides along in the same legacy blob but is its own
-    // preference now, so it is deliberately not copied into the permissions.
-    const { allowedTools, disallowedTools, skipPermissions } = parsed;
-    return { allowedTools, disallowedTools, skipPermissions };
+    // Only the tool lists ride over from the legacy blob; the sort order is
+    // its own preference and the retired skip-permissions flag is ignored.
+    const { allowedTools, disallowedTools } = parsed;
+    return { allowedTools, disallowedTools };
   }
 
   return parsed;

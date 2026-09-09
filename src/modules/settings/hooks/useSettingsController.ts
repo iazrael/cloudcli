@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { useTheme } from '@/shared/context/ThemeContext';
 import { authenticatedFetch } from '@/shared/api';
-import { readProviderToolsSettings, setNotificationSoundEnabled } from '@/modules/chat';
+import { readProviderToolsSettings, setNotificationSoundEnabled, toClaudePermissionMode } from '@/modules/chat';
 import { useProviderAuthStatus } from '@/modules/provider-auth';
 import {
   readCodeEditorSettings as readStoredCodeEditorSettings,
@@ -80,9 +80,9 @@ const toZcodePermissionMode = (value: unknown): ZcodePermissionMode => {
 const toResponseJson = async <T>(response: Response): Promise<T> => response.json() as Promise<T>;
 
 const createEmptyClaudePermissions = (): ClaudePermissionsState => ({
+  permissionMode: 'default',
   allowedTools: [],
   disallowedTools: [],
-  skipPermissions: false,
 });
 
 const createEmptyCursorPermissions = (): CursorPermissionsState => ({
@@ -162,13 +162,13 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
       // in effect, on any device.
       const storedClaudePermissions = readUserPreference<Partial<ClaudePermissionsState>>('claudePermissions', {});
       setClaudePermissions({
+        permissionMode: toClaudePermissionMode(storedClaudePermissions.permissionMode),
         allowedTools: Array.isArray(storedClaudePermissions.allowedTools)
           ? storedClaudePermissions.allowedTools
           : [],
         disallowedTools: Array.isArray(storedClaudePermissions.disallowedTools)
           ? storedClaudePermissions.disallowedTools
           : [],
-        skipPermissions: Boolean(storedClaudePermissions.skipPermissions),
       });
       setProjectSortOrder(readUserPreference<ProjectSortOrder>('projectSortOrder', 'name'));
 
@@ -252,9 +252,9 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
       // Mirror of loadSettings: every write lands in the preference store, so
       // the settings survive a device switch and stay visible to the send path.
       writeUserPreference('claudePermissions', {
+        permissionMode: claudePermissions.permissionMode,
         allowedTools: claudePermissions.allowedTools,
         disallowedTools: claudePermissions.disallowedTools,
-        skipPermissions: claudePermissions.skipPermissions,
       });
       writeUserPreference('projectSortOrder', projectSortOrder);
 
@@ -286,8 +286,8 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
   }, [
     antigravityPermissionMode,
     claudePermissions.allowedTools,
+    claudePermissions.permissionMode,
     claudePermissions.disallowedTools,
-    claudePermissions.skipPermissions,
     codexPermissionMode,
     cursorPermissions.allowedCommands,
     cursorPermissions.disallowedCommands,

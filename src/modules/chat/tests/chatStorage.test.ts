@@ -6,7 +6,7 @@ import { beforeEach, test, vi } from 'vitest';
  * readProviderToolsSettings is the one read path `chat.send` uses for
  * per-provider tool permissions. The mapping must stay per-provider: a key
  * falling through to Claude's would silently hand another engine Claude's
- * allow-list or skipPermissions.
+ * allow-list or permission mode.
  *
  * Fresh module copies per test because the preference store reads its
  * localStorage mirror once at module scope.
@@ -39,7 +39,6 @@ test('reads each provider permissions from its own preference key', async () => 
   userSettings.writeUserPreference('claudePermissions', {
     allowedTools: ['Read'],
     disallowedTools: [],
-    skipPermissions: false,
   });
   userSettings.writeUserPreference('codexPermissions', { permissionMode: 'acceptEdits' });
   userSettings.writeUserPreference('zcodePermissions', { permissionMode: 'plan' });
@@ -47,7 +46,6 @@ test('reads each provider permissions from its own preference key', async () => 
   assert.deepEqual(chatStorage.readProviderToolsSettings('claude'), {
     allowedTools: ['Read'],
     disallowedTools: [],
-    skipPermissions: false,
   });
   assert.deepEqual(chatStorage.readProviderToolsSettings('codex'), { permissionMode: 'acceptEdits' });
   assert.deepEqual(chatStorage.readProviderToolsSettings('zcode'), { permissionMode: 'plan' });

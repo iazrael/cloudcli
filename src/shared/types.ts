@@ -324,11 +324,11 @@ export type ChatMessage = {
   isSubagentContainer?: boolean;
 }
 
-/** The user's locally persisted Claude preferences (allowed and disallowed tool lists, permission skipping and project sort order) read from and written back to browser storage. */
+/** The user's locally persisted Claude preferences (default permission mode and allowed/disallowed tool lists, plus project sort order) read from and written back to browser storage. */
 export type ClaudeSettings = {
+  permissionMode: PermissionMode;
   allowedTools: string[];
   disallowedTools: string[];
-  skipPermissions: boolean;
   projectSortOrder: string;
   lastUpdated?: string;
   [key: string]: unknown;
@@ -1135,11 +1135,11 @@ export type AgentSettingsProject = {
   path?: string;
 };
 
-/** Claude's persisted permission settings: the allowed and disallowed tool patterns and whether permission prompts are skipped; read and written as one unit by the settings controller. */
+/** Claude's persisted permission settings: the default permission mode new sessions start in and the allowed and disallowed tool patterns; read and written as one unit by the settings controller. */
 export type ClaudePermissionsState = {
+  permissionMode: PermissionMode;
   allowedTools: string[];
   disallowedTools: string[];
-  skipPermissions: boolean;
 };
 
 /** The user's notification settings, grouped into delivery channels (in-app, web push, desktop, sound) and the events that trigger them; mirrors the payload of the notification preferences API. */
@@ -1218,7 +1218,31 @@ export type MobileTerminalSelectionManager = {
 //----------------- SIDEBAR ------------
 
 /** The complete project-list state and callback bundle the sidebar assembles once and threads down through its project list, project rows and session rows. */
-export type SidebarProjectListProps = {
+/**
+ * What a session row needs to draw its state and act on the session, named once
+ * so the two lists that render a row — Projects and Conversations — cannot fall
+ * out of step, and so a call site passes one prop instead of nine.
+ *
+ * SidebarProjectListProps composes it rather than restating it; it was already
+ * carrying every member.
+ */
+export type SessionRowActions = {
+  /** The rename currently open anywhere in the sidebar, or null. */
+  activeRename: ActiveSidebarRename | null;
+  /** Sessions with a run in flight: they show a spinner and hide destructive actions. */
+  activeSessions: ReadonlySet<string>;
+  /** Sessions waiting on the user, which show the amber dot. */
+  attentionSessionIds: ReadonlySet<string>;
+  onRenameDraftChange: (draft: string) => void;
+  onStartEditingSession: (projectId: string, sessionId: string, initialName: string) => void;
+  onCancelEditingSession: () => void;
+  onSaveEditingSession: (projectId: string, sessionId: string, summary: string, provider: LLMProvider) => void;
+  onDeleteSession: (sessionId: string, sessionTitle: string) => void;
+  /** Branches a session into an independent one. Rows hide it for providers that cannot. */
+  onForkSession?: (session: SessionWithProvider) => void;
+};
+
+export type SidebarProjectListProps = SessionRowActions & {
   projects: Project[];
   filteredProjects: Project[];
   selectedProject: Project | null;
@@ -1226,7 +1250,6 @@ export type SidebarProjectListProps = {
   isLoading: boolean;
   loadingProgress: LoadingProgress | null;
   expandedProjects: Set<string>;
-  activeRename: ActiveSidebarRename | null;
   initialSessionsLoaded: Set<string>;
   currentTime: Date;
   deletingProjects: Set<string>;
@@ -1235,11 +1258,8 @@ export type SidebarProjectListProps = {
   getProjectSessions: (project: Project) => SessionWithProvider[];
   onLoadMoreSessions: (projectId: string) => void;
   loadingMoreProjects: Set<string>;
-  activeSessions: ReadonlySet<string>;
-  attentionSessionIds: ReadonlySet<string>;
   forceExpanded?: boolean;
   isProjectStarred: (projectName: string) => boolean;
-  onRenameDraftChange: (draft: string) => void;
   onToggleProject: (projectName: string) => void;
   onProjectSelect: (project: Project) => void;
   onToggleStarProject: (projectName: string) => void;
@@ -1248,13 +1268,7 @@ export type SidebarProjectListProps = {
   onSaveProjectName: (projectId: string, nextName: string) => void;
   onDeleteProject: (project: Project) => void;
   onSessionSelect: (session: SessionWithProvider, projectName: string) => void;
-  onDeleteSession: (sessionId: string, sessionTitle: string) => void;
-  /** Branches a session into an independent one. Rows hide it for providers that cannot. */
-  onForkSession?: (session: SessionWithProvider) => void;
   onNewSession: (project: Project) => void;
-  onStartEditingSession: (projectId: string, sessionId: string, initialName: string) => void;
-  onCancelEditingSession: () => void;
-  onSaveEditingSession: (projectName: string, sessionId: string, summary: string, provider: LLMProvider) => void;
   t: TFunction;
 };
 

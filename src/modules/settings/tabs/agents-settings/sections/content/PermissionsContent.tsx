@@ -3,7 +3,7 @@ import { AlertTriangle, Plus, Shield, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { Button, Input } from '@/shared/ui';
-import type { AntigravityPermissionMode, CodexPermissionMode, ZcodePermissionMode } from '@/shared/types';
+import type { AntigravityPermissionMode, CodexPermissionMode, PermissionMode, ZcodePermissionMode } from '@/shared/types';
 
 const COMMON_CLAUDE_TOOLS = [
   'Bash(git log:*)',
@@ -52,8 +52,8 @@ const removeValue = (items: string[], value: string): string[] => (
 
 type ClaudePermissionsProps = {
   agent: 'claude';
-  skipPermissions: boolean;
-  onSkipPermissionsChange: (value: boolean) => void;
+  permissionMode: PermissionMode;
+  onPermissionModeChange: (value: PermissionMode) => void;
   allowedTools: string[];
   onAllowedToolsChange: (value: string[]) => void;
   disallowedTools: string[];
@@ -61,8 +61,8 @@ type ClaudePermissionsProps = {
 };
 
 function ClaudePermissions({
-  skipPermissions,
-  onSkipPermissionsChange,
+  permissionMode,
+  onPermissionModeChange,
   allowedTools,
   onAllowedToolsChange,
   disallowedTools,
@@ -96,27 +96,74 @@ function ClaudePermissions({
     <div className="space-y-6">
       <div className="space-y-4">
         <div className="flex items-center gap-3">
-          <AlertTriangle className="h-5 w-5 text-orange-500" />
-          <h3 className="text-lg font-medium text-foreground">{t('permissions.title')}</h3>
+          <Shield className="h-5 w-5 text-green-500" />
+          <h3 className="text-lg font-medium text-foreground">{t('permissions.claude.permissionMode')}</h3>
         </div>
-        <div className="rounded-lg border border-orange-200 bg-orange-50 p-4 dark:border-orange-800 dark:bg-orange-900/20">
-          <label className="flex items-center gap-3">
-            <input
-              type="checkbox"
-              checked={skipPermissions}
-              onChange={(event) => onSkipPermissionsChange(event.target.checked)}
-              className="h-4 w-4 rounded border-input bg-card text-primary focus:ring-2 focus:ring-primary"
-            />
-            <div>
-              <div className="font-medium text-orange-900 dark:text-orange-100">
-                {t('permissions.skipPermissions.label')}
-              </div>
-              <div className="text-sm text-orange-700 dark:text-orange-300">
-                {t('permissions.skipPermissions.claudeDescription')}
-              </div>
-            </div>
-          </label>
-        </div>
+        <p className="text-sm text-muted-foreground">{t('permissions.claude.description')}</p>
+
+        <PermissionModeRadioCard
+          name="claudePermissionMode"
+          value="default"
+          currentValue={permissionMode}
+          onChange={onPermissionModeChange}
+          title={t('permissions.claude.modes.default.title')}
+          description={t('permissions.claude.modes.default.description')}
+        />
+
+        <PermissionModeRadioCard
+          name="claudePermissionMode"
+          value="auto"
+          currentValue={permissionMode}
+          onChange={onPermissionModeChange}
+          variant="info"
+          title={t('permissions.claude.modes.auto.title')}
+          description={t('permissions.claude.modes.auto.description')}
+        />
+
+        <PermissionModeRadioCard
+          name="claudePermissionMode"
+          value="acceptEdits"
+          currentValue={permissionMode}
+          onChange={onPermissionModeChange}
+          variant="success"
+          title={t('permissions.claude.modes.acceptEdits.title')}
+          description={t('permissions.claude.modes.acceptEdits.description')}
+        />
+
+        <PermissionModeRadioCard
+          name="claudePermissionMode"
+          value="bypassPermissions"
+          currentValue={permissionMode}
+          onChange={onPermissionModeChange}
+          variant="warning"
+          hasWarningIcon
+          title={t('permissions.claude.modes.bypassPermissions.title')}
+          description={t('permissions.claude.modes.bypassPermissions.description')}
+        />
+
+        <PermissionModeRadioCard
+          name="claudePermissionMode"
+          value="plan"
+          currentValue={permissionMode}
+          onChange={onPermissionModeChange}
+          variant="info"
+          title={t('permissions.claude.modes.plan.title')}
+          description={t('permissions.claude.modes.plan.description')}
+        />
+
+        <details className="text-sm">
+          <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
+            {t('permissions.claude.technicalDetails')}
+          </summary>
+          <div className="mt-2 space-y-2 rounded-lg bg-muted/50 p-3 text-xs text-muted-foreground">
+            <p><strong>{t('permissions.claude.modes.default.title')}:</strong> {t('permissions.claude.technicalInfo.default')}</p>
+            <p><strong>{t('permissions.claude.modes.auto.title')}:</strong> {t('permissions.claude.technicalInfo.auto')}</p>
+            <p><strong>{t('permissions.claude.modes.acceptEdits.title')}:</strong> {t('permissions.claude.technicalInfo.acceptEdits')}</p>
+            <p><strong>{t('permissions.claude.modes.bypassPermissions.title')}:</strong> {t('permissions.claude.technicalInfo.bypassPermissions')}</p>
+            <p><strong>{t('permissions.claude.modes.plan.title')}:</strong> {t('permissions.claude.technicalInfo.plan')}</p>
+            <p className="text-xs opacity-75">{t('permissions.claude.technicalInfo.overrideNote')}</p>
+          </div>
+        </details>
       </div>
 
       <div className="space-y-4">

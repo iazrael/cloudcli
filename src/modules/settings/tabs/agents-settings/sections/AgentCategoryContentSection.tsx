@@ -51,9 +51,9 @@ export default function AgentCategoryContentSection({
       {selectedCategory === 'permissions' && selectedAgent === 'claude' && (
         <PermissionsContent
           agent="claude"
-          skipPermissions={claudePermissions.skipPermissions}
-          onSkipPermissionsChange={(value) => {
-            onClaudePermissionsChange({ ...claudePermissions, skipPermissions: value });
+          permissionMode={claudePermissions.permissionMode}
+          onPermissionModeChange={(value) => {
+            onClaudePermissionsChange({ ...claudePermissions, permissionMode: value });
           }}
           allowedTools={claudePermissions.allowedTools}
           onAllowedToolsChange={(value) => {

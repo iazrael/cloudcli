@@ -18,7 +18,9 @@ import {
   FALLBACK_PROVIDER_EFFORT_VALUES,
   toProviderEffortOptions,
 } from '@/modules/chat/constants/providerEffort';
+import { readProviderToolsSettings } from '@/modules/chat/utils/chatStorage';
 import { PROVIDER_FALLBACK_CATALOG, PROVIDER_FALLBACK_ORDER } from '@/shared/providerCatalogFallback';
+import { subscribeToUserPreferences } from '@/shared/userSettings';
 
 // Typed views over the shared fallback catalog (whose literal file must stay
 // import-free for the cross-tree parity test to compile it from the server
@@ -44,6 +46,7 @@ const readStoredProvider = (): LLMProvider => {
 type UseChatProviderStateArgs = {
   selectedSession: ProjectSession | null;
   selectedProject: Project | null;
+  newSessionTrigger?: number;
 }
 
 type ProviderModelsApiResponse = {
@@ -91,7 +94,11 @@ const getSessionSelectionKey = (provider: LLMProvider, sessionId: string): strin
   `${provider}:${sessionId}`
 );
 
-export function useChatProviderState({ selectedSession, selectedProject: _selectedProject }: UseChatProviderStateArgs) {
+export function useChatProviderState({
+  selectedSession,
+  selectedProject: _selectedProject,
+  newSessionTrigger = 0,
+}: UseChatProviderStateArgs) {
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default');
   const [pendingPermissionRequests, setPendingPermissionRequests] = useState<PendingPermissionRequest[]>([]);
   const [provider, setProvider] = useState<LLMProvider>(readStoredProvider);
@@ -134,6 +141,10 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   const sessionSelectionLoadRequestIdRef = useRef(0);
   const sessionModelMutationIdRef = useRef(0);
   const sessionEffortMutationIdRef = useRef(0);
+  // Keeps unsent per-provider choices inside the current draft conversation;
+  // once a session id exists the choice moves to the session-scoped key.
+  const draftPermissionModesRef = useRef<Partial<Record<LLMProvider, PermissionMode>>>({});
+  const previousNewSessionTriggerRef = useRef(newSessionTrigger);
 
   const setProviderModel = useCallback((targetProvider: LLMProvider, model: string) => {
     setProviderModels((previous) => (
@@ -246,6 +257,13 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     }
     return modes[0] ?? 'default';
   }, [getPermissionModesForProvider, providerCapabilities]);
+
+  const getConfiguredPermissionModeForProvider = useCallback((targetProvider: LLMProvider): PermissionMode => {
+    const configuredMode = readProviderToolsSettings(targetProvider).permissionMode;
+    return getPermissionModesForProvider(targetProvider).includes(configuredMode as PermissionMode)
+      ? configuredMode as PermissionMode
+      : getDefaultPermissionModeForProvider(targetProvider);
+  }, [getDefaultPermissionModeForProvider, getPermissionModesForProvider]);
 
   const getSupportsEffortForProvider = useCallback((targetProvider: LLMProvider): boolean => {
     const capabilitySupport = providerCapabilities?.[targetProvider]?.supportsEffort;
@@ -382,20 +400,34 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   }, [providerEfforts, providerModels, reconcileStoredEffort]);
 
   useEffect(() => {
+    if (previousNewSessionTriggerRef.current !== newSessionTrigger) {
+      previousNewSessionTriggerRef.current = newSessionTrigger;
+      draftPermissionModesRef.current = {};
+    }
+
     const validModes = getPermissionModesForProvider(provider);
     const sessionSavedMode = selectedSession?.id
       ? (localStorage.getItem(`permissionMode-${selectedSession.id}`) as PermissionMode | null)
       : null;
-    // Fall back to the last mode picked for this provider: a brand-new chat
-    // only receives its session id after the first send, so without this the
-    // mode chosen beforehand would snap back to the default as soon as the
-    // session id appears.
-    const providerSavedMode = localStorage.getItem(`permissionMode-last-${provider}`) as PermissionMode | null;
-    const savedMode = [sessionSavedMode, providerSavedMode].find(
+    const draftMode = selectedSession?.id ? null : draftPermissionModesRef.current[provider];
+    const savedMode = [sessionSavedMode, draftMode].find(
       (mode): mode is PermissionMode => Boolean(mode && validModes.includes(mode)),
     );
-    setPermissionMode(savedMode ?? getDefaultPermissionModeForProvider(provider));
-  }, [selectedSession?.id, provider, getDefaultPermissionModeForProvider, getPermissionModesForProvider]);
+    setPermissionMode(savedMode ?? getConfiguredPermissionModeForProvider(provider));
+  }, [
+    selectedSession?.id,
+    provider,
+    newSessionTrigger,
+    getConfiguredPermissionModeForProvider,
+    getPermissionModesForProvider,
+  ]);
+
+  useEffect(() => subscribeToUserPreferences(() => {
+    if (selectedSession?.id || draftPermissionModesRef.current[provider]) {
+      return;
+    }
+    setPermissionMode(getConfiguredPermissionModeForProvider(provider));
+  }), [getConfiguredPermissionModeForProvider, provider, selectedSession?.id]);
 
   useEffect(() => {
     if (!selectedSession?.__provider || selectedSession.__provider === provider) {
@@ -417,14 +449,18 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   const selectPermissionMode = useCallback((nextMode: PermissionMode) => {
     setPermissionMode(nextMode);
 
-    // Persist per provider as well as per session: a brand-new chat has no
-    // session id yet, and the per-provider key keeps the choice sticky when
-    // the real id arrives (and for future sessions of this provider).
-    localStorage.setItem(`permissionMode-last-${provider}`, nextMode);
     if (selectedSession?.id) {
       localStorage.setItem(`permissionMode-${selectedSession.id}`, nextMode);
+      return;
     }
+
+    draftPermissionModesRef.current[provider] = nextMode;
   }, [provider, selectedSession?.id]);
+
+  const persistPermissionModeForSession = useCallback((sessionId: string) => {
+    localStorage.setItem(`permissionMode-${sessionId}`, permissionMode);
+    delete draftPermissionModesRef.current[provider];
+  }, [permissionMode, provider]);
 
   const cyclePermissionMode = useCallback(() => {
     const modes = getPermissionModesForProvider(provider);
@@ -816,6 +852,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     setPendingPermissionRequests,
     availablePermissionModes,
     selectPermissionMode,
+    persistPermissionModeForSession,
     cyclePermissionMode,
     providerModelCatalog,
     providerModelsLoading,

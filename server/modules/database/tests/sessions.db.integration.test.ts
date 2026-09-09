@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { closeConnection } from '@/modules/database/connection.js';
+import { closeConnection, getConnection } from '@/modules/database/connection.js';
 import { initializeDatabase } from '@/modules/database/init-db.js';
 import { projectsDb } from '@/modules/database/repositories/projects.db.js';
 import { sessionsDb } from '@/modules/database/repositories/sessions.db.js';
@@ -58,7 +58,11 @@ test('createSession preserves archived state of existing rows', async () => {
     sessionsDb.createSession('session-reused', 'claude', '/workspace/demo-project', 'First Name');
     sessionsDb.updateSessionIsArchived('session-reused', true);
 
-    sessionsDb.createSession('session-reused', 'claude', '/workspace/demo-project', 'Updated Name');
+    // A rescan of an unchanged transcript passes its (stale) file timestamps;
+    // since the upstream rework, an omitted timestamp would count as fresh
+    // activity and legitimately unarchive the row.
+    const staleTimestamp = new Date(Date.now() - 60_000).toISOString();
+    sessionsDb.createSession('session-reused', 'claude', '/workspace/demo-project', 'Updated Name', staleTimestamp, staleTimestamp);
 
     const activeSessions = sessionsDb.getAllSessions();
     const archivedSessions = sessionsDb.getArchivedSessions();
@@ -87,6 +91,88 @@ test('archiveSessionsOlderThanCutoff returns the ids it archived and only those'
     assert.deepEqual(sessionsDb.archiveSessionsOlderThanCutoff(new Date().toISOString()), []);
   });
 });
+
+test("createSession leaves an archived row archived when the transcript has not changed", async () => {
+  await withIsolatedDatabase(() => {
+    const createdAt = "2026-07-18T09:00:00.000Z";
+    const updatedAt = "2026-07-18T10:00:00.000Z";
+    const jsonlPath = "/transcripts/session-untouched.jsonl";
+
+    sessionsDb.createSession("session-untouched", "claude", "/workspace/demo-project", "A Name", createdAt, updatedAt, jsonlPath);
+    sessionsDb.updateSessionIsArchived("session-untouched", true);
+
+    // A full rescan re-indexes every transcript created since the last scan,
+    // changed or not, and hands over the timestamps the file still carries.
+    sessionsDb.createSession("session-untouched", "claude", "/workspace/demo-project", "A Name", createdAt, updatedAt, jsonlPath);
+
+    assert.equal(sessionsDb.getSessionById("session-untouched")?.isArchived, 1);
+    assert.equal(sessionsDb.getArchivedSessions().length, 1);
+    assert.equal(sessionsDb.getAllSessions().length, 0);
+
+    // Actually writing to the session again still brings it back.
+    sessionsDb.createSession("session-untouched", "claude", "/workspace/demo-project", "A Name", createdAt, "2026-07-18T11:00:00.000Z", jsonlPath);
+
+    assert.equal(sessionsDb.getSessionById("session-untouched")?.isArchived, 0);
+  });
+});
+
+test("the upsert path counts an omitted timestamp as activity", async () => {
+  await withIsolatedDatabase(() => {
+    // An app-created row carries no provider id, so indexing it takes the
+    // INSERT ... ON CONFLICT branch rather than the UPDATE above. Its
+    // updated_at is CURRENT_TIMESTAMP, which resolves to whole seconds, so a
+    // call in the same second is not *newer* -- the omitted timestamp itself
+    // has to be what reactivates the row.
+    sessionsDb.createAppSession("session-legacy", "claude", "/workspace/demo-project");
+    sessionsDb.updateSessionIsArchived("session-legacy", true);
+
+    sessionsDb.createSession("session-legacy", "claude", "/workspace/demo-project", "Indexed Name");
+
+    assert.equal(sessionsDb.getSessionById("session-legacy")?.isArchived, 0);
+  });
+});
+
+test("the upsert path leaves an archived row alone for a transcript older than it", async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession("session-stale", "claude", "/workspace/demo-project");
+    sessionsDb.updateSessionIsArchived("session-stale", true);
+
+    sessionsDb.createSession("session-stale", "claude", "/workspace/demo-project", "Indexed Name", "2026-07-18T09:00:00.000Z", "2026-07-18T10:00:00.000Z", "/transcripts/session-stale.jsonl");
+
+    assert.equal(sessionsDb.getSessionById("session-stale")?.isArchived, 1);
+  });
+});
+
+test("a legacy archived row with a NULL updated_at unarchives on new activity", async () => {
+  await withIsolatedDatabase(() => {
+    // UPDATE branch: the row is keyed by provider_session_id, so indexing it
+    // again takes the UPDATE path. Legacy rows predating timestamp bookkeeping
+    // carry updated_at NULL; without the NULL guard every julianday comparison
+    // against them is false and they could never leave the archive.
+    sessionsDb.createSession("session-null-ts-update", "claude", "/workspace/demo-project", "A Name", "2026-07-18T09:00:00.000Z", "2026-07-18T10:00:00.000Z");
+    sessionsDb.updateSessionIsArchived("session-null-ts-update", true);
+    getConnection().prepare("UPDATE sessions SET updated_at = NULL WHERE session_id = ?").run("session-null-ts-update");
+
+    sessionsDb.createSession("session-null-ts-update", "claude", "/workspace/demo-project", "A Name", undefined, "2026-07-18T11:00:00.000Z");
+
+    assert.equal(sessionsDb.getSessionById("session-null-ts-update")?.isArchived, 0);
+  });
+});
+
+test("the upsert path unarchives a legacy row with a NULL updated_at", async () => {
+  await withIsolatedDatabase(() => {
+    // ON CONFLICT branch: the app row has no provider id yet, so indexing
+    // takes INSERT ... ON CONFLICT against its session_id.
+    sessionsDb.createAppSession("session-null-ts-conflict", "claude", "/workspace/demo-project");
+    sessionsDb.updateSessionIsArchived("session-null-ts-conflict", true);
+    getConnection().prepare("UPDATE sessions SET updated_at = NULL WHERE session_id = ?").run("session-null-ts-conflict");
+
+    sessionsDb.createSession("session-null-ts-conflict", "claude", "/workspace/demo-project", "Indexed Name", undefined, "2026-07-18T11:00:00.000Z");
+
+    assert.equal(sessionsDb.getSessionById("session-null-ts-conflict")?.isArchived, 0);
+  });
+});
+
 
 test('repository reads normalize SQLite UTC timestamps to ISO strings', async () => {
   await withIsolatedDatabase(() => {

@@ -1,8 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
-import { authenticatedFetch, extractResponseError } from '@/shared/api';
 
-import { api } from '@/shared/api';
+import { api, readApiJson } from '@/shared/api';
 import type { Plugin } from '@/shared/types';
 
 
@@ -36,14 +35,9 @@ export function PluginsProvider({ children }: { children: ReactNode }) {
   const refreshPlugins = useCallback(async () => {
     try {
       const res = await api.plugins.list();
-      if (res.ok) {
-        const data = await res.json();
-        setPlugins(data.plugins || []);
-        setPluginsError(null);
-      } else {
-        const errorMessage = await extractResponseError(res, 'Failed to fetch plugins');
-        setPluginsError(errorMessage);
-      }
+      const data = await readApiJson<{ plugins?: Plugin[] }>(res);
+      setPlugins(data.plugins || []);
+      setPluginsError(null);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to fetch plugins';
       setPluginsError(message);
@@ -59,16 +53,10 @@ export function PluginsProvider({ children }: { children: ReactNode }) {
 
   const installPlugin = useCallback(async (url: string) => {
     try {
-      const res = await authenticatedFetch('/api/plugins/install', {
-        method: 'POST',
-        body: JSON.stringify({ url }),
-      });
-      if (res.ok) {
-        await refreshPlugins();
-        return { success: true };
-      }
-      const error = await extractResponseError(res, 'Install failed');
-      return { success: false, error };
+      const res = await api.plugins.install(url);
+      await readApiJson(res);
+      await refreshPlugins();
+      return { success: true };
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : 'Install failed' };
     }
@@ -76,15 +64,10 @@ export function PluginsProvider({ children }: { children: ReactNode }) {
 
   const uninstallPlugin = useCallback(async (name: string) => {
     try {
-      const res = await authenticatedFetch(`/api/plugins/${encodeURIComponent(name)}`, {
-        method: 'DELETE',
-      });
-      if (res.ok) {
-        await refreshPlugins();
-        return { success: true };
-      }
-      const error = await extractResponseError(res, 'Uninstall failed');
-      return { success: false, error };
+      const res = await api.plugins.uninstall(name);
+      await readApiJson(res);
+      await refreshPlugins();
+      return { success: true };
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : 'Uninstall failed' };
     }
@@ -92,15 +75,10 @@ export function PluginsProvider({ children }: { children: ReactNode }) {
 
   const updatePlugin = useCallback(async (name: string) => {
     try {
-      const res = await authenticatedFetch(`/api/plugins/${encodeURIComponent(name)}/update`, {
-        method: 'POST',
-      });
-      if (res.ok) {
-        await refreshPlugins();
-        return { success: true };
-      }
-      const error = await extractResponseError(res, 'Update failed');
-      return { success: false, error };
+      const res = await api.plugins.update(name);
+      await readApiJson(res);
+      await refreshPlugins();
+      return { success: true };
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : 'Update failed' };
     }
@@ -109,10 +87,7 @@ export function PluginsProvider({ children }: { children: ReactNode }) {
   const togglePlugin = useCallback(async (name: string, enabled: boolean): Promise<{ success: boolean; error: string | null }> => {
     try {
       const res = await api.plugins.toggle(name, enabled);
-      if (!res.ok) {
-        const error = await extractResponseError(res, 'Toggle failed');
-        return { success: false, error };
-      }
+      await readApiJson(res);
       await refreshPlugins();
       return { success: true, error: null };
     } catch (err) {

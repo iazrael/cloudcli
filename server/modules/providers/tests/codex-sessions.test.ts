@@ -237,6 +237,72 @@ test('Codex history translates wrapped exec scripts into the tools they ran', { 
   }
 });
 
+test('Codex history reads 0.153-era prompts from item_completed UserMessage rows', { concurrency: false }, async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'codex-history-user-153-'));
+  const workspacePath = path.join(tempRoot, 'workspace');
+  await mkdir(workspacePath, { recursive: true });
+  const restoreHomeDir = patchHomeDir(tempRoot);
+
+  try {
+    const providerSessionId = 'codex-user-153-1';
+    // Mirrors a real 0.153.4 rollout: injected context rides an unnamed
+    // `response_item` user message, the typed prompt arrives as an
+    // `event_msg`/`item_completed` whose item is a `UserMessage`.
+    const lines = [
+      JSON.stringify({ type: 'session_meta', payload: { id: providerSessionId, cwd: workspacePath } }),
+      JSON.stringify({ type: 'event_msg', payload: { type: 'task_started', turn_id: 'turn-1' } }),
+      JSON.stringify({
+        type: 'response_item',
+        payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '<user_instructions>AGENTS.md body</user_instructions>' }] },
+      }),
+      JSON.stringify({ type: 'turn_context', payload: { turn_id: 'turn-1' } }),
+      JSON.stringify({
+        type: 'event_msg',
+        payload: { type: 'item_completed', turn_id: 'turn-1', item: { type: 'UserMessage', id: 'item-u1', content: [{ type: 'text', text: 'first prompt' }] } },
+      }),
+      JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'first answer' }] } }),
+      JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete', turn_id: 'turn-1' } }),
+      JSON.stringify({ type: 'event_msg', payload: { type: 'task_started', turn_id: 'turn-2' } }),
+      JSON.stringify({ type: 'turn_context', payload: { turn_id: 'turn-2' } }),
+      JSON.stringify({
+        type: 'event_msg',
+        payload: { type: 'item_completed', turn_id: 'turn-2', item: { type: 'UserMessage', id: 'item-u2', content: [{ type: 'text', text: 'second prompt' }] } },
+      }),
+      JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'second answer' }] } }),
+      JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete', turn_id: 'turn-2' } }),
+    ];
+    const sessionsDir = path.join(tempRoot, '.codex', 'sessions', '2026', '07', '07');
+    await mkdir(sessionsDir, { recursive: true });
+    const transcriptPath = path.join(sessionsDir, `rollout-${providerSessionId}.jsonl`);
+    await writeFile(transcriptPath, `${lines.join('\n')}\n`, 'utf8');
+
+    await withIsolatedDatabase(async () => {
+      sessionsDb.createAppSession('app-user-153-1', 'codex', workspacePath);
+      sessionsDb.assignProviderSessionId('app-user-153-1', providerSessionId);
+      await new CodexSessionSynchronizer().synchronize();
+
+      const history = await new CodexSessionsProvider().fetchHistory('app-user-153-1');
+      const userRows = history.messages.filter((message) => message.kind === 'text' && message.role === 'user');
+      const assistantRows = history.messages.filter((message) => message.kind === 'text' && message.role === 'assistant');
+
+      assert.equal(userRows.length, 2);
+      assert.equal(userRows[0]?.content, 'first prompt');
+      assert.equal(userRows[1]?.content, 'second prompt');
+      // The typed prompt anchors its turn so edit/fork stay addressable.
+      assert.equal(userRows[0]?.transcriptAnchorId, 'turn-1');
+      assert.equal(userRows[1]?.transcriptAnchorId, 'turn-2');
+      // Injected context must not surface as a user row.
+      assert.ok(!userRows.some((message) => String(message.content).includes('AGENTS.md')));
+      assert.equal(assistantRows.length, 2);
+      assert.equal(assistantRows[0]?.content, 'first answer');
+      assert.equal(assistantRows[1]?.content, 'second answer');
+    });
+  } finally {
+    restoreHomeDir();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test('getTokenUsage reads the latest token_count snapshot from the indexed rollout', async () => {
   const tempDirectory = await mkdtemp(path.join(os.tmpdir(), 'codex-token-usage-'));
   const sessionFilePath = path.join(tempDirectory, 'rollout-provider-session.jsonl');

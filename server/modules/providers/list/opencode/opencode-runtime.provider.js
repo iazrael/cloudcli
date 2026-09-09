@@ -9,7 +9,12 @@ import {
   normalizeAttachmentDescriptors
 } from '@/shared/image-attachments.js';
 import { notifyRunFailed, notifyRunStopped } from '@/modules/notifications/index.js';
-import { createCompleteMessage, createNormalizedMessage, flattenPromptForWindowsShell } from '@/shared/utils.js';
+import {
+  createCompleteMessage,
+  createNormalizedMessage,
+  flattenPromptForWindowsShell,
+  resolveModelEffort
+} from '@/shared/utils.js';
 
 import { getOpenCodeDatabasePath } from './opencode-data-root.js';
 
@@ -47,14 +52,6 @@ export function resolveOpenCodePermissionOptions(permissionMode) {
     default:
       return { args: [], env: {} };
   }
-}
-
-function resolveOpenCodeEffort(model, effort, modelsDefinition) {
-  const selectedModel = modelsDefinition?.OPTIONS?.find((option) => option.value === model);
-  const allowedEfforts = selectedModel?.effort?.values?.map((value) => value.value) || [];
-  return typeof effort === 'string' && effort !== 'default' && allowedEfforts.includes(effort)
-    ? effort
-    : undefined;
 }
 
 function readOpenCodeSessionId(event) {
@@ -257,7 +254,7 @@ async function spawnOpenCode(command, options = {}, ws, context) {
         console.warn('[OpenCode] Unable to load provider models for effort validation:', error);
       }
 
-      const resolvedEffort = resolveOpenCodeEffort(resolvedModel, effort, effortModels);
+      const resolvedEffort = resolveModelEffort(resolvedModel, effort, effortModels);
       const args = ['run', '--format', 'json'];
       // OpenCode's `run` command owns workspace selection through `--dir`.
       // Relying on the child-process cwd alone is not enough on Linux, where

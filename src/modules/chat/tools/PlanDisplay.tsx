@@ -1,4 +1,5 @@
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { ChevronsUpDown, FileText } from 'lucide-react';
 
 import {
@@ -41,6 +42,7 @@ export const PlanDisplay: React.FC<PlanDisplayProps> = ({
   rawContent,
   toolName: _toolName,
 }) => {
+  const { t } = useTranslation();
   const permissionCtx = usePermission();
 
   const pendingRequest = permissionCtx?.pendingPermissionRequests.find(
@@ -57,7 +59,7 @@ export const PlanDisplay: React.FC<PlanDisplayProps> = ({
     if (pendingRequest && permissionCtx) {
       permissionCtx.handlePermissionDecision(pendingRequest.requestId, {
         allow: false,
-        message: 'User asked to revise the plan',
+        message: t('chat:misc.userAskedRevise'),
       });
     }
   };

@@ -107,12 +107,16 @@ export const sessionsDb = {
       .get(providerSessionId, provider) as { session_id: string } | undefined;
 
     if (existing) {
+      // CASE 意图: 只有时间前进（或旧行无时间戳）的事件才解除归档，防止迟到的
+      // watcher 旧事件误恢复刚归档的会话。`updated_at IS NULL` 兜底存量无时间戳
+      // 的旧行——否则与 NULL 比较恒为假，这类行永远无法解档。
       db.prepare(
         `UPDATE sessions SET
            provider = ?,
            updated_at = COALESCE(?, CURRENT_TIMESTAMP),
            project_path = ?,
            jsonl_path = ?,
+           isArchived = CASE WHEN ? IS NULL OR updated_at IS NULL OR julianday(?) > julianday(updated_at) THEN 0 ELSE isArchived END,
            custom_name = CASE
              WHEN session_id <> provider_session_id AND custom_name IS NOT NULL THEN custom_name
              ELSE COALESCE(?, custom_name)
@@ -123,6 +127,8 @@ export const sessionsDb = {
         updatedAtValue,
         normalizedProjectPath,
         jsonlPath ?? null,
+        updatedAtValue,
+        updatedAtValue,
         customName ?? null,
         existing.session_id
       );
@@ -133,6 +139,9 @@ export const sessionsDb = {
     // Sessions created outside the app (directly via the provider CLI) are
     // keyed by the provider-native id for both columns. The ON CONFLICT path
     // covers legacy rows that predate the provider_session_id mapping.
+    // CASE 意图: 只有时间前进（或旧行无时间戳）的事件才解除归档，防止迟到的
+    // watcher 旧事件误恢复刚归档的会话。`sessions.updated_at IS NULL` 兜底存量
+    // 无时间戳的旧行——否则与 NULL 比较恒为假，这类行永远无法解档。
     db.prepare(
       `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, project_path, jsonl_path, isArchived, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, 0, COALESCE(?, CURRENT_TIMESTAMP), COALESCE(?, CURRENT_TIMESTAMP))
@@ -142,6 +151,7 @@ export const sessionsDb = {
          updated_at = excluded.updated_at,
          project_path = excluded.project_path,
          jsonl_path = excluded.jsonl_path,
+         isArchived = CASE WHEN ? IS NULL OR sessions.updated_at IS NULL OR julianday(excluded.updated_at) > julianday(sessions.updated_at) THEN 0 ELSE sessions.isArchived END,
          custom_name = CASE
            WHEN sessions.session_id <> sessions.provider_session_id AND sessions.custom_name IS NOT NULL
              THEN sessions.custom_name
@@ -155,6 +165,7 @@ export const sessionsDb = {
       normalizedProjectPath,
       jsonlPath ?? null,
       createdAtValue,
+      updatedAtValue,
       updatedAtValue
     );
 
