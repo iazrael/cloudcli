@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { useTheme } from '@/shared/context/ThemeContext';
 import { authenticatedFetch } from '@/shared/api';
-import { readProviderToolsSettings, setNotificationSoundEnabled } from '@/modules/chat';
+import { readProviderToolsSettings, setNotificationSoundEnabled, toClaudePermissionMode } from '@/modules/chat';
 import { useProviderAuthStatus } from '@/modules/provider-auth';
 import {
   readCodeEditorSettings as readStoredCodeEditorSettings,
@@ -20,7 +20,6 @@ import type {
   CodexPermissionMode,
   CursorPermissionsState,
   NotificationPreferencesState,
-  PermissionMode,
   ProjectSortOrder,
   SettingsMainTab,
   ZcodePermissionMode,
@@ -78,21 +77,12 @@ const toZcodePermissionMode = (value: unknown): ZcodePermissionMode => {
   return 'default';
 };
 
-const toClaudePermissionMode = (value: unknown): PermissionMode => {
-  if (value === 'acceptEdits' || value === 'auto' || value === 'plan' || value === 'bypassPermissions') {
-    return value;
-  }
-
-  return 'default';
-};
-
 const toResponseJson = async <T>(response: Response): Promise<T> => response.json() as Promise<T>;
 
 const createEmptyClaudePermissions = (): ClaudePermissionsState => ({
   permissionMode: 'default',
   allowedTools: [],
   disallowedTools: [],
-  skipPermissions: false,
 });
 
 const createEmptyCursorPermissions = (): CursorPermissionsState => ({
@@ -179,7 +169,6 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
         disallowedTools: Array.isArray(storedClaudePermissions.disallowedTools)
           ? storedClaudePermissions.disallowedTools
           : [],
-        skipPermissions: Boolean(storedClaudePermissions.skipPermissions),
       });
       setProjectSortOrder(readUserPreference<ProjectSortOrder>('projectSortOrder', 'name'));
 
@@ -266,7 +255,6 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
         permissionMode: claudePermissions.permissionMode,
         allowedTools: claudePermissions.allowedTools,
         disallowedTools: claudePermissions.disallowedTools,
-        skipPermissions: claudePermissions.skipPermissions,
       });
       writeUserPreference('projectSortOrder', projectSortOrder);
 
@@ -300,7 +288,6 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
     claudePermissions.allowedTools,
     claudePermissions.permissionMode,
     claudePermissions.disallowedTools,
-    claudePermissions.skipPermissions,
     codexPermissionMode,
     cursorPermissions.allowedCommands,
     cursorPermissions.disallowedCommands,

@@ -54,8 +54,6 @@ type ClaudePermissionsProps = {
   agent: 'claude';
   permissionMode: PermissionMode;
   onPermissionModeChange: (value: PermissionMode) => void;
-  skipPermissions: boolean;
-  onSkipPermissionsChange: (value: boolean) => void;
   allowedTools: string[];
   onAllowedToolsChange: (value: string[]) => void;
   disallowedTools: string[];
@@ -65,8 +63,6 @@ type ClaudePermissionsProps = {
 function ClaudePermissions({
   permissionMode,
   onPermissionModeChange,
-  skipPermissions,
-  onSkipPermissionsChange,
   allowedTools,
   onAllowedToolsChange,
   disallowedTools,
@@ -98,31 +94,6 @@ function ClaudePermissions({
 
   return (
     <div className="space-y-6">
-      <div className="space-y-4">
-        <div className="flex items-center gap-3">
-          <AlertTriangle className="h-5 w-5 text-orange-500" />
-          <h3 className="text-lg font-medium text-foreground">{t('permissions.title')}</h3>
-        </div>
-        <div className="rounded-lg border border-orange-200 bg-orange-50 p-4 dark:border-orange-800 dark:bg-orange-900/20">
-          <label className="flex items-center gap-3">
-            <input
-              type="checkbox"
-              checked={skipPermissions}
-              onChange={(event) => onSkipPermissionsChange(event.target.checked)}
-              className="h-4 w-4 rounded border-input bg-card text-primary focus:ring-2 focus:ring-primary"
-            />
-            <div>
-              <div className="font-medium text-orange-900 dark:text-orange-100">
-                {t('permissions.skipPermissions.label')}
-              </div>
-              <div className="text-sm text-orange-700 dark:text-orange-300">
-                {t('permissions.skipPermissions.claudeDescription')}
-              </div>
-            </div>
-          </label>
-        </div>
-      </div>
-
       <div className="space-y-4">
         <div className="flex items-center gap-3">
           <Shield className="h-5 w-5 text-green-500" />

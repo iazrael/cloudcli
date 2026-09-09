@@ -427,7 +427,6 @@
     "title": "Permission Settings",
     "skipPermissions": {
       "label": "Skip permission prompts (use with caution)",
-      "claudeDescription": "Equivalent to --dangerously-skip-permissions flag",
       "cursorDescription": "Equivalent to -f flag in Cursor CLI"
     },
     "allowedTools": {

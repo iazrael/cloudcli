@@ -410,7 +410,6 @@
     "title": "权限设置",
     "skipPermissions": {
       "label": "跳过权限提示（请谨慎使用）",
-      "claudeDescription": "等同于 --dangerously-skip-permissions 标志",
       "cursorDescription": "等同于 Cursor CLI 中的 -f 标志"
     },
     "allowedTools": {

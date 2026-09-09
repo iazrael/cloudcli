@@ -55,10 +55,6 @@ export default function AgentCategoryContentSection({
           onPermissionModeChange={(value) => {
             onClaudePermissionsChange({ ...claudePermissions, permissionMode: value });
           }}
-          skipPermissions={claudePermissions.skipPermissions}
-          onSkipPermissionsChange={(value) => {
-            onClaudePermissionsChange({ ...claudePermissions, skipPermissions: value });
-          }}
           allowedTools={claudePermissions.allowedTools}
           onAllowedToolsChange={(value) => {
             onClaudePermissionsChange({ ...claudePermissions, allowedTools: value });

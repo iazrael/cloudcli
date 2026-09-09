@@ -160,7 +160,6 @@ test('新 Claude 会话读取设置页保存的权限模式', async () => {
     permissionMode: 'auto',
     allowedTools: [],
     disallowedTools: [],
-    skipPermissions: false,
   });
 
   const { result } = renderProviderState('claude');
@@ -174,13 +173,11 @@ test('会话内授权保存工具清单时保留已存的权限模式', () => {
     permissionMode: 'auto',
     allowedTools: [],
     disallowedTools: [],
-    skipPermissions: false,
   });
 
   saveClaudePermissions({
     allowedTools: ['Bash(git log:*)'],
     disallowedTools: [],
-    skipPermissions: false,
   });
 
   const stored = readUserPreference<{ permissionMode?: string; allowedTools?: string[] }>('claudePermissions', {});

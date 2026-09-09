@@ -49,10 +49,10 @@ export default function Shell({
 }: ShellProps) {
   const { t } = useTranslation('chat');
   const [isRestarting, setIsRestarting] = useState(false);
-  // Seeded from the chat composer's persisted permission setting; the header
-  // toggle only changes this shell's launches, not the chat setting.
+  // Seeded from the claude default permission mode configured in settings; the
+  // header toggle only changes this shell's launches, not the chat setting.
   const [bypassPermissions, setBypassPermissions] = useState(
-    () => getClaudeSettings().skipPermissions,
+    () => getClaudeSettings().permissionMode === 'bypassPermissions',
   );
   const [cliPromptOptions, setCliPromptOptions] = useState<CliPromptOption[] | null>(null);
   const promptCheckTimer = useRef<ReturnType<typeof setTimeout> | null>(null);

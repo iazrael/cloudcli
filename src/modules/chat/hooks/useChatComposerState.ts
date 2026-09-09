@@ -674,20 +674,28 @@ export function useChatComposerState({
   // it is later dispatched outside this composer (app-level auto-send).
   const buildSendOptions = useCallback((currentInput: string): QueuedSendOptions => {
     const storedToolsSettings = readProviderToolsSettings(provider);
-    const toolsSettings = Object.keys(storedToolsSettings).length > 0
-      ? storedToolsSettings
-      : {
-          allowedTools: [],
-          disallowedTools: [],
-          skipPermissions: false,
-        };
+    // Claude's skip-permissions checkbox is retired: its stale stored flag must
+    // not keep overriding the mode choice, so only the tool lists leave the
+    // client. Other providers still pass their stored settings through as-is.
+    const toolsSettings = provider === 'claude'
+      ? {
+          allowedTools: Array.isArray(storedToolsSettings.allowedTools) ? storedToolsSettings.allowedTools : [],
+          disallowedTools: Array.isArray(storedToolsSettings.disallowedTools) ? storedToolsSettings.disallowedTools : [],
+        }
+      : Object.keys(storedToolsSettings).length > 0
+        ? storedToolsSettings
+        : {
+            allowedTools: [],
+            disallowedTools: [],
+            skipPermissions: false,
+          };
 
     return {
       model: currentProviderModel,
       effort: currentProviderEffort,
       permissionMode: resolvePermissionModeForProvider(provider, permissionMode),
       toolsSettings,
-      skipPermissions: toolsSettings?.skipPermissions || false,
+      skipPermissions: 'skipPermissions' in toolsSettings ? Boolean(toolsSettings.skipPermissions) : false,
       sessionSummary: getNotificationSessionSummary(selectedSession, currentInput),
     };
   }, [

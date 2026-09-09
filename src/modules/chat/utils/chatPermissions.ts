@@ -70,7 +70,6 @@ export function grantClaudeToolPermission(entry: string | null): PermissionGrant
   saveClaudePermissions({
     allowedTools: nextAllowed,
     disallowedTools: nextDisallowed,
-    skipPermissions: settings.skipPermissions,
   });
   return { success: true, alreadyAllowed, updatedSettings };
 }

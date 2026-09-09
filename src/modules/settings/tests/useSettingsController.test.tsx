@@ -29,12 +29,13 @@ vi.mock('@/shared/api', () => ({
 }));
 
 vi.mock('@/modules/chat', async (importOriginal) => {
-  // Keep the real readProviderToolsSettings: the permissions assertions below
-  // must exercise the same helper the controller reads through.
+  // Keep the real storage helpers: the permissions assertions below must
+  // exercise the same helpers the controller reads through.
   const actual = (await importOriginal()) as typeof ChatModule;
   return {
     setNotificationSoundEnabled: vi.fn(),
     readProviderToolsSettings: actual.readProviderToolsSettings,
+    toClaudePermissionMode: actual.toClaudePermissionMode,
   };
 });
 
@@ -82,18 +83,19 @@ test('loads permissions from the preference store', async () => {
   const { useSettingsController, userSettings } = await load();
 
   userSettings.writeUserPreference('claudePermissions', {
+    permissionMode: 'acceptEdits',
     allowedTools: ['Bash(git:*)'],
     disallowedTools: [],
-    skipPermissions: false,
   });
-  userSettings.writeUserPreference('codexPermissions', { permissionMode: 'acceptEdits' });
+  userSettings.writeUserPreference('codexPermissions', { permissionMode: 'bypassPermissions' });
   userSettings.writeUserPreference('projectSortOrder', 'date');
 
   const { result } = renderHook(() => useSettingsController({ isOpen: true, initialTab: 'agents' }));
 
   await waitFor(() => assert.equal(result.current.projectSortOrder, 'date'));
   assert.deepEqual(result.current.claudePermissions.allowedTools, ['Bash(git:*)']);
-  assert.equal(result.current.codexPermissionMode, 'acceptEdits');
+  assert.equal(result.current.claudePermissions.permissionMode, 'acceptEdits');
+  assert.equal(result.current.codexPermissionMode, 'bypassPermissions');
 });
 
 test('a stale legacy localStorage blob no longer feeds the dialog', async () => {
@@ -107,13 +109,12 @@ test('a stale legacy localStorage blob no longer feeds the dialog', async () => 
   userSettings.writeUserPreference('claudePermissions', {
     allowedTools: ['StoreTool'],
     disallowedTools: [],
-    skipPermissions: false,
   });
 
   const { result } = renderHook(() => useSettingsController({ isOpen: true, initialTab: 'agents' }));
 
   await waitFor(() => assert.deepEqual(result.current.claudePermissions.allowedTools, ['StoreTool']));
-  assert.equal(result.current.claudePermissions.skipPermissions, false);
+  assert.equal(result.current.claudePermissions.permissionMode, 'default');
 });
 
 test('auto-save writes the preference store and leaves legacy keys untouched', async () => {
@@ -127,7 +128,6 @@ test('auto-save writes the preference store and leaves legacy keys untouched', a
       permissionMode: 'acceptEdits',
       allowedTools: ['Bash(npm run:*)'],
       disallowedTools: [],
-      skipPermissions: false,
     });
     result.current.setCodexPermissionMode('bypassPermissions');
     result.current.setProjectSortOrder('date');
@@ -141,7 +141,6 @@ test('auto-save writes the preference store and leaves legacy keys untouched', a
     permissionMode: 'acceptEdits',
     allowedTools: ['Bash(npm run:*)'],
     disallowedTools: [],
-    skipPermissions: false,
   });
   assert.deepEqual(userSettings.readUserPreference('codexPermissions', null), {
     permissionMode: 'bypassPermissions',

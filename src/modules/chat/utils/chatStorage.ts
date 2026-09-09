@@ -1,5 +1,5 @@
 import { PROVIDER_PERMISSION_PREFERENCE_KEYS } from '@/shared/constants';
-import type { ClaudeSettings, LLMProvider } from '@/shared/types';
+import type { ClaudeSettings, LLMProvider, PermissionMode } from '@/shared/types';
 import { readUserPreference, writeUserPreference } from '@/shared/userSettings';
 
 import { safeLocalStorage } from '@/shared/utils';
@@ -9,7 +9,9 @@ export { safeLocalStorage };
 
 /**
  * Claude's tool-permission settings, stored in auth.db so the allow-list a user
- * builds up on one machine applies on the next.
+ * builds up on one machine applies on the next. The default permission mode is
+ * the mode new sessions start in; the old skip-permissions checkbox is retired
+ * and its stored flag is deliberately not surfaced.
  *
  * `projectSortOrder` is a separate preference now, but stays on the returned
  * object because ClaudeSettings still describes the whole legacy blob.
@@ -18,11 +20,18 @@ export function getClaudeSettings(): ClaudeSettings {
   const stored = readUserPreference<Partial<ClaudeSettings>>('claudePermissions', {});
 
   return {
+    permissionMode: toClaudePermissionMode(stored.permissionMode),
     allowedTools: Array.isArray(stored.allowedTools) ? stored.allowedTools : [],
     disallowedTools: Array.isArray(stored.disallowedTools) ? stored.disallowedTools : [],
-    skipPermissions: Boolean(stored.skipPermissions),
     projectSortOrder: readUserPreference<ClaudeSettings['projectSortOrder']>('projectSortOrder', 'name'),
   };
+}
+
+/** Coerces an untrusted stored value into a valid Claude permission mode; anything unrecognized falls back to 'default'. Used by the storage reader and the settings controller. */
+export function toClaudePermissionMode(value: unknown): PermissionMode {
+  return value === 'acceptEdits' || value === 'auto' || value === 'bypassPermissions' || value === 'plan'
+    ? value
+    : 'default';
 }
 
 /**
@@ -34,7 +43,6 @@ export function getClaudeSettings(): ClaudeSettings {
 export function saveClaudePermissions(permissions: {
   allowedTools: string[];
   disallowedTools: string[];
-  skipPermissions: boolean;
 }): void {
   const stored = readUserPreference<Partial<ClaudeSettings>>('claudePermissions', {});
   writeUserPreference('claudePermissions', {

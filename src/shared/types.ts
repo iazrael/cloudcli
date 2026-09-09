@@ -324,11 +324,11 @@ export type ChatMessage = {
   isSubagentContainer?: boolean;
 }
 
-/** The user's locally persisted Claude preferences (allowed and disallowed tool lists, permission skipping and project sort order) read from and written back to browser storage. */
+/** The user's locally persisted Claude preferences (default permission mode and allowed/disallowed tool lists, plus project sort order) read from and written back to browser storage. */
 export type ClaudeSettings = {
+  permissionMode: PermissionMode;
   allowedTools: string[];
   disallowedTools: string[];
-  skipPermissions: boolean;
   projectSortOrder: string;
   lastUpdated?: string;
   [key: string]: unknown;
@@ -1135,12 +1135,11 @@ export type AgentSettingsProject = {
   path?: string;
 };
 
-/** Claude's persisted permission settings: the default permission mode new sessions start in, the allowed and disallowed tool patterns and whether permission prompts are skipped; read and written as one unit by the settings controller. */
+/** Claude's persisted permission settings: the default permission mode new sessions start in and the allowed and disallowed tool patterns; read and written as one unit by the settings controller. */
 export type ClaudePermissionsState = {
   permissionMode: PermissionMode;
   allowedTools: string[];
   disallowedTools: string[];
-  skipPermissions: boolean;
 };
 
 /** The user's notification settings, grouped into delivery channels (in-app, web push, desktop, sound) and the events that trigger them; mirrors the payload of the notification preferences API. */
