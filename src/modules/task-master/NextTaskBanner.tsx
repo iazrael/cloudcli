@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   CheckCircle,
   Circle,
@@ -6,9 +7,7 @@ import {
   Flag,
   List,
   Play,
-  Settings,
   Target,
-  Terminal,
   Zap,
 } from 'lucide-react';
 
@@ -23,9 +22,10 @@ type NextTaskBannerProps = {
 };
 
 function PriorityIndicator({ priority }: { priority?: string }) {
+  const { t } = useTranslation();
   if (priority === 'high') {
     return (
-      <div className="flex h-4 w-4 items-center justify-center rounded bg-red-100 dark:bg-red-900/50" title="High Priority">
+      <div className="flex h-4 w-4 items-center justify-center rounded bg-red-100 dark:bg-red-900/50" title={t('tasks:priorities.highTitle')}>
         <Zap className="h-2.5 w-2.5 text-red-600 dark:text-red-400" />
       </div>
     );
@@ -33,14 +33,14 @@ function PriorityIndicator({ priority }: { priority?: string }) {
 
   if (priority === 'medium') {
     return (
-      <div className="flex h-4 w-4 items-center justify-center rounded bg-amber-100 dark:bg-amber-900/50" title="Medium Priority">
+      <div className="flex h-4 w-4 items-center justify-center rounded bg-amber-100 dark:bg-amber-900/50" title={t('tasks:priorities.mediumTitle')}>
         <Flag className="h-2.5 w-2.5 text-amber-600 dark:text-amber-400" />
       </div>
     );
   }
 
   return (
-    <div className="flex h-4 w-4 items-center justify-center rounded bg-gray-100 dark:bg-gray-800" title="Low Priority">
+    <div className="flex h-4 w-4 items-center justify-center rounded bg-gray-100 dark:bg-gray-800" title={t('tasks:priorities.lowTitle')}>
       <Circle className="h-2.5 w-2.5 text-gray-400 dark:text-gray-500" />
     </div>
   );
@@ -48,6 +48,7 @@ function PriorityIndicator({ priority }: { priority?: string }) {
 
 /** Exported through the task-master barrel; the chat module's empty state renders it to surface the next task and prefill a prompt that starts it. */
 export default function NextTaskBanner({ onShowAllTasks = null, onStartTask = null, className = '' }: NextTaskBannerProps) {
+  const { t } = useTranslation();
   const {
     nextTask,
     tasks,
@@ -55,7 +56,6 @@ export default function NextTaskBanner({ onShowAllTasks = null, onStartTask = nu
     isLoadingTasks,
     projectTaskMaster,
     refreshTasks,
-    setCurrentProject,
   } = useTaskMaster();
 
   const [showTaskDetail, setShowTaskDetail] = useState(false);
@@ -97,13 +97,13 @@ export default function NextTaskBanner({ onShowAllTasks = null, onStartTask = nu
                 className="flex items-center gap-1 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
               >
                 <Play className="h-3 w-3" />
-                Start Task
+                {t('tasks:banner.startTask')}
               </button>
 
               <button
                 onClick={() => setShowTaskDetail(true)}
                 className="rounded-md border border-slate-300 px-2 py-1.5 text-xs text-slate-600 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
-                title="View task details"
+                title={t('tasks:banner.viewTaskDetails')}
               >
                 <Eye className="h-3 w-3" />
               </button>
@@ -112,7 +112,7 @@ export default function NextTaskBanner({ onShowAllTasks = null, onStartTask = nu
                 <button
                   onClick={onShowAllTasks}
                   className="rounded-md border border-slate-300 px-2 py-1.5 text-xs text-slate-600 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
-                  title="View all tasks"
+                  title={t('tasks:banner.viewAllTasks')}
                 >
                   <List className="h-3 w-3" />
                 </button>
@@ -142,7 +142,7 @@ export default function NextTaskBanner({ onShowAllTasks = null, onStartTask = nu
           <div className="flex items-center gap-2">
             <CheckCircle className="h-4 w-4 text-purple-600 dark:text-purple-400" />
             <span className="text-sm font-medium text-gray-900 dark:text-white">
-              {completedTasks === tasks.length ? 'All tasks complete' : 'No pending tasks'}
+              {completedTasks === tasks.length ? t('tasks:banner.allComplete') : t('tasks:banner.noPending')}
             </span>
           </div>
           <div className="flex items-center gap-2">

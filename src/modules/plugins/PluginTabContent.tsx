@@ -53,11 +53,10 @@ export default function PluginTabContent({
   selectedProject,
   selectedSession,
 }: PluginTabContentProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const containerRef = useRef<HTMLDivElement>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const { isDarkMode } = useTheme();
-  const { i18n } = useTranslation();
   const { plugins } = usePlugins();
 
   // Stable refs so effects don't need context values in their dep arrays
