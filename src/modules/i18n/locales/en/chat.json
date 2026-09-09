@@ -102,9 +102,9 @@
       "plan": "Plan Mode"
     },
     "descriptions": {
-      "default": "Commands run automatically inside the workspace sandbox; actions that need to go beyond it will ask for your approval first.",
+      "default": "Asks for approval before actions that need it, following the provider's own permission rules.",
       "auto": "A model classifier decides per tool call whether to approve or deny. Hands-off, but safer than Bypass — denials still happen.",
-      "acceptEdits": "All commands run automatically within the workspace. Full auto mode with sandboxed execution.",
+      "acceptEdits": "File edits are applied without asking; other actions still follow the provider's own permission rules.",
       "bypassPermissions": "Full system access with no restrictions. All commands run automatically with full disk and network access. Use with caution.",
       "plan": "Planning mode - no commands are executed"
     },
