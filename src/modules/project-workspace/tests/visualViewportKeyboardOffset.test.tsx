@@ -24,6 +24,25 @@ function readKeyboardVar(): string {
 }
 
 let viewport: FakeVisualViewport;
+let activeInputElement: HTMLInputElement | null = null;
+
+function focusInput() {
+  if (!activeInputElement) {
+    activeInputElement = document.createElement('input');
+    document.body.appendChild(activeInputElement);
+  }
+  activeInputElement.focus();
+}
+
+function blurInput() {
+  if (activeInputElement) {
+    activeInputElement.blur();
+    if (activeInputElement.parentNode) {
+      activeInputElement.parentNode.removeChild(activeInputElement);
+    }
+    activeInputElement = null;
+  }
+}
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -39,14 +58,16 @@ beforeEach(() => {
     writable: true,
   });
   document.documentElement.style.removeProperty('--keyboard-height');
+  focusInput();
 });
 
 afterEach(() => {
   vi.useRealTimers();
+  blurInput();
   document.documentElement.style.removeProperty('--keyboard-height');
 });
 
-test('resize shrinking the visual viewport records the keyboard height', () => {
+test('resize shrinking the visual viewport records the keyboard height when an input is focused', () => {
   renderHook(() => useVisualViewportKeyboardOffset());
   assert.equal(readKeyboardVar(), '0px');
 
@@ -55,6 +76,17 @@ test('resize shrinking the visual viewport records the keyboard height', () => {
     viewport.dispatchEvent(new Event('resize'));
   });
   assert.equal(readKeyboardVar(), '350px');
+});
+
+test('viewport shrinking without any focused editable element stays zero (prevents page load blank bug)', () => {
+  blurInput();
+  renderHook(() => useVisualViewportKeyboardOffset());
+
+  act(() => {
+    viewport.height = LAYOUT_HEIGHT - 350;
+    viewport.dispatchEvent(new Event('resize'));
+  });
+  assert.equal(readKeyboardVar(), '0px');
 });
 
 test('a restored visual viewport clears the offset to zero', () => {
@@ -71,7 +103,7 @@ test('a restored visual viewport clears the offset to zero', () => {
   assert.equal(readKeyboardVar(), '0px');
 });
 
-test('focusout re-syncs even when iOS never fires the closing resize', () => {
+test('focusout clears offset even when iOS never fires the closing resize', () => {
   renderHook(() => useVisualViewportKeyboardOffset());
 
   act(() => {
@@ -80,11 +112,28 @@ test('focusout re-syncs even when iOS never fires the closing resize', () => {
   });
   assert.equal(readKeyboardVar(), '350px');
 
-  // Keyboard closes silently: geometry changes but no visualViewport event.
-  viewport.height = LAYOUT_HEIGHT;
+  // Input blurs and keyboard closes silently: geometry stays unchanged or delayed.
+  blurInput();
   act(() => {
     document.dispatchEvent(new Event('focusout'));
     vi.advanceTimersByTime(500);
+  });
+  assert.equal(readKeyboardVar(), '0px');
+});
+
+test('visibilitychange / pageshow clears stale offset when resuming without focus', () => {
+  renderHook(() => useVisualViewportKeyboardOffset());
+
+  act(() => {
+    viewport.height = LAYOUT_HEIGHT - 350;
+    viewport.dispatchEvent(new Event('resize'));
+  });
+  assert.equal(readKeyboardVar(), '350px');
+
+  // User switched to another app, iOS closed keyboard in background, resumed back
+  blurInput();
+  act(() => {
+    document.dispatchEvent(new Event('visibilitychange'));
   });
   assert.equal(readKeyboardVar(), '0px');
 });
