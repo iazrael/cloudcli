@@ -153,6 +153,7 @@
     "viewTaskDetails": "View task details",
     "viewAllTasks": "View all tasks",
     "allComplete": "All tasks complete",
-    "noPending": "No pending tasks"
+    "noPending": "No pending tasks",
+    "review": "Review"
   }
 }

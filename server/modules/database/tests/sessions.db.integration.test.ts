@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { closeConnection } from '@/modules/database/connection.js';
+import { closeConnection, getConnection } from '@/modules/database/connection.js';
 import { initializeDatabase } from '@/modules/database/init-db.js';
 import { projectsDb } from '@/modules/database/repositories/projects.db.js';
 import { sessionsDb } from '@/modules/database/repositories/sessions.db.js';
@@ -140,6 +140,36 @@ test("the upsert path leaves an archived row alone for a transcript older than i
     sessionsDb.createSession("session-stale", "claude", "/workspace/demo-project", "Indexed Name", "2026-07-18T09:00:00.000Z", "2026-07-18T10:00:00.000Z", "/transcripts/session-stale.jsonl");
 
     assert.equal(sessionsDb.getSessionById("session-stale")?.isArchived, 1);
+  });
+});
+
+test("a legacy archived row with a NULL updated_at unarchives on new activity", async () => {
+  await withIsolatedDatabase(() => {
+    // UPDATE branch: the row is keyed by provider_session_id, so indexing it
+    // again takes the UPDATE path. Legacy rows predating timestamp bookkeeping
+    // carry updated_at NULL; without the NULL guard every julianday comparison
+    // against them is false and they could never leave the archive.
+    sessionsDb.createSession("session-null-ts-update", "claude", "/workspace/demo-project", "A Name", "2026-07-18T09:00:00.000Z", "2026-07-18T10:00:00.000Z");
+    sessionsDb.updateSessionIsArchived("session-null-ts-update", true);
+    getConnection().prepare("UPDATE sessions SET updated_at = NULL WHERE session_id = ?").run("session-null-ts-update");
+
+    sessionsDb.createSession("session-null-ts-update", "claude", "/workspace/demo-project", "A Name", undefined, "2026-07-18T11:00:00.000Z");
+
+    assert.equal(sessionsDb.getSessionById("session-null-ts-update")?.isArchived, 0);
+  });
+});
+
+test("the upsert path unarchives a legacy row with a NULL updated_at", async () => {
+  await withIsolatedDatabase(() => {
+    // ON CONFLICT branch: the app row has no provider id yet, so indexing
+    // takes INSERT ... ON CONFLICT against its session_id.
+    sessionsDb.createAppSession("session-null-ts-conflict", "claude", "/workspace/demo-project");
+    sessionsDb.updateSessionIsArchived("session-null-ts-conflict", true);
+    getConnection().prepare("UPDATE sessions SET updated_at = NULL WHERE session_id = ?").run("session-null-ts-conflict");
+
+    sessionsDb.createSession("session-null-ts-conflict", "claude", "/workspace/demo-project", "Indexed Name", undefined, "2026-07-18T11:00:00.000Z");
+
+    assert.equal(sessionsDb.getSessionById("session-null-ts-conflict")?.isArchived, 0);
   });
 });
 

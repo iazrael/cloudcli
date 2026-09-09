@@ -62,4 +62,17 @@ describe('readApiJson', () => {
     expect((error as ApiRequestError).message).toBe('Request failed (502)');
     expect((error as ApiRequestError).code).toBeUndefined();
   });
+
+  it('handles non-JSON responses (e.g. 502 Bad Gateway HTML) gracefully', async () => {
+    const htmlResponse = new Response('<html>502 Bad Gateway</html>', {
+      status: 502,
+      statusText: 'Bad Gateway',
+      headers: { 'Content-Type': 'text/html' },
+    });
+    const error = await failure(readApiJson(htmlResponse));
+    expect(error).toBeInstanceOf(ApiRequestError);
+    const apiError = error as ApiRequestError;
+    expect(apiError.message).toBe('Bad Gateway');
+    expect(apiError.status).toBe(502);
+  });
 });

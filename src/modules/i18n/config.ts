@@ -144,7 +144,7 @@ i18n
         chat: enChat,
         codeEditor: enCodeEditor,
         tasks: enTasks,
-git: enGit,
+        git: enGit,
       },
       fr: {
         common: frCommon,

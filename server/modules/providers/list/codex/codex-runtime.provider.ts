@@ -20,6 +20,7 @@ import {
   normalizeImageDescriptors,
   createCompleteMessage,
   createNormalizedMessage,
+  resolveModelEffort,
 } from '@/shared/index.js';
 import { notifyRunFailed, notifyRunStopped } from '@/modules/notifications/index.js';
 import type { AnyRecord, ProviderRuntimeContext, ProviderRuntimeWriter } from '@/shared/index.js';
@@ -328,11 +329,7 @@ async function queryCodex(
   const workingDirectory = cwd || projectPath || process.cwd();
   const { sandboxMode, approvalPolicy } = mapPermissionModeToCodexOptions(permissionMode);
   const catalog = await context.getProviderModels();
-  const selectedModel = catalog.OPTIONS.find((option) => option.value === resolvedModel) || null;
-  const allowedEfforts = selectedModel?.effort?.values?.map((value) => value.value) || [];
-  const resolvedEffort = typeof effort === 'string' && effort !== 'default' && allowedEfforts.includes(effort)
-    ? effort as ModelReasoningEffort
-    : undefined;
+  const resolvedEffort = resolveModelEffort(resolvedModel, effort, catalog) as ModelReasoningEffort | undefined;
 
   let codex: Codex;
   let thread: Thread;
@@ -574,19 +571,15 @@ export const codexRuntime = {
 };
 
 /**
- * Helper to send message via WebSocket or writer
- * @param {WebSocket|object} ws - WebSocket or response writer
- * @param {object} data - Data to send
+ * Sends one runtime message through the run's writer.
+ *
+ * Consumed by queryCodex's event loop. `ProviderRuntimeWriter.send` already
+ * owns payload stringification (WebSocket/SSE writers), so — like every other
+ * provider runtime — the adapter passes the object straight through.
  */
 function sendMessage(ws: ProviderRuntimeWriter, data: unknown) {
   try {
-    if (ws.isSSEStreamWriter || ws.isWebSocketWriter) {
-      // Writer handles stringification (SSEStreamWriter or WebSocketWriter)
-      ws.send(data);
-    } else if (typeof ws.send === 'function') {
-      // Raw WebSocket - stringify here
-      ws.send(JSON.stringify(data));
-    }
+    ws.send(data);
   } catch (error) {
     console.error('[Codex] Error sending message:', error);
   }

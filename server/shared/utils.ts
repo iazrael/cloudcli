@@ -583,6 +583,27 @@ export function buildDefaultProviderCurrentActiveModel(
   };
 }
 
+/**
+ * Validates a UI effort selection against the model's catalog-declared tiers.
+ *
+ * Claude/Codex/OpenCode runtime adapters use this before passing the choice to
+ * their SDK/CLI: only non-`default` string values that the selected model
+ * actually lists under `effort.values` survive; anything else (including an
+ * unknown or missing catalog, so the lookup tolerates `null`) yields
+ * `undefined`, letting the provider runtime fall back to its own default.
+ */
+export function resolveModelEffort(
+  model: string | null | undefined,
+  effort: unknown,
+  modelsDefinition: ProviderModelsDefinition | null | undefined,
+): string | undefined {
+  const selectedModel = modelsDefinition?.OPTIONS?.find((option) => option.value === model) || null;
+  const allowedEfforts = selectedModel?.effort?.values?.map((value) => value.value) || [];
+  return typeof effort === 'string' && effort !== 'default' && allowedEfforts.includes(effort)
+    ? effort
+    : undefined;
+}
+
 // ---------------------------
 //----------------- WEBSOCKET PAYLOAD PARSING UTILITIES ------------
 /**
