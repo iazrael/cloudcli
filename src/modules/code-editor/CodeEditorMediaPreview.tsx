@@ -1,9 +1,13 @@
-import { authenticatedFetch } from '@/shared/api';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
-import { api } from '@/shared/api';
-import type { CodeEditorFile,PreviewKind } from '@/shared/types';
+import { api, authenticatedFetch } from '@/shared/api';
+import type { CodeEditorFile, PreviewKind } from '@/shared/types';
 import { getPreviewMimeType } from '@/modules/code-editor/utils/previewableFile';
+import CodeEditorImageViewer, {
+  MAX_SCALE,
+  MIN_SCALE,
+  type ImageViewerHandle,
+} from '@/modules/code-editor/CodeEditorImageViewer';
 
 type CodeEditorMediaPreviewProps = {
   file: CodeEditorFile;
@@ -22,6 +26,9 @@ type CodeEditorMediaPreviewProps = {
     fullscreen: string;
     exitFullscreen: string;
     close: string;
+    zoomIn?: string;
+    zoomOut?: string;
+    resetZoom?: string;
   };
 };
 
@@ -52,6 +59,13 @@ export default function CodeEditorMediaPreview({
   // Identifies which file the current `url` was loaded for. Rendering is gated on
   // this so a blob from a previously-opened file can never show under the new
   const [loadedKey, setLoadedKey] = useState<string | null>(null);
+
+  /** Imperative ref to invoke zoomIn, zoomOut, and resetZoom on the child image viewer. */
+  const imageViewerRef = useRef<ImageViewerHandle | null>(null);
+
+  /** Current image zoom multiplier displayed in the header percentage badge. */
+  const [imageScale, setImageScale] = useState<number>(1);
+
   const isExternal = Boolean(file.isReadOnlyExternal);
   const sourceKey = `${isExternal ? 'external' : (projectId ?? '')}:${file.path}:${kind}`;
 
@@ -158,10 +172,11 @@ export default function CodeEditorMediaPreview({
     switch (kind) {
       case 'image':
         return (
-          <img
+          <CodeEditorImageViewer
             src={currentUrl}
             alt={file.name}
-            className="max-h-full max-w-full object-contain"
+            viewerRef={imageViewerRef}
+            onScaleChange={setImageScale}
           />
         );
       case 'pdf':
@@ -191,7 +206,7 @@ export default function CodeEditorMediaPreview({
   };
 
   const previewBody = (
-    <div className="relative flex h-full w-full flex-col items-center justify-center bg-muted/30 p-2">
+    <div className={`relative flex h-full w-full flex-col items-center justify-center bg-muted/30 ${kind === 'image' ? 'p-0 overflow-hidden' : 'p-2'}`}>
       {loading && (
         <div className="text-sm text-muted-foreground">{labels.loading}</div>
       )}
@@ -207,8 +222,59 @@ export default function CodeEditorMediaPreview({
     </div>
   );
 
+  const canZoomOut = imageScale > MIN_SCALE + 0.01;
+  const canZoomIn = imageScale < MAX_SCALE - 0.01;
+
   const headerActions = (
     <div className="flex shrink-0 items-center gap-0.5">
+      {kind === 'image' && currentUrl && (
+        <>
+          <button
+            type="button"
+            disabled={!canZoomOut}
+            onClick={() => imageViewerRef.current?.zoomOut()}
+            className={`flex items-center justify-center rounded-md p-1.5 ${
+              canZoomOut
+                ? 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white'
+                : 'cursor-not-allowed opacity-30 text-gray-400 dark:text-gray-600'
+            }`}
+            aria-label={labels.zoomOut ?? 'Zoom out'}
+            title={labels.zoomOut ?? 'Zoom out'}
+          >
+            <svg aria-hidden="true" className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <circle cx="11" cy="11" r="8" strokeWidth={2} />
+              <path strokeLinecap="round" strokeWidth={2} d="M21 21l-4.35-4.35M8 11h6" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            onClick={() => imageViewerRef.current?.resetZoom()}
+            className="px-1.5 py-0.5 text-xs font-mono font-medium text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white rounded"
+            aria-label={labels.resetZoom ?? 'Reset zoom'}
+            title={labels.resetZoom ?? 'Reset zoom'}
+          >
+            {Math.round(imageScale * 100)}%
+          </button>
+          <button
+            type="button"
+            disabled={!canZoomIn}
+            onClick={() => imageViewerRef.current?.zoomIn()}
+            className={`flex items-center justify-center rounded-md p-1.5 ${
+              canZoomIn
+                ? 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white'
+                : 'cursor-not-allowed opacity-30 text-gray-400 dark:text-gray-600'
+            }`}
+            aria-label={labels.zoomIn ?? 'Zoom in'}
+            title={labels.zoomIn ?? 'Zoom in'}
+          >
+            <svg aria-hidden="true" className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <circle cx="11" cy="11" r="8" strokeWidth={2} />
+              <path strokeLinecap="round" strokeWidth={2} d="M21 21l-4.35-4.35M11 8v6M8 11h6" />
+            </svg>
+          </button>
+          <div className="mx-1 h-3.5 w-px bg-border/60" />
+        </>
+      )}
       {canOpenInNewTab && currentUrl && (
         <a
           href={currentUrl}

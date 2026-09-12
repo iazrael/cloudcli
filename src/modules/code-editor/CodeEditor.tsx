@@ -213,6 +213,9 @@ export default function CodeEditor({
           fullscreen: t('actions.fullscreen', 'Fullscreen'),
           exitFullscreen: t('actions.exitFullscreen', 'Exit fullscreen'),
           close: t('actions.close', 'Close'),
+          zoomIn: t('filePreview.zoomIn', 'Zoom in'),
+          zoomOut: t('filePreview.zoomOut', 'Zoom out'),
+          resetZoom: t('filePreview.resetZoom', 'Reset zoom'),
         }}
       />
     );

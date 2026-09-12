@@ -1,9 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { createPortal } from 'react-dom';
-import { X } from 'lucide-react';
 
 import { api } from '@/shared/api';
+import { UnifiedImageViewer } from '@/shared/ui';
 import type { ChatImage } from '@/shared/types';
 
 type ChatMessageImagesProps = {
@@ -83,53 +82,14 @@ function useChatImageSrc(image: ChatImage, projectId?: string | null): { src: st
 }
 
 /**
- * Fullscreen image overlay in the claude.ai style: dark backdrop, centered
- * image, closes on backdrop click, close button, or Escape.
- *
- * Used by chat's ChatMessageImages and ComposerAttachment to expand a
- * thumbnail to full size.
+ * Used by chat's ComposerAttachment to expand an attachment preview to full size
+ * using the unified image viewer.
  */
 export function ImageLightbox({ src, alt, onClose }: { src: string; alt: string; onClose: () => void }) {
-  const { t } = useTranslation();
-  useEffect(() => {
-    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.stopPropagation();
-        onClose();
-      }
-    };
-    document.addEventListener('keydown', handleKeyDown, true);
-    return () => document.removeEventListener('keydown', handleKeyDown, true);
-  }, [onClose]);
-
-  return createPortal(
-    <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm"
-      onClick={onClose}
-      role="dialog"
-      aria-modal="true"
-      aria-label={alt}
-    >
-      <button
-        type="button"
-        onClick={onClose}
-        aria-label={t('chat:misc.closeImagePreview')}
-        className="absolute right-4 top-4 rounded-full bg-white/10 p-2 text-white transition-colors hover:bg-white/20"
-      >
-        <X className="h-5 w-5" />
-      </button>
-      <img
-        src={src}
-        alt={alt}
-        onClick={(event) => event.stopPropagation()}
-        className="max-h-[90vh] max-w-[92vw] rounded-lg object-contain shadow-2xl"
-      />
-    </div>,
-    document.body,
-  );
+  return <UnifiedImageViewer src={src} alt={alt} title={alt} onClose={onClose} />;
 }
 
-function ChatMessageImage({ image, projectId }: { image: ChatImage; projectId?: string | null }) {
+export function ChatMessageImage({ image, projectId }: { image: ChatImage; projectId?: string | null }) {
   const { t } = useTranslation();
   const { src, failed } = useChatImageSrc(image, projectId);
   const [expanded, setExpanded] = useState(false);
@@ -161,7 +121,15 @@ function ChatMessageImage({ image, projectId }: { image: ChatImage; projectId?: 
           className="h-28 w-28 cursor-zoom-in object-cover transition-transform duration-200 hover:scale-105"
         />
       </button>
-      {expanded && <ImageLightbox src={src} alt={alt} onClose={() => setExpanded(false)} />}
+      {expanded && (
+        <UnifiedImageViewer
+          src={src}
+          alt={alt}
+          title={alt}
+          filePath={image.path || undefined}
+          onClose={() => setExpanded(false)}
+        />
+      )}
     </>
   );
 }

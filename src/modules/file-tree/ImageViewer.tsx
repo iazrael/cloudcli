@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { X } from 'lucide-react';
 
-import { Button } from '@/shared/ui';
 import { api } from '@/shared/api';
+import { UnifiedImageViewer } from '@/shared/ui';
 import type { FileTreeImageSelection } from '@/shared/types';
 
 type ImageViewerProps = {
@@ -10,11 +10,16 @@ type ImageViewerProps = {
   onClose: () => void;
 };
 
-/** Rendered by FileTree to preview an image file picked in the tree. */
+/** Rendered by FileTree to preview an image file picked in the tree using UnifiedImageViewer. */
 export default function ImageViewer({ file, onClose }: ImageViewerProps) {
+  /** Blob URL created from downloaded image bytes for local preview. */
   const [imageUrl, setImageUrl] = useState<string | null>(null);
+
+  /** Error message displayed if loading image blob fails. */
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+
+  /** Loading state indicator while image blob is being fetched. */
+  const [loading, setLoading] = useState<boolean>(true);
 
   useEffect(() => {
     let objectUrl: string | null = null;
@@ -42,7 +47,7 @@ export default function ImageViewer({ file, onClose }: ImageViewerProps) {
           return;
         }
         console.error('Error loading image:', loadError);
-        setError('Unable to load image');
+        setError('无法加载图片');
       } finally {
         setLoading(false);
       }
@@ -58,40 +63,48 @@ export default function ImageViewer({ file, onClose }: ImageViewerProps) {
     };
   }, [file.projectId, file.path]);
 
+  if (!loading && imageUrl) {
+    return (
+      <UnifiedImageViewer
+        src={imageUrl}
+        alt={file.name}
+        title={file.name}
+        filePath={file.path}
+        onClose={onClose}
+      />
+    );
+  }
+
+  // Loading or Error fallback overlay
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
-      <div className="mx-4 max-h-[90vh] w-full max-w-4xl overflow-hidden rounded-lg bg-white shadow-xl dark:bg-gray-800">
-        <div className="flex items-center justify-between border-b p-4">
-          <h3 className="text-lg font-semibold text-gray-900 dark:text-white">{file.name}</h3>
-          <Button variant="ghost" size="sm" onClick={onClose} className="h-8 w-8 p-0">
-            <X className="h-4 w-4" />
-          </Button>
-        </div>
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={file.name}
+      className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-black/90 p-4 backdrop-blur-md"
+    >
+      <button
+        type="button"
+        onClick={onClose}
+        className="absolute right-4 top-4 flex items-center justify-center rounded-full bg-white/20 p-2 text-white shadow-lg transition-colors hover:bg-white/35 active:scale-95"
+        title="关闭"
+        aria-label="关闭"
+      >
+        <X className="h-5 w-5" />
+      </button>
 
-        <div className="flex min-h-[400px] items-center justify-center bg-gray-50 p-4 dark:bg-gray-900">
-          {loading && (
-            <div className="text-center text-gray-500 dark:text-gray-400">
-              <p>Loading image...</p>
-            </div>
-          )}
-          {!loading && imageUrl && (
-            <img
-              src={imageUrl}
-              alt={file.name}
-              className="max-h-[70vh] max-w-full rounded-lg object-contain shadow-md"
-            />
-          )}
-          {!loading && !imageUrl && (
-            <div className="text-center text-gray-500 dark:text-gray-400">
-              <p>{error || 'Unable to load image'}</p>
-              <p className="mt-2 break-all text-sm">{file.path}</p>
-            </div>
-          )}
-        </div>
-
-        <div className="border-t bg-gray-50 p-4 dark:bg-gray-800">
-          <p className="text-sm text-gray-600 dark:text-gray-400">{file.path}</p>
-        </div>
+      <div className="flex flex-col items-center gap-3 text-center text-white/80">
+        {loading ? (
+          <>
+            <div className="h-8 w-8 animate-spin rounded-full border-2 border-white/20 border-t-white" />
+            <p className="text-sm font-medium">正在加载图片...</p>
+          </>
+        ) : (
+          <>
+            <p className="text-sm text-red-400">{error || '无法加载图片'}</p>
+            <p className="max-w-md break-all font-mono text-xs text-white/50">{file.path}</p>
+          </>
+        )}
       </div>
     </div>
   );

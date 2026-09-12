@@ -38,7 +38,10 @@
   "filePreview": {
     "loading": "正在加载预览...",
     "error": "无法显示此文件。",
-    "openInNewTab": "在新标签页中打开"
+    "openInNewTab": "在新标签页中打开",
+    "zoomIn": "放大",
+    "zoomOut": "缩小",
+    "resetZoom": "重置缩放"
   },
   "readOnly": {
     "badge": "只读"
