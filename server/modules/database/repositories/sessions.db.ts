@@ -214,7 +214,7 @@ export const sessionsDb = {
     projectPath: string;
     customName: string | null;
     providerSessionId: string;
-    jsonlPath: string;
+    jsonlPath: string | null;
     forkedFromSessionId: string;
     model: string | null;
     effort: string | null;

@@ -1,261 +1,258 @@
 import assert from 'node:assert/strict';
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import os from 'node:os';
-import path from 'node:path';
-import test from 'node:test';
+import http from 'node:http';
+import test, { after, before } from 'node:test';
 
 import {
-  opencodeRuntime,
-  resolveOpenCodePermissionOptions,
-} from './opencode-runtime.provider.js';
-import { OpenCodeSessionsProvider } from './opencode-sessions.provider.js';
+  resolveOpenCodeAgent,
+  shouldAutoApproveOpenCodePermission,
+} from './opencode-server.client.js';
+import {
+  announceOpenCodePermission,
+  announceOpenCodeQuestion,
+  openCodePermissions,
+  registerOpenCodeRun,
+  settleOpenCodeEvent,
+  unregisterOpenCodeRun,
+} from './opencode-permissions.provider.js';
 
-const sessionsProvider = new OpenCodeSessionsProvider();
-const runtimeContext = {
-  resolveProviderSessionId: (sessionId) => sessionId || null,
-  resolveResumeModel: async (_sessionId, requestedModel) => requestedModel || undefined,
-  getProviderModels: async () => ({ OPTIONS: [], DEFAULT: '' }),
-  normalizeMessage: (raw, sessionId) => sessionsProvider.normalizeMessage(raw, sessionId),
-  isProviderInstalled: async () => true,
-};
+/** Captured engine replies keyed by the path the bridge called. */
+const replies = [];
+let server;
+let baseUrl;
 
-const findEnvKey = (name) =>
-  Object.keys(process.env).find((key) => key.toLowerCase() === name.toLowerCase()) || name;
+before(async () => {
+  server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (chunk) => {
+      body += chunk;
+    });
+    req.on('end', () => {
+      replies.push({ method: req.method, url: req.url, body: body ? JSON.parse(body) : null });
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('true');
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  baseUrl = `http://127.0.0.1:${address.port}`;
+});
 
-async function createFakeOpenCodeExecutable(binDir) {
-  const scriptPath = path.join(binDir, 'opencode.js');
-  await writeFile(scriptPath, `
-const capturePath = process.env.OPENCODE_ARGS_CAPTURE;
-if (capturePath) {
-  require('node:fs').writeFileSync(capturePath, JSON.stringify({
-    args: process.argv.slice(2),
-    permissionEnv: process.env.OPENCODE_PERMISSION ?? null,
-  }));
-}
+after(() => {
+  server.close();
+});
 
-const events = [
-  { type: 'text', sessionID: 'open-live-1', text: 'assistant response' },
-  { type: 'step_finish', sessionID: 'open-live-1' },
-];
-
-for (const event of events) {
-  console.log(JSON.stringify(event));
-}
-`, 'utf8');
-
-  if (process.platform === 'win32') {
-    const commandPath = path.join(binDir, 'opencode.cmd');
-    await writeFile(commandPath, '@echo off\r\nnode "%~dp0opencode.js" %*\r\n', 'utf8');
-    return;
-  }
-
-  const commandPath = path.join(binDir, 'opencode');
-  await writeFile(commandPath, '#!/bin/sh\nnode "$(dirname "$0")/opencode.js" "$@"\n', 'utf8');
-  await chmod(commandPath, 0o755);
-}
-
-test('spawnOpenCode emits session_created before normalized live messages for new sessions', async () => {
-  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-cli-live-'));
-  const argsCapturePath = path.join(tempRoot, 'opencode-args.json');
-  const pathKey = findEnvKey('PATH');
-  const pathExtKey = findEnvKey('PATHEXT');
-  const previousPath = process.env[pathKey];
-  const previousPathExt = process.env[pathExtKey];
-  const previousArgsCapture = process.env.OPENCODE_ARGS_CAPTURE;
+function createWriter() {
   const messages = [];
-  const writer = {
-    userId: null,
-    sessionId: null,
+  return {
+    messages,
     send(message) {
       messages.push(message);
     },
-    setSessionId(sessionId) {
-      this.sessionId = sessionId;
-    },
   };
+}
 
-  try {
-    await createFakeOpenCodeExecutable(tempRoot);
-    process.env[pathKey] = `${tempRoot}${path.delimiter}${previousPath || ''}`;
-    process.env.OPENCODE_ARGS_CAPTURE = argsCapturePath;
-    if (process.platform === 'win32') {
-      process.env[pathExtKey] = previousPathExt?.toUpperCase().includes('.CMD')
-        ? previousPathExt
-        : `.COM;.EXE;.BAT;.CMD${previousPathExt ? `;${previousPathExt}` : ''}`;
-    }
-
-    await opencodeRuntime.run('Hi', { cwd: tempRoot }, writer, runtimeContext);
-
-    const sessionCreatedIndex = messages.findIndex((message) => message.kind === 'session_created');
-    const assistantDeltaIndex = messages.findIndex((message) =>
-      message.kind === 'stream_delta' && message.content === 'assistant response',
-    );
-    const streamEnd = messages.find((message) => message.kind === 'stream_end');
-    const complete = messages.find((message) => message.kind === 'complete');
-
-    assert.notEqual(sessionCreatedIndex, -1);
-    assert.notEqual(assistantDeltaIndex, -1);
-    assert.ok(sessionCreatedIndex < assistantDeltaIndex);
-    assert.equal(messages[sessionCreatedIndex].newSessionId, 'open-live-1');
-    assert.equal(writer.sessionId, 'open-live-1');
-    assert.equal(streamEnd?.sessionId, 'open-live-1');
-    assert.equal(complete?.sessionId, 'open-live-1');
-    assert.equal(messages.some((message) => message.kind === 'error'), false);
-
-    const capture = JSON.parse(await readFile(argsCapturePath, 'utf8'));
-    const launchedArgs = capture.args;
-    assert.ok(Array.isArray(launchedArgs));
-    assert.deepEqual(launchedArgs.slice(0, 4), ['run', '--format', 'json', '--dir']);
-    assert.equal(launchedArgs[4], tempRoot);
-    // No permission mode requested → no permission flags and no env override.
-    assert.equal(launchedArgs.includes('--auto'), false);
-    assert.equal(launchedArgs.includes('--agent'), false);
-    assert.equal(capture.permissionEnv, null);
-
-    const attachmentOnlyCapturePath = path.join(tempRoot, 'opencode-attachment-only.json');
-    process.env.OPENCODE_ARGS_CAPTURE = attachmentOnlyCapturePath;
-    await opencodeRuntime.run(
-      '',
-      {
-        cwd: tempRoot,
-        files: [{
-          path: path.join(tempRoot, 'brief.pdf'),
-          name: 'brief.pdf',
-          mimeType: 'application/pdf',
-        }],
-      },
+function createRun(overrides = {}) {
+  const writer = createWriter();
+  return {
+    writer,
+    run: {
+      runId: 'app-session-1',
+      appSessionId: 'app-session-1',
+      providerSessionId: 'ses_test',
+      directory: '/tmp/project',
+      handle: { baseUrl, headers: {} },
       writer,
-      runtimeContext,
-    );
-    const attachmentOnlyCapture = JSON.parse(await readFile(attachmentOnlyCapturePath, 'utf8'));
-    const attachmentPrompt = attachmentOnlyCapture.args[attachmentOnlyCapture.args.length - 1];
-    assert.match(attachmentPrompt, /<files_input>/);
-    assert.match(attachmentPrompt, /brief\.pdf/);
-  } finally {
-    if (previousPath === undefined) {
-      delete process.env[pathKey];
-    } else {
-      process.env[pathKey] = previousPath;
-    }
-
-    if (previousPathExt === undefined) {
-      delete process.env[pathExtKey];
-    } else {
-      process.env[pathExtKey] = previousPathExt;
-    }
-
-    if (previousArgsCapture === undefined) {
-      delete process.env.OPENCODE_ARGS_CAPTURE;
-    } else {
-      process.env.OPENCODE_ARGS_CAPTURE = previousArgsCapture;
-    }
-
-    await rm(tempRoot, { recursive: true, force: true });
-  }
-});
-
-test('resolveOpenCodePermissionOptions maps UI permission modes onto OpenCode controls', () => {
-  assert.deepEqual(resolveOpenCodePermissionOptions('plan'), {
-    args: ['--agent', 'plan'],
-    env: {},
-  });
-  assert.deepEqual(resolveOpenCodePermissionOptions('bypassPermissions'), {
-    args: ['--auto'],
-    env: {},
-  });
-  assert.deepEqual(resolveOpenCodePermissionOptions('acceptEdits'), {
-    args: [],
-    env: { OPENCODE_PERMISSION: '{"edit":"allow"}' },
-  });
-  // default and anything unknown leave the user's own opencode config in charge.
-  assert.deepEqual(resolveOpenCodePermissionOptions('default'), { args: [], env: {} });
-  assert.deepEqual(resolveOpenCodePermissionOptions(undefined), { args: [], env: {} });
-});
-
-test('spawnOpenCode passes permission mode flags and env to the CLI', async () => {
-  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-cli-perms-'));
-  const pathKey = findEnvKey('PATH');
-  const pathExtKey = findEnvKey('PATHEXT');
-  const previousPath = process.env[pathKey];
-  const previousPathExt = process.env[pathExtKey];
-  const previousArgsCapture = process.env.OPENCODE_ARGS_CAPTURE;
-  const writer = {
-    userId: null,
-    sessionId: null,
-    send() {},
-    setSessionId(sessionId) {
-      this.sessionId = sessionId;
+      permissionMode: 'default',
+      ...overrides,
     },
   };
+}
 
-  try {
-    await createFakeOpenCodeExecutable(tempRoot);
-    process.env[pathKey] = `${tempRoot}${path.delimiter}${previousPath || ''}`;
-    if (process.platform === 'win32') {
-      process.env[pathExtKey] = previousPathExt?.toUpperCase().includes('.CMD')
-        ? previousPathExt
-        : `.COM;.EXE;.BAT;.CMD${previousPathExt ? `;${previousPathExt}` : ''}`;
-    }
+function permissionEvent(overrides = {}) {
+  return {
+    type: 'permission.asked',
+    directory: '/tmp/project',
+    properties: {
+      id: 'per_test_1',
+      sessionID: 'ses_test',
+      permission: 'external_directory',
+      patterns: ['C:\\Windows\\*'],
+      metadata: { filepath: 'C:\\Windows\\win.ini' },
+      always: ['C:\\Windows\\*'],
+      tool: { messageID: 'msg_1', callID: 'call_1' },
+      ...overrides,
+    },
+  };
+}
 
-    const scenarios = [
-      {
-        permissionMode: 'plan',
-        expectArgs: ['--agent', 'plan'],
-        expectPermissionEnv: null,
-      },
-      {
-        permissionMode: 'bypassPermissions',
-        expectArgs: ['--auto'],
-        expectPermissionEnv: null,
-      },
-      {
-        permissionMode: 'acceptEdits',
-        expectArgs: [],
-        expectPermissionEnv: '{"edit":"allow"}',
-      },
-    ];
+test('permission modes map onto the OpenCode agent and auto-approval lever', () => {
+  assert.equal(resolveOpenCodeAgent('plan'), 'plan');
+  assert.equal(resolveOpenCodeAgent('default'), undefined);
+  assert.equal(resolveOpenCodeAgent(undefined), undefined);
+  assert.equal(shouldAutoApproveOpenCodePermission('bypassPermissions'), true);
+  assert.equal(shouldAutoApproveOpenCodePermission('default'), false);
+  assert.equal(shouldAutoApproveOpenCodePermission('acceptEdits'), false);
+  assert.equal(shouldAutoApproveOpenCodePermission('acceptEdits', 'edit'), true);
+  assert.equal(shouldAutoApproveOpenCodePermission('acceptEdits', 'external_directory'), false);
+});
 
-    for (const scenario of scenarios) {
-      const argsCapturePath = path.join(tempRoot, `opencode-args-${scenario.permissionMode}.json`);
-      process.env.OPENCODE_ARGS_CAPTURE = argsCapturePath;
+test('a permission request becomes an answerable card and resolves with once', async () => {
+  const { run, writer } = createRun();
+  registerOpenCodeRun(run);
+  replies.length = 0;
 
-      await opencodeRuntime.run(
-        'Hi',
-        { cwd: tempRoot, permissionMode: scenario.permissionMode },
-        writer,
-        runtimeContext,
-      );
+  announceOpenCodePermission(run, permissionEvent());
 
-      const capture = JSON.parse(await readFile(argsCapturePath, 'utf8'));
-      for (const expectedArg of scenario.expectArgs) {
-        assert.ok(
-          capture.args.includes(expectedArg),
-          `${scenario.permissionMode}: expected "${expectedArg}" in ${JSON.stringify(capture.args)}`,
-        );
-      }
-      // The prompt stays the last positional argument, after any permission flags.
-      assert.equal(capture.args[capture.args.length - 1], 'Hi');
-      assert.equal(capture.permissionEnv, scenario.expectPermissionEnv);
-    }
-  } finally {
-    if (previousPath === undefined) {
-      delete process.env[pathKey];
-    } else {
-      process.env[pathKey] = previousPath;
-    }
+  const card = writer.messages.find((message) => message.kind === 'permission_request');
+  assert.ok(card, 'a permission card must be sent');
+  assert.equal(card.requestId, 'per_test_1');
+  assert.equal(card.toolName, 'external_directory');
+  assert.deepEqual(card.input.patterns, ['C:\\Windows\\*']);
 
-    if (previousPathExt === undefined) {
-      delete process.env[pathExtKey];
-    } else {
-      process.env[pathExtKey] = previousPathExt;
-    }
+  assert.equal(openCodePermissions.listPending('app-session-1').length, 1);
 
-    if (previousArgsCapture === undefined) {
-      delete process.env.OPENCODE_ARGS_CAPTURE;
-    } else {
-      process.env.OPENCODE_ARGS_CAPTURE = previousArgsCapture;
-    }
+  openCodePermissions.resolve('per_test_1', { allow: true });
+  await new Promise((resolve) => setTimeout(resolve, 50));
 
-    await rm(tempRoot, { recursive: true, force: true });
-  }
+  assert.equal(replies.length, 1);
+  assert.match(replies[0].url, /\/permission\/per_test_1\/reply\?directory=/);
+  assert.deepEqual(replies[0].body, { reply: 'once' });
+
+  assert.equal(openCodePermissions.listPending('app-session-1').length, 0);
+  assert.ok(writer.messages.some((message) => message.kind === 'permission_cancelled'));
+
+  unregisterOpenCodeRun(run.runId);
+});
+
+test('denying a permission replies reject with the user message', async () => {
+  const { run } = createRun({ runId: 'app-session-2', appSessionId: 'app-session-2' });
+  registerOpenCodeRun(run);
+  replies.length = 0;
+
+  announceOpenCodePermission(run, permissionEvent({ id: 'per_test_2' }));
+  openCodePermissions.resolve('per_test_2', { allow: false, message: 'not allowed' });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  assert.deepEqual(replies[0].body, { reply: 'reject', message: 'not allowed' });
+
+  unregisterOpenCodeRun(run.runId);
+});
+
+test('remembering a permission replies always', async () => {
+  const { run } = createRun({ runId: 'app-session-3', appSessionId: 'app-session-3' });
+  registerOpenCodeRun(run);
+  replies.length = 0;
+
+  announceOpenCodePermission(run, permissionEvent({ id: 'per_test_3' }));
+  openCodePermissions.resolve('per_test_3', { allow: true, rememberEntry: '{"edit":"allow"}' });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  assert.deepEqual(replies[0].body, { reply: 'always' });
+
+  unregisterOpenCodeRun(run.runId);
+});
+
+test('bypassPermissions auto-approves without rendering a card', async () => {
+  const { run, writer } = createRun({
+    runId: 'app-session-4',
+    appSessionId: 'app-session-4',
+    permissionMode: 'bypassPermissions',
+  });
+  registerOpenCodeRun(run);
+  replies.length = 0;
+
+  announceOpenCodePermission(run, permissionEvent({ id: 'per_test_4' }));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  assert.equal(writer.messages.some((message) => message.kind === 'permission_request'), false);
+  assert.deepEqual(replies[0].body, { reply: 'once' });
+  assert.equal(openCodePermissions.listPending('app-session-4').length, 0);
+
+  unregisterOpenCodeRun(run.runId);
+});
+
+test('an AskUserQuestion bridges to a card and answers in question order', async () => {
+  const { run, writer } = createRun({ runId: 'app-session-5', appSessionId: 'app-session-5' });
+  registerOpenCodeRun(run);
+  replies.length = 0;
+
+  announceOpenCodeQuestion(run, {
+    type: 'question.asked',
+    directory: '/tmp/project',
+    properties: {
+      id: 'que_test_1',
+      sessionID: 'ses_test',
+      questions: [
+        {
+          question: 'Which database?',
+          header: 'Database',
+          options: [{ label: 'Postgres', description: 'relational' }, { label: 'SQLite', description: 'embedded' }],
+        },
+        {
+          question: 'Which extras?',
+          header: 'Extras',
+          multiple: true,
+          options: [{ label: 'Auth', description: '' }, { label: 'Logging', description: '' }],
+        },
+      ],
+      tool: { messageID: 'msg_2', callID: 'call_2' },
+    },
+  });
+
+  const card = writer.messages.find((message) => message.kind === 'permission_request');
+  assert.equal(card.toolName, 'AskUserQuestion');
+  assert.equal(card.input.questions[0].multiSelect, false);
+  assert.equal(card.input.questions[1].multiSelect, true);
+  assert.equal(card.input.questions[0].options[0].label, 'Postgres');
+
+  openCodePermissions.resolve('que_test_1', {
+    allow: true,
+    updatedInput: {
+      questions: card.input.questions,
+      answers: { 'Which database?': 'Postgres', 'Which extras?': 'Auth, Logging' },
+    },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  assert.match(replies[0].url, /\/question\/que_test_1\/reply/);
+  assert.deepEqual(replies[0].body, { answers: [['Postgres'], ['Auth', 'Logging']] });
+
+  unregisterOpenCodeRun(run.runId);
+});
+
+test('settling an engine event retracts the card without re-replying', () => {
+  const { run, writer } = createRun({ runId: 'app-session-6', appSessionId: 'app-session-6' });
+  registerOpenCodeRun(run);
+
+  announceOpenCodeQuestion(run, {
+    type: 'question.asked',
+    directory: '/tmp/project',
+    properties: {
+      id: 'que_test_2',
+      sessionID: 'ses_test',
+      questions: [{ question: 'Continue?', header: 'Next', options: [{ label: 'Yes', description: '' }] }],
+    },
+  });
+
+  settleOpenCodeEvent({
+    type: 'question.replied',
+    directory: '/tmp/project',
+    properties: { sessionID: 'ses_test', requestID: 'que_test_2', answers: [['Yes']] },
+  });
+
+  assert.equal(openCodePermissions.listPending('app-session-6').length, 0);
+  assert.ok(writer.messages.some((message) => message.kind === 'permission_cancelled'));
+
+  unregisterOpenCodeRun(run.runId);
+});
+
+test('unregistering a run retracts cards it left pending', () => {
+  const { run, writer } = createRun({ runId: 'app-session-7', appSessionId: 'app-session-7' });
+  registerOpenCodeRun(run);
+
+  announceOpenCodePermission(run, permissionEvent({ id: 'per_test_7' }));
+  unregisterOpenCodeRun(run.runId);
+
+  assert.equal(openCodePermissions.listPending('app-session-7').length, 0);
+  assert.ok(writer.messages.some((message) => message.kind === 'permission_cancelled'));
 });

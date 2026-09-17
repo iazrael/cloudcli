@@ -78,11 +78,15 @@ const BASELINE: Record<string, Omit<ProviderCapabilities, 'provider'>> = {
     supportsImages: true,
     supportsFiles: true,
     supportsAbort: true,
-    supportsPermissionRequests: false,
+    // The OpenCode runtime carries a permission bridge (server
+    // `permission.asked` -> chat cards, `question.asked` -> AskUserQuestion),
+    // so its runtime.permissions facet is present.
+    supportsPermissionRequests: true,
     supportsTokenUsage: true,
     supportsEffort: true,
     supportsMessageEditing: false,
-    supportsSessionForking: false,
+    // The fork facet branches a conversation through the server's `fork`.
+    supportsSessionForking: true,
   },
   zcode: {
     permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],

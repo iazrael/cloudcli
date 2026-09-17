@@ -72,21 +72,30 @@ export interface IProvider {
  */
 export interface IProviderFork {
   /**
+   * Whether a fork needs the source transcript to exist as a file.
+   *
+   * Providers that keep their transcript in a shared database (OpenCode) set
+   * this to `false`; everything else defaults to `true`, and the service then
+   * refuses to fork a session whose transcript file is missing.
+   */
+  readonly requiresTranscriptFile?: boolean;
+  /**
    * Copies a session's transcript, up to and including `upToAnchorId` (the
    * whole conversation when omitted), into a brand-new provider session.
    *
    * Returns the new provider-native id and the path of the artifact it wrote,
    * so the caller can insert the database row before the filesystem watcher
-   * notices the file and indexes it as an unrelated session.
+   * notices the file and indexes it as an unrelated session. The path is `null`
+   * for providers whose transcript is not a file.
    */
   forkSession(input: {
     providerSessionId: string;
-    jsonlPath: string;
+    jsonlPath: string | null;
     /** The session's working directory — how providers scope a session lookup. */
     projectPath: string;
     upToAnchorId?: string;
     title?: string;
-  }): Promise<{ providerSessionId: string; jsonlPath: string }>;
+  }): Promise<{ providerSessionId: string; jsonlPath: string | null }>;
 }
 
 // ---------------------------
