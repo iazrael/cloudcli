@@ -267,5 +267,21 @@
       "updateAvailable": "有可用更新",
       "closeSidebar": "关闭侧边栏"
     }
+  },
+  "folderBrowser": {
+    "title": "选择文件夹",
+    "hideHidden": "隐藏隐藏文件夹",
+    "showHidden": "显示隐藏文件夹",
+    "createNew": "创建新文件夹",
+    "newFolderPlaceholder": "新文件夹名称",
+    "create": "创建",
+    "loadFailed": "加载文件夹失败",
+    "createFailed": "创建文件夹失败",
+    "noSubfolders": "未找到子文件夹",
+    "select": "选择",
+    "pathLabel": "路径：",
+    "useThisFolder": "使用此文件夹",
+    "drives": "磁盘",
+    "go": "前往"
   }
 }

@@ -330,7 +330,9 @@
     "noSubfolders": "No subfolders found",
     "select": "Select",
     "pathLabel": "Path:",
-    "useThisFolder": "Use this folder"
+    "useThisFolder": "Use this folder",
+    "drives": "Drives",
+    "go": "Go"
   },
   "misc": {
     "errorTitle": "Something went wrong",

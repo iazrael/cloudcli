@@ -1259,7 +1259,10 @@ export type FileTreeProjectGateway = {
  */
 export type FileTreeWorkspaceGateway = {
   rootPath: string;
-  validatePath(candidatePath: string): Promise<WorkspacePathValidationResult>;
+  validatePath(
+    candidatePath: string,
+    options?: { allowDriveRoot?: boolean },
+  ): Promise<WorkspacePathValidationResult>;
 };
 
 /**
@@ -1307,6 +1310,10 @@ export type FileTreeServiceDependencies = {
    * every path outside these roots is rejected with `PATH_NOT_ALLOWED`.
    */
   externalReadOnlyRoots: string[];
+  /**
+   * Optional provider for available system drive roots (e.g. on Windows).
+   */
+  getAvailableDrives?: () => Promise<string[]>;
 };
 
 /**
@@ -1320,6 +1327,7 @@ export type FileTreeServices = {
   browseWorkspace(inputPath: string | null): Promise<{
     path: string;
     suggestions: Array<{ path: string; name: string; type: 'directory' }>;
+    drives?: string[];
   }>;
   createWorkspaceFolder(folderPath: string): Promise<{ success: true; path: string }>;
   readTextFile(projectId: string, filePath: string): Promise<{ content: string; path: string }>;

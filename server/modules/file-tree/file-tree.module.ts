@@ -16,7 +16,7 @@ import type {
   FileTreeProjectGateway,
   FileTreeWorkspaceGateway,
 } from '@/shared/types.js';
-import { WORKSPACES_ROOT, validateWorkspacePath } from '@/shared/utils.js';
+import { WORKSPACES_ROOT, getAvailableWindowsDrives, validateWorkspacePath } from '@/shared/utils.js';
 
 const MAXIMUM_UPLOAD_SIZE_MEGABYTES = 200;
 const MAXIMUM_UPLOAD_SIZE_BYTES = MAXIMUM_UPLOAD_SIZE_MEGABYTES * 1024 * 1024;
@@ -86,7 +86,7 @@ const fileTreeProjects: FileTreeProjectGateway = {
  */
 const fileTreeWorkspace: FileTreeWorkspaceGateway = {
   rootPath: WORKSPACES_ROOT,
-  validatePath: (candidatePath) => validateWorkspacePath(candidatePath),
+  validatePath: (candidatePath, options) => validateWorkspacePath(candidatePath, options),
 };
 
 const fileTreeLogger: FileTreeLogger = {
@@ -100,6 +100,7 @@ const fileTreeServices = createFileTreeService({
   resolveMimeType: (filePath) => mime.lookup(filePath) || 'application/octet-stream',
   fileSystemConcurrency: readFileSystemConcurrency(),
   logger: fileTreeLogger,
+  getAvailableDrives: getAvailableWindowsDrives,
   // Antigravity writes plan documents into its brain directories, chat
   // file attachments live in ~/.cloudcli/assets, provider runtimes stage
   // generated reports and other throwaway artifacts in the OS temp directories,
