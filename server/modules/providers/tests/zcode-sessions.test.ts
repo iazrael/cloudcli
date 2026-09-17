@@ -1326,8 +1326,7 @@ test('synchronizer maps fixture rows through the shared SQLite skeleton', async 
 
       const indexed = sessionsDb.getSessionByProviderSessionId('sess_sync');
       assert.equal(indexed?.provider, 'zcode');
-      // normalizeProjectPath applies host path rules, so Windows stores backslashes.
-      assert.equal(indexed?.project_path, path.normalize('/workspace/sess_sync'));
+      assert.equal(indexed?.project_path, workspaceDir);
       assert.equal(indexed?.custom_name, 'Fixture session');
       assert.equal(indexed?.jsonl_path, null);
 

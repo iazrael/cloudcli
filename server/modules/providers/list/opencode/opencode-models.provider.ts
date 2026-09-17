@@ -13,7 +13,6 @@ import type {
   ProviderModelOption,
   ProviderModelsDefinition,
 } from '@/shared/types.js';
-import type { StaleWhileRefreshValue } from '@/shared/utils.js';
 import {
   buildDefaultProviderCurrentActiveModel,
   createStaleWhileRefreshValue,
@@ -427,8 +426,11 @@ const parseOpenCodeSessionModelValue = (rawModel: unknown): string | null => {
   return modelId;
 };
 
+/** One catalog read: the account catalog when the CLI answered, else the anchor fallback. */
+type OpenCodeCatalogLoad = { models: ProviderModelsDefinition; fromCli: boolean };
+
 /** Reads the account-scoped catalog, or the anchor fallback when the CLI reports nothing. */
-const loadOpenCodeCatalog = async (): Promise<{ models: ProviderModelsDefinition; fromCli: boolean }> => {
+const loadOpenCodeCatalog = async (): Promise<OpenCodeCatalogLoad> => {
   // `opencode models` reports exactly the models the logged-in account can
   // route — narrower and fresher than the anchor catalog, which only
   // covers the fallback path (CLI missing, failing, or answering empty).
