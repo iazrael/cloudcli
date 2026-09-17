@@ -77,9 +77,11 @@ export const PROVIDER_CATALOG = {
     supportsEffort: true,
   },
   opencode: {
-    // Mapped by the runtime onto OpenCode's controls: `--agent plan` (plan),
-    // `--auto` (bypassPermissions) and the OPENCODE_PERMISSION env var
-    // (acceptEdits). See resolveOpenCodePermissionOptions in the OpenCode runtime adapter.
+    // Mapped by the runtime onto OpenCode's controls: the `plan` agent for plan,
+    // silent `once` approvals for bypassPermissions, auto-approved edits for
+    // acceptEdits, and the user's own opencode config for default. See the
+    // OpenCode runtime adapter (resolveOpenCodeAgent /
+    // shouldAutoApproveOpenCodePermission).
     permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
     defaultPermissionMode: 'default',
     defaultModel: 'opencode/gpt-5.6-terra',
