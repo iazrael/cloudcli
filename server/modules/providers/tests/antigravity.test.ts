@@ -16,6 +16,10 @@ import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/datab
 import type { ProviderModelOption } from '@/shared/types.js';
 
 import { AntigravityProviderAuth } from '../list/antigravity/antigravity-auth.provider.js';
+import {
+  hasMacKeychainCredential,
+  hasWindowsCredentialManagerCredential,
+} from '../list/antigravity/antigravity-credential-store.js';
 import { getAntigravitySummariesDbPath } from '../list/antigravity/antigravity-data-root.js';
 import {
   ANTIGRAVITY_BUILTIN_MODELS,
@@ -89,10 +93,10 @@ test('AntigravityProviderAuth only reports authenticated with an OAuth token fil
   // tryResolveEnginePath honors this override whenever its cache is empty.
   const restoreDataDir = withEnvValue('CLOUDCLI_ANTIGRAVITY_DATA_DIR', tempRoot);
   const restoreAgyPath = withEnvValue('CLOUDCLI_AGY_PATH', path.join(tempRoot, 'agy'));
-  // Keep the macOS keychain probe out so this fixture tree is the only
-  // credential source under test, even on a machine whose real keychain holds
-  // live agy credentials.
-  const restoreSkipKeychain = withEnvValue('CLOUDCLI_ANTIGRAVITY_SKIP_KEYCHAIN', '1');
+  // Keep the credential-store probes (macOS keychain, Windows Credential
+  // Manager) out so this fixture tree is the only credential source under
+  // test, even on a machine whose real store holds live agy credentials.
+  const restoreSkipKeychain = withEnvValue('CLOUDCLI_ANTIGRAVITY_SKIP_CREDENTIAL_STORE', '1');
   await fs.writeFile(path.join(tempRoot, 'agy'), '#!/bin/sh\n', { mode: 0o755 });
   try {
     const auth = new AntigravityProviderAuth();
@@ -116,6 +120,41 @@ test('AntigravityProviderAuth only reports authenticated with an OAuth token fil
     restoreSkipKeychain();
     await fs.rm(tempRoot, { recursive: true, force: true });
   }
+});
+
+test('credential-store probes detect macOS keychain and Windows Credential Manager logins', () => {
+  // macOS: `security find-generic-password` exits non-zero for a missing item,
+  // so a successful run alone is the signal.
+  assert.equal(hasMacKeychainCredential(() => 'attributes'), true);
+  assert.equal(hasMacKeychainCredential(() => { throw new Error('item not found'); }), false);
+
+  // Windows: cmdkey always exits 0, so the serialized target line decides.
+  assert.equal(
+    hasWindowsCredentialManagerCredential(() => [
+      'Currently stored credentials:',
+      '',
+      '    Target: LegacyGeneric:target=gemini:antigravity',
+      '    Type: Generic',
+      '    User: antigravity',
+    ].join('\r\n')),
+    true,
+  );
+  assert.equal(
+    hasWindowsCredentialManagerCredential(() => 'Currently stored credentials:\r\n\r\n* NONE *\r\n'),
+    false,
+  );
+  // `cmdkey /list:<target>` echoes the requested target in its header even
+  // when nothing is stored; the probe must not be fooled by that echo.
+  assert.equal(
+    hasWindowsCredentialManagerCredential(
+      () => 'Currently stored credentials for gemini:antigravity:\r\n\r\n* NONE *\r\n',
+    ),
+    false,
+  );
+  assert.equal(
+    hasWindowsCredentialManagerCredential(() => { throw new Error('cmdkey unavailable'); }),
+    false,
+  );
 });
 
 test('AntigravityProviderModels returns builtin models fallback', async () => {
@@ -910,8 +949,9 @@ test('AntigravityProviderAuth validates token expiry and extracts the account em
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-auth-expiry-'));
   const restoreDataDir = withEnvValue('CLOUDCLI_ANTIGRAVITY_DATA_DIR', tempRoot);
   const restoreAgyPath = withEnvValue('CLOUDCLI_AGY_PATH', path.join(tempRoot, 'agy'));
-  // Isolate from the real keychain so the file fixture alone decides the verdict.
-  const restoreSkipKeychain = withEnvValue('CLOUDCLI_ANTIGRAVITY_SKIP_KEYCHAIN', '1');
+  // Isolate from the real credential store so the file fixture alone decides
+  // the verdict.
+  const restoreSkipKeychain = withEnvValue('CLOUDCLI_ANTIGRAVITY_SKIP_CREDENTIAL_STORE', '1');
   await fs.writeFile(path.join(tempRoot, 'agy'), '#!/bin/sh\n', { mode: 0o755 });
   const jwtPayload = (payload: Record<string, unknown>) =>
     Buffer.from(JSON.stringify(payload)).toString('base64url');
