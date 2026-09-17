@@ -18,7 +18,7 @@ import { useScheduledMessages } from '@/modules/chat/composer/useScheduledMessag
 import ChatMessagesPane from '@/modules/chat/transcript/ChatMessagesPane';
 import ProviderSelectionEmptyState from '@/modules/chat/transcript/ProviderSelectionEmptyState';
 import type { ChatMessage } from '@/shared/types';
-import { api } from '@/shared/api';
+import { useSessionFork } from '@/shared/hooks/useSessionFork';
 import ChatComposer from '@/modules/chat/composer/ChatComposer';
 import CommandResultModal from '@/modules/chat/modals/CommandResultModal';
 
@@ -344,23 +344,23 @@ function ChatInterface({
     }
   }, [currentProviderEffort, currentProviderModel, input, permissionMode, scheduleMessage, setInput]);
 
+  const { forkSession, forkingSessionIds } = useSessionFork();
+
   const handleForkFromMessage = useCallback(async (message: ChatMessage) => {
     const anchorId = message.transcriptAnchorId;
     const sourceSessionId = selectedSession?.id;
     if (!anchorId || !sourceSessionId) return;
 
     try {
-      const response = await api.forkSession(sourceSessionId, { upToAnchorId: anchorId });
-      const payload = await response.json();
-      const forkedSessionId = payload?.data?.sessionId;
-      if (!response.ok || typeof forkedSessionId !== 'string') {
-        throw new Error(payload?.message || `HTTP ${response.status}`);
+      const forked = await forkSession(sourceSessionId, { upToAnchorId: anchorId });
+      // `null` means another fork for this session is already in flight.
+      if (forked) {
+        onNavigateToSession?.(forked.sessionId);
       }
-      onNavigateToSession?.(forkedSessionId);
     } catch (error) {
       console.error('Error forking session:', error);
     }
-  }, [onNavigateToSession, selectedSession?.id]);
+  }, [forkSession, onNavigateToSession, selectedSession?.id]);
 
   // Stable adapter so ChatMessagesPane's React.memo is not defeated by an
   // inline arrow recreated on every render.
@@ -428,6 +428,7 @@ function ChatInterface({
           provider={provider}
           onEditMessage={supportsMessageEditing && !isProcessing ? beginEditMessage : undefined}
           onForkFromMessage={supportsSessionForking ? handleForkFromMessage : undefined}
+          isForking={Boolean(selectedSession?.id && forkingSessionIds.has(selectedSession.id))}
           isLoadingMoreMessages={isLoadingMoreMessages}
           hasMoreMessages={hasMoreMessages}
           totalMessages={totalMessages}

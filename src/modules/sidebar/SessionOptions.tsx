@@ -6,6 +6,7 @@ import { ActionMenu } from '@/shared/ui';
 import { cn } from '@/shared/utils';
 import type { LLMProvider } from '@/shared/types';
 import { useSessionForkingProviders } from '@/shared/hooks/useProviderCapabilities';
+import { useSessionFork } from '@/shared/hooks/useSessionFork';
 import { useProviderSessionIdCopy } from '@/modules/sidebar/hooks/useProviderSessionIdCopy';
 import { getProviderDisplayName } from '@/shared/providerDisplay';
 
@@ -71,6 +72,21 @@ export default function SessionOptions({
   // provider id here; the request is cached module-side, so every row shares one.
   const forkableProviders = useSessionForkingProviders();
   const canFork = Boolean(onFork) && forkableProviders.has(provider) && !isProcessing;
+
+  // Read the shared fork registry directly so the row shows the in-flight state
+  // without threading it through every sidebar list level. A fork in flight
+  // keeps the menu open on a disabled, spinning row instead of silently closing.
+  const { forkingSessionIds } = useSessionFork();
+  const isForking = forkingSessionIds.has(sessionId);
+
+  // Close the menu when a fork finishes: it was held open to show progress.
+  const wasForkingRef = useRef(false);
+  useEffect(() => {
+    if (wasForkingRef.current && !isForking) {
+      setOptionsOpen(false);
+    }
+    wasForkingRef.current = isForking;
+  }, [isForking, setOptionsOpen]);
 
   // While editing, dismiss only when the click lands outside the rename panel,
   // matching Escape and the cancel button.
@@ -175,11 +191,16 @@ export default function SessionOptions({
               closeOnSelect: false,
               onSelect: handleCopyAction,
             },
-            ...(canFork && onFork ? [{
+            ...(onFork && (canFork || isForking) ? [{
               key: 'fork',
-              label: 'Fork session',
-              description: 'Continue from a copy, leaving this one untouched.',
+              label: isForking ? 'Forking…' : 'Fork session',
+              description: isForking
+                ? 'Creating a copy of this conversation…'
+                : 'Continue from a copy, leaving this one untouched.',
               icon: GitBranch,
+              loading: isForking,
+              disabled: isForking,
+              closeOnSelect: false,
               onSelect: onFork,
             }] : []),
             ...(canDelete && !isProcessing ? [{

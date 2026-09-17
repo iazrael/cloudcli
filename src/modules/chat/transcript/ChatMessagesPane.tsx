@@ -32,6 +32,8 @@ type ChatMessagesPaneProps = {
   onEditMessage?: (message: ChatMessage) => void;
   /** Present when the provider supports forking the session from a message. */
   onForkFromMessage?: (message: ChatMessage) => void;
+  /** True while a fork of this session is being created; disables the action. */
+  isForking?: boolean;
   isLoadingMoreMessages: boolean;
   hasMoreMessages: boolean;
   totalMessages: number;
@@ -91,6 +93,7 @@ function ChatMessagesPane({
   provider,
   onEditMessage,
   onForkFromMessage,
+  isForking = false,
   isLoadingMoreMessages,
   hasMoreMessages,
   totalMessages,
@@ -293,6 +296,7 @@ function ChatMessagesPane({
                     provider={provider}
                     onEditMessage={onEditMessage}
                     onForkFromMessage={onForkFromMessage}
+                    isForking={isForking}
                   />
                 </div>
               );
