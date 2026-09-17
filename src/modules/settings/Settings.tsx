@@ -57,6 +57,8 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
     setAntigravityPermissionMode,
     zcodePermissionMode,
     setZcodePermissionMode,
+    opencodePermissionMode,
+    setOpenCodePermissionMode,
     providerAuthStatus,
     openLoginForProvider,
     showLoginModal,
@@ -196,6 +198,8 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
                   onAntigravityPermissionModeChange={setAntigravityPermissionMode}
                   zcodePermissionMode={zcodePermissionMode}
                   onZcodePermissionModeChange={setZcodePermissionMode}
+                  opencodePermissionMode={opencodePermissionMode}
+                  onOpenCodePermissionModeChange={setOpenCodePermissionMode}
                   projects={projects}
                 />
               )}

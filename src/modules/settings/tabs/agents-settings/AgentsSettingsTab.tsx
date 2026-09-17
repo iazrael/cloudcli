@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 
-import type { AgentCategory, AgentContextByProvider, AgentProvider, AgentSettingsProject, AntigravityPermissionMode, ClaudePermissionsState, CodexPermissionMode, CursorPermissionsState, ProviderAuthStatus, ZcodePermissionMode } from '@/shared/types';
+import type { AgentCategory, AgentContextByProvider, AgentProvider, AgentSettingsProject, AntigravityPermissionMode, ClaudePermissionsState, CodexPermissionMode, CursorPermissionsState, OpenCodePermissionMode, ProviderAuthStatus, ZcodePermissionMode } from '@/shared/types';
 import AgentCategoryContentSection from '@/modules/settings/tabs/agents-settings/sections/AgentCategoryContentSection';
 import AgentCategoryTabsSection from '@/modules/settings/tabs/agents-settings/sections/AgentCategoryTabsSection';
 import AgentSelectorSection from '@/modules/settings/tabs/agents-settings/sections/AgentSelectorSection';
@@ -20,8 +20,13 @@ type AgentsSettingsTabProps = {
   onAntigravityPermissionModeChange?: (value: AntigravityPermissionMode) => void;
   zcodePermissionMode?: ZcodePermissionMode;
   onZcodePermissionModeChange?: (value: ZcodePermissionMode) => void;
+  opencodePermissionMode: OpenCodePermissionMode;
+  onOpenCodePermissionModeChange: (value: OpenCodePermissionMode) => void;
   projects: AgentSettingsProject[];
 };
+
+/** Settings categories every provider exposes in the agents tab. */
+const AGENT_CATEGORIES: AgentCategory[] = ['account', 'permissions', 'mcp', 'skills'];
 
 /** Rendered by Settings for the "agents" tab, hosting per-provider account, permission, MCP and skill settings. */
 export default function AgentsSettingsTab({
@@ -37,15 +42,15 @@ export default function AgentsSettingsTab({
   onAntigravityPermissionModeChange,
   zcodePermissionMode,
   onZcodePermissionModeChange,
+  opencodePermissionMode,
+  onOpenCodePermissionModeChange,
   projects,
 }: AgentsSettingsTabProps) {
   const [selectedAgent, setSelectedAgent] = useState<AgentProvider>('claude');
   const [selectedCategory, setSelectedCategory] = useState<AgentCategory>('account');
-  const visibleCategories = useMemo<AgentCategory[]>(() => (
-    selectedAgent === 'opencode'
-      ? ['account', 'permissions', 'mcp']
-      : ['account', 'permissions', 'mcp', 'skills']
-  ), [selectedAgent]);
+  // Every provider exposes the same categories, including skills: OpenCode
+  // manages its native global skills under ~/.config/opencode/skills.
+  const visibleCategories = AGENT_CATEGORIES;
 
   const allAgents: AgentProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'zcode', 'antigravity'];
 
@@ -131,6 +136,8 @@ export default function AgentsSettingsTab({
           onAntigravityPermissionModeChange={onAntigravityPermissionModeChange}
           zcodePermissionMode={zcodePermissionMode}
           onZcodePermissionModeChange={onZcodePermissionModeChange}
+          opencodePermissionMode={opencodePermissionMode}
+          onOpenCodePermissionModeChange={onOpenCodePermissionModeChange}
           projects={projects}
         />
       </div>

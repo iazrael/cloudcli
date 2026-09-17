@@ -536,6 +536,36 @@
         "overrideNote": "聊天输入框旁的会话权限选择器可为当前回合覆盖此默认值。"
       }
     },
+    "opencode": {
+      "permissionMode": "权限模式",
+      "description": "控制 OpenCode 如何处理文件编辑、计划生成及命令执行",
+      "modes": {
+        "default": {
+          "title": "默认模式",
+          "description": "按你自己的 opencode.json 权限规则运行。非交互运行下，未显式放行的操作会被拒绝。"
+        },
+        "acceptEdits": {
+          "title": "接受编辑",
+          "description": "通过 OPENCODE_PERMISSION 环境变量自动放行文件编辑，其余规则仍遵循你的配置。"
+        },
+        "plan": {
+          "title": "计划模式",
+          "description": "通过内置 plan agent 进行只读分析与计划（--agent plan），生成结构化计划而不修改文件。"
+        },
+        "bypassPermissions": {
+          "title": "跳过权限（危险）",
+          "description": "自动放行配置中未显式拒绝的所有操作（--auto），请谨慎使用。"
+        }
+      },
+      "technicalDetails": "技术详情",
+      "technicalInfo": {
+        "default": "不附加任何参数：非交互运行，opencode.json 中标记为 ask 的规则会被直接拒绝。",
+        "acceptEdits": "映射为 OPENCODE_PERMISSION={\"edit\":\"allow\"}，由 CLI 合并进权限配置。",
+        "plan": "映射为 `opencode run --agent plan`：只读分析与计划，不做修改。",
+        "bypassPermissions": "映射为 `opencode run --auto`：未被显式拒绝的操作全部自动放行。",
+        "overrideNote": "聊天输入框旁的会话权限选择器可为当前回合覆盖此默认值。"
+      }
+    },
     "claude": {
       "permissionMode": "权限模式",
       "description": "控制 Claude 执行工具前如何请求批准；新会话默认从此模式开始。",

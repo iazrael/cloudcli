@@ -1557,6 +1557,8 @@ export type AntigravityPermissionMode = 'default' | 'acceptEdits' | 'plan' | 'by
 
 export type ZcodePermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions';
 
+export type OpenCodePermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions';
+
 export type AuthStatus = ProviderAuthStatus;
 
 export type ChatInterfaceProps = {
@@ -1601,6 +1603,7 @@ export type SettingsStoragePayload = {
   codex: { permissionMode: CodexPermissionMode; lastUpdated: string };
   antigravity: { permissionMode: AntigravityPermissionMode; lastUpdated: string };
   zcode: { permissionMode: ZcodePermissionMode; lastUpdated: string };
+  opencode: { permissionMode: OpenCodePermissionMode; lastUpdated: string };
 };
 
 export type SubagentChildTool = {

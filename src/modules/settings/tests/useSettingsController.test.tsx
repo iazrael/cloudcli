@@ -88,6 +88,7 @@ test('loads permissions from the preference store', async () => {
     disallowedTools: [],
   });
   userSettings.writeUserPreference('codexPermissions', { permissionMode: 'bypassPermissions' });
+  userSettings.writeUserPreference('opencodePermissions', { permissionMode: 'plan' });
   userSettings.writeUserPreference('projectSortOrder', 'date');
 
   const { result } = renderHook(() => useSettingsController({ isOpen: true, initialTab: 'agents' }));
@@ -96,6 +97,7 @@ test('loads permissions from the preference store', async () => {
   assert.deepEqual(result.current.claudePermissions.allowedTools, ['Bash(git:*)']);
   assert.equal(result.current.claudePermissions.permissionMode, 'acceptEdits');
   assert.equal(result.current.codexPermissionMode, 'bypassPermissions');
+  assert.equal(result.current.opencodePermissionMode, 'plan');
 });
 
 test('a stale legacy localStorage blob no longer feeds the dialog', async () => {
@@ -130,6 +132,7 @@ test('auto-save writes the preference store and leaves legacy keys untouched', a
       disallowedTools: [],
     });
     result.current.setCodexPermissionMode('bypassPermissions');
+    result.current.setOpenCodePermissionMode('acceptEdits');
     result.current.setProjectSortOrder('date');
   });
 
@@ -145,9 +148,13 @@ test('auto-save writes the preference store and leaves legacy keys untouched', a
   assert.deepEqual(userSettings.readUserPreference('codexPermissions', null), {
     permissionMode: 'bypassPermissions',
   });
+  assert.deepEqual(userSettings.readUserPreference('opencodePermissions', null), {
+    permissionMode: 'acceptEdits',
+  });
   assert.equal(userSettings.readUserPreference('projectSortOrder', 'name'), 'date');
   assert.equal(localStorage.getItem('claude-settings'), null);
   assert.equal(localStorage.getItem('codex-settings'), null);
+  assert.equal(localStorage.getItem('opencode-settings'), null);
 });
 
 test('editor setting changes land in the preference store, not legacy keys', async () => {

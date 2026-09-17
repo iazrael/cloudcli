@@ -553,6 +553,36 @@
         "overrideNote": "The per-session permission selector in the chat composer overrides this default for the current turn."
       }
     },
+    "opencode": {
+      "permissionMode": "Permission Mode",
+      "description": "Controls how OpenCode handles file edits, plan generation, and command execution",
+      "modes": {
+        "default": {
+          "title": "Default",
+          "description": "Follows your own opencode.json permission rules. In non-interactive runs, anything not explicitly allowed is denied."
+        },
+        "acceptEdits": {
+          "title": "Accept Edits",
+          "description": "File edits are auto-approved through the OPENCODE_PERMISSION env var; every other rule stays under your own config."
+        },
+        "plan": {
+          "title": "Plan Mode",
+          "description": "Read-only analysis and planning through the built-in plan agent (--agent plan). Generates structured plans without editing files."
+        },
+        "bypassPermissions": {
+          "title": "Bypass Permissions",
+          "description": "Auto-approves every permission that is not explicitly denied in your config (--auto). Use with caution."
+        }
+      },
+      "technicalDetails": "Technical details",
+      "technicalInfo": {
+        "default": "No flags passed: the run is non-interactive, so any `ask` rule in your opencode.json is denied.",
+        "acceptEdits": "Maps to OPENCODE_PERMISSION={\"edit\":\"allow\"}, which the CLI merges into its permission config.",
+        "plan": "Maps to `opencode run --agent plan`: read-only planning without modifications.",
+        "bypassPermissions": "Maps to `opencode run --auto`: auto-approves everything not explicitly denied.",
+        "overrideNote": "The per-session permission selector in the chat composer overrides this default for the current turn."
+      }
+    },
     "claude": {
       "permissionMode": "Permission Mode",
       "description": "Controls how Claude asks for approval before running tools; new sessions start in this mode.",

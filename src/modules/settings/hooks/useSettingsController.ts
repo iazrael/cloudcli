@@ -20,6 +20,7 @@ import type {
   CodexPermissionMode,
   CursorPermissionsState,
   NotificationPreferencesState,
+  OpenCodePermissionMode,
   ProjectSortOrder,
   SettingsMainTab,
   ZcodePermissionMode,
@@ -70,6 +71,14 @@ const toAntigravityPermissionMode = (value: unknown): AntigravityPermissionMode 
 };
 
 const toZcodePermissionMode = (value: unknown): ZcodePermissionMode => {
+  if (value === 'acceptEdits' || value === 'plan' || value === 'bypassPermissions') {
+    return value;
+  }
+
+  return 'default';
+};
+
+const toOpenCodePermissionMode = (value: unknown): OpenCodePermissionMode => {
   if (value === 'acceptEdits' || value === 'plan' || value === 'bypassPermissions') {
     return value;
   }
@@ -146,6 +155,7 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
   const [codexPermissionMode, setCodexPermissionMode] = useState<CodexPermissionMode>('default');
   const [antigravityPermissionMode, setAntigravityPermissionMode] = useState<AntigravityPermissionMode>('default');
   const [zcodePermissionMode, setZcodePermissionMode] = useState<ZcodePermissionMode>('default');
+  const [opencodePermissionMode, setOpenCodePermissionMode] = useState<OpenCodePermissionMode>('default');
 
   const [showLoginModal, setShowLoginModal] = useState(false);
   const [loginProvider, setLoginProvider] = useState<ActiveLoginProvider>('');
@@ -192,6 +202,9 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
       const storedZcodeSettings = readProviderToolsSettings('zcode');
       setZcodePermissionMode(toZcodePermissionMode(storedZcodeSettings.permissionMode));
 
+      const storedOpenCodeSettings = readProviderToolsSettings('opencode');
+      setOpenCodePermissionMode(toOpenCodePermissionMode(storedOpenCodeSettings.permissionMode));
+
       try {
         const notificationResponse = await authenticatedFetch('/api/settings/notification-preferences');
         if (notificationResponse.ok) {
@@ -215,6 +228,7 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
       setNotificationPreferences(createDefaultNotificationPreferences());
       setCodexPermissionMode('default');
       setAntigravityPermissionMode('default');
+      setOpenCodePermissionMode('default');
       setProjectSortOrder('name');
     }
   }, []);
@@ -270,6 +284,8 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
 
       writeUserPreference('zcodePermissions', { permissionMode: zcodePermissionMode });
 
+      writeUserPreference('opencodePermissions', { permissionMode: opencodePermissionMode });
+
       const notificationResponse = await authenticatedFetch('/api/settings/notification-preferences', {
         method: 'PUT',
         body: JSON.stringify(notificationPreferences),
@@ -293,6 +309,7 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
     cursorPermissions.disallowedCommands,
     cursorPermissions.skipPermissions,
     notificationPreferences,
+    opencodePermissionMode,
     projectSortOrder,
     zcodePermissionMode,
   ]);
@@ -401,6 +418,8 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
     setAntigravityPermissionMode,
     zcodePermissionMode,
     setZcodePermissionMode,
+    opencodePermissionMode,
+    setOpenCodePermissionMode,
     providerAuthStatus,
     openLoginForProvider,
     showLoginModal,
