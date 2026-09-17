@@ -267,8 +267,19 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
     }
 
     if (type === 'tool_use') {
-      const toolName = readOptionalString(raw.tool) ?? readOptionalString(raw.name) ?? 'Tool';
-      const toolId = readOptionalString(raw.callID) ?? readOptionalString(raw.toolCallId) ?? baseId;
+      // `opencode run --format json` envelopes the line as
+      // `{ type, timestamp, sessionID, part }`: the tool name and call id sit
+      // on the part, the arguments and outcome under `part.state`. Reading
+      // them off the line itself labeled every live call "Tool" with empty
+      // parameters, no result and no call id — the transcript then stacked
+      // unlabeled "Running" cards. Flat emitters put the fields on the line,
+      // so the line stays the fallback.
+      const part = readObjectRecord(raw.part) ?? raw;
+      const state = readObjectRecord(part.state) ?? {};
+      const toolName = readOptionalString(part.tool) ?? readOptionalString(part.name) ?? 'Tool';
+      const toolId = readOptionalString(part.callID)
+        ?? readOptionalString(part.toolCallId)
+        ?? baseId;
       const toolMessage = createNormalizedMessage({
         id: baseId,
         sessionId: eventSessionId,
@@ -276,14 +287,17 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
         provider: PROVIDER,
         kind: 'tool_use',
         toolName,
-        toolInput: raw.input ?? raw.arguments ?? {},
+        toolInput: state.input ?? part.input ?? raw.arguments ?? {},
         toolId,
       });
 
-      if (raw.output !== undefined || raw.error !== undefined) {
+      const status = readOptionalString(state.status);
+      const output = state.output ?? part.output;
+      const error = state.error ?? part.error;
+      if (status === 'completed' || status === 'error' || output !== undefined || error !== undefined) {
         toolMessage.toolResult = {
-          content: formatToolContent(raw.output ?? raw.error),
-          isError: raw.error !== undefined,
+          content: formatToolContent(output ?? error),
+          isError: status === 'error' || error !== undefined,
         };
       }
 

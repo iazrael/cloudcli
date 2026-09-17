@@ -379,6 +379,66 @@ test('OpenCode sessions provider normalizes quoted live text and skips user echo
   assert.deepEqual(userEcho, []);
 });
 
+test('OpenCode sessions provider reads live tool calls from the event envelope', () => {
+  const provider = new OpenCodeSessionsProvider();
+  // `opencode run --format json` emits `{ type, timestamp, sessionID, part }`
+  // for tool calls, with the arguments and outcome under `part.state`.
+  const completed = provider.normalizeMessage({
+    type: 'tool_use',
+    timestamp: 1_700_000_000_000,
+    sessionID: 'open-session-live',
+    part: {
+      id: 'part-tool-1',
+      type: 'tool',
+      tool: 'bash',
+      callID: 'call-1',
+      state: {
+        status: 'completed',
+        input: { command: 'ls -la' },
+        output: 'total 0',
+      },
+    },
+  }, null);
+
+  assert.equal(completed.length, 1);
+  assert.equal(completed[0]?.toolName, 'bash');
+  assert.equal(completed[0]?.toolId, 'call-1');
+  assert.deepEqual(completed[0]?.toolInput, { command: 'ls -la' });
+  assert.deepEqual(completed[0]?.toolResult, { content: 'total 0', isError: false });
+
+  const failed = provider.normalizeMessage({
+    type: 'tool_use',
+    timestamp: 1_700_000_000_001,
+    sessionID: 'open-session-live',
+    part: {
+      id: 'part-tool-2',
+      type: 'tool',
+      tool: 'edit',
+      callID: 'call-2',
+      state: {
+        status: 'error',
+        input: { file_path: 'a.ts' },
+        error: 'permission denied',
+      },
+    },
+  }, null);
+
+  assert.equal(failed[0]?.toolName, 'edit');
+  assert.deepEqual(failed[0]?.toolResult, { content: 'permission denied', isError: true });
+
+  // A flat, part-less line still normalizes.
+  const flat = provider.normalizeMessage({
+    type: 'tool_use',
+    tool: 'read',
+    callID: 'call-3',
+    input: { file_path: '/a.ts' },
+    output: 'ok',
+  }, null);
+  assert.equal(flat[0]?.toolName, 'read');
+  assert.equal(flat[0]?.toolId, 'call-3');
+  assert.deepEqual(flat[0]?.toolResult, { content: 'ok', isError: false });
+});
+
 test('OpenCode sessions provider reads sqlite history and token usage', { concurrency: false }, async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-session-history-'));
   const workspacePath = path.join(tempRoot, 'workspace');
