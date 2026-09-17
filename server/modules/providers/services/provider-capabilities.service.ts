@@ -30,6 +30,12 @@ export type ProviderCapabilities = {
    * Whether a session's transcript can be branched into an independent one.
    */
   supportsSessionForking: boolean;
+  /**
+   * Whether the conversation can be compacted on demand (`/compact`), which
+   * requires an engine primitive that replaces the carried history with a
+   * summary.
+   */
+  supportsCompaction: boolean;
 };
 
 /**
@@ -43,12 +49,13 @@ export type ProviderCapabilities = {
  * - message editing rides `sessions.resolveEditAnchor` (the anchor lookup the
  *   edit flow needs; both integrations that have it also provide the rest).
  * - the token-usage endpoint rides `sessions.getTokenUsage`.
+ * - on-demand compaction rides the runtime's optional `compact` primitive.
  * - interactive permission prompts ride the runtime's optional `permissions`
  *   gateway (claude's SDK bridge; zcode's engine permission bridge).
  */
 function deriveCapabilities(providerId: LLMProvider, provider: {
   fork?: unknown;
-  runtime?: { permissions?: unknown };
+  runtime?: { permissions?: unknown; compact?: unknown };
   sessions?: { resolveEditAnchor?: unknown; getTokenUsage?: unknown };
 }): ProviderCapabilities {
   const catalog = PROVIDER_CATALOG[providerId];
@@ -64,6 +71,7 @@ function deriveCapabilities(providerId: LLMProvider, provider: {
     supportsEffort: catalog.supportsEffort,
     supportsMessageEditing: typeof provider.sessions?.resolveEditAnchor === 'function',
     supportsSessionForking: provider.fork !== undefined,
+    supportsCompaction: typeof provider.runtime?.compact === 'function',
   };
 }
 

@@ -39,6 +39,19 @@ export interface IProviderRuntime {
     context: ProviderRuntimeContext,
   ): Promise<unknown>;
   abort(sessionId: string): boolean | Promise<boolean>;
+  /**
+   * Compacts a stored conversation into a summary the next turn builds on.
+   *
+   * Present only for engines whose CLI or protocol exposes on-demand
+   * compaction; its absence is what keeps `/compact` out of the composer menu.
+   * Runtimes report progress through the same writer `run` receives, and the
+   * chat gateway emits the terminal `complete` when the promise settles.
+   */
+  compact?(
+    options: AnyRecord,
+    writer: ProviderRuntimeWriter,
+    context: ProviderRuntimeContext,
+  ): Promise<unknown>;
   permissions?: ProviderRuntimePermissionGateway;
 }
 

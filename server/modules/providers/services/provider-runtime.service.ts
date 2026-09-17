@@ -75,12 +75,36 @@ export function createProviderRuntimeService(
     return provider.runtime.run(command, options, writer, createRuntimeContext(provider));
   };
 
+  const compact = (
+    providerName: LLMProvider,
+    options: AnyRecord,
+    writer: ProviderRuntimeWriter,
+  ): Promise<unknown> => {
+    const provider = dependencies.resolveProvider(providerName);
+    const compactFacet = provider.runtime.compact;
+    if (typeof compactFacet !== 'function') {
+      return Promise.reject(
+        new Error(`Provider "${providerName}" cannot compact conversations.`),
+      );
+    }
+    return compactFacet.call(provider.runtime, options, writer, createRuntimeContext(provider));
+  };
+
   return {
     run,
+    compact,
 
     hasRuntime(providerName: string): boolean {
       try {
         return Boolean(dependencies.resolveProvider(providerName).runtime);
+      } catch {
+        return false;
+      }
+    },
+
+    supportsCompaction(providerName: string): boolean {
+      try {
+        return typeof dependencies.resolveProvider(providerName).runtime.compact === 'function';
       } catch {
         return false;
       }

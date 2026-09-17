@@ -29,7 +29,8 @@ React 18 + TypeScript + Vite 7（`vite.config.js`，别名 `@` → `src/`），�
 - **回退镜像**：`src/shared/providerCatalogFallback.ts` 只用于首屏与请求失败兜底，由 parity 测试钉住与后端一致；**其 key 顺序是全应用引擎规范顺序**（一处改动不要在别处另排顺序）。
 - 本地选择持久化为 `<provider>-model` / `<provider>-effort`（`useChatProviderState` 直接读写 localStorage，设备本地，不经 preference store）。
 - 引擎外观：`src/shared/providerDisplay.ts`（显示名）、`src/shared/ui/LLMProviderLogo.tsx`（Logo）。
-- 新增引擎的前端步骤见 [providers.md](./providers.md) 第六步——composer 不写 provider 分支，一切按能力矩阵渲染。
+- 新增引擎的前端步骤见 [providers.md](./providers.md) 第六步——composer 不写 provider 分支，一切按能力矩阵渲染（slash 菜单同理：`/compact` 仅在 `supportsCompaction` 为真时出现，能力为真时前端发 `chat.compact` 帧并**不**落乐观用户气泡）。
+- **上下文占用展示**：`tokenBudget`（WS `token_budget` 指令 / 历史页 `tokenUsage`）喂 composer 的两个控件与 `/cost` 弹窗，二者读同一份 `readContextUsage`（`src/modules/chat/utils/contextUsage.ts`；引擎自报 `percentage` 优先，否则 `used/total`）：顶沿细进度条 `ContextUsageBar`（`<60%` 绿 / `60–84%` 黄 / `≥85%` 红）表示窗口占用，工具行里的 `TokenUsageSummary` 显示当前 K 数——手机上只留 K 数（隐藏图标与 `xx%`）以免工具行（附件/语音/命令 + 定时/模型/权限/发送）在 ~320px 溢出、和定时图标重叠，`sm` 以上再加图标和百分比。两者点击都开 `/cost`。没有窗口时细条不画；徽章在整份读数缺失时才不画（快照全 0，或刚压缩且没有摘要大小），因为只显示 K 数、百分比是 `sm` 以上的附加项。刚压缩时引擎还没有 token 数，徽章改用 `summaryBytes`（压缩摘要的 UTF-8 字节数）显示 "9.4KB"，占用条不画。字段语义与来源见 [providers.md](./providers.md)，前端不按引擎分支；`cumulative` 只在 `/cost` 里单列。
 
 ## 性能守则（硬约束，都是踩过坑的）
 

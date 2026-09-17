@@ -22,12 +22,12 @@ import {
   readObjectRecord,
   readJsonRecord,
   readOptionalString,
-  readUsageNumber,
   removePathIfExists,
   sliceTailPage,
   unwrapJsonStringLiteral,
 } from '@/shared/utils.js';
 
+import { readOpenCodeContextUsage } from './opencode-context-usage.js';
 import { getOpenCodeDatabasePath } from './opencode-data-root.js';
 
 const PROVIDER = 'opencode';
@@ -39,14 +39,6 @@ type OpenCodeHistoryRow = {
   part_id: string | null;
   part_time_created: number | null;
   part_data: string | null;
-};
-
-type OpenCodeTokenTotals = {
-  inputTokens: number;
-  outputTokens: number;
-  reasoningTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
 };
 
 const openOpenCodeDatabase = (): Database.Database | null => {
@@ -91,124 +83,30 @@ const hasUserRole = (value: unknown): boolean => {
   return readOptionalString(record?.role) === 'user';
 };
 
+/**
+ * Reads the human-readable text out of one live OpenCode error event.
+ *
+ * `opencode run --format json` serializes provider failures as
+ * `{ type: 'error', error: { name, data: { message, ref } } }`, so the message
+ * is nested two levels down; the older flat `{ error: '...' }` /
+ * `{ message: '...' }` shapes still occur. Without the nested lookup every
+ * failure degraded to the generic fallback, hiding causes like "Model not
+ * found".
+ */
+const extractErrorMessage = (raw: AnyRecord): string => {
+  const errorRecord = readObjectRecord(raw.error);
+  return readOptionalString(errorRecord?.message)
+    ?? readOptionalString(readObjectRecord(errorRecord?.data)?.message)
+    ?? readOptionalString(errorRecord?.name)
+    ?? readOptionalString(raw.error)
+    ?? readOptionalString(raw.message)
+    ?? 'Unknown OpenCode error';
+};
+
 const isUserTextEcho = (raw: AnyRecord): boolean => {
   return readOptionalString(raw.role) === 'user'
     || hasUserRole(raw.message)
     || hasUserRole(raw.part);
-};
-
-const buildTokenUsage = (totals: OpenCodeTokenTotals | undefined): AnyRecord | undefined => {
-  if (!totals) {
-    return undefined;
-  }
-
-  const inputTokens = totals.inputTokens;
-  const displayInputTokens = inputTokens + totals.cacheReadTokens;
-  const outputTokens = totals.outputTokens;
-  const used = inputTokens
-    + outputTokens
-    + totals.reasoningTokens
-    + totals.cacheReadTokens
-    + totals.cacheWriteTokens;
-
-  if (used <= 0) {
-    return undefined;
-  }
-
-  return {
-    used,
-    inputTokens: displayInputTokens,
-    outputTokens,
-    breakdown: {
-      input: displayInputTokens,
-      output: outputTokens,
-    },
-  };
-};
-
-const readOpenCodeSessionColumnTokenUsage = (
-  db: Database.Database,
-  sessionId: string,
-): AnyRecord | undefined => {
-  const columns = db.prepare('PRAGMA table_info(session)').all() as { name: string }[];
-  const columnNames = new Set(columns.map((column) => column.name));
-  const requiredColumns = ['tokens_input', 'tokens_output', 'tokens_reasoning', 'tokens_cache_read', 'tokens_cache_write'];
-  if (!requiredColumns.every((column) => columnNames.has(column))) {
-    return undefined;
-  }
-
-  const row = db.prepare(`
-    SELECT
-      tokens_input AS inputTokens,
-      tokens_output AS outputTokens,
-      tokens_reasoning AS reasoningTokens,
-      tokens_cache_read AS cacheReadTokens,
-      tokens_cache_write AS cacheWriteTokens
-    FROM session
-    WHERE id = ?
-  `).get(sessionId) as OpenCodeTokenTotals | undefined;
-
-  if (!row) {
-    return undefined;
-  }
-
-  return buildTokenUsage({
-    inputTokens: Number(row.inputTokens ?? 0),
-    outputTokens: Number(row.outputTokens ?? 0),
-    reasoningTokens: Number(row.reasoningTokens ?? 0),
-    cacheReadTokens: Number(row.cacheReadTokens ?? 0),
-    cacheWriteTokens: Number(row.cacheWriteTokens ?? 0),
-  });
-};
-
-/**
- * OpenCode stores per-message token counts on assistant `message.data` objects
- * (see MessageV2.Assistant). Older DBs also had session-level counters; this
- * matches current `opencode.db` layouts that only persist message JSON.
- */
-const aggregateOpenCodeSessionTokenUsage = (
-  db: Database.Database,
-  sessionId: string,
-): AnyRecord | undefined => {
-  const sessionColumnUsage = readOpenCodeSessionColumnTokenUsage(db, sessionId);
-  if (sessionColumnUsage) {
-    return sessionColumnUsage;
-  }
-
-  const rows = db.prepare('SELECT data FROM message WHERE session_id = ?').all(sessionId) as { data: string }[];
-
-  let inputTokens = 0;
-  let outputTokens = 0;
-  let reasoningTokens = 0;
-  let cacheReadTokens = 0;
-  let cacheWriteTokens = 0;
-
-  for (const row of rows) {
-    const info = readJsonRecord(row.data);
-    if (readOptionalString(info?.role) !== 'assistant') {
-      continue;
-    }
-
-    const tokens = readObjectRecord(info?.tokens);
-    if (!tokens) {
-      continue;
-    }
-
-    inputTokens += Number(tokens.input ?? 0);
-    outputTokens += Number(tokens.output ?? 0);
-    reasoningTokens += Number(tokens.reasoning ?? 0);
-    const cache = readObjectRecord(tokens.cache);
-    cacheReadTokens += Number(cache?.read ?? 0);
-    cacheWriteTokens += Number(cache?.write ?? 0);
-  }
-
-  return buildTokenUsage({
-    inputTokens,
-    outputTokens,
-    reasoningTokens,
-    cacheReadTokens,
-    cacheWriteTokens,
-  });
 };
 
 export class OpenCodeSessionsProvider implements IProviderSessions {
@@ -297,7 +195,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
         timestamp,
         provider: PROVIDER,
         kind: 'error',
-        content: readOptionalString(raw.error) ?? readOptionalString(raw.message) ?? 'Unknown OpenCode error',
+        content: extractErrorMessage(raw),
       })];
     }
 
@@ -352,7 +250,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
       `).all(providerSessionId) as OpenCodeHistoryRow[];
 
       const normalized = this.normalizeHistoryRows(rows, sessionId);
-      const tokenUsage = aggregateOpenCodeSessionTokenUsage(db, providerSessionId);
+      const tokenUsage = readOpenCodeContextUsage(db, providerSessionId);
 
       const normalizedOffset = Math.max(0, offset);
       const normalizedLimit = limit === null ? null : Math.max(0, limit);
@@ -512,11 +410,12 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
   }
 
   /**
-   * Reads the token usage recorded on the session row's token columns.
+   * Reads the session's context usage (newest message occupancy + model
+   * context window) for the provider token-usage service.
    *
-   * Consumer: the provider token-usage service. Databases predating the token
-   * columns answer with an explicit unsupported result; a database or session
-   * row that cannot be found is a 404.
+   * Databases whose messages and columns both predate token tracking answer
+   * with an explicit unsupported result; a database or session row that cannot
+   * be found is a 404.
    */
   async getTokenUsage(input: ProviderSessionUsageInput): Promise<ProviderTokenUsageResult> {
     const databasePath = getOpenCodeDatabasePath();
@@ -529,58 +428,24 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
 
     const database = new Database(databasePath, { readonly: true, fileMustExist: true });
     try {
-      const columns = database.prepare('PRAGMA table_info(session)').all() as Array<{ name: string }>;
-      const columnNames = new Set(columns.map((column) => column.name));
-      const requiredColumns = [
-        'tokens_input',
-        'tokens_output',
-        'tokens_reasoning',
-        'tokens_cache_read',
-        'tokens_cache_write',
-      ];
+      const sessionRow = database
+        .prepare('SELECT id FROM session WHERE id = ?')
+        .get(input.nativeSessionId) as { id: string } | undefined;
 
-      if (!requiredColumns.every((column) => columnNames.has(column))) {
-        return {
-          used: 0,
-          inputTokens: 0,
-          outputTokens: 0,
-          breakdown: { input: 0, output: 0 },
-          unsupported: true,
-          message: 'Token usage tracking is not available in this OpenCode database schema',
-        };
-      }
-
-      const row = database.prepare(`
-        SELECT
-          tokens_input AS inputTokens,
-          tokens_output AS outputTokens,
-          tokens_reasoning AS reasoningTokens,
-          tokens_cache_read AS cacheReadTokens,
-          tokens_cache_write AS cacheWriteTokens
-        FROM session
-        WHERE id = ?
-      `).get(input.nativeSessionId) as OpenCodeTokenTotals | undefined;
-
-      if (!row) {
+      if (!sessionRow) {
         throw new AppError('OpenCode session was not found.', {
           code: 'OPENCODE_SESSION_NOT_FOUND',
           statusCode: 404,
         });
       }
 
-      const inputTokens = readUsageNumber(row.inputTokens) + readUsageNumber(row.cacheReadTokens);
-      const outputTokens = readUsageNumber(row.outputTokens);
-      const used = readUsageNumber(row.inputTokens)
-        + outputTokens
-        + readUsageNumber(row.reasoningTokens)
-        + readUsageNumber(row.cacheReadTokens)
-        + readUsageNumber(row.cacheWriteTokens);
-
-      return {
-        used,
-        inputTokens,
-        outputTokens,
-        breakdown: { input: inputTokens, output: outputTokens },
+      return readOpenCodeContextUsage(database, input.nativeSessionId) ?? {
+        used: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        breakdown: { input: 0, output: 0 },
+        unsupported: true,
+        message: 'Token usage tracking is not available in this OpenCode database schema',
       };
     } finally {
       database.close();

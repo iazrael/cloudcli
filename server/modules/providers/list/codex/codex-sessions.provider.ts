@@ -1225,16 +1225,55 @@ async function findCodexSessionFile(
 }
 
 /**
+ * Builds one Codex token-usage answer from a rollout `token_count.info` block.
+ *
+ * `last_token_usage` is the turn that just ran — the prompt the model actually
+ * carried, i.e. what the context window holds. `total_token_usage` is the
+ * session's cumulative spend; reporting it as `used` made the context
+ * percentage climb with every turn, so it is preserved separately as
+ * `cumulative` for the cost breakdown.
+ */
+function buildCodexTokenUsage(info: AnyRecord): ProviderTokenUsageResult {
+  const last = readObjectRecord(info.last_token_usage);
+  const cumulative = readObjectRecord(info.total_token_usage);
+
+  const lastInputTokens = readUsageNumber(last?.input_tokens);
+  const lastOutputTokens = readUsageNumber(last?.output_tokens);
+  const cumulativeInputTokens = readUsageNumber(cumulative?.input_tokens);
+  const cumulativeOutputTokens = readUsageNumber(cumulative?.output_tokens);
+  const used = readUsageNumber(last?.total_tokens)
+    || lastInputTokens + lastOutputTokens
+    || readUsageNumber(cumulative?.total_tokens)
+    || cumulativeInputTokens + cumulativeOutputTokens;
+
+  return {
+    used,
+    total: readUsageNumber(info.model_context_window) || 200_000,
+    inputTokens: lastInputTokens || cumulativeInputTokens,
+    outputTokens: lastOutputTokens || cumulativeOutputTokens,
+    breakdown: {
+      input: lastInputTokens || cumulativeInputTokens,
+      output: lastOutputTokens || cumulativeOutputTokens,
+    },
+    ...(cumulative
+      ? {
+          cumulative: {
+            used: readUsageNumber(cumulative.total_tokens) || cumulativeInputTokens + cumulativeOutputTokens,
+            inputTokens: cumulativeInputTokens,
+            outputTokens: cumulativeOutputTokens,
+          },
+        }
+      : {}),
+  };
+}
+
+/**
  * Reads the latest `token_count` snapshot from a Codex rollout JSONL.
  *
  * Codex appends cumulative totals over time, so the scan walks from the end
  * and stops at the first readable token_count entry.
  */
 function readCodexTokenUsage(fileContent: string): ProviderTokenUsageResult {
-  let inputTokens = 0;
-  let outputTokens = 0;
-  let totalTokens = 0;
-  let contextWindow = 200_000;
   const lines = fileContent.trim().split('\n');
 
   for (let index = lines.length - 1; index >= 0; index -= 1) {
@@ -1243,29 +1282,20 @@ function readCodexTokenUsage(fileContent: string): ProviderTokenUsageResult {
       const tokenInfo = entry.type === 'event_msg' && entry.payload?.type === 'token_count'
         ? entry.payload.info
         : null;
-      if (!tokenInfo) {
-        continue;
+      if (tokenInfo) {
+        return buildCodexTokenUsage(tokenInfo);
       }
-
-      if (tokenInfo.total_token_usage) {
-        inputTokens = readUsageNumber(tokenInfo.total_token_usage.input_tokens);
-        outputTokens = readUsageNumber(tokenInfo.total_token_usage.output_tokens);
-        totalTokens = readUsageNumber(tokenInfo.total_token_usage.total_tokens)
-          || inputTokens + outputTokens;
-      }
-      contextWindow = readUsageNumber(tokenInfo.model_context_window) || contextWindow;
-      break;
     } catch {
       // A provider may be writing the last JSONL line while this read happens.
     }
   }
 
   return {
-    used: totalTokens,
-    total: contextWindow,
-    inputTokens,
-    outputTokens,
-    breakdown: { input: inputTokens, output: outputTokens },
+    used: 0,
+    total: 200_000,
+    inputTokens: 0,
+    outputTokens: 0,
+    breakdown: { input: 0, output: 0 },
   };
 }
 
@@ -1353,10 +1383,7 @@ async function getCodexSessionMessages(sessionId: string): Promise<CodexHistoryR
     if (entry.type === 'event_msg') {
       if (payload.type === 'token_count' && payload.info) {
         const info = payload.info as AnyRecord;
-        if (info.total_token_usage) {
-          const usage = info.total_token_usage as AnyRecord;
-          tokenUsage = { used: usage.total_tokens || 0, total: info.model_context_window || 200000 };
-        }
+        tokenUsage = buildCodexTokenUsage(info);
         continue;
       }
 

@@ -523,6 +523,14 @@ export type CostCommandData = {
     input?: number;
     output?: number;
   };
+  /** Engine-reported context-window percentage (Claude); when absent the modal derives it from used/total. */
+  percentage?: number;
+  /** Session-lifetime totals for providers whose `tokenUsage.used` is the current context occupancy (codex, opencode). */
+  cumulative?: {
+    used?: number;
+    inputTokens?: number;
+    outputTokens?: number;
+  };
   provider?: string;
   model?: string;
 };

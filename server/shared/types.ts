@@ -126,6 +126,38 @@ export type ProviderTokenUsageResult = {
     input: number;
     output: number;
   };
+  /**
+   * Session-lifetime token totals. `used` above reports the CURRENT context
+   * occupancy for providers whose engines can tell the two apart (codex,
+   * opencode); this field preserves the cumulative spend those endpoints used
+   * to report, for the `/cost` breakdown.
+   */
+  cumulative?: {
+    used: number;
+    inputTokens: number;
+    outputTokens: number;
+  };
+  /**
+   * Context-window usage percent as reported by the engine itself (Claude's
+   * SDK context-usage twin). When present, consumers use it directly instead
+   * of computing `used / total`.
+   */
+  percentage?: number;
+  /**
+   * The session was compacted and the engine has not reported the resulting
+   * occupancy yet (OpenCode only learns it when the next turn runs, so its
+   * newest record still describes the PRE-compaction conversation). `used` is
+   * zero and carries no meaning; consumers show "unknown until the next turn"
+   * instead of the stale number.
+   */
+  compacted?: boolean;
+  /**
+   * UTF-8 size of the compaction summary text that now stands in for the
+   * conversation. Only present alongside `compacted` and only when the summary
+   * could be read; it is the one concrete "how big is the context now" reading
+   * available before the next turn reports real occupancy.
+   */
+  summaryBytes?: number;
   unsupported?: boolean;
   message?: string;
 };

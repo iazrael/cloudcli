@@ -266,6 +266,11 @@ Custom commands can be created in:
 
   "/cost": async (args, context) => {
     let tokenUsage = context?.tokenUsage || {};
+    // A just-compacted session has no occupancy to report yet (the engine only
+    // learns it on the next turn); forwarding the flag plus the summary's size
+    // lets callers show that instead of a misleading "0".
+    let compacted = tokenUsage.compacted === true;
+    let summaryBytes = Number(tokenUsage.summaryBytes ?? 0) || 0;
     const provider = readModelProvider(context?.provider);
     const model = await resolveCommandModel(providerModelsService, provider, context);
     const hasContextUsage = Boolean(
@@ -305,6 +310,12 @@ Custom commands can be created in:
     ) {
       try {
         const persisted = await providerTokenUsageService.getSessionTokenUsage(context.sessionId);
+        if (persisted?.compacted === true) {
+          compacted = true;
+        }
+        if (!summaryBytes) {
+          summaryBytes = Number(persisted?.summaryBytes ?? 0) || 0;
+        }
         if (persisted && (persisted.used > 0 || persisted.inputTokens > 0 || persisted.outputTokens > 0)) {
           // Live telemetry can have a newer total/context window while omitting
           // input/output. Keep those live values and fill only the missing
@@ -376,6 +387,19 @@ Custom commands can be created in:
     const hasTokenBreakdown = computedUsed > 0;
     const used = Math.max(reportedUsed, computedUsed);
 
+    // Providers that report the current context occupancy (codex, opencode)
+    // also ship the session's cumulative spend and the engine's own context
+    // percentage; forward both so the modal can render them.
+    const cumulativeSource = tokenUsage.cumulative;
+    const cumulative = cumulativeSource && typeof cumulativeSource === "object"
+      ? {
+          used: Number(cumulativeSource.used ?? 0) || 0,
+          inputTokens: Number(cumulativeSource.inputTokens ?? 0) || 0,
+          outputTokens: Number(cumulativeSource.outputTokens ?? 0) || 0,
+        }
+      : undefined;
+    const percentage = Number(tokenUsage.percentage ?? 0) || 0;
+
     return {
       type: "builtin",
       action: "cost",
@@ -392,6 +416,10 @@ Custom commands can be created in:
               },
             }
           : {}),
+        ...(percentage > 0 ? { percentage } : {}),
+        ...(cumulative ? { cumulative } : {}),
+        ...(compacted ? { compacted: true } : {}),
+        ...(summaryBytes > 0 ? { summaryBytes } : {}),
         provider,
         model,
       },

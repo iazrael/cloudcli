@@ -23,6 +23,7 @@ import {
   resolveModelEffort,
 } from '@/shared/index.js';
 import { notifyRunFailed, notifyRunStopped } from '@/modules/notifications/index.js';
+import { codexAppServer } from '@/modules/providers/list/codex/codex-app-server.client.js';
 import type { AnyRecord, ProviderRuntimeContext, ProviderRuntimeWriter } from '@/shared/index.js';
 
 type ActiveCodexSession = {
@@ -564,10 +565,42 @@ function abortCodexSession(sessionId: string) {
   return true;
 }
 
-/** Used by the providers module's CodexProvider to run and abort SDK turns. */
+/**
+ * Compacts a Codex thread's carried conversation into a summary.
+ *
+ * The SDK's `Thread` surface cannot express this, so the request goes through
+ * the app-server JSON-RPC primitive (`thread/compact/start`) the Codex IDE
+ * clients use. Only a stored thread has something to compact; the run's
+ * synthetic terminal `complete` is what makes the UI refresh the transcript
+ * and show the summary.
+ */
+async function compactCodexSession(
+  options: AnyRecord,
+  writer: ProviderRuntimeWriter,
+  context: ProviderRuntimeContext,
+): Promise<unknown> {
+  const appSessionId = typeof options.sessionId === 'string' ? options.sessionId : null;
+  const providerSessionId = context.resolveProviderSessionId(appSessionId);
+  if (!providerSessionId) {
+    throw new Error('This Codex session has no stored conversation to compact yet.');
+  }
+
+  sendMessage(writer, createNormalizedMessage({
+    kind: 'status',
+    text: 'Compacting context…',
+    sessionId: appSessionId,
+    provider: 'codex',
+  }));
+
+  await codexAppServer.compactThread({ threadId: providerSessionId });
+  return undefined;
+}
+
+/** Used by the providers module's CodexProvider to run, abort, and compact SDK turns. */
 export const codexRuntime = {
   run: queryCodex,
   abort: abortCodexSession,
+  compact: compactCodexSession,
 };
 
 /**

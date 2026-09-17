@@ -22,6 +22,7 @@ export function summarizeClaudeTokenUsage(
   let outputTokens = 0;
   let cacheReadTokens = 0;
   let cacheCreationTokens = 0;
+  let observedModel: string | null = null;
 
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index];
@@ -57,6 +58,8 @@ export function summarizeClaudeTokenUsage(
       continue;
     }
 
+    const model = entry.message?.model;
+    observedModel = typeof model === 'string' ? model : null;
     cacheReadTokens = rowCacheReadTokens;
     cacheCreationTokens = rowCacheCreationTokens;
     inputTokens = rowInputTokens;
@@ -64,18 +67,33 @@ export function summarizeClaudeTokenUsage(
     break;
   }
 
-  const parsedContextWindow = Number.parseInt(configuredContextWindow ?? '', 10);
-  const contextWindow = Number.isFinite(parsedContextWindow) ? parsedContextWindow : 160_000;
-  const cacheTokens = cacheReadTokens + cacheCreationTokens;
-
   return {
     used: inputTokens + outputTokens,
-    total: contextWindow,
+    total: resolveClaudeContextWindow(configuredContextWindow, observedModel),
     inputTokens,
     outputTokens,
     cacheReadTokens,
     cacheCreationTokens,
-    cacheTokens,
+    cacheTokens: cacheReadTokens + cacheCreationTokens,
     breakdown: { input: inputTokens, output: outputTokens },
   };
+}
+
+/**
+ * Resolves the context window a transcript's usage is measured against.
+ *
+ * `[1m]` model variants carry the 1M-context beta; every other current model
+ * is 200k. The `CONTEXT_WINDOW` override stays authoritative when set, so a
+ * deployment can pin an explicit window.
+ */
+function resolveClaudeContextWindow(
+  configuredContextWindow: string | undefined,
+  model: string | null,
+): number {
+  const parsedContextWindow = Number.parseInt(configuredContextWindow ?? '', 10);
+  if (Number.isFinite(parsedContextWindow) && parsedContextWindow > 0) {
+    return parsedContextWindow;
+  }
+
+  return model?.includes('[1m]') ? 1_000_000 : 200_000;
 }

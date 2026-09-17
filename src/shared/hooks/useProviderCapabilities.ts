@@ -27,6 +27,8 @@ export type ProviderCapabilities = {
   supportsEffort?: boolean;
   supportsMessageEditing?: boolean;
   supportsSessionForking?: boolean;
+  /** Whether the provider runtime can compact a session's context on demand (`/compact`). */
+  supportsCompaction?: boolean;
 };
 
 let cachedCapabilities: Partial<Record<LLMProvider, ProviderCapabilities>> | null = null;

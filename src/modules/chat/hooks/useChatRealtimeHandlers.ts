@@ -8,6 +8,7 @@ import type { MarkSessionIdle, MarkSessionProcessing } from '@/shared/types';
 import type { PendingPermissionRequest } from '@/shared/types';
 import type { ProjectSession, LLMProvider } from '@/shared/types';
 import type { ServerEventDirective } from '@/modules/chat/utils/sessionTimelineStore';
+import { toTokenBudget } from '@/modules/chat/utils/contextUsage';
 import type { SessionStore } from '@/modules/chat/hooks/useSessionStore';
 
 const isActionablePermissionRequest = (request: { toolName?: unknown } | null | undefined): boolean => {
@@ -200,7 +201,10 @@ export function useChatRealtimeHandlers({
 
         case 'status': {
           if (directive.text === 'token_budget' && directive.tokenBudget) {
-            setTokenBudget(directive.tokenBudget as Record<string, unknown>);
+            // A just-compacted session reports `compacted: true` with `used: 0`;
+            // those numbers describe the context the user discarded, so the
+            // badge falls back to the summary's size (see `toTokenBudget`).
+            setTokenBudget(toTokenBudget(directive.tokenBudget));
           } else if (directive.text && directive.sessionId) {
             onSessionProcessing?.(directive.sessionId, {
               statusText: directive.text,

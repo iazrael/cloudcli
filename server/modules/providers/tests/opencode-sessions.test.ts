@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -379,6 +379,37 @@ test('OpenCode sessions provider normalizes quoted live text and skips user echo
   assert.deepEqual(userEcho, []);
 });
 
+test('OpenCode sessions provider surfaces the nested live error message', () => {
+  const provider = new OpenCodeSessionsProvider();
+  // `opencode run --format json` serializes failures as
+  // `{ type: 'error', error: { name, data: { message } } }`.
+  const normalized = provider.normalizeMessage({
+    type: 'error',
+    sessionID: 'open-session-live',
+    error: {
+      name: 'UnknownError',
+      data: { message: 'Model not found: deepseek-v4.1-flash/.', ref: 'err_1234' },
+    },
+  }, null);
+
+  assert.equal(normalized.length, 1);
+  assert.equal(normalized[0]?.kind, 'error');
+  assert.equal(normalized[0]?.content, 'Model not found: deepseek-v4.1-flash/.');
+
+  const flat = provider.normalizeMessage({
+    type: 'error',
+    sessionID: 'open-session-live',
+    error: 'plain failure',
+  }, null);
+  assert.equal(flat[0]?.content, 'plain failure');
+
+  const opaque = provider.normalizeMessage({
+    type: 'error',
+    sessionID: 'open-session-live',
+  }, null);
+  assert.equal(opaque[0]?.content, 'Unknown OpenCode error');
+});
+
 test('OpenCode sessions provider reads sqlite history and token usage', { concurrency: false }, async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-session-history-'));
   const workspacePath = path.join(tempRoot, 'workspace');
@@ -541,6 +572,217 @@ test('getTokenUsage reads the token columns for the provider-native session', as
       }),
       { used: 42, inputTokens: 13, outputTokens: 20, breakdown: { input: 13, output: 20 } },
     );
+  } finally {
+    restoreHomeDir();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+/**
+ * Rewrites the seeded assistant message into the current OpenCode shape
+ * (`tokens.total`, provider/model ids) and seeds OpenCode's model cache with a
+ * context limit for it.
+ */
+const seedCurrentOpenCodeUsage = async (
+  homeDir: string,
+  options: { messageTokens?: Record<string, unknown>; contextLimit?: number } = {},
+): Promise<void> => {
+  const db = new Database(path.join(homeDir, '.local', 'share', 'opencode', 'opencode.db'));
+  try {
+    const row = db.prepare('SELECT data FROM message WHERE id = ?').get('message-assistant') as { data: string };
+    const info = JSON.parse(row.data);
+    info.providerID = 'opencode-go';
+    info.modelID = 'deepseek-v4.1-flash';
+    info.tokens = options.messageTokens ?? {
+      total: 52_027,
+      input: 13_510,
+      output: 366,
+      reasoning: 0,
+      cache: { read: 38_151, write: 0 },
+    };
+    db.prepare('UPDATE message SET data = ? WHERE id = ?').run(JSON.stringify(info), 'message-assistant');
+  } finally {
+    db.close();
+  }
+
+  if (options.contextLimit !== undefined) {
+    const cacheDir = path.join(homeDir, '.cache', 'opencode');
+    await mkdir(cacheDir, { recursive: true });
+    await writeFile(
+      path.join(cacheDir, 'models.json'),
+      JSON.stringify({
+        'opencode-go': {
+          models: {
+            'deepseek-v4.1-flash': { limit: { context: options.contextLimit, output: 384_000 } },
+          },
+        },
+      }),
+    );
+  }
+};
+
+test('token usage reports the newest assistant message context plus the model window', { concurrency: false }, async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-context-usage-'));
+  const workspacePath = path.join(tempRoot, 'workspace');
+  await mkdir(workspacePath, { recursive: true });
+  const restoreHomeDir = patchHomeDir(tempRoot);
+
+  try {
+    await createOpenCodeDatabase(tempRoot, workspacePath);
+    await seedCurrentOpenCodeUsage(tempRoot, { contextLimit: 1_000_000 });
+
+    const provider = new OpenCodeSessionsProvider();
+    const history = await provider.fetchHistory('open-session-1');
+
+    assert.deepEqual(history.tokenUsage, {
+      // Newest message: total 52027 = input 13510 + output 366 + cache read
+      // 38151; inputTokens is that whole prompt (input + cache), the same
+      // convention Claude's reader uses. The seeded session columns (used 42)
+      // stay as cumulative.
+      used: 52_027,
+      total: 1_000_000,
+      inputTokens: 51_661,
+      outputTokens: 366,
+      breakdown: { input: 51_661, output: 366 },
+      cumulative: { used: 42, inputTokens: 13, outputTokens: 20 },
+    });
+
+    assert.deepEqual(
+      await provider.getTokenUsage({
+        appSessionId: 'app-1',
+        nativeSessionId: 'open-session-1',
+        jsonlPath: null,
+        projectPath: null,
+      }),
+      history.tokenUsage,
+    );
+  } finally {
+    restoreHomeDir();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('token usage reports a compaction reset instead of the pre-compaction context', { concurrency: false }, async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-compacted-usage-'));
+  const workspacePath = path.join(tempRoot, 'workspace');
+  await mkdir(workspacePath, { recursive: true });
+  const restoreHomeDir = patchHomeDir(tempRoot);
+
+  try {
+    await createOpenCodeDatabase(tempRoot, workspacePath);
+    await seedCurrentOpenCodeUsage(tempRoot, { contextLimit: 1_000_000 });
+
+    const databasePath = path.join(tempRoot, '.local', 'share', 'opencode', 'opencode.db');
+    const insertAssistantMessage = (id: string, timeCreated: number, info: Record<string, unknown>) => {
+      const db = new Database(databasePath);
+      try {
+        db.prepare(
+          'INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)',
+        ).run(id, 'open-session-1', timeCreated, timeCreated, JSON.stringify(info));
+      } finally {
+        db.close();
+      }
+    };
+    const insertSummaryPart = (id: string, messageId: string, info: Record<string, unknown>) => {
+      const db = new Database(databasePath);
+      try {
+        db.prepare(
+          'INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?)',
+        ).run(id, messageId, 'open-session-1', 1_700_000_010_000, 1_700_000_010_000, JSON.stringify(info));
+      } finally {
+        db.close();
+      }
+    };
+
+    // A compaction summary carries the whole pre-compaction conversation as its
+    // request usage; reporting it as current occupancy is exactly backwards.
+    insertAssistantMessage('message-summary', 1_700_000_010_000, {
+      role: 'assistant',
+      summary: true,
+      modelID: 'deepseek-v4.1-flash',
+      providerID: 'opencode-go',
+      tokens: {
+        total: 319_336,
+        input: 312_690,
+        output: 6_646,
+        reasoning: 0,
+        cache: { read: 0, write: 0 },
+      },
+    });
+
+    // The summary text is the conversation the next turn will be given, so its
+    // size is the one occupancy reading available while `compacted`; reasoning
+    // parts are not context and must not count toward it.
+    insertSummaryPart('part-summary-text', 'message-summary', { type: 'text', text: 'compacted' });
+    insertSummaryPart('part-summary-reasoning', 'message-summary', { type: 'reasoning', text: 'x'.repeat(500) });
+
+    const provider = new OpenCodeSessionsProvider();
+    const usageInput = {
+      appSessionId: 'app-1',
+      nativeSessionId: 'open-session-1',
+      jsonlPath: null,
+      projectPath: null,
+    };
+
+    assert.deepEqual(await provider.getTokenUsage(usageInput), {
+      used: 0,
+      total: 1_000_000,
+      inputTokens: 0,
+      outputTokens: 0,
+      breakdown: { input: 0, output: 0 },
+      compacted: true,
+      summaryBytes: 9,
+      cumulative: { used: 42, inputTokens: 13, outputTokens: 20 },
+    });
+
+    // The next real turn is the first record that knows the compacted context,
+    // so it becomes the reported occupancy and clears the reset flag.
+    insertAssistantMessage('message-after-compaction', 1_700_000_020_000, {
+      role: 'assistant',
+      modelID: 'deepseek-v4.1-flash',
+      providerID: 'opencode-go',
+      tokens: {
+        total: 900,
+        input: 600,
+        output: 100,
+        reasoning: 0,
+        cache: { read: 200, write: 0 },
+      },
+    });
+
+    const afterCompaction = await provider.getTokenUsage(usageInput);
+    assert.equal(afterCompaction?.used, 900);
+    assert.equal(afterCompaction?.total, 1_000_000);
+    assert.equal(afterCompaction?.compacted, undefined);
+    assert.equal(afterCompaction?.inputTokens, 800);
+    assert.equal(afterCompaction?.outputTokens, 100);
+  } finally {
+    restoreHomeDir();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('token usage falls back to the cumulative columns when the model cache has no window', { concurrency: false }, async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-context-window-missing-'));
+  const workspacePath = path.join(tempRoot, 'workspace');
+  await mkdir(workspacePath, { recursive: true });
+  const restoreHomeDir = patchHomeDir(tempRoot);
+
+  try {
+    await createOpenCodeDatabase(tempRoot, workspacePath);
+    await seedCurrentOpenCodeUsage(tempRoot);
+
+    const provider = new OpenCodeSessionsProvider();
+    const usage = await provider.getTokenUsage({
+      appSessionId: 'app-1',
+      nativeSessionId: 'open-session-1',
+      jsonlPath: null,
+      projectPath: null,
+    });
+
+    assert.equal(usage?.used, 52_027);
+    assert.equal(usage?.total, undefined);
+    assert.deepEqual(usage?.cumulative, { used: 42, inputTokens: 13, outputTokens: 20 });
   } finally {
     restoreHomeDir();
     await rm(tempRoot, { recursive: true, force: true });

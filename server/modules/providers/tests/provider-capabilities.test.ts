@@ -43,6 +43,9 @@ const BASELINE: Record<string, Omit<ProviderCapabilities, 'provider'>> = {
     supportsEffort: true,
     supportsMessageEditing: true,
     supportsSessionForking: true,
+    // The Agent SDK processes `/compact` from the held input stream, which is
+    // exactly what the runtime's compact primitive feeds it.
+    supportsCompaction: true,
   },
   cursor: {
     permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
@@ -55,6 +58,7 @@ const BASELINE: Record<string, Omit<ProviderCapabilities, 'provider'>> = {
     supportsEffort: false,
     supportsMessageEditing: false,
     supportsSessionForking: false,
+    supportsCompaction: false,
   },
   codex: {
     permissionModes: ['default', 'acceptEdits', 'bypassPermissions'],
@@ -71,6 +75,8 @@ const BASELINE: Record<string, Omit<ProviderCapabilities, 'provider'>> = {
     // which is how Codex's own IDE clients do it.
     supportsMessageEditing: true,
     supportsSessionForking: true,
+    // `thread/compact/start` on the same app-server transport the fork rides.
+    supportsCompaction: true,
   },
   opencode: {
     permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
@@ -83,6 +89,8 @@ const BASELINE: Record<string, Omit<ProviderCapabilities, 'provider'>> = {
     supportsEffort: true,
     supportsMessageEditing: false,
     supportsSessionForking: false,
+    // `opencode run --command compact` runs the CLI's own compaction command.
+    supportsCompaction: true,
   },
   zcode: {
     permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
@@ -102,6 +110,7 @@ const BASELINE: Record<string, Omit<ProviderCapabilities, 'provider'>> = {
     // provider today.
     supportsMessageEditing: false,
     supportsSessionForking: false,
+    supportsCompaction: false,
   },
   antigravity: {
     permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
@@ -114,6 +123,10 @@ const BASELINE: Record<string, Omit<ProviderCapabilities, 'provider'>> = {
     supportsEffort: true,
     supportsMessageEditing: false,
     supportsSessionForking: false,
+    // Verified against agy 1.1.x: print mode passes `/compact` through to the
+    // model ("not a built-in slash command"), and the CLI has no compaction
+    // subcommand or flag. Slash expansion only covers skills/custom commands.
+    supportsCompaction: false,
   },
 };
 

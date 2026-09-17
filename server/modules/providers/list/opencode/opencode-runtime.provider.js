@@ -1,4 +1,6 @@
 import fsSync from 'node:fs';
+import net from 'node:net';
+import { spawnSync } from 'node:child_process';
 
 import crossSpawn from 'cross-spawn';
 import Database from 'better-sqlite3';
@@ -16,6 +18,7 @@ import {
   resolveModelEffort
 } from '@/shared/utils.js';
 
+import { readOpenCodeContextUsage } from './opencode-context-usage.js';
 import { getOpenCodeDatabasePath } from './opencode-data-root.js';
 
 // cross-spawn resolves .cmd shims/PATHEXT on Windows and delegates to
@@ -54,6 +57,36 @@ export function resolveOpenCodePermissionOptions(permissionMode) {
   }
 }
 
+/**
+ * Kills a spawned CLI process and everything it started.
+ *
+ * `cross-spawn` resolves `opencode` through the Windows `.cmd` shim, so the
+ * handle it hands back is cmd.exe: killing that leaves the real opencode.exe
+ * (and any server it hosts) running, holding the port and the project
+ * instance. `taskkill /T` walks the whole tree; POSIX children take the
+ * signal directly.
+ */
+function killProcessTree(child) {
+  if (!child) {
+    return;
+  }
+
+  if (process.platform === 'win32' && child.pid) {
+    try {
+      spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+      return;
+    } catch {
+      // Fall through to the plain kill.
+    }
+  }
+
+  try {
+    child.kill('SIGTERM');
+  } catch {
+    // Already gone.
+  }
+}
+
 function readOpenCodeSessionId(event) {
   if (!event || typeof event !== 'object') {
     return null;
@@ -71,48 +104,7 @@ function readOpenCodeTokenUsage(sessionId) {
   let db = null;
   try {
     db = new Database(dbPath, { readonly: true, fileMustExist: true });
-    const columns = db.prepare('PRAGMA table_info(session)').all();
-    const columnNames = new Set(columns.map((column) => column.name));
-    const requiredColumns = ['tokens_input', 'tokens_output', 'tokens_reasoning', 'tokens_cache_read', 'tokens_cache_write'];
-    if (!requiredColumns.every((column) => columnNames.has(column))) {
-      return null;
-    }
-
-    const row = db.prepare(`
-      SELECT
-        tokens_input AS inputTokens,
-        tokens_output AS outputTokens,
-        tokens_reasoning AS reasoningTokens,
-        tokens_cache_read AS cacheReadTokens,
-        tokens_cache_write AS cacheWriteTokens
-      FROM session
-      WHERE id = ?
-    `).get(sessionId);
-
-    if (!row) {
-      return null;
-    }
-
-    const inputTokens = Number(row.inputTokens || 0) + Number(row.cacheReadTokens || 0);
-    const outputTokens = Number(row.outputTokens || 0);
-    const used = Number(row.inputTokens || 0)
-      + outputTokens
-      + Number(row.reasoningTokens || 0)
-      + Number(row.cacheReadTokens || 0)
-      + Number(row.cacheWriteTokens || 0);
-    if (used <= 0) {
-      return null;
-    }
-
-    return {
-      used,
-      inputTokens,
-      outputTokens,
-      breakdown: {
-        input: inputTokens,
-        output: outputTokens,
-      },
-    };
+    return readOpenCodeContextUsage(db, sessionId) || null;
   } catch {
     return null;
   } finally {
@@ -407,7 +399,7 @@ function abortOpenCodeSession(sessionId) {
   // The abort handler sends the terminal complete (aborted: true); flag the
   // process so its close handler does not emit a second one.
   process.aborted = true;
-  process.kill('SIGTERM');
+  killProcessTree(process);
   activeOpenCodeProcesses.delete(sessionId);
   return true;
 }
@@ -420,14 +412,179 @@ function getActiveOpenCodeSessions() {
   return Array.from(activeOpenCodeProcesses.keys());
 }
 
+/**
+ * Compacts a stored OpenCode conversation in place.
+ *
+ * `opencode run` has no built-in-command flag (`run --command` only resolves
+ * configured commands and `/compact` is not one of them — verified against
+ * 1.18.31), but the CLI's server exposes the primitive the TUI itself uses:
+ * `POST /session/:id/summarize`. This spawns a short-lived headless server,
+ * calls that endpoint with the session's own model, and tears the server
+ * down. The endpoint runs OpenCode's whole compaction loop, so the next
+ * history refresh shows the summary.
+ */
+function readOpenCodeSessionModel(sessionId) {
+  const dbPath = getOpenCodeDatabasePath();
+  if (!fsSync.existsSync(dbPath)) {
+    return null;
+  }
+
+  let db = null;
+  try {
+    db = new Database(dbPath, { readonly: true, fileMustExist: true });
+    const row = db.prepare('SELECT model FROM session WHERE id = ?').get(sessionId);
+    if (!row || typeof row.model !== 'string') {
+      return null;
+    }
+
+    const parsed = JSON.parse(row.model);
+    const providerId = typeof parsed?.providerID === 'string' ? parsed.providerID : null;
+    const modelId = typeof parsed?.id === 'string' ? parsed.id : null;
+    return providerId && modelId ? { providerId, modelId } : null;
+  } catch {
+    return null;
+  } finally {
+    if (db) {
+      db.close();
+    }
+  }
+}
+
+/** Picks a free loopback port for the short-lived compaction server. */
+function reserveLoopbackPort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.unref();
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      server.close(() => {
+        if (address && typeof address === 'object') {
+          resolve(address.port);
+          return;
+        }
+        reject(new Error('Could not reserve a loopback port for OpenCode compaction.'));
+      });
+    });
+  });
+}
+
+/** Basic-auth header for `opencode serve` when the user secured it. */
+function openCodeServerAuthHeaders() {
+  const password = process.env.OPENCODE_SERVER_PASSWORD;
+  if (!password) {
+    return {};
+  }
+
+  const username = process.env.OPENCODE_SERVER_USERNAME || 'opencode';
+  return {
+    Authorization: `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`,
+  };
+}
+
+const COMPACT_SERVER_READY_TIMEOUT_MS = 20_000;
+const COMPACT_REQUEST_TIMEOUT_MS = 10 * 60_000;
+
+async function waitForOpenCodeServer(baseUrl, headers, serverProcess) {
+  const deadline = Date.now() + COMPACT_SERVER_READY_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (serverProcess.exitCode !== null) {
+      throw new Error(`OpenCode server exited before it was ready (code ${serverProcess.exitCode}).`);
+    }
+
+    try {
+      const response = await fetch(`${baseUrl}/config`, {
+        headers,
+        signal: AbortSignal.timeout(2000),
+      });
+      if (response.ok) {
+        return;
+      }
+    } catch {
+      // Not listening yet.
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+
+  throw new Error('OpenCode server did not become ready in time.');
+}
+
+async function compactOpenCodeSession(options = {}, ws, context) {
+  const { sessionId } = options;
+  const providerSessionId = context.resolveProviderSessionId(sessionId);
+  if (!sessionId || !providerSessionId) {
+    throw new Error('This OpenCode session has no stored conversation to compact yet.');
+  }
+
+  const model = readOpenCodeSessionModel(providerSessionId);
+  if (!model) {
+    throw new Error('OpenCode did not report a model for this session, so it cannot be compacted.');
+  }
+
+  const workingDir = options.cwd || options.projectPath || process.cwd();
+  ws.send(createNormalizedMessage({
+    kind: 'status',
+    text: 'Compacting context…',
+    canInterrupt: false,
+    sessionId,
+    provider: 'opencode',
+  }));
+
+  const port = await reserveLoopbackPort();
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const headers = { 'Content-Type': 'application/json', ...openCodeServerAuthHeaders() };
+  const serverProcess = spawnFunction('opencode', ['serve', '--port', String(port)], {
+    cwd: workingDir,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: process.env,
+  });
+
+  let stderrTail = '';
+  serverProcess.stderr?.on('data', (chunk) => {
+    stderrTail = (stderrTail + String(chunk)).slice(-1000);
+  });
+  // The server's stdout is noise for this one request; drain it so the pipe
+  // never back-pressures the child.
+  serverProcess.stdout?.on('data', () => {});
+
+  try {
+    await waitForOpenCodeServer(baseUrl, headers, serverProcess);
+
+    const response = await fetch(`${baseUrl}/session/${encodeURIComponent(providerSessionId)}/summarize`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ providerID: model.providerId, modelID: model.modelId, auto: false }),
+      signal: AbortSignal.timeout(COMPACT_REQUEST_TIMEOUT_MS),
+    });
+
+    if (!response.ok) {
+      const detail = await response.text().catch(() => '');
+      const suffix = detail.trim() ? `: ${detail.trim().slice(0, 300)}` : '';
+      throw new Error(`OpenCode refused to compact this session (HTTP ${response.status})${suffix}`);
+    }
+
+    return true;
+  } catch (error) {
+    if (stderrTail.trim()) {
+      console.warn(`[OpenCode] Compaction server stderr: ${stderrTail.trim().split('\n').slice(-1)[0]}`);
+    }
+    throw error;
+  } finally {
+    killProcessTree(serverProcess);
+  }
+}
+
 export const opencodeRuntime = {
   run: spawnOpenCode,
   abort: abortOpenCodeSession,
+  compact: compactOpenCodeSession,
 };
 
 export {
   spawnOpenCode,
   abortOpenCodeSession,
+  compactOpenCodeSession,
   isOpenCodeSessionActive,
   getActiveOpenCodeSessions,
 };

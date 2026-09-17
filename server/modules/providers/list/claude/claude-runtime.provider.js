@@ -408,21 +408,40 @@ function readNumber(value) {
  */
 
 /**
+ * Resolves the context window for one Claude model id.
+ *
+ * `[1m]` variants carry the 1M-context beta; every other current model is
+ * 200k. `CONTEXT_WINDOW` stays authoritative when set, so a deployment can
+ * pin an explicit window.
+ * @param {string} [model] - Anthropic model id
+ * @returns {number} Context window in tokens
+ */
+function resolveClaudeContextWindow(model) {
+  const configured = parseInt(process.env.CONTEXT_WINDOW, 10);
+  if (Number.isFinite(configured) && configured > 0) {
+    return configured;
+  }
+
+  return typeof model === 'string' && model.includes('[1m]') ? 1000000 : 200000;
+}
+
+/**
  * Builds a context-window budget from an Anthropic-shaped usage payload.
  *
  * `input_tokens + cache_read + cache_creation` is one request's whole prompt,
  * which is exactly what the context window holds at that moment.
  * @param {Object} messageUsage - Anthropic usage payload
+ * @param {string} [model] - The request's model id, for the window size
  * @returns {TokenBudget} Token budget object
  */
-function buildTokenBudget(messageUsage) {
+function buildTokenBudget(messageUsage, model) {
   const directInputTokens = readNumber(messageUsage.input_tokens ?? messageUsage.inputTokens);
   const cacheCreationTokens = readNumber(messageUsage.cache_creation_input_tokens ?? messageUsage.cacheCreationInputTokens ?? messageUsage.cacheCreationTokens);
   const cacheReadTokens = readNumber(messageUsage.cache_read_input_tokens ?? messageUsage.cacheReadInputTokens ?? messageUsage.cacheReadTokens);
   const cacheTokens = cacheCreationTokens + cacheReadTokens;
   const inputTokens = directInputTokens + cacheTokens;
   const outputTokens = readNumber(messageUsage.output_tokens ?? messageUsage.outputTokens);
-  const contextWindow = parseInt(process.env.CONTEXT_WINDOW, 10) || 160000;
+  const contextWindow = resolveClaudeContextWindow(model);
 
   return {
     used: inputTokens + outputTokens,
@@ -473,7 +492,7 @@ function extractTokenBudget(sdkMessage) {
     return null;
   }
 
-  return buildTokenBudget(messageUsage);
+  return buildTokenBudget(messageUsage, sdkMessage.message?.model);
 }
 
 /**
@@ -498,7 +517,10 @@ function extractCumulativeTokenBudget(sdkMessage) {
   }
 
   if (sdkMessage.usage && typeof sdkMessage.usage === 'object') {
-    return buildTokenBudget(sdkMessage.usage);
+    const usageModelKey = sdkMessage.modelUsage && typeof sdkMessage.modelUsage === 'object'
+      ? Object.keys(sdkMessage.modelUsage)[0]
+      : undefined;
+    return buildTokenBudget(sdkMessage.usage, usageModelKey);
   }
 
   if (!sdkMessage.modelUsage || typeof sdkMessage.modelUsage !== 'object') {
@@ -516,7 +538,7 @@ function extractCumulativeTokenBudget(sdkMessage) {
   const inputTokens = readNumber(modelData.cumulativeInputTokens ?? modelData.inputTokens);
   const outputTokens = readNumber(modelData.cumulativeOutputTokens ?? modelData.outputTokens);
   const totalUsed = inputTokens + outputTokens;
-  const contextWindow = parseInt(process.env.CONTEXT_WINDOW, 10) || 160000;
+  const contextWindow = resolveClaudeContextWindow(modelKey);
 
   return {
     used: totalUsed,
@@ -1076,6 +1098,25 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
           });
           turnCompleteSent = true;
           ws.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: 0 }));
+
+          // Refine the composer badge with the SDK's own context accounting
+          // (percentage + the real autocompact window). Fire-and-forget: the
+          // per-assistant estimate above already streamed, so a slow or
+          // unavailable control request only leaves that estimate in place.
+          void fetchSdkContextBudget(queryInstance).then((sdkBudget) => {
+            if (!sdkBudget) {
+              return;
+            }
+            const currentKey = sessionKey();
+            if (currentKey && abortedSessionIds.has(currentKey)) {
+              return;
+            }
+            try {
+              ws.send(createNormalizedMessage({ kind: 'status', text: 'token_budget', tokenBudget: sdkBudget, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
+            } catch {
+              // Socket already gone; the next turn refreshes the badge.
+            }
+          });
           if (!pendingIdleResend) {
             notifyRunStopped({
               userId: ws?.userId || null,
@@ -1318,9 +1359,65 @@ function reconnectSessionWriter(sessionId, newRawWs) {
   return true;
 }
 
+/**
+ * Wraps `/compact` as a real runtime invocation.
+ *
+ * The CLI treats a leading-slash user turn as a local slash command (verified
+ * against the Agent SDK: `/compact` drives its `compacting` status events and
+ * `/context` answers with the structured context breakdown), so compaction is
+ * just the normal run path with that command as the turn's text. The turn
+ * never reaches the model, and the compaction summary arrives as a transcript
+ * fold on the next history refresh.
+ * @param {Object} options - Run options (session id, cwd, ...)
+ * @param {Object} ws - WebSocket writer
+ * @param {Object} context - Provider-scoped lookups
+ * @returns {Promise<void>}
+ */
+function compactClaudeSession(options = {}, ws, context) {
+  return queryClaudeSDK('/compact', options, ws, context);
+}
+
+/**
+ * Fetches the SDK's own context-window breakdown (the structured twin of the
+ * `/context` report) as a token budget.
+ *
+ * `detail: 'summary'` answers from the last response's usage plus local
+ * estimates, so a per-turn badge refresh costs no extra model calls. Returns
+ * null when the SDK build predates the control request.
+ * @param {Object} queryInstance - Active SDK query instance
+ * @returns {Promise<Object|null>} Token budget object or null
+ */
+async function fetchSdkContextBudget(queryInstance) {
+  if (!queryInstance || typeof queryInstance.getContextUsage !== 'function') {
+    return null;
+  }
+
+  try {
+    const usage = await queryInstance.getContextUsage({ detail: 'summary' });
+    const used = readNumber(usage?.totalTokens);
+    const total = readNumber(usage?.rawMaxTokens) || readNumber(usage?.maxTokens);
+    if (!total || used <= 0) {
+      return null;
+    }
+
+    const percentage = readNumber(usage?.percentage);
+    return {
+      used,
+      total,
+      ...(percentage > 0 ? { percentage: Math.round(percentage) } : {}),
+      inputTokens: used,
+      outputTokens: 0,
+      breakdown: { input: used, output: 0 },
+    };
+  } catch {
+    return null;
+  }
+}
+
 export const claudeRuntime = {
   run: queryClaudeSDK,
   abort: abortClaudeSDKSession,
+  compact: compactClaudeSession,
   permissions: {
     resolve: resolveToolApproval,
     listPending: getPendingApprovalsForSession,

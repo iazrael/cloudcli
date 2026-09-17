@@ -388,6 +388,16 @@ const filterOpenCodeModelsByProvider = (
   };
 };
 
+/**
+ * Canonicalizes OpenCode's stored session model into the
+ * `<providerID>/<modelID>` value the picker and `opencode run --model` expect.
+ *
+ * OpenCode persists `session.model` as `{ id, providerID, variant }`. Reading
+ * only `id` dropped the gateway prefix, so the value was recorded back on the
+ * session (and passed to `--model`) as a bare model id, which the CLI then read
+ * as a provider id and failed to resume. Records that only carry a model id
+ * still degrade to the bare value.
+ */
 const parseOpenCodeSessionModelValue = (rawModel: unknown): string | null => {
   if (typeof rawModel === 'string') {
     const trimmed = rawModel.trim();
@@ -407,11 +417,17 @@ const parseOpenCodeSessionModelValue = (rawModel: unknown): string | null => {
     return null;
   }
 
-  return readOptionalString(record.id)
+  const modelId = readOptionalString(record.id)
+    ?? readOptionalString(record.modelID)
     ?? readOptionalString(record.model)
     ?? readOptionalString(record.name)
-    ?? readOptionalString(record.value)
-    ?? null;
+    ?? readOptionalString(record.value);
+  if (!modelId) {
+    return null;
+  }
+
+  const providerId = readOptionalString(record.providerID) ?? readOptionalString(record.providerId);
+  return providerId ? `${providerId}/${modelId}` : modelId;
 };
 
 /** Provider registry model adapter for OpenCode predefined models and session metadata. */
