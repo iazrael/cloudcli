@@ -491,6 +491,11 @@ function resolveBucketTitle(bucket: QuotaBucket, t: TFunction): string {
     return t('cost.weeklyWindow', { defaultValue: '周配额' });
   }
 
+  const isMonthly = bucket.window === 'monthly' || bucket.id.includes('monthly');
+  if (isMonthly) {
+    return t('cost.monthlyWindow', { defaultValue: '月度配额' });
+  }
+
   const isCycle = bucket.window === 'cycle' || bucket.id.includes('calls');
   if (isCycle) {
     return t('cost.cycleWindow', { defaultValue: '周期调用限额' });

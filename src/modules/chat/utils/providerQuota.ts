@@ -3,9 +3,9 @@
  *
  * Used by CommandResultModal to determine whether to render the quota card.
  */
-export type QuotaProvider = 'antigravity' | 'codex' | 'zcode';
+export type QuotaProvider = 'antigravity' | 'codex' | 'opencode' | 'zcode';
 
-const QUOTA_PROVIDERS = new Set<string>(['antigravity', 'codex', 'zcode']);
+const QUOTA_PROVIDERS = new Set<string>(['antigravity', 'codex', 'opencode', 'zcode']);
 
 /**
  * Resolves whether a provider supports account-level quota reporting.

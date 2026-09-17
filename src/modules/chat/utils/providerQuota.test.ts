@@ -10,6 +10,7 @@ import {
 test('resolveQuotaProvider enables only providers with account quota adapters', () => {
   assert.equal(resolveQuotaProvider('antigravity'), 'antigravity');
   assert.equal(resolveQuotaProvider('codex'), 'codex');
+  assert.equal(resolveQuotaProvider('opencode'), 'opencode');
   assert.equal(resolveQuotaProvider('zcode'), 'zcode');
   assert.equal(resolveQuotaProvider('claude'), null);
   assert.equal(resolveQuotaProvider(undefined), null);
@@ -17,6 +18,10 @@ test('resolveQuotaProvider enables only providers with account quota adapters', 
 
 test('buildProviderQuotaUrl addresses the active provider and optional refresh', () => {
   assert.equal(buildProviderQuotaUrl('codex'), '/api/providers/quota?provider=codex');
+  assert.equal(
+    buildProviderQuotaUrl('opencode'),
+    '/api/providers/quota?provider=opencode',
+  );
   assert.equal(
     buildProviderQuotaUrl('antigravity', true),
     '/api/providers/quota?provider=antigravity&refresh=true',

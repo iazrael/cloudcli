@@ -320,6 +320,7 @@
     "expand": "展開檢視",
     "fiveHourWindow": "5 小時滑動窗口限額",
     "weeklyWindow": "週配額",
+    "monthlyWindow": "每月配額",
     "remainingPercent": "剩餘 {{percent}}%",
     "resetSoon": "即將重設",
     "resetDaysHours": "{{days}} 天 {{hours}} 小時後重設",

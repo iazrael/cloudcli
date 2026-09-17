@@ -305,6 +305,7 @@
     "expand": "展开查看",
     "fiveHourWindow": "5 小时滑动窗口限额",
     "weeklyWindow": "周配额",
+    "monthlyWindow": "月度配额",
     "cycleWindow": "周期调用限额",
     "cycleCallsDesc": "总计 {{total}} 次，剩余 {{remaining}} 次",
     "cycleGeneralDesc": "周期内模型与工具调用配额",

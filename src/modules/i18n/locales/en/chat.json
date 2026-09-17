@@ -326,6 +326,7 @@
     "expand": "Expand",
     "fiveHourWindow": "5-Hour Sliding Window",
     "weeklyWindow": "Weekly Quota",
+    "monthlyWindow": "Monthly Quota",
     "cycleWindow": "Cycle Request Limit",
     "cycleCallsDesc": "{{remaining}} of {{total}} calls remaining",
     "cycleGeneralDesc": "Cycle model & tool request quota",
