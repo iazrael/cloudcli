@@ -125,6 +125,7 @@ export default function WorkspacePathField({
 
       <FolderBrowserModal
         isOpen={showFolderBrowser}
+        initialPath={value}
         autoAdvanceOnSelect={false}
         onClose={() => setShowFolderBrowser(false)}
         onFolderSelected={handleFolderSelected}

@@ -26,6 +26,10 @@ const IGNORED_DIRECTORY_NAMES = new Set([
   '.gradle', '.idea', 'coverage', '.nyc_output',
 ]);
 
+// Volume-level Windows metadata folders (E:\$RECYCLE.BIN, E:\System Volume
+// Information) are not user projects, so browsing a drive root skips them.
+const WINDOWS_SYSTEM_VOLUME_DIRECTORY_RE = /^\$(recycle\.bin|system volume information)$/i;
+
 const COMMON_WORKSPACE_DIRECTORY_NAMES = [
   'Desktop',
   'Documents',
@@ -608,13 +612,16 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
    * `createWorkspaceFolder` deliberately does not do this, which is what keeps
    * them read-only.
    */
-  async function resolveBrowsablePath(targetPath: string): Promise<string> {
+  async function resolveBrowsablePath(
+    targetPath: string,
+    options?: { allowDriveRoot?: boolean },
+  ): Promise<string> {
     const readOnlyPath = await dependencies.workspace.resolveReadOnlyRootPath(targetPath);
     if (readOnlyPath) {
       return readOnlyPath;
     }
 
-    const validation = await dependencies.workspace.validatePath(targetPath);
+    const validation = await dependencies.workspace.validatePath(targetPath, options);
     if (!validation.valid) {
       throw createFileTreeError(validation.error ?? 'Path is outside the workspace root', 403, 'INVALID_WORKSPACE_PATH');
     }
@@ -699,11 +706,28 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
 
   return {
     async browseWorkspace(inputPath) {
+      const isWindows = process.platform === 'win32';
+      const availableDrives = dependencies.getAvailableDrives
+        ? await dependencies.getAvailableDrives()
+        : [];
+
+      if (isWindows && (inputPath === 'drives' || inputPath === 'This PC')) {
+        return {
+          path: 'drives',
+          suggestions: availableDrives.map((drive) => ({
+            path: drive,
+            name: `Local Disk (${drive.replace(/[\\/]/g, '')})`,
+            type: 'directory' as const,
+          })),
+          drives: availableDrives,
+        };
+      }
+
       const requestedPath = inputPath
         ? expandWorkspacePath(dependencies.workspace.rootPath, inputPath)
         : dependencies.workspace.rootPath;
       const targetPath = path.resolve(requestedPath);
-      const resolvedPath = await resolveBrowsablePath(targetPath);
+      const resolvedPath = await resolveBrowsablePath(targetPath, { allowDriveRoot: true });
 
       try {
         await fileSystem.access(resolvedPath);
@@ -722,7 +746,11 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
       await acquire();
       try {
         for await (const entry of fileSystem.openDirectory(resolvedPath)) {
-          if (entry.isDirectory() && !IGNORED_DIRECTORY_NAMES.has(entry.name)) {
+          if (
+            entry.isDirectory()
+            && !IGNORED_DIRECTORY_NAMES.has(entry.name)
+            && !WINDOWS_SYSTEM_VOLUME_DIRECTORY_RE.test(entry.name)
+          ) {
             directoryNames.push(entry.name);
             if (directoryNames.length >= MAXIMUM_DIRECTORY_ENTRIES) break;
           }
@@ -759,7 +787,11 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
           ]
         : directories;
 
-      return { path: resolvedPath, suggestions };
+      return {
+        path: resolvedPath,
+        suggestions,
+        drives: availableDrives.length > 0 ? availableDrives : undefined,
+      };
     },
 
     async createWorkspaceFolder(folderPath) {
