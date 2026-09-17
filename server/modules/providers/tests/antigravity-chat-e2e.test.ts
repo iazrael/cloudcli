@@ -189,8 +189,10 @@ after(async () => {
       });
     });
   }
-  await fs.rm(stubDir, { recursive: true, force: true });
-  await fs.rm(e2eHome, { recursive: true, force: true });
+  // Windows releases the terminated child's SQLite file handles a moment
+  // after the exit event, so the cleanup retries instead of failing with EBUSY.
+  await fs.rm(stubDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  await fs.rm(e2eHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 // --------------- helpers ---------------

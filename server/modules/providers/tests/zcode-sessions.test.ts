@@ -971,10 +971,13 @@ test('fetchHistory replays cancelled request errors as quiet notifications, real
 
 test('fetchHistory materializes user image attachments into the asset store', async () => {
   await withZCodeStorage(async (storageDir) => {
-    // The shared asset store lives under the user's home; redirect HOME into
-    // the temp storage dir so the test never touches the real ~/.cloudcli.
+    // The shared asset store lives under the user's home; redirect HOME (and
+    // USERPROFILE, which os.homedir() prefers on Windows) into the temp
+    // storage dir so the test never touches the real ~/.cloudcli.
     const previousHome = process.env.HOME;
+    const previousUserProfile = process.env.USERPROFILE;
     process.env.HOME = storageDir;
+    process.env.USERPROFILE = storageDir;
 
     try {
       await createFixtureDatabase(storageDir, 'sess_img');
@@ -1037,6 +1040,11 @@ test('fetchHistory materializes user image attachments into the asset store', as
         delete process.env.HOME;
       } else {
         process.env.HOME = previousHome;
+      }
+      if (previousUserProfile === undefined) {
+        delete process.env.USERPROFILE;
+      } else {
+        process.env.USERPROFILE = previousUserProfile;
       }
     }
   });
@@ -1318,7 +1326,8 @@ test('synchronizer maps fixture rows through the shared SQLite skeleton', async 
 
       const indexed = sessionsDb.getSessionByProviderSessionId('sess_sync');
       assert.equal(indexed?.provider, 'zcode');
-      assert.equal(indexed?.project_path, workspaceDir);
+      // normalizeProjectPath applies host path rules, so Windows stores backslashes.
+      assert.equal(indexed?.project_path, path.normalize('/workspace/sess_sync'));
       assert.equal(indexed?.custom_name, 'Fixture session');
       assert.equal(indexed?.jsonl_path, null);
 
