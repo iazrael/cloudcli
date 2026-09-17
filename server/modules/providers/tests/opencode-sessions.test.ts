@@ -546,3 +546,43 @@ test('getTokenUsage reads the token columns for the provider-native session', as
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+test('OpenCode edit anchors expose provider message ids and resolve to the predecessor', { concurrency: false }, async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-edit-anchor-'));
+  const workspacePath = path.join(tempRoot, 'workspace');
+  await mkdir(workspacePath, { recursive: true });
+  const restoreHomeDir = patchHomeDir(tempRoot);
+
+  try {
+    await createOpenCodeDatabase(tempRoot, workspacePath);
+    await withIsolatedDatabase(async () => {
+      const appSessionId = sessionsDb.createSession('open-session-1', 'opencode', workspacePath, 'Edit anchor');
+      const provider = new OpenCodeSessionsProvider();
+
+      const history = await provider.fetchHistory(appSessionId, { providerSessionId: 'open-session-1' });
+      const userMessage = history.messages.find((message) => message.role === 'user');
+      const assistantMessage = history.messages.find((message) => message.role === 'assistant');
+      assert.equal(userMessage?.transcriptAnchorId, 'message-user');
+      assert.equal(assistantMessage?.transcriptAnchorId, 'message-assistant');
+
+      // Editing the assistant message keeps the user prompt before it.
+      assert.deepEqual(
+        await provider.resolveEditAnchor(appSessionId, 'message-assistant'),
+        { found: true, resumeThroughId: 'message-user' },
+      );
+      // Editing the first prompt keeps nothing.
+      assert.deepEqual(
+        await provider.resolveEditAnchor(appSessionId, 'message-user'),
+        { found: true, resumeThroughId: null },
+      );
+      // An unknown anchor is reported, never guessed at.
+      assert.deepEqual(
+        await provider.resolveEditAnchor(appSessionId, 'missing-message'),
+        { found: false, resumeThroughId: null },
+      );
+    });
+  } finally {
+    restoreHomeDir();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});

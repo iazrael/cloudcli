@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import Database from 'better-sqlite3';
 
+import { sessionsDb } from '@/modules/database/index.js';
 import { parseFilesInputTag, parseImagesInputTag } from '@/shared/image-attachments.js';
 import type { IProviderSessions } from '@/shared/interfaces.js';
 import type {
@@ -29,6 +30,11 @@ import {
 } from '@/shared/utils.js';
 
 import { getOpenCodeDatabasePath } from './opencode-data-root.js';
+import {
+  acquireOpenCodeServer,
+  releaseOpenCodeServer,
+  revertOpenCodeSession,
+} from './opencode-server.client.js';
 
 const PROVIDER = 'opencode';
 
@@ -56,6 +62,20 @@ const openOpenCodeDatabase = (): Database.Database | null => {
   }
 
   return new Database(dbPath, { readonly: true, fileMustExist: true });
+};
+
+/**
+ * Provider message ids of one session, oldest first. Used by the edit flow to
+ * turn an anchor into the message OpenCode must revert to.
+ */
+const readOpenCodeMessageIds = (db: Database.Database, providerSessionId: string): string[] => {
+  const rows = db.prepare(`
+    SELECT id
+    FROM message
+    WHERE session_id = ?
+    ORDER BY COALESCE(time_created, 0), id
+  `).all(providerSessionId) as Array<{ id: string }>;
+  return rows.map((row) => row.id);
 };
 
 const formatToolContent = (value: unknown): string => {
@@ -247,6 +267,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
         provider: PROVIDER,
         kind: 'stream_delta',
         content,
+        transcriptAnchorId: readOptionalString(raw.messageID) ?? undefined,
       })];
     }
 
@@ -438,6 +459,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
             content: parsedFiles.text,
             images: parsedImages.attachments.length > 0 ? parsedImages.attachments : undefined,
             files: parsedFiles.attachments.length > 0 ? parsedFiles.attachments : undefined,
+            transcriptAnchorId: row.message_id,
           }));
         }
         continue;
@@ -584,6 +606,91 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
       };
     } finally {
       database.close();
+    }
+  }
+
+  /**
+   * Resolves the last message to keep when the message `anchorId` names is
+   * replaced.
+   *
+   * `anchorId` is the provider message id (`msg_…`) carried as each normalized
+   * message's transcript anchor. OpenCode's `revert` drops the named message
+   * and everything after it, so the predecessor of the edited message — or
+   * `null` when it is the first — is what survives.
+   */
+  async resolveEditAnchor(
+    sessionId: string,
+    anchorId: string,
+  ): Promise<{ found: boolean; resumeThroughId: string | null }> {
+    const session = sessionsDb.getSessionById(sessionId);
+    const providerSessionId = session?.provider_session_id;
+    if (!providerSessionId) {
+      return { found: false, resumeThroughId: null };
+    }
+
+    const db = openOpenCodeDatabase();
+    if (!db) {
+      return { found: false, resumeThroughId: null };
+    }
+
+    try {
+      const messageIds = readOpenCodeMessageIds(db, providerSessionId);
+      const index = messageIds.indexOf(anchorId);
+      if (index < 0) {
+        return { found: false, resumeThroughId: null };
+      }
+
+      return { found: true, resumeThroughId: index === 0 ? null : messageIds[index - 1] };
+    } finally {
+      db.close();
+    }
+  }
+
+  /**
+   * Rewinds an OpenCode session so `keepThroughId` is its last message.
+   *
+   * OpenCode has no resume-at-a-message, but the server keeps a revert marker:
+   * naming the first message to drop (`keepThroughId`'s successor, or the
+   * session's first message when nothing is kept) makes the engine discard that
+   * message and everything after it when the replacement prompt arrives.
+   */
+  async rewindSession(sessionId: string, keepThroughId: string | null): Promise<void> {
+    const session = sessionsDb.getSessionById(sessionId);
+    const providerSessionId = session?.provider_session_id;
+    if (!session || !providerSessionId) {
+      throw new AppError('This session has not produced a transcript yet.', {
+        code: 'EDIT_SOURCE_NOT_READY',
+        statusCode: 409,
+      });
+    }
+
+    const db = openOpenCodeDatabase();
+    if (!db) {
+      throw new AppError('OpenCode database was not found.', {
+        code: 'OPENCODE_DATABASE_NOT_FOUND',
+        statusCode: 409,
+      });
+    }
+
+    let dropMessageId: string | null;
+    try {
+      const messageIds = readOpenCodeMessageIds(db, providerSessionId);
+      const keepIndex = keepThroughId === null ? -1 : messageIds.indexOf(keepThroughId);
+      dropMessageId = messageIds[keepIndex + 1] ?? null;
+    } finally {
+      db.close();
+    }
+
+    // Nothing follows what is being kept, so there is nothing to replace.
+    if (!dropMessageId) {
+      return;
+    }
+
+    const handle = await acquireOpenCodeServer();
+    try {
+      await revertOpenCodeSession(handle, session.project_path ?? '', providerSessionId, dropMessageId);
+    } finally {
+      releaseOpenCodeServer();
     }
   }
 
