@@ -43,10 +43,10 @@ import type {
   StatusCommandData,
 } from '@/modules/chat/hooks/useChatComposerState';
 import { authenticatedFetch } from '@/shared/api';
+import { useProviderCapabilitiesMap } from '@/shared/hooks/useProviderCapabilities';
 import {
   buildProviderQuotaUrl,
   resolveIsActiveQuotaGroup,
-  resolveQuotaProvider,
 } from '@/modules/chat/utils/providerQuota';
 import { getProviderDisplayName, PROVIDER_DISPLAY_NAMES } from '@/shared/providerDisplay';
 
@@ -664,8 +664,15 @@ function CostContent({ data }: { data: CostCommandData }) {
   const total = Number(data.tokenUsage?.total ?? 0);
   const model = data.model || 'Unknown';
   const provider = getProviderLabel(data.provider, data.provider || 'Unknown');
-  const quotaProvider = resolveQuotaProvider(data.provider);
-  const supportsQuota = quotaProvider !== null;
+  // Whether an account quota can be asked for is the backend's answer, not a
+  // list kept here: a provider that grows a quota adapter now lights this up on
+  // its own. Nothing is offered before the matrix settles, so the card is never
+  // shown and then withdrawn.
+  const { capabilities: providerCapabilities } = useProviderCapabilitiesMap();
+  const quotaProvider = data.provider;
+  const supportsQuota = Boolean(
+    quotaProvider && providerCapabilities?.[quotaProvider as LLMProvider]?.supportsQuota,
+  );
 
   const [quotaData, setQuotaData] = useState<ProviderQuotaData | null>(data.quota ?? null);
   const [loadingQuota, setLoadingQuota] = useState(supportsQuota && !data.quota);
@@ -674,8 +681,16 @@ function CostContent({ data }: { data: CostCommandData }) {
   const [quotaError, setQuotaError] = useState<string | null>(null);
   const quotaRequestSequence = useRef(0);
 
+  // Why an account can come back with no quota is provider-specific knowledge
+  // (Codex: an API-key login has no ChatGPT plan behind it). It lives in the
+  // locale files keyed by provider, so adding one is a translation change
+  // rather than another branch in this component.
+  const emptyQuotaHint = quotaProvider
+    ? t(`cost.emptyQuotaHint.${quotaProvider}`, { defaultValue: '' })
+    : '';
+
   const fetchQuota = useCallback(async (isManualRefresh = false) => {
-    if (!quotaProvider) return;
+    if (!quotaProvider || !supportsQuota) return;
     const requestSequence = ++quotaRequestSequence.current;
     if (isManualRefresh) {
       setIsRefreshing(true);
@@ -704,7 +719,7 @@ function CostContent({ data }: { data: CostCommandData }) {
         setIsRefreshing(false);
       }
     }
-  }, [quotaProvider, t]);
+  }, [quotaProvider, supportsQuota, t]);
 
   useEffect(() => {
     quotaRequestSequence.current += 1;
@@ -821,10 +836,8 @@ function CostContent({ data }: { data: CostCommandData }) {
               <p className="text-xs font-semibold text-foreground">
                 {quotaError || t('cost.noQuotaData', { defaultValue: '当前账号没有可显示的配额数据' })}
               </p>
-              {!quotaError && data.provider === 'codex' && (
-                <p className="mt-1 text-[11px] text-muted-foreground">
-                  {t('cost.apiKeyNotice', { defaultValue: 'API Key 登录通常不会提供 ChatGPT 账号的 5 小时和周限额' })}
-                </p>
+              {!quotaError && emptyQuotaHint && (
+                <p className="mt-1 text-[11px] text-muted-foreground">{emptyQuotaHint}</p>
               )}
             </div>
           )}
@@ -842,6 +855,7 @@ function CostContent({ data }: { data: CostCommandData }) {
                   data.model,
                   group,
                   quotaGroups.length,
+                  quotaData?.partitioning,
                 );
 
                 return (

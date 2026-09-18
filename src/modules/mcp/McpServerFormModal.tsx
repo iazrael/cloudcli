@@ -3,7 +3,8 @@ import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 
 import { Button, Input } from '@/shared/ui';
-import { MCP_PROVIDER_NAMES, MCP_SUPPORTED_SCOPES, MCP_SUPPORTED_TRANSPORTS, MCP_SUPPORTS_WORKING_DIRECTORY } from '@/shared/constants';
+import { MCP_PROVIDER_NAMES } from '@/shared/constants';
+import { useProviderMcpCapabilities } from '@/shared/hooks/useProviderCapabilities';
 import { useMcpServerForm } from '@/modules/mcp/hooks/useMcpServerForm';
 import type { McpFormState, McpProject, McpProvider, McpScope, McpTransport, ProviderMcpServer } from '@/shared/types';
 
@@ -69,8 +70,11 @@ export default function McpServerFormModal({
 }: McpServerFormModalProps) {
   const { t } = useTranslation('settings');
   const isGlobalMode = mode === 'global';
-  const availableScopes = supportedScopes ?? MCP_SUPPORTED_SCOPES[provider];
-  const availableTransports = supportedTransports ?? MCP_SUPPORTED_TRANSPORTS[provider];
+  // What this provider's config format supports is the backend's declaration,
+  // never a comparison against its name.
+  const mcpCapabilities = useProviderMcpCapabilities(provider);
+  const availableScopes = supportedScopes ?? mcpCapabilities.scopes;
+  const availableTransports = supportedTransports ?? mcpCapabilities.transports;
   const {
     formData,
     multilineText,
@@ -102,8 +106,8 @@ export default function McpServerFormModal({
   const addButtonLabel = submitLabel ?? t('mcpForm.addToProvider', { action: t('mcpForm.actions.addServer'), provider: providerName });
   const showProjectSelector = formData.scope !== 'user';
   const supportsHttpHeaders = formData.transport === 'http' || formData.transport === 'sse';
-  const supportsWorkingDirectory = !isGlobalMode && MCP_SUPPORTS_WORKING_DIRECTORY[provider];
-  const showCodexOnlyFields = provider === 'codex' && !isGlobalMode;
+  const supportsWorkingDirectory = !isGlobalMode && mcpCapabilities.supportsWorkingDirectory;
+  const showEnvVarIndirectionFields = !isGlobalMode && mcpCapabilities.supportsEnvVarIndirection;
 
   return createPortal(
     <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/50 p-4">
@@ -369,7 +373,7 @@ export default function McpServerFormModal({
             </div>
           )}
 
-          {showCodexOnlyFields && formData.importMode === 'form' && formData.transport === 'stdio' && (
+          {showEnvVarIndirectionFields && formData.importMode === 'form' && formData.transport === 'stdio' && (
             <div>
               <label className="mb-2 block text-sm font-medium text-foreground">
                 {t('mcpForm.envVarNames')}
@@ -384,7 +388,7 @@ export default function McpServerFormModal({
             </div>
           )}
 
-          {showCodexOnlyFields && formData.importMode === 'form' && formData.transport === 'http' && (
+          {showEnvVarIndirectionFields && formData.importMode === 'form' && formData.transport === 'http' && (
             <div>
               <label className="mb-2 block text-sm font-medium text-foreground">
                 {t('mcpForm.bearerTokenEnvVar')}

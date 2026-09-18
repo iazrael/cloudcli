@@ -11,7 +11,7 @@ import {
 } from 'lucide-react';
 import type { ComponentType } from 'react';
 
-import type { FileStatusCode, LLMProvider, McpProvider, McpScope, McpTransport, SettingsMainTab } from '@/shared/types';
+import type { FileStatusCode, LLMProvider, McpProvider, McpTransport, SettingsMainTab } from '@/shared/types';
 import type { UserPreferenceKey } from '@/shared/userSettings';
 
 /** The four buckets the git changes view sorts working-tree files into. */
@@ -151,38 +151,8 @@ export const MCP_PROVIDER_NAMES: Record<McpProvider, string> = {
   antigravity: 'Antigravity',
 };
 
-/** Scopes each provider can install an MCP server into; drives the scope selector and validation. */
-export const MCP_SUPPORTED_SCOPES: Record<McpProvider, McpScope[]> = {
-  claude: ['user', 'project', 'local'],
-  cursor: ['user', 'project'],
-  codex: ['user', 'project'],
-  opencode: ['user', 'project'],
-  zcode: ['user', 'project'],
-  antigravity: ['user', 'project'],
-};
-
-/** Transports each provider can talk to an MCP server over; drives the transport selector and validation. */
-export const MCP_SUPPORTED_TRANSPORTS: Record<McpProvider, McpTransport[]> = {
-  claude: ['stdio', 'http', 'sse'],
-  cursor: ['stdio', 'http'],
-  codex: ['stdio', 'http'],
-  opencode: ['stdio', 'http'],
-  zcode: ['stdio', 'http'],
-  antigravity: ['stdio', 'http', 'sse'],
-};
-
 /** Transports offered when configuring a global (provider-agnostic) MCP server. */
 export const MCP_GLOBAL_SUPPORTED_TRANSPORTS: McpTransport[] = ['stdio', 'http'];
-
-/** Whether a provider honours an MCP server's working-directory setting; the form hides the field when it does not. */
-export const MCP_SUPPORTS_WORKING_DIRECTORY: Record<McpProvider, boolean> = {
-  claude: false,
-  cursor: false,
-  codex: true,
-  opencode: false,
-  zcode: false,
-  antigravity: false,
-};
 
 // ---------------------------
 

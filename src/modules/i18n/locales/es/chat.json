@@ -295,7 +295,6 @@
     "fetchingQuota": "Obteniendo cuota más reciente...",
     "syncingWithProvider": "Sincronizando límites de 5 horas y semanales desde {{provider}}",
     "noQuotaData": "No hay datos de cuota disponibles para esta cuenta",
-    "apiKeyNotice": "Los inicios de sesión con API Key no suelen indicar límites de 5 horas o semanales",
     "refreshFailedNotice": "Fallo al actualizar; mostrando los últimos datos obtenidos con éxito",
     "fetchFailed": "Error al cargar la cuota, inténtalo de nuevo más tarde",
     "currentGroup": "Modelos de la sesión actual",
@@ -308,6 +307,10 @@
     "resetSoon": "Reinicio inminente",
     "resetDaysHours": "Se reinicia en {{days}}d {{hours}}h",
     "resetHoursMinutes": "Se reinicia en {{hours}}h {{minutes}}m",
-    "resetMinutes": "Se reinicia en {{minutes}}m"
+    "resetMinutes": "Se reinicia en {{minutes}}m",
+    "emptyQuotaHint": {
+      "claude": "Los inicios de sesión con API key, Bedrock o Vertex no tienen límites de suscripción de claude.ai",
+      "codex": "Los inicios de sesión con API Key no suelen indicar límites de 5 horas o semanales"
+    }
   }
 }

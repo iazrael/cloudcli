@@ -135,7 +135,8 @@
     "switchToScroll": "Switch to horizontal scroll",
     "switchToWrap": "Switch to text wrap",
     "scroll": "Scroll",
-    "wrap": "Wrap"
+    "wrap": "Wrap",
+    "loadingDiff": "Loading diff…"
   },
   "selection": {
     "selectedOfFiles": "{{selected}} of {{total}} files selected",

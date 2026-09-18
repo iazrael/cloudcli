@@ -55,7 +55,13 @@ const findProjectConfigPath = async (workspacePath: string): Promise<string | nu
 export class ZCodeMcpProvider extends McpProvider {
   constructor() {
     // ZCode supports user and project scopes, with stdio and http transports
-    super('zcode', ['user', 'project'], ['stdio', 'http']);
+    super('zcode', {
+      scopes: ['user', 'project'],
+      transports: ['stdio', 'http'],
+      // `cwd` is read back when normalizing, never written.
+      supportsWorkingDirectory: false,
+      supportsEnvVarIndirection: false,
+    });
   }
 
   /**

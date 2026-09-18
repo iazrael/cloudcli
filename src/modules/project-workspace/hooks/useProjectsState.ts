@@ -489,7 +489,10 @@ export function useProjectsState({
     }
 
     const now = new Date().toISOString();
-    const optimisticSession: ProjectSession = {
+    // Left uninferred rather than annotated `ProjectSession`: the wire shape
+    // requires a `summary` string, and the annotation would widen the literal
+    // back to the optional field and lose that.
+    const optimisticSession = {
       id: newSessionId,
       summary: summary ?? '',
       messageCount: 0,
@@ -501,13 +504,14 @@ export function useProjectsState({
       __projectId: project.projectId,
     };
     // A purely local record that reuses the wire shape to feed
-    // `upsertSessionIntoProject`; it is never dispatched onto the socket. It
-    // deliberately carries no `providerSessionId` — the row was created moments
-    // ago by `POST /api/providers/sessions` and the provider has not reported
-    // an id yet, so there is nothing truthful to put there.
+    // `upsertSessionIntoProject`; it is never dispatched onto the socket. The
+    // row was created moments ago by `POST /api/providers/sessions` and the
+    // provider has not reported an id yet, which the wire shape spells `null`
+    // rather than an absent field.
     const upsert: SessionUpsertedEvent = {
       kind: 'session_upserted',
       sessionId: newSessionId,
+      providerSessionId: null,
       provider,
       session: optimisticSession,
       project: {
@@ -697,13 +701,11 @@ export function useProjectsState({
         eventSessionId
         && eventSessionId !== viewedSessionId
         && event.kind !== 'chat_subscribed'
-        && event.kind !== 'loading_progress'
         && event.kind !== 'session_upserted'
         && event.kind !== 'status'
         && event.kind !== 'stream_end'
         && event.kind !== 'permission_resolved'
         && event.kind !== 'permission_cancelled'
-        && event.kind !== 'websocket_reconnected'
       ) {
         markSessionAttention(eventSessionId);
       }

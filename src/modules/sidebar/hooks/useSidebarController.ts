@@ -714,11 +714,7 @@ export function useSidebarController({
 
       return getAllSessions(project).some((session) => {
         const sessionSummary =
-          typeof session.summary === 'string' && session.summary.trim().length > 0
-            ? session.summary
-            : typeof session.name === 'string'
-              ? session.name
-              : '';
+          typeof session.summary === 'string' ? session.summary : '';
 
         return [
           sessionSummary,

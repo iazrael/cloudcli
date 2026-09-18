@@ -98,35 +98,40 @@ export default function FileChangeItem({
         </div>
       </div>
 
-      <div
-        className={`duration-400 overflow-hidden bg-muted/50 transition-all ease-in-out ${isExpanded && diff ? 'max-h-[600px] translate-y-0 opacity-100' : 'max-h-0 -translate-y-1 opacity-0'
-          }`}
-      >
-        <div className="flex items-center justify-between border-b border-border p-2">
-          <span className="flex items-center gap-2">
-            <span className={`inline-flex h-5 w-5 items-center justify-center rounded border text-[10px] font-bold ${badgeClass}`}>
-              {status}
+      {/* Mounted only while expanded: keeping every collapsed diff in the DOM
+          (one node per line) crashes mobile browsers on large working trees. */}
+      {isExpanded && (
+        <div className="overflow-hidden border-t border-border bg-muted/50">
+          <div className="flex items-center justify-between border-b border-border p-2">
+            <span className="flex items-center gap-2">
+              <span className={`inline-flex h-5 w-5 items-center justify-center rounded border text-[10px] font-bold ${badgeClass}`}>
+                {status}
+              </span>
+              <span className="text-sm font-medium text-foreground">{statusLabel}</span>
             </span>
-            <span className="text-sm font-medium text-foreground">{statusLabel}</span>
-          </span>
-          {isMobile && (
-            <button
-              onClick={(event) => {
-                event.stopPropagation();
-                onToggleWrapText();
-              }}
-              className="text-sm text-muted-foreground transition-colors hover:text-foreground"
-              title={wrapText ? t('git:item.switchToScroll') : t('git:item.switchToWrap')}
-            >
-              {wrapText ? t('git:item.scroll') : t('git:item.wrap')}
-            </button>
-          )}
-        </div>
+            {isMobile && (
+              <button
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onToggleWrapText();
+                }}
+                className="text-sm text-muted-foreground transition-colors hover:text-foreground"
+                title={wrapText ? t('git:item.switchToScroll') : t('git:item.switchToWrap')}
+              >
+                {wrapText ? t('git:item.scroll') : t('git:item.wrap')}
+              </button>
+            )}
+          </div>
 
-        <div className="max-h-96 overflow-y-auto">
-          {diff && <GitDiffViewer diff={diff} isMobile={isMobile} wrapText={wrapText} />}
+          <div className="max-h-96 overflow-y-auto">
+            {diff ? (
+              <GitDiffViewer diff={diff} isMobile={isMobile} wrapText={wrapText} />
+            ) : (
+              <div className="p-4 text-center text-sm text-muted-foreground">{t('git:item.loadingDiff')}</div>
+            )}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

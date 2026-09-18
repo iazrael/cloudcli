@@ -226,6 +226,48 @@ function extractCodexTextContent(content: unknown): string {
 }
 
 /**
+ * The command a live `command_execution` item ran, as the persisted transcript
+ * spells it.
+ *
+ * Codex reports the shell invocation — `["/bin/zsh", "-lc", "<cmd>"]` — while
+ * the rollout records the `cmd` argument the script passed. Storing the
+ * invocation verbatim leaves the two transports describing one call
+ * differently, which is enough to stop the client pairing them and render the
+ * card twice. A plain string is already the command and passes through.
+ */
+function readCodexCommandLine(value: unknown): string {
+  // Two serializations reach this: the SDK reports a string
+  // (`/bin/zsh -lc ls`), the rollout's own event format an array
+  // (`["/bin/zsh", "-lc", "ls"]`). Both wrap the command in a shell
+  // invocation, and the transcript records only what was inside it, so the
+  // wrapper comes off either way — otherwise the live card and the persisted
+  // one describe the same call differently and both render.
+  if (Array.isArray(value)) {
+    const parts = value.filter((part): part is string => typeof part === 'string');
+    const shellFlagIndex = parts.findIndex((part) => part === '-lc' || part === '-c');
+    return shellFlagIndex >= 0 && shellFlagIndex + 1 < parts.length
+      ? parts.slice(shellFlagIndex + 1).join(' ')
+      : parts.join(' ');
+  }
+
+  if (typeof value !== 'string') {
+    return '';
+  }
+
+  // `<shell> -lc <command>`: everything after the flag is the command, which
+  // may itself contain quotes and spaces, so the split is on the flag alone.
+  const wrapped = value.match(/^\S*(?:sh|bash|zsh)\s+-l?c\s+([\s\S]+)$/);
+  if (!wrapped) {
+    return value;
+  }
+  const command = wrapped[1].trim();
+  // The shell payload is usually quoted as one argument; unwrap a balanced
+  // pair rather than stripping quotes that belong to the command itself.
+  const quoted = command.match(/^(['"])([\s\S]*)\1$/);
+  return quoted ? quoted[2] : command;
+}
+
+/**
  * Reads the markdown out of Codex's `<proposed_plan>` envelope.
  *
  * Codex delivers a plan as a wrapped assistant message while Claude delivers
@@ -1289,6 +1331,12 @@ async function getCodexSessionMessages(sessionId: string): Promise<CodexHistoryR
   /** Exec calls that own a shell row, so their output can be routed back. */
   const shellCallMessages = new Map<string, AnyRecord>();
   /**
+   * Rows split out of one exec script beside the row that kept the call id.
+   * The call reports a single outcome for the whole script, so they inherit it
+   * rather than claiming a success nobody verified.
+   */
+  const splitShellFollowers = new Map<string, string[]>();
+  /**
    * File rows produced by each patch call, so the authoritative
    * `patch_apply_end` diffs can replace what was reconstructed from the call
    * input, and so every row gets exactly one result.
@@ -1311,6 +1359,38 @@ async function getCodexSessionMessages(sessionId: string): Promise<CodexHistoryR
 
   const subagentsByCallId = new Map<string, CodexSubagentRecord>();
   const subagentsByPath = new Map<string, CodexSubagentRecord>();
+
+  /**
+   * Records what one spawned-agent lifecycle event says about its agent.
+   *
+   * Codex has reported these under two shapes — a top-level
+   * `sub_agent_activity` payload, and a `SubAgentActivity` item inside
+   * `item_completed` — so both are routed here rather than each growing its
+   * own copy of the bookkeeping. `agent_thread_id` is the important part: it
+   * names the sibling rollout holding the agent's own transcript.
+   */
+  const applySubagentActivity = (activity: {
+    eventId?: string;
+    kind?: string;
+    agentPath?: string;
+    agentThreadId?: string;
+  }): void => {
+    const byCallId = activity.eventId ? subagentsByCallId.get(activity.eventId) : undefined;
+    const byPath = activity.agentPath ? subagentsByPath.get(activity.agentPath) : undefined;
+    const byThread = activity.agentThreadId
+      ? [...subagentsByCallId.values()].find((record) => record.agentThreadId === activity.agentThreadId)
+      : undefined;
+    const subagent = byCallId ?? byPath ?? byThread;
+    if (!subagent) {
+      return;
+    }
+
+    subagent.agentThreadId = activity.agentThreadId ?? subagent.agentThreadId;
+    if (activity.agentPath) {
+      subagent.agentPath = activity.agentPath;
+      subagentsByPath.set(activity.agentPath, subagent);
+    }
+  };
   const turns = createCodexTurnTracker();
   /** Turns whose prompt already carries the anchor, so only the first does. */
   const anchoredTurnIds = new Set<string>();
@@ -1325,6 +1405,22 @@ async function getCodexSessionMessages(sessionId: string): Promise<CodexHistoryR
     }
     completedExecCalls.add(callId);
     messages.push({ type: 'tool_result', timestamp, toolCallId: callId, output, isError });
+
+    // A script's other commands share the call's single outcome. The output
+    // itself belongs to the row the call addresses, so theirs says where to
+    // find it instead of repeating it.
+    for (const followerId of splitShellFollowers.get(callId) ?? []) {
+      messages.push({
+        type: 'tool_result',
+        timestamp,
+        toolCallId: followerId,
+        output: isError
+          ? 'This command ran as part of a script that failed; the output is on the first command of the script.'
+          : 'Output is on the first command of the script.',
+        isError,
+      });
+    }
+    splitShellFollowers.delete(callId);
   };
 
   for await (const line of rl) {
@@ -1361,17 +1457,12 @@ async function getCodexSessionMessages(sessionId: string): Promise<CodexHistoryR
       }
 
       if (payload.type === 'sub_agent_activity' && payload.kind === 'started') {
-        const eventId = readNonEmptyString(payload.event_id);
-        const agentPath = readNonEmptyString(payload.agent_path);
-        const agentThreadId = readNonEmptyString(payload.agent_thread_id);
-        const subagent = eventId ? subagentsByCallId.get(eventId) : undefined;
-        if (subagent) {
-          subagent.agentThreadId = agentThreadId ?? subagent.agentThreadId;
-          if (agentPath) {
-            subagent.agentPath = agentPath;
-            subagentsByPath.set(agentPath, subagent);
-          }
-        }
+        applySubagentActivity({
+          eventId: readNonEmptyString(payload.event_id),
+          kind: 'started',
+          agentPath: readNonEmptyString(payload.agent_path),
+          agentThreadId: readNonEmptyString(payload.agent_thread_id),
+        });
         continue;
       }
 
@@ -1458,6 +1549,19 @@ async function getCodexSessionMessages(sessionId: string): Promise<CodexHistoryR
       // leak guard the old `kind` check provided holds by construction.
       if (payload.type === 'item_completed') {
         const completedItem = readObjectRecord(payload.item);
+        // Current Codex reports spawned-agent lifecycle here rather than as a
+        // top-level `sub_agent_activity` payload. The thread id it carries is
+        // the only way to find the agent's own rollout, so a card whose id
+        // never arrives renders with an empty timeline.
+        if (completedItem && completedItem.type === 'SubAgentActivity') {
+          applySubagentActivity({
+            eventId: readNonEmptyString(completedItem.id),
+            kind: readNonEmptyString(completedItem.kind),
+            agentPath: readNonEmptyString(completedItem.agent_path),
+            agentThreadId: readNonEmptyString(completedItem.agent_thread_id),
+          });
+          continue;
+        }
         if (completedItem && completedItem.type === 'UserMessage') {
           const content = extractCodexTextContent(completedItem.content);
           if (content.trim()) {
@@ -1719,20 +1823,38 @@ async function getCodexSessionMessages(sessionId: string): Promise<CodexHistoryR
           return `${callId}~${messages.length}`;
         };
 
-        if (shellCommands.length > 0) {
+        // One row per command, matching both the live stream (which emits a
+        // `command_execution` item each) and this adapter's own subagent path.
+        // Joining them produced a card whose text matched nothing live, so the
+        // two transports rendered the call twice over.
+        shellCommands.forEach((operation, index) => {
           const shellMessage: AnyRecord = {
             type: 'tool_use',
             timestamp,
             toolName: 'Bash',
             toolInput: JSON.stringify({
-              command: shellCommands.map((operation) => operation.command).join('\n'),
-              description: shellCommands.find((operation) => operation.justification)?.justification,
+              command: operation.command,
+              description: operation.justification,
             }),
             toolCallId: nextRowId(),
           };
           messages.push(shellMessage);
-          shellCallMessages.set(callId, shellMessage);
-        }
+          if (index === 0) {
+            // The call has exactly one output and it lands on the row that
+            // kept the call id.
+            shellCallMessages.set(callId, shellMessage);
+          } else {
+            // The rest cannot be handed that output, but they must still be
+            // settled — a tool row with no result renders as running forever,
+            // and the call has long finished. They are settled when the real
+            // result arrives, so they can carry its outcome: reporting an
+            // unqualified success on a command that actually failed is worse
+            // than the duplicate card this split exists to prevent.
+            const followers = splitShellFollowers.get(callId) ?? [];
+            followers.push(String(shellMessage.toolCallId));
+            splitShellFollowers.set(callId, followers);
+          }
+        });
 
         for (const search of searches) {
           messages.push({
@@ -2122,6 +2244,24 @@ export class CodexSessionsProvider implements IProviderSessions {
       if (!content.trim()) {
         return [];
       }
+      // Same unification the live and session-reader paths apply: a proposed
+      // plan is a plan card, not an assistant paragraph that happens to open
+      // with a tag. Leaving it to the client is what put a provider-specific
+      // branch in a renderer shared by every provider.
+      const proposedPlan = readCodexProposedPlan(content);
+      if (proposedPlan) {
+        return [createNormalizedMessage({
+          id: baseId,
+          sessionId,
+          timestamp: ts,
+          provider: PROVIDER,
+          kind: 'tool_use',
+          toolName: 'ExitPlanMode',
+          toolInput: { plan: proposedPlan },
+          toolId: baseId,
+          memoryCitations: raw.memoryCitations,
+        })];
+      }
       return [createNormalizedMessage({
         id: baseId,
         sessionId,
@@ -2131,6 +2271,13 @@ export class CodexSessionsProvider implements IProviderSessions {
         role: 'assistant',
         content,
         memoryCitations: raw.memoryCitations,
+        // Deliberately unkeyed. The two transports do not share a row
+        // identity: the SDK stream numbers items per turn (`item_0`,
+        // `item_1`), while the rollout records the model's own response id
+        // (`msg_…`). Keying each side with its own value is worse than having
+        // no key at all — reconciliation takes the identity branch, finds no
+        // match, calls the rows distinct, and renders the reply twice with no
+        // fallback. Codex assistant text reconciles causally instead.
       })];
     }
 
@@ -2235,7 +2382,7 @@ export class CodexSessionsProvider implements IProviderSessions {
             provider: PROVIDER,
             kind: 'tool_use',
             toolName: 'Bash',
-            toolInput: { command: raw.command },
+            toolInput: { command: readCodexCommandLine(raw.command) },
             toolId: itemId,
             status: raw.status,
           });
@@ -2261,17 +2408,34 @@ export class CodexSessionsProvider implements IProviderSessions {
         case 'file_change': {
           // One row per file so each change gets the same diff view as an Edit.
           const changes = Array.isArray(raw.changes) ? raw.changes : [];
-          return changes.map((change: AnyRecord, index: number) => createNormalizedMessage({
-            id: `${itemId}_${index}`,
-            sessionId,
-            timestamp: ts,
-            provider: PROVIDER,
-            kind: 'tool_use',
-            toolName: change?.kind === 'add' ? 'Write' : 'Edit',
-            toolInput: { file_path: change?.path, old_string: '', new_string: '' },
-            toolId: `${itemId}_${index}`,
-            status: raw.status,
-          }));
+          const rows: NormalizedMessage[] = [];
+          for (const [index, change] of changes.entries()) {
+            const toolCallId = `${itemId}_${index}`;
+            rows.push(createNormalizedMessage({
+              id: toolCallId,
+              sessionId,
+              timestamp: ts,
+              provider: PROVIDER,
+              kind: 'tool_use',
+              toolName: change?.kind === 'add' ? 'Write' : 'Edit',
+              toolInput: { file_path: change?.path, old_string: '', new_string: '' },
+              toolId: toolCallId,
+              status: raw.status,
+            }));
+            if (raw.status !== 'in_progress') {
+              rows.push(createNormalizedMessage({
+                id: `${toolCallId}_result`,
+                sessionId,
+                timestamp: ts,
+                provider: PROVIDER,
+                kind: 'tool_result',
+                toolId: toolCallId,
+                content: raw.status === 'failed' ? 'Failed to apply file changes' : 'File changes applied',
+                isError: raw.status === 'failed',
+              }));
+            }
+          }
+          return rows;
         }
         case 'mcp_tool_call': {
           const toolName = raw.server ? `mcp__${String(raw.server)}__${String(raw.tool ?? 'tool')}` : String(raw.tool || 'MCP');

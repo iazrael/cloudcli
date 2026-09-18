@@ -137,8 +137,10 @@ test('a finalized row is recognised as echo even when older user turns are pagin
   assert.equal(isAssistantTextEchoedInSameTurnOnServer(realtime[3], server, realtime), true);
 });
 
-test('a finalized row is recognised as echo when all user turns are paginated away by tool calls', () => {
-  // Server only carries tool calls and the assistant reply (user message was 40 tool calls ago)
+test('a finalized row is an echo when every user turn was paginated away', () => {
+  // A long tool-heavy turn pushed the prompt off the tail page, so the server
+  // slice holds no user row at all. Everything on it therefore belongs to one
+  // turn — this one — and the reply is already there.
   const server = [
     msg('tool_use', undefined, '', '2026-01-01T00:00:20Z'),
     msg('text', 'assistant', 'long detailed summary of accomplished work', '2026-01-01T00:00:25Z'),
@@ -179,12 +181,20 @@ test('identical assistant replies across different user turns are not treated as
   assert.equal(isAssistantTextEchoedInSameTurnOnServer(realtime[0], server, realtime), false);
 });
 
-test('a server clock ahead of the client still recognises the echo via the text scan', () => {
-  // The finalized row anchors to the client clock while the transcript stamps
-  // with the engine clock; when the engine runs ahead, both the preceding-user
-  // scan and the turn-ordinal count break out empty and the ordinal lands on
-  // an older turn. A found-but-unmatched turn used to return false instead of
-  // falling through to the content-level scan.
+/**
+ * This case used to assert the row was retained.
+ *
+ * It was written when the turn lookup went through the clock: with the engine
+ * an hour ahead, the scan broke out empty and the ordinal landed on an older
+ * turn, so the code could not tell which turn owned the row and kept it. That
+ * is the duplicate-reply symptom — the same answer rendered twice, once live
+ * and once from history.
+ *
+ * Arrival order removes the uncertainty. Nothing sits above this row, so it
+ * belongs to the newest persisted turn, and that turn already carries this
+ * exact text. It is the same row, and one of the two has to go.
+ */
+test('an unanchored live row is an echo of the newest turn that already carries it', () => {
   const server = [
     msg('text', 'user', 'first question', '2026-01-01T01:00:00Z'),
     msg('text', 'assistant', 'older reply', '2026-01-01T01:00:01Z'),
@@ -216,3 +226,53 @@ test('anchored turns match accurately using transcriptAnchorId', () => {
   assert.equal(isAssistantTextEchoedInSameTurnOnServer(realtime[0], server, realtime), true);
 });
 
+/**
+ * Which turn a live row belongs to is a causal question, not a clock one.
+ *
+ * The turn lookup used to merge both sources and sort them on wall clock, then
+ * take the last user row at or before the live row's timestamp. Those
+ * timestamps come from two machines — the live row is stamped by the browser,
+ * the persisted rows by the engine — so a browser running behind stops the
+ * walk early and lands on an older turn. When that older turn happens to
+ * contain the same words, a real reply is judged an echo and disappears.
+ *
+ * A tab that did not send the message has no optimistic user row to sit above
+ * the live row, which is exactly when the clock was the only thing deciding.
+ * With nothing above it, the live row belongs to the newest persisted turn.
+ */
+test('a live reply is not judged an echo of an older turn when the browser clock lags', () => {
+  const server = [
+    msg('text', 'user', 'first question', '2026-01-01T00:00:00Z'),
+    msg('text', 'assistant', 'Shared answer.', '2026-01-01T00:00:01Z'),
+    msg('text', 'user', 'second question', '2026-01-01T00:00:20Z'),
+  ];
+  // The reply to "second question", stamped by a browser eight seconds behind
+  // the engine, and observed by a tab that never created an optimistic row.
+  const realtime = [
+    msg('text', 'assistant', 'Shared answer.', '2026-01-01T00:00:12Z'),
+  ];
+
+  assert.equal(
+    isAssistantTextEchoedInSameTurnOnServer(realtime[0], server, realtime),
+    false,
+    'the newest turn has nothing persisted yet, so this reply is new',
+  );
+});
+
+/**
+ * The same shape with the turn genuinely already persisted still dedupes: the
+ * fix must not turn every live row into a keeper.
+ */
+test('a live reply IS an echo when the newest persisted turn already carries it', () => {
+  const server = [
+    msg('text', 'user', 'first question', '2026-01-01T00:00:00Z'),
+    msg('text', 'assistant', 'An older answer.', '2026-01-01T00:00:01Z'),
+    msg('text', 'user', 'second question', '2026-01-01T00:00:20Z'),
+    msg('text', 'assistant', 'Shared answer.', '2026-01-01T00:00:21Z'),
+  ];
+  const realtime = [
+    msg('text', 'assistant', 'Shared answer.', '2026-01-01T00:00:12Z'),
+  ];
+
+  assert.equal(isAssistantTextEchoedInSameTurnOnServer(realtime[0], server, realtime), true);
+});

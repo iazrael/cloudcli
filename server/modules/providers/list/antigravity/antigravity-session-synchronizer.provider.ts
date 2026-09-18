@@ -3,6 +3,7 @@ import fsSync from 'node:fs';
 import Database from 'better-sqlite3';
 
 import { sessionsDb } from '@/modules/database/index.js';
+import type { ProviderSessionFileSynchronizationDelta } from '@/shared/types.js';
 import {
   parseAntigravityWorkspacePath,
   readOptionalString,
@@ -76,6 +77,16 @@ export class AntigravitySessionSynchronizer extends SqliteSessionSynchronizer<An
   async synchronizeFile(filePath: string): Promise<string | null> {
     this.archiveIndexedSubagentSessions();
     return super.synchronizeFile(filePath);
+  }
+
+  /**
+   * Consumer: session-synchronizer service uses this lifecycle seam for
+   * watcher deltas. The ordinary synchronizer interface stays compatible with
+   * providers whose filesystem scans can only report one updated id.
+   */
+  async synchronizeFileWithLifecycle(filePath: string): Promise<ProviderSessionFileSynchronizationDelta> {
+    const removedSessionIds = this.archiveIndexedSubagentSessions();
+    return { updatedSessionId: await super.synchronizeFile(filePath), removedSessionIds };
   }
 
   protected selectSessionRows(
@@ -167,10 +178,10 @@ export class AntigravitySessionSynchronizer extends SqliteSessionSynchronizer<An
    * metadata or transcript. The source database owns hierarchy, so this runs
    * before every scan instead of persisting a parallel hierarchy model.
    */
-  private archiveIndexedSubagentSessions(): void {
+  private archiveIndexedSubagentSessions(): string[] {
     const dbPath = this.getDatabasePath();
     if (!fsSync.existsSync(dbPath)) {
-      return;
+      return [];
     }
 
     let db: Database.Database | null = null;
@@ -178,7 +189,7 @@ export class AntigravitySessionSynchronizer extends SqliteSessionSynchronizer<An
       db = new Database(dbPath, { readonly: true, fileMustExist: true });
       const hierarchy = readConversationSummaryHierarchy(db);
       if (!hierarchy.hasParentConversationId && !hierarchy.hasNestingDepth) {
-        return;
+        return [];
       }
 
       const parentColumn = hierarchy.hasParentConversationId
@@ -190,24 +201,32 @@ export class AntigravitySessionSynchronizer extends SqliteSessionSynchronizer<An
       const childRows = db.prepare(`
         SELECT conversation_id AS id
         FROM conversation_summaries
-        WHERE ${parentColumn} <> '' OR ${nestingColumn} <> 0
+        WHERE TRIM(${parentColumn}) <> '' OR ${nestingColumn} <> 0
       `).all() as Array<{ id: string }>;
 
       const activeAntigravitySessionIds = new Map(
         sessionsDb.getAllSessions()
-          .filter((session) => session.provider === 'antigravity' && Boolean(session.provider_session_id))
+          .filter((session) => (
+            session.provider === 'antigravity'
+            && !session.isArchived
+            && Boolean(session.provider_session_id)
+          ))
           .map((session) => [session.provider_session_id as string, session.session_id] as const),
       );
+      const removedSessionIds: string[] = [];
 
       for (const childRow of childRows) {
         const childSessionId = activeAntigravitySessionIds.get(childRow.id);
         if (childSessionId) {
           sessionsDb.updateSessionIsArchived(childSessionId, true);
+          removedSessionIds.push(childSessionId);
         }
       }
+      return removedSessionIds;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.warn(`${this.logTag} Failed to archive child-agent sessions:`, message);
+      return [];
     } finally {
       db?.close();
     }

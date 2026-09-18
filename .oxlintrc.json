@@ -109,7 +109,8 @@
           "server/shared/frontmatter.ts",
           "server/shared/claude-cli-path.ts",
           "server/shared/image-attachments.ts",
-          "server/shared/message-unification.ts"
+          "server/shared/message-unification.ts",
+          "server/shared/normalized-message-contract.ts"
         ],
         "mode": "file"
       },
@@ -135,6 +136,7 @@
           "src/shared/uiPreferences.ts",
           "src/shared/selectedProvider.ts",
           "src/shared/providerCatalogFallback.ts",
+            "src/shared/mcpCapabilitiesFallback.ts",
           "src/shared/authToken.ts",
           "src/shared/voiceConfig.ts",
           "src/shared/codeEditorSettings.ts",

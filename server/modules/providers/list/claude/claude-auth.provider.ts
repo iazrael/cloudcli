@@ -5,8 +5,10 @@ import path from 'node:path';
 import { createCliInstallationProbe } from '@/modules/providers/shared/installation/cli-installation-probe.js';
 import { resolveClaudeCodeExecutablePath } from '@/shared/claude-cli-path.js';
 import type { IProviderAuth } from '@/shared/interfaces.js';
-import type { ProviderAuthStatus } from '@/shared/types.js';
+import type { ProviderAuthStatus, ProviderQuotaData } from '@/shared/types.js';
 import { readObjectRecord, readOptionalString } from '@/shared/utils.js';
+
+import { fetchClaudeQuota } from './claude-quota.provider.js';
 
 type ClaudeCredentialsStatus = {
   authenticated: boolean;
@@ -58,6 +60,14 @@ export class ClaudeProviderAuth implements IProviderAuth {
       method: credentials.method,
       error: credentials.authenticated ? undefined : credentials.error || 'Not authenticated',
     };
+  }
+
+  /**
+   * Reads the claude.ai subscription rate-limit windows (5-hour and weekly).
+   * Consumer: the provider token-usage service (GET /providers/quota).
+   */
+  async getQuota(options?: { forceRefresh?: boolean }): Promise<ProviderQuotaData | null> {
+    return fetchClaudeQuota(options);
   }
 
   /**

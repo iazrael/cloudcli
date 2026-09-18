@@ -197,16 +197,16 @@ export const playChatCompletionSound = (options = {}): Promise<void> => playNoti
 const DEFAULT_PAGE_TITLE = 'CloudCLI UI';
 
 /**
- * Resolves the human-readable label for a session, accounting for Cursor sessions that
- * carry a `name` instead of the summary the other providers return.
+ * Resolves the human-readable label for a session.
+ *
+ * Every provider's session row carries its label in `summary` — the
+ * synchronizers write whatever they derive (Cursor: the transcript's first
+ * user line) into `custom_name`, and the row surfaces that as `summary`. So
+ * there is nothing here to tell providers apart, and the Cursor branch that
+ * used to read a `name` field no endpoint sends only hid the real label.
  */
-export const getSessionTitle = (session: ProjectSession): string => {
-  if (session.__provider === 'cursor') {
-    return (session.name as string) || 'Untitled Session';
-  }
-
-  return (session.summary as string) || 'New Session';
-};
+export const getSessionTitle = (session: ProjectSession): string =>
+  (session.summary as string) || 'New Session';
 
 /**
  * Builds the browser tab title for the current selection: the session title when one is

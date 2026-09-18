@@ -268,7 +268,6 @@
     "fetchingQuota": "En güncel kota bilgisi alınıyor...",
     "syncingWithProvider": "{{provider}} üzerinden 5 saatlik ve haftalık limitler eşitleniyor",
     "noQuotaData": "Bu hesap için gösterilecek kota verisi yok",
-    "apiKeyNotice": "API Anahtarı ile girişler genellikle 5 saatlik veya haftalık limitleri bildirmez",
     "refreshFailedNotice": "Yenileme başarısız; en son başarıyla alınan kota verisi gösteriliyor",
     "fetchFailed": "Kota bilgisi yüklenemedi, lütfen daha sonra tekrar deneyin",
     "currentGroup": "Geçerli Oturum Modelleri",
@@ -281,6 +280,10 @@
     "resetSoon": "Yakında sıfırlanacak",
     "resetDaysHours": "{{days}}g {{hours}}sa sonra sıfırlanır",
     "resetHoursMinutes": "{{hours}}sa {{minutes}}dk sonra sıfırlanır",
-    "resetMinutes": "{{minutes}}dk sonra sıfırlanır"
+    "resetMinutes": "{{minutes}}dk sonra sıfırlanır",
+    "emptyQuotaHint": {
+      "claude": "API anahtarı, Bedrock ve Vertex girişlerinde claude.ai abonelik limitleri bulunmaz",
+      "codex": "API Anahtarı ile girişler genellikle 5 saatlik veya haftalık limitleri bildirmez"
+    }
   }
 }

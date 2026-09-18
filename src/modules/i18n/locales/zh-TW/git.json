@@ -135,7 +135,8 @@
     "switchToScroll": "切換為橫向捲動",
     "switchToWrap": "切換為自動換行",
     "scroll": "捲動",
-    "wrap": "換行"
+    "wrap": "換行",
+    "loadingDiff": "正在載入差異…"
   },
   "selection": {
     "selectedOfFiles": "已選 {{total}} 個檔案中的 {{selected}} 個",

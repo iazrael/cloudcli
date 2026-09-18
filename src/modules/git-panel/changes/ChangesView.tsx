@@ -26,6 +26,8 @@ type ChangesViewProps = {
   onCommitChanges: (message: string, files: string[]) => Promise<boolean>;
   onRequestConfirmation: (request: ConfirmationRequest) => void;
   onExpandedFilesChange: (hasExpandedFiles: boolean) => void;
+  /** Loads one file's diff; called only when its row is expanded. */
+  onFetchFileDiff: (filePath: string) => Promise<void>;
 };
 
 /** Rendered by GitPanel for the Changes tab, listing working-tree changes and hosting the commit composer. */
@@ -47,6 +49,7 @@ export default function ChangesView({
   onCommitChanges,
   onRequestConfirmation,
   onExpandedFilesChange,
+  onFetchFileDiff,
 }: ChangesViewProps) {
   const { t } = useTranslation();
   const [expandedFiles, setExpandedFiles] = useState<Set<string>>(new Set());
@@ -89,6 +92,14 @@ export default function ChangesView({
   useEffect(() => {
     onExpandedFilesChange(hasExpandedFiles);
   }, [hasExpandedFiles, onExpandedFilesChange]);
+
+  // Diffs load lazily, one expanded row at a time. Re-running on `gitStatus`
+  // refreshes the diff of rows that are still open after a stage/commit.
+  useEffect(() => {
+    expandedFiles.forEach((filePath) => {
+      void onFetchFileDiff(filePath);
+    });
+  }, [expandedFiles, gitStatus, onFetchFileDiff]);
 
   useEffect(() => {
     return () => {

@@ -15,7 +15,12 @@ import {
 
 export class ClaudeMcpProvider extends McpProvider {
   constructor() {
-    super('claude', ['user', 'local', 'project'], ['stdio', 'http', 'sse']);
+    super('claude', {
+      scopes: ['user', 'local', 'project'],
+      transports: ['stdio', 'http', 'sse'],
+      supportsWorkingDirectory: false,
+      supportsEnvVarIndirection: false,
+    });
   }
 
   protected async readScopedServers(scope: McpScope, workspacePath: string): Promise<Record<string, unknown>> {

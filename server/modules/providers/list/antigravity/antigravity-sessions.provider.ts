@@ -44,8 +44,37 @@ import {
   getAntigravitySummariesDbPath,
   getAntigravityTranscriptCandidates,
 } from './antigravity-data-root.js';
+import { readCanonicalAntigravityTranscript } from './antigravity-transcript.provider.js';
 
 const PROVIDER = 'antigravity';
+
+/**
+ * Builds the identity shared by Antigravity's live assistant delta and its
+ * eventual PLANNER_RESPONSE transcript row. Missing native step indexes stay
+ * unidentified so clients can fall back to their legacy reconciliation rules.
+ */
+/**
+ * The id both transports must give one tool call.
+ *
+ * Live reports a tool at its own step index; the transcript declares it on the
+ * planner entry one step earlier, with its position in that entry's
+ * `tool_calls`. `declaringStepIndex` is that planner step and is offset here,
+ * while the live side passes the execution step it already has. An index the
+ * engine did not supply falls back to a per-process value, which cannot pair —
+ * that is the honest outcome, better than two rows sharing a made-up id.
+ */
+function buildAntigravityToolId(stepIndex: number | undefined, positionInEntry: number | null): string {
+  if (stepIndex === undefined) {
+    return `tool_unindexed_${Date.now()}`;
+  }
+  return positionInEntry === null
+    ? `tool_${stepIndex}`
+    : `tool_${stepIndex + 1 + positionInEntry}`;
+}
+
+function buildAntigravityAssistantRowKey(stepIndex: number | undefined): string | undefined {
+  return stepIndex === undefined ? undefined : `assistant-step:${stepIndex}`;
+}
 
 /**
  * Finds the transcript.jsonl file for a session across possible brain directories.
@@ -249,6 +278,16 @@ export function cleanAntigravityMessageContent(
 }
 
 /**
+ * Recognizes the header Antigravity's tool runner prepends to every tool
+ * result (`Created At:` / `Completed At:`, optionally followed by a file or
+ * command banner). Results that never find their call must not reach the UI as
+ * assistant prose, so this guards the last-resort text fallback.
+ */
+function looksLikeToolResultPayload(text: string): boolean {
+  return /^Created At:\s*\S+[\s\S]*?^Completed At:\s*\S+/m.test(text);
+}
+
+/**
  * Strips Antigravity engine internal wrapper blocks completely (used for user messages).
  */
 export function stripSystemMessageBlocks(text: string): string {
@@ -292,7 +331,7 @@ export class AntigravitySessionsProvider implements IProviderSessions {
       messages.push(createNormalizedMessage({
         kind: 'session_created',
         sessionId: conversationId,
-        newSessionId: conversationId,
+        newSessionId: conversationId ?? undefined,
         provider: PROVIDER,
         content: `Session initialized: ${conversationId}`,
       }));
@@ -318,6 +357,7 @@ export class AntigravitySessionsProvider implements IProviderSessions {
           sessionId,
           provider: PROVIDER,
           sequence: stepIndex,
+          providerRowKey: buildAntigravityAssistantRowKey(stepIndex),
         }));
       }
 
@@ -326,7 +366,7 @@ export class AntigravitySessionsProvider implements IProviderSessions {
         const toolName = readOptionalString(step.tool_name) || 'tool';
         const toolInfo = readObjectRecord(step.tool_info);
         const parameters = normalizeAntigravityToolArgs(toolInfo?.parameters ?? {});
-        const toolId = `tool_${stepIndex ?? Date.now()}`;
+        const toolId = buildAntigravityToolId(stepIndex, null);
 
         messages.push(createNormalizedMessage({
           id: generateMessageId(PROVIDER),
@@ -343,7 +383,7 @@ export class AntigravitySessionsProvider implements IProviderSessions {
       // Tool result completion or error
       if (stepType === 'tool' && (state === 'DONE' || state === 'ERROR')) {
         const toolInfo = readObjectRecord(step.tool_info);
-        const toolId = `tool_${stepIndex ?? Date.now()}`;
+        const toolId = buildAntigravityToolId(stepIndex, null);
         const output = readOptionalString(toolInfo?.output) ?? '';
         const isError = state === 'ERROR';
 
@@ -404,21 +444,18 @@ export class AntigravitySessionsProvider implements IProviderSessions {
     }
 
     try {
-      const content = await readFile(transcriptPath, 'utf8');
-      const lines = content.split(/\r?\n/);
+      const canonicalRows = await readCanonicalAntigravityTranscript(providerSessionId);
       const normalizedMessages: NormalizedMessage[] = [];
 
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i]?.trim();
-        if (!line) continue;
-
+      for (let i = 0; i < canonicalRows.length; i++) {
         try {
-          const entry = JSON.parse(line) as AnyRecord;
+          const { entry, contentCompleteness } = canonicalRows[i];
           const type = readOptionalString(entry.type);
           const source = readOptionalString(entry.source);
           const rawContent = readOptionalString(entry.content) ?? '';
           const createdAt = readOptionalString(entry.created_at) ?? new Date().toISOString();
-          const stepIndex = typeof entry.step_index === 'number' ? entry.step_index : i;
+          const nativeStepIndex = typeof entry.step_index === 'number' ? entry.step_index : undefined;
+          const stepIndex = nativeStepIndex ?? i;
           const baseId = `msg_${sessionId}_${stepIndex}`;
 
           // User prompt
@@ -452,17 +489,44 @@ export class AntigravitySessionsProvider implements IProviderSessions {
             continue;
           }
 
-          // Planner entries carry either tool invocations or the assistant's
-          // reply text. Real transcripts emit replies as PLANNER_RESPONSE
-          // content without tool_calls (GENERIC only appears for background
-          // task status), so both shapes must be handled here.
+          // Planner entries carry tool invocations, reasoning, and/or the assistant's
+          // reply text. Real transcripts emit replies as PLANNER_RESPONSE.
           if (type === 'PLANNER_RESPONSE') {
+            // Historical thinking lacks a matching live identity, so exposing
+            // it makes refresh introduce rows that were absent while streaming.
+
+            if (rawContent) {
+              const cleanedContent = cleanAntigravityMessageContent(rawContent, 'assistant');
+              if (cleanedContent) {
+                normalizedMessages.push(createNormalizedMessage({
+                  id: baseId,
+                  sessionId,
+                  timestamp: createdAt,
+                  provider: PROVIDER,
+                  kind: 'text',
+                  role: 'assistant',
+                  content: cleanedContent,
+                  sequence: stepIndex,
+                  providerRowKey: buildAntigravityAssistantRowKey(nativeStepIndex),
+                  contentCompleteness,
+                }));
+              }
+            }
+
             if (Array.isArray(entry.tool_calls) && entry.tool_calls.length > 0) {
               for (let t = 0; t < entry.tool_calls.length; t++) {
                 const tc = entry.tool_calls[t] as AnyRecord;
                 const toolName = readOptionalString(tc?.name) || 'tool';
                 const args = normalizeAntigravityToolArgs(tc?.args ?? {});
-                const toolId = `tool_${stepIndex}_${t}`;
+                // Both transports must name this call the same way, or the
+                // live card and the persisted one render side by side. Live
+                // reports the tool at its own step, which is the step after
+                // the planner entry that declared it (verified across two
+                // real sessions: 830/830 and 798/807 calls are followed by
+                // their GENERIC output one step later, and no planner entry
+                // has ever carried more than one call). `t` keeps the formula
+                // total should that ever change.
+                const toolId = buildAntigravityToolId(nativeStepIndex, t);
 
                 normalizedMessages.push(createNormalizedMessage({
                   id: `${baseId}_tc_${t}`,
@@ -476,55 +540,43 @@ export class AntigravitySessionsProvider implements IProviderSessions {
                   sequence: stepIndex,
                 }));
               }
-            } else if (rawContent) {
-              const cleanedContent = cleanAntigravityMessageContent(rawContent, 'assistant');
-              if (cleanedContent) {
-                normalizedMessages.push(createNormalizedMessage({
-                  id: baseId,
-                  sessionId,
-                  timestamp: createdAt,
-                  provider: PROVIDER,
-                  kind: 'text',
-                  role: 'assistant',
-                  content: cleanedContent,
-                  sequence: stepIndex,
-                }));
-              }
             }
             continue;
           }
 
           // Remaining MODEL entries are tool results (RUN_COMMAND, VIEW_FILE,
           // CODE_ACTION, LIST_DIRECTORY, GREP_SEARCH, ...) or GENERIC
-          // background-task output. Result entries arrive in call order, so
-          // pair each with the oldest tool_use still missing its result.
+          // background-task output. Rows reach here in step order, so pairing
+          // each with the oldest tool_use still missing its result is exact.
           if (source === 'MODEL' && rawContent) {
             const pendingToolUse = normalizedMessages.find(
               (msg) => msg.kind === 'tool_use' && !msg.toolResult,
             );
             if (pendingToolUse) {
-              const cleanedResult = cleanAntigravityMessageContent(rawContent, 'tool_result');
               pendingToolUse.toolResult = {
-                content: cleanedResult,
+                content: cleanAntigravityMessageContent(rawContent, 'tool_result'),
                 isError: entry.status === 'ERROR'
                   || (typeof entry.exit_code === 'number' && entry.exit_code !== 0),
               };
-            } else {
-              const cleanedContent = cleanAntigravityMessageContent(rawContent, 'assistant');
-              if (cleanedContent) {
-                // Nothing to pair with (task status without a visible call):
-                // surface the cleaned content as assistant text only if non-empty
-                normalizedMessages.push(createNormalizedMessage({
-                  id: baseId,
-                  sessionId,
-                  timestamp: createdAt,
-                  provider: PROVIDER,
-                  kind: 'text',
-                  role: 'assistant',
-                  content: cleanedContent,
-                  sequence: stepIndex,
-                }));
-              }
+              continue;
+            }
+
+            // Nothing to pair with. Genuine background-task status is surfaced
+            // as assistant text, but raw tool output must never be: that is a
+            // pairing miss, and rendering it dumps the tool's payload into the
+            // conversation as if the model had written it.
+            const cleanedContent = cleanAntigravityMessageContent(rawContent, 'assistant');
+            if (cleanedContent && !looksLikeToolResultPayload(cleanedContent)) {
+              normalizedMessages.push(createNormalizedMessage({
+                id: baseId,
+                sessionId,
+                timestamp: createdAt,
+                provider: PROVIDER,
+                kind: 'text',
+                role: 'assistant',
+                content: cleanedContent,
+                sequence: stepIndex,
+              }));
             }
           }
         } catch {

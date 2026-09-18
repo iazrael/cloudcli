@@ -61,47 +61,63 @@ export type AuthenticatedWebSocketRequest = IncomingMessage & {
 // ---------------------------
 //----------------- PROVIDER MESSAGE MODEL ------------
 /**
- * Providers supported by the unified server runtime.
- *
- * Use this as the source of truth whenever a function or payload needs to identify
- * a specific LLM integration.
+ * The wire contract lives in `shared/protocol/chatEvents.ts` so the client
+ * cannot declare a second, drifting copy of it. Imported as well as re-exported
+ * because the declarations below refer to these types by name.
  */
-export type LLMProvider = 'claude' | 'codex' | 'cursor' | 'opencode' | 'zcode' | 'antigravity';
+import type { McpScope, McpTransport } from '../../shared/protocol/capabilities.js';
+import type {
+  ProviderQuotaBucket as QuotaBucketShape,
+  ProviderQuotaData as QuotaDataShape,
+  ProviderQuotaGroup as QuotaGroupShape,
+} from '../../shared/protocol/quota.js';
+import type {
+  GatewayEventKind,
+  LLMProvider,
+  MemoryCitation,
+  MessageKind,
+  NormalizedMessage,
+  ServerEventKind,
+  SessionRemovedEvent,
+  SessionUpsertedEvent,
+  SessionUpsertedProject,
+  SubagentActivity,
+  SubagentInfo,
+} from '../../shared/protocol/chatEvents.js';
 
-/**
- * Single quota bucket representing rolling or windowed token limit information
- * returned by providers such as Antigravity.
- */
-export type ProviderQuotaBucket = {
-  id: string;
-  name: string;
-  description?: string;
-  window: '5h' | 'weekly' | string;
-  remainingFraction: number;
-  resetTime?: string;
+export type {
+  GatewayEventKind,
+  LLMProvider,
+  MemoryCitation,
+  MessageKind,
+  NormalizedMessage,
+  ServerEventKind,
+  SessionRemovedEvent,
+  SessionUpsertedEvent,
+  SessionUpsertedProject,
+  SubagentActivity,
+  SubagentInfo,
 };
 
-/**
- * Group of quota buckets belonging to a family of models (e.g. Gemini Models, Claude/GPT models).
- */
-export type ProviderQuotaGroup = {
-  name: string;
-  description?: string;
-  buckets: ProviderQuotaBucket[];
-};
 
-/**
- * Account-level quota and rate limit status across model groups.
- */
-export type ProviderQuotaData = {
-  groups: ProviderQuotaGroup[];
-  updatedAt: string;
-};
+export type {
+  McpScope,
+  McpTransport,
+  ProviderCapabilities,
+  ProviderMcpCapabilities,
+} from '../../shared/protocol/capabilities.js';
+
+export type {
+  ProviderQuotaBucket,
+  ProviderQuotaData,
+  ProviderQuotaGroup,
+  ProviderQuotaGroupPartitioning,
+} from '../../shared/protocol/quota.js';
 
 /** Backwards-compatible aliases for Antigravity-specific callers */
-export type AntigravityQuotaBucket = ProviderQuotaBucket;
-export type AntigravityQuotaGroup = ProviderQuotaGroup;
-export type AntigravityQuotaData = ProviderQuotaData;
+export type AntigravityQuotaBucket = QuotaBucketShape;
+export type AntigravityQuotaGroup = QuotaGroupShape;
+export type AntigravityQuotaData = QuotaDataShape;
 
 // ---------------------------
 //----------------- PROVIDER SESSION TOKEN USAGE TYPES ------------
@@ -162,6 +178,22 @@ export type ProviderSessionWatchTarget = {
   rootPath: string;
   /** Returns true when a file event under `rootPath` should trigger a sync. */
   isTargetFile(filePath: string): boolean;
+};
+
+/**
+ * Lifecycle facts produced while synchronizing one provider artifact file.
+ *
+ * `updatedSessionId` is the CloudCLI app session id upserted from the watched
+ * file; it is null when that file has no indexable top-level session.
+ * `removedSessionIds` contains CloudCLI app session ids that transitioned to
+ * archived during the same operation. Consumers must treat both collections as
+ * idempotent deltas: a watcher can receive duplicate filesystem events, and
+ * only the synchronizer can authoritatively determine an active-to-archived
+ * transition.
+ */
+export type ProviderSessionFileSynchronizationDelta = {
+  updatedSessionId: string | null;
+  removedSessionIds: string[];
 };
 
 /**
@@ -275,274 +307,15 @@ export type ProviderSessionModel = {
   source: ProviderSessionModelSource;
 };
 
-/**
- * Message/event variants emitted by provider adapters and normalized transports.
- *
- * Keep this union in sync with event kinds produced by provider session adapters.
- */
-export type MessageKind =
-  | 'text'
-  | 'tool_use'
-  | 'tool_result'
-  | 'thinking'
-  | 'stream_delta'
-  | 'stream_end'
-  | 'error'
-  | 'complete'
-  | 'status'
-  | 'permission_request'
-  | 'permission_resolved'
-  | 'permission_cancelled'
-  | 'session_created'
-  | 'history_truncated'
-  | 'task_notification';
 
-/**
- * Event kinds added by the chat gateway layer on top of provider message kinds.
- *
- * These are app-level realtime events (subscription acks, sidebar deltas,
- * project loading progress, protocol failures) that are not produced by any
- * provider adapter. Together with `MessageKind` they form the complete set of
- * `kind` values a websocket client can receive, so the frontend only ever
- * needs one kind-based switch.
- */
-export type GatewayEventKind =
-  | 'chat_subscribed'
-  | 'session_upserted'
-  | 'session_removed'
-  | 'loading_progress'
-  | 'protocol_error';
 
-/**
- * Complete set of `kind` values emitted to websocket clients.
- *
- * Every server-to-client websocket frame carries a `kind` from this union.
- * Provider runtimes emit `MessageKind` values; gateway services emit
- * `GatewayEventKind` values.
- */
-export type ServerEventKind = MessageKind | GatewayEventKind;
 
-/** The owning project as it appears inside a `session_upserted` delta. */
-export type SessionUpsertedProject = {
-  projectId: string;
-  path: string;
-  fullPath: string;
-  displayName: string;
-  isStarred: boolean;
-};
 
-/**
- * The `session_upserted` sidebar delta, built only by
- * `modules/websocket/services/session-upsert-broadcast.service.ts`.
- *
- * Typed rather than assembled as an untyped object literal because the payload
- * used to be built in two places and silently drifted apart: one copy set
- * `providerSessionId` and the other did not, and nothing could detect it.
- *
- * `providerSessionId` is how a client recognises that a row it is currently
- * showing has been merged into its canonical app-session row, so it is always
- * present — `null` only while the provider has not reported an id yet.
- */
-export type SessionUpsertedEvent = {
-  kind: 'session_upserted';
-  sessionId: string;
-  providerSessionId: string | null;
-  provider: LLMProvider;
-  session: {
-    id: string;
-    summary: string;
-    messageCount: number;
-    lastActivity: string;
-  };
-  project: SessionUpsertedProject | null;
-  timestamp: string;
-};
 
-/**
- * Announces that sessions left the active sidebar list because they were
- * archived (batch auto-archive, manual run, or single-session archive) or
- * permanently deleted.
- *
- * There is deliberately no singular `sessionId` field: clients must key the
- * removal off `sessionIds`, which also keeps generic per-session event
- * handling (attention marks, unread badges) from firing for rows that are
- * gone. Removal is idempotent — a client that already removed the row locally
- * (the delete initiator) just drops the frame.
- *
- * Built only by `modules/websocket/services/session-upsert-broadcast.service.ts`.
- */
-export type SessionRemovedEvent = {
-  kind: 'session_removed';
-  sessionIds: string[];
-  timestamp: string;
-};
 
-/**
- * Provider-neutral message envelope used in REST responses and realtime channels.
- *
- * Every provider-specific message must be converted into this shape before being
- * emitted outside provider-specific modules.
- */
-export type NormalizedMessage = {
-  id: string;
-  /**
-   * The provider's own identifier for the transcript row this message came
-   * from, when the provider has stable per-row identity (today: Claude's
-   * `uuid`). It is what "edit this message" and "fork from here" address, so it
-   * has to survive a reload — never a value this app synthesized.
-   */
-  transcriptAnchorId?: string;
-  sessionId: string;
-  timestamp: string;
-  provider: LLMProvider;
-  kind: MessageKind;
-  /**
-   * Monotonic per-session sequence number assigned by the chat run registry
-   * when a live event is forwarded to the websocket. The counter continues
-   * across runs (the registry keeps one watermark per session), so a client's
-   * `lastSeq` stays comparable for `chat.subscribe` replay across websocket
-   * reconnects. History messages loaded over REST do not carry it.
-   */
-  seq?: number;
-  role?: 'user' | 'assistant';
-  content?: string;
-  /**
-   * Optional display-oriented metadata used by providers that need to expose
-   * richer transcript artifacts without introducing a brand-new message kind.
-   *
-   * Current Claude usage:
-   * - local slash commands expose parsed command fields
-   * - compact summaries are flagged so the UI can treat them differently later
-   */
-  displayText?: string;
-  commandName?: string;
-  commandMessage?: string;
-  commandArgs?: string;
-  isLocalCommand?: boolean;
-  isLocalCommandStdout?: boolean;
-  isCompactSummary?: boolean;
-  images?: unknown;
-  /** Non-image files attached to a user turn after provider history normalization. */
-  files?: unknown;
-  toolName?: string;
-  toolInput?: unknown;
-  toolId?: string;
-  toolResult?: {
-    content?: string;
-    isError?: boolean;
-    toolUseResult?: unknown;
-  };
-  isError?: boolean;
-  /**
-   * ZCode only: the engine reported this error as a cancelled model request,
-   * not a failure. The runtime drops it when the user's own stop is on
-   * record and otherwise degrades it to a quiet `task_notification`; history
-   * normalization degrades it the same way, so a reload matches the live
-   * stream. Never set by other providers.
-   */
-  isCancelledError?: boolean;
-  text?: string;
-  tokens?: number;
-  canInterrupt?: boolean;
-  requestId?: string;
-  input?: unknown;
-  context?: unknown;
-  reason?: string;
-  newSessionId?: string;
-  status?: string;
-  summary?: string;
-  /**
-   * i18n key for the summary, resolved by the client against its own locale
-   * (chat namespace). Providers set it on task notifications whose wording is
-   * ours, not the engine's; `summary` stays as the verbatim fallback so older
-   * clients and transcript exports still show sensible text. Keys live under
-   * `taskNotices` in each locale's chat.json.
-   */
-  summaryKey?: string;
-  tokenBudget?: unknown;
-  /**
-   * Timeline of everything a subagent did, attached to the `tool_use` that
-   * spawned it. Present for Claude `Agent`/`Task` calls and Codex
-   * `spawn_agent` calls; absent for every other tool.
-   */
-  subagentTools?: SubagentActivity[];
-  /** Identity and lifecycle of the subagent this `tool_use` spawned. */
-  subagent?: SubagentInfo;
-  /** Stored memory the reply drew on, when the provider reports it. */
-  memoryCitations?: MemoryCitation[];
-  toolUseResult?: unknown;
-  sequence?: number;
-  rowid?: number;
-  [key: string]: unknown;
-};
 
-/**
- * One stored memory an assistant reply drew on.
- *
- * Codex appends these to a reply that used its memory files, naming the file
- * and line range it read plus a short note on what it took from there. The
- * transcript shows them as a footnote so a memory-derived claim is traceable
- * rather than arriving as an unattributed assertion.
- */
-export type MemoryCitation = {
-  /** File and line range that was read, e.g. `MEMORY.md:137-142`. */
-  source: string;
-  /** What the reply took from that range, when the provider states it. */
-  note?: string;
-};
 
-/**
- * One entry in a subagent's recorded timeline.
- *
- * Providers store a subagent's work in a separate transcript (Claude:
- * `<session>/subagents/agent-<id>.jsonl`; Codex: a sibling rollout keyed by
- * `agent_thread_id`). Both are flattened into this shape so the transcript can
- * replay a subagent's run with the same renderers the main thread uses.
- *
- * `kind` decides which fields matter: `tool` uses the tool fields, `text` and
- * `thinking` use `content`. Consumers must not assume tool fields exist on the
- * text kinds.
- */
-export type SubagentActivity = {
-  kind: 'tool' | 'text' | 'thinking';
-  timestamp?: string;
-  /** Tool-call identity; only set when `kind` is `tool`. */
-  toolId?: string;
-  toolName?: string;
-  toolInput?: unknown;
-  toolResult?: { content?: string; isError?: boolean } | null;
-  /** Message body; only set when `kind` is `text` or `thinking`. */
-  content?: string;
-};
 
-/**
- * Identity and lifecycle of one spawned subagent, normalized across providers.
- *
- * `status` is `running` until the call that spawned the agent resolves. After
- * that it is whatever the provider reported — Claude's task notification
- * carries one — and `completed` when the provider reported nothing. A failed
- * tool call *inside* the agent is not a failed agent, so it is never inferred
- * from the transcript.
- */
-export type SubagentInfo = {
-  /** Provider-native agent id — Claude `agentId`, Codex `agent_thread_id`. */
-  id: string;
-  /** Human-facing label: Claude's agent type, or Codex's assigned nickname. */
-  name?: string;
-  /** Agent type/preset when the provider records one (Claude `agentType`). */
-  type?: string;
-  /** One-line task summary shown in the collapsed header. */
-  description?: string;
-  status: 'running' | 'completed' | 'failed';
-  /** Model the subagent ran on, when the provider records it. */
-  model?: string;
-  /**
-   * How many activities the agent actually recorded. It exceeds
-   * `subagentTools.length` when a long run was truncated for transport, which
-   * lets the UI say so instead of silently showing a partial timeline.
-   */
-  activityCount?: number;
-};
 
 /**
  * Output gateway shared by WebSocket and SSE provider runs.
@@ -752,18 +525,7 @@ export type AppErrorOptions = {
 
 // ---------------------------
 //----------------- MCP TYPES ------------
-/**
- * Scope where an MCP server definition is stored and resolved.
- *
- * `user` is global for a user account, `local` is provider-local, and `project`
- * is tied to a specific project path.
- */
-export type McpScope = 'user' | 'local' | 'project';
 
-/**
- * Transport protocol used by an MCP server definition.
- */
-export type McpTransport = 'stdio' | 'http' | 'sse';
 
 /**
  * Normalized MCP server model exposed to frontend and route handlers.

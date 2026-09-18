@@ -36,7 +36,14 @@ const writeTomlConfig = async (filePath: string, data: Record<string, unknown>):
 
 export class CodexMcpProvider extends McpProvider {
   constructor() {
-    super('codex', ['user', 'project'], ['stdio', 'http']);
+    super('codex', {
+      scopes: ['user', 'project'],
+      transports: ['stdio', 'http'],
+      supportsWorkingDirectory: true,
+      // The only format with env-variable indirection: `env_vars`,
+      // `bearer_token_env_var` and `env_http_headers`.
+      supportsEnvVarIndirection: true,
+    });
   }
 
   protected async readScopedServers(scope: McpScope, workspacePath: string): Promise<Record<string, unknown>> {

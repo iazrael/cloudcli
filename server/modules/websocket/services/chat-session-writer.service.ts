@@ -4,7 +4,8 @@ import type {
   NormalizedMessage,
   RealtimeClientConnection,
 } from '@/shared/types.js';
-import { createCompleteMessage, readObjectRecord } from '@/shared/utils.js';
+import { enforceNormalizedMessageContract } from '@/shared/normalized-message-contract.js';
+import { createCompleteMessage } from '@/shared/utils.js';
 
 type ChatSessionWriterOptions = {
   connection: RealtimeClientConnection | null;
@@ -84,16 +85,27 @@ export class ChatSessionWriter {
   }
 
   send(data: unknown): void {
-    const record = readObjectRecord(data);
-    if (!record || typeof record.kind !== 'string') {
-      // Provider runtimes only emit kind-based normalized messages. Anything
-      // else indicates a programming error; drop it rather than leaking an
-      // un-remapped payload to the client.
-      console.error('[ChatSessionWriter] Dropping non-normalized outbound payload', data);
+    // The wire contract is enforced here rather than trusted: two provider
+    // runtimes are `.js` files the compiler never type-checks, so this is the
+    // last place an undeclared field can be stopped before a renderer starts
+    // depending on it.
+    const checked = enforceNormalizedMessageContract(data);
+    if (!checked.ok) {
+      console.error(
+        `[ChatSessionWriter] Dropping outbound payload from ${this.options.provider}: ${checked.reason}`,
+        data,
+      );
       return;
     }
+    if (checked.strippedKeys.length > 0) {
+      console.error(
+        `[ChatSessionWriter] ${this.options.provider} emitted fields the wire contract does not declare, `
+        + `stripped before sending: ${checked.strippedKeys.join(', ')}. `
+        + 'Declare them in shared/protocol/chatEvents.ts or stop emitting them.',
+      );
+    }
 
-    const message = record as NormalizedMessage;
+    const message = checked.message;
 
     if (message.kind === 'session_created') {
       const announcedId =

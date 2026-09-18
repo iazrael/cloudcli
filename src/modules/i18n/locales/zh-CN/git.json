@@ -135,7 +135,8 @@
     "switchToScroll": "切换为横向滚动",
     "switchToWrap": "切换为自动换行",
     "scroll": "滚动",
-    "wrap": "换行"
+    "wrap": "换行",
+    "loadingDiff": "正在加载差异…"
   },
   "selection": {
     "selectedOfFiles": "已选 {{total}} 个文件中的 {{selected}} 个",

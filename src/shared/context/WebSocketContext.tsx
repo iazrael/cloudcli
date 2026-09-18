@@ -3,21 +3,10 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { useAuth } from '@/modules/auth';
 import { IS_PLATFORM } from '@/shared/utils';
 import { expireAuthSession, isAuthTokenExpired } from '@/shared/api';
+import type { ServerEvent } from '@/shared/types';
 
-/**
- * One frame received from the chat websocket. The server guarantees every
- * frame carries a `kind` (provider message kinds plus gateway kinds such as
- * `chat_subscribed`, `session_upserted`, `loading_progress`,
- * `protocol_error`). The synthetic `websocket_reconnected` kind is injected
- * client-side when the socket re-opens after a drop.
- */
-export type ServerEvent = {
-  kind?: string;
-  type?: string;
-  sessionId?: string;
-  seq?: number;
-  [key: string]: unknown;
-};
+
+export type { ServerEvent };
 
 type ServerEventListener = (event: ServerEvent) => void;
 

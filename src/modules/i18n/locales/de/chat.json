@@ -268,7 +268,6 @@
     "fetchingQuota": "Aktuelles Kontingent wird abgerufen...",
     "syncingWithProvider": "5-Stunden- und Wochenlimits von {{provider}} synchronisieren",
     "noQuotaData": "Keine Kontingentdaten für dieses Konto verfügbar",
-    "apiKeyNotice": "API-Schlüssel-Anmeldungen liefern in der Regel keine 5-Stunden- oder Wochenlimits",
     "refreshFailedNotice": "Aktualisierung fehlgeschlagen; letzte erfolgreiche Daten werden angezeigt",
     "fetchFailed": "Kontingent konnte nicht geladen werden, bitte später erneut versuchen",
     "currentGroup": "Aktuelle Sitzungsmodelle",
@@ -281,6 +280,10 @@
     "resetSoon": "Wird bald zurückgesetzt",
     "resetDaysHours": "Zurücksetzung in {{days}}T {{hours}}Std",
     "resetHoursMinutes": "Zurücksetzung in {{hours}}Std {{minutes}}Min",
-    "resetMinutes": "Zurücksetzung in {{minutes}}Min"
+    "resetMinutes": "Zurücksetzung in {{minutes}}Min",
+    "emptyQuotaHint": {
+      "claude": "API-Schlüssel-, Bedrock- und Vertex-Anmeldungen haben keine Abo-Limits von Claude.ai",
+      "codex": "API-Schlüssel-Anmeldungen liefern in der Regel keine 5-Stunden- oder Wochenlimits"
+    }
   }
 }

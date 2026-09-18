@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import { api } from '@/shared/api';
-import type { LLMProvider } from '@/shared/types';
+import type { LLMProvider, ProviderCapabilities, ProviderMcpCapabilities } from '@/shared/types';
+import { MCP_FALLBACK_CAPABILITIES } from '@/shared/mcpCapabilitiesFallback';
 
 /**
  * The backend-owned answer to "what can this provider actually do", as served
@@ -15,19 +16,7 @@ import type { LLMProvider } from '@/shared/types';
  * consumers fall back to `PROVIDER_FALLBACK_CATALOG` while `capabilities` is
  * null.
  */
-export type ProviderCapabilities = {
-  provider: LLMProvider;
-  permissionModes: string[];
-  defaultPermissionMode: string;
-  supportsImages: boolean;
-  supportsFiles: boolean;
-  supportsAbort: boolean;
-  supportsPermissionRequests: boolean;
-  supportsTokenUsage: boolean;
-  supportsEffort?: boolean;
-  supportsMessageEditing?: boolean;
-  supportsSessionForking?: boolean;
-};
+export type { ProviderCapabilities } from '@/shared/types';
 
 let cachedCapabilities: Partial<Record<LLMProvider, ProviderCapabilities>> | null = null;
 let inFlightRequest: Promise<Partial<Record<LLMProvider, ProviderCapabilities>> | null> | null = null;
@@ -130,4 +119,30 @@ export function useSessionForkingProviders(): Set<LLMProvider> {
     }
     return forkable;
   }, [loaded, capabilities]);
+}
+
+/**
+ * Resolves what one provider's MCP config format supports.
+ *
+ * The backend declaration wins; `MCP_FALLBACK_CAPABILITIES` only covers the
+ * window before the matrix lands and a failed request. Callers must not decide
+ * any of this by comparing provider ids.
+ */
+export function useProviderMcpCapabilities(provider: LLMProvider): ProviderMcpCapabilities {
+  const { capabilities } = useProviderCapabilitiesMap();
+  return useMemo(() => {
+    const declared = capabilities?.[provider]?.mcp;
+    if (declared) {
+      return declared;
+    }
+    // The mirror is frozen literals so the parity test can read it from the
+    // server tree; hand back mutable copies of its lists.
+    const fallback = MCP_FALLBACK_CAPABILITIES[provider];
+    return {
+      scopes: [...fallback.scopes],
+      transports: [...fallback.transports],
+      supportsWorkingDirectory: fallback.supportsWorkingDirectory,
+      supportsEnvVarIndirection: fallback.supportsEnvVarIndirection,
+    };
+  }, [capabilities, provider]);
 }

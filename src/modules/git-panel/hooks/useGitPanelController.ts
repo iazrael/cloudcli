@@ -48,6 +48,7 @@ type GitPanelController = {
   deleteUntrackedFile: (filePath: string) => Promise<void>;
   stageFiles: (files: string[]) => Promise<boolean>;
   unstageFiles: (files: string[]) => Promise<boolean>;
+  fetchFileDiff: (filePath: string) => Promise<void>;
   fetchCommitDiff: (commitHash: string) => Promise<void>;
   generateCommitMessage: (files: string[]) => Promise<string | null>;
   commitChanges: (message: string, files: string[]) => Promise<boolean>;
@@ -212,9 +213,19 @@ export function useGitPanelController({
       setGitStatus(data);
       setCurrentBranch(data.branch || DEFAULT_BRANCH);
 
-      const changedFiles = getAllChangedFiles(data);
-      changedFiles.forEach((filePath) => {
-        void fetchFileDiff(filePath, signal);
+      // Diffs are fetched on demand when a file row is expanded: a working
+      // tree with hundreds of changes would otherwise fire one request (and
+      // several git processes) per file and keep every diff in memory.
+      // Drop cached diffs for files that are no longer reported as changed.
+      const changedFiles = new Set(getAllChangedFiles(data));
+      setGitDiff((previous) => {
+        const stalePaths = Object.keys(previous).filter((filePath) => !changedFiles.has(filePath));
+        if (stalePaths.length === 0) {
+          return previous;
+        }
+        const next = { ...previous };
+        stalePaths.forEach((filePath) => delete next[filePath]);
+        return next;
       });
     } catch (error) {
       if (signal?.aborted || isAbortError(error)) {
@@ -233,7 +244,7 @@ export function useGitPanelController({
     } finally {
       setIsLoading(false);
     }
-  }, [fetchFileDiff, selectedProject]);
+  }, [selectedProject]);
 
   const fetchBranches = useCallback(async () => {
     if (!selectedProject) {
@@ -835,6 +846,7 @@ export function useGitPanelController({
     deleteUntrackedFile,
     stageFiles,
     unstageFiles,
+    fetchFileDiff,
     fetchCommitDiff,
     generateCommitMessage,
     commitChanges,

@@ -1,6 +1,8 @@
 import type { AnyRecord, NormalizedMessage } from '@/shared/types.js';
 import { readObjectRecord } from '@/shared/utils.js';
 
+import { isToolResultMessage, isToolUseMessage } from '../../shared/protocol/messageNarrowing.js';
+
 /**
  * Cross-provider unification of the two interaction surfaces that Claude and
  * Codex both have but spell differently: the running checklist and the
@@ -271,7 +273,7 @@ class ChecklistState {
 
 /** True for a tool row that already carries a whole checklist in its input. */
 function isChecklistSnapshot(message: NormalizedMessage): boolean {
-  return message.kind === 'tool_use' && message.toolName === CHECKLIST_TOOL;
+  return isToolUseMessage(message) && message.toolName === CHECKLIST_TOOL;
 }
 
 /**
@@ -415,7 +417,7 @@ export function prepareTranscriptMessages(messages: NormalizedMessage[]): Normal
     // A result row renders as part of its call, so it must not break a run of
     // snapshots apart — the results of the calls being folded away sit exactly
     // between them.
-    if (message.kind === 'tool_result') {
+    if (isToolResultMessage(message)) {
       return;
     }
 
@@ -444,6 +446,6 @@ export function prepareTranscriptMessages(messages: NormalizedMessage[]): Normal
   // renders on its own.
   return messages.filter((message, index) => (
     !superseded.has(index)
-    && !(message.kind === 'tool_result' && message.toolId)
+    && !(isToolResultMessage(message) && message.toolId)
   ));
 }

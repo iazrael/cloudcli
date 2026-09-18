@@ -9,7 +9,10 @@
       // The frontend keeps "@" mapped to /src.
       // The backend gets its own "@" mapping in server/tsconfig.json so both sides can use
       // the same alias name without sharing one compiler configuration.
-      "@/*": ["src/*"]
+      "@/*": ["src/*"],
+      // The chat wire contract lives at the repository root so both builds can
+      // include exactly one copy of it.
+      "@shared/*": ["shared/*"]
     },
     "skipLibCheck": true,
     "moduleResolution": "Bundler",

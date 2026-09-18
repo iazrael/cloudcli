@@ -259,6 +259,7 @@ test('chat.send drives the full WebUI path: REST session → WS stream → remap
     const delta = await waitFor(ws, (msg) => msg.kind === 'stream_delta', 'stream_delta');
     assert.equal(delta.content, 'OK');
     assert.equal(delta.sessionId, appSessionId, 'stream deltas must carry the stable app session id');
+    assert.equal(delta.providerRowKey, 'assistant-step:2', 'provider row identity must survive the WebSocket path');
 
     const upsert = await waitFor(ws, (msg) => msg.kind === 'session_upserted', 'session_upserted');
     assert.equal(upsert.sessionId, appSessionId);

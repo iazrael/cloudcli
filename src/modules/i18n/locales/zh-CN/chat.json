@@ -296,7 +296,6 @@
     "fetchingQuota": "正在获取最新配额...",
     "syncingWithProvider": "正在从 {{provider}} 同步 5 小时限额与周配额",
     "noQuotaData": "当前账号没有可显示的配额数据",
-    "apiKeyNotice": "API Key 登录通常不会提供 ChatGPT 账号的 5 小时和周限额",
     "refreshFailedNotice": "刷新失败，当前显示的是上次成功获取的配额数据",
     "fetchFailed": "配额读取失败，请稍后重试",
     "currentGroup": "当前会话模型组",
@@ -316,6 +315,10 @@
     "resetSoon": "即将重置",
     "resetDaysHours": "{{days}} 天 {{hours}} 小时后重置",
     "resetHoursMinutes": "{{hours}} 小时 {{minutes}} 分钟后重置",
-    "resetMinutes": "{{minutes}} 分钟后重置"
+    "resetMinutes": "{{minutes}} 分钟后重置",
+    "emptyQuotaHint": {
+      "claude": "API Key、Bedrock、Vertex 登录没有 claude.ai 订阅限额",
+      "codex": "API Key 登录通常不会提供 ChatGPT 账号的 5 小时和周限额"
+    }
   }
 }

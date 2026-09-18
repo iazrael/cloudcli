@@ -3,7 +3,7 @@ import { access } from 'node:fs/promises';
 
 import { scanStateDb, sessionsDb } from '@/modules/database/index.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
-import type { LLMProvider } from '@/shared/types.js';
+import type { LLMProvider, ProviderSessionFileSynchronizationDelta } from '@/shared/types.js';
 
 type SessionSynchronizeResult = {
   processedByProvider: Record<LLMProvider, number>;
@@ -148,13 +148,22 @@ export const sessionSynchronizerService = {
   async synchronizeProviderFile(
     provider: LLMProvider,
     filePath: string
-  ): Promise<{ provider: LLMProvider; indexed: boolean; sessionId: string | null }> {
+  ): Promise<{
+    provider: LLMProvider;
+    indexed: boolean;
+    sessionId: string | null;
+    removedSessionIds: string[];
+  }> {
     const resolvedProvider = providerRegistry.resolveProvider(provider);
-    const sessionId = await resolvedProvider.sessionSynchronizer.synchronizeFile(filePath);
+    const synchronizer = resolvedProvider.sessionSynchronizer;
+    const lifecycleDelta: ProviderSessionFileSynchronizationDelta = synchronizer.synchronizeFileWithLifecycle
+      ? await synchronizer.synchronizeFileWithLifecycle(filePath)
+      : { updatedSessionId: await synchronizer.synchronizeFile(filePath), removedSessionIds: [] };
     return {
       provider,
-      indexed: Boolean(sessionId),
-      sessionId,
+      indexed: Boolean(lifecycleDelta.updatedSessionId),
+      sessionId: lifecycleDelta.updatedSessionId,
+      removedSessionIds: lifecycleDelta.removedSessionIds,
     };
   },
 };

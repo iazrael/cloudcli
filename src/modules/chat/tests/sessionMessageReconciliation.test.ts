@@ -3,7 +3,13 @@ import assert from 'node:assert/strict';
 import { test } from 'vitest';
 
 import type { NormalizedMessage } from '@/shared/types';
-import { removeOptimisticUserEchoes, upsertToolUseRow } from '@/modules/chat/utils/sessionMessageReconciliation';
+import { reconcileOptimisticUserEchoes, upsertToolUseRow } from '@/modules/chat/utils/sessionMessageReconciliation';
+
+/** These cases assert which rows survive; the pairing has its own coverage. */
+const retireOptimisticUserEchoes = (
+  serverMessages: Parameters<typeof reconcileOptimisticUserEchoes>[0],
+  realtimeMessages: Parameters<typeof reconcileOptimisticUserEchoes>[1],
+) => reconcileOptimisticUserEchoes(serverMessages, realtimeMessages).messages;
 
 const createUserMessage = (
   id: string,
@@ -28,7 +34,7 @@ test('replaces an optimistic image-only turn with its persisted Claude copy', ()
     images: [{ data: 'data:image/png;base64,AAAA' }],
   });
 
-  assert.deepEqual(removeOptimisticUserEchoes([persisted], [local]), []);
+  assert.deepEqual(retireOptimisticUserEchoes([persisted], [local]), []);
 });
 
 test('does not collapse an attachment-only turn into a server row without attachments', () => {
@@ -37,7 +43,7 @@ test('does not collapse an attachment-only turn into a server row without attach
   });
   const persisted = createUserMessage('claude_empty', '2026-07-28T20:30:22.000Z');
 
-  assert.deepEqual(removeOptimisticUserEchoes([persisted], [local]), [local]);
+  assert.deepEqual(retireOptimisticUserEchoes([persisted], [local]), [local]);
 });
 
 test('matches optimistic attachment turns to persisted turns one-to-one', () => {
@@ -51,7 +57,7 @@ test('matches optimistic attachment turns to persisted turns one-to-one', () => 
     images: [{ data: 'data:image/png;base64,AAAA' }],
   });
 
-  const remainingRealtime = removeOptimisticUserEchoes(
+  const remainingRealtime = retireOptimisticUserEchoes(
     [firstPersisted],
     [firstLocal, secondLocal],
   );
@@ -67,7 +73,7 @@ test('keeps the existing optimistic text reconciliation behavior', () => {
     content: 'hello',
   });
 
-  assert.deepEqual(removeOptimisticUserEchoes([persisted], [local]), []);
+  assert.deepEqual(retireOptimisticUserEchoes([persisted], [local]), []);
 });
 
 test('a replacement echo survives a kept turn that repeats its text', () => {
@@ -92,12 +98,12 @@ test('a replacement echo survives a kept turn that repeats its text', () => {
     replacesAfterRowCount: kept.length,
   } as NormalizedMessage;
 
-  assert.deepEqual(removeOptimisticUserEchoes(kept, [echo]), [echo]);
+  assert.deepEqual(retireOptimisticUserEchoes(kept, [echo]), [echo]);
 
   // Once the provider has written the replacement, it is a row the cut did not
   // keep, so it retires the echo.
   const persisted = [...kept, userRow('persisted', 'continue', '2026-01-01T00:00:25.000Z')];
-  assert.deepEqual(removeOptimisticUserEchoes(persisted, [echo]), []);
+  assert.deepEqual(retireOptimisticUserEchoes(persisted, [echo]), []);
 });
 
 test('upsertToolUseRow: a blank re-announce frame never blanks a populated card', () => {
@@ -125,4 +131,69 @@ test('upsertToolUseRow: a blank re-announce frame never blanks a populated card'
   // A fresh toolId appends as before.
   const appended = upsertToolUseRow(updated, toolRow('row_4', 'call_2', {}));
   assert.equal(appended.length, 2);
+});
+
+/**
+ * Retiring the optimistic echo must not depend on the two clocks agreeing.
+ *
+ * The persisted copy of a prompt is stamped by the engine, the optimistic row
+ * by the browser. The match used to require the persisted row to land inside a
+ * window around the local timestamp, so an engine running more than ten
+ * seconds behind had its row rejected as "too old" — the optimistic echo
+ * survived and the user saw their own message twice.
+ *
+ * `replacesAfterRowCount` already records how much transcript existed when the
+ * row was sent, which answers the same question causally: only a row that
+ * appeared afterwards can be this prompt's persisted copy.
+ */
+test('an optimistic prompt retires against its persisted copy despite clock skew', () => {
+  const local: NormalizedMessage = {
+    id: 'local_1',
+    sessionId: 'sess-1',
+    timestamp: '2026-01-01T00:01:00.000Z',
+    provider: 'antigravity',
+    kind: 'text',
+    role: 'user',
+    content: 'answer in two words',
+    replacesAfterRowCount: 0,
+  };
+  // The engine stamped its copy a full minute earlier than the browser did.
+  const persisted: NormalizedMessage = {
+    id: 'srv-1',
+    sessionId: 'sess-1',
+    timestamp: '2026-01-01T00:00:00.000Z',
+    provider: 'antigravity',
+    kind: 'text',
+    role: 'user',
+    content: 'answer in two words',
+  };
+
+  assert.deepEqual(retireOptimisticUserEchoes([persisted], [local]), []);
+});
+
+test('an optimistic prompt is not retired by transcript that predates it', () => {
+  const local: NormalizedMessage = {
+    id: 'local_2',
+    sessionId: 'sess-1',
+    timestamp: '2026-01-01T00:01:00.000Z',
+    provider: 'antigravity',
+    kind: 'text',
+    role: 'user',
+    content: 'continue',
+    // Two rows were already on screen when this was sent, so neither of them
+    // can be its persisted copy.
+    replacesAfterRowCount: 2,
+  };
+  const older: NormalizedMessage = {
+    id: 'srv-old',
+    sessionId: 'sess-1',
+    timestamp: '2026-01-01T00:00:00.000Z',
+    provider: 'antigravity',
+    kind: 'text',
+    role: 'user',
+    content: 'continue',
+  };
+  const filler: NormalizedMessage = { ...older, id: 'srv-filler', role: 'assistant', content: 'ok' };
+
+  assert.deepEqual(retireOptimisticUserEchoes([older, filler], [local]), [local]);
 });

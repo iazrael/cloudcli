@@ -1,8 +1,5 @@
 import type { NormalizedMessage } from '@/shared/types';
 
-const LOCAL_USER_DEDUPE_WINDOW_MS = 5 * 60 * 1000;
-const LOCAL_USER_DEDUPE_CLOCK_SKEW_MS = 10_000;
-const LOCAL_ATTACHMENT_ONLY_DEDUPE_WINDOW_MS = 30_000;
 
 type UserTurnFingerprint = {
   text: string;
@@ -32,35 +29,22 @@ function userTurnFingerprintsMatch(
   );
 }
 
-function readMessageTime(message: NormalizedMessage): number | null {
-  const time = Date.parse(message.timestamp);
-  return Number.isFinite(time) ? time : null;
-}
-
 function findServerEchoForLocalUser(
   localMessage: NormalizedMessage,
   serverMessages: NormalizedMessage[],
   claimedServerIds: Set<string>,
 ): NormalizedMessage | null {
   const localFingerprint = userTurnFingerprint(localMessage);
-  const localTime = readMessageTime(localMessage);
-  if (!localFingerprint || localTime === null) {
+  if (!localFingerprint) {
     return null;
   }
 
-  // The echo of an edited message may only be retired by a row that was not
-  // in the transcript when the cut was made. Text and a time window are not
-  // enough for it: a rewind that branches re-stamps every surviving turn to
-  // the moment of the copy, so an earlier turn with the same words — "yes",
-  // "continue", the typo being corrected — lands inside the window and would
-  // retire the message the user just sent.
+  // Only a row that appeared after this prompt was sent can be its persisted
+  // copy. `replacesAfterRowCount` records how much transcript was on screen at
+  // that moment, which settles it without comparing two machines' clocks — the
+  // engine stamps its copy, the browser stamps this one, and a difference
+  // between them is not evidence of anything.
   const firstEligibleIndex = localMessage.replacesAfterRowCount ?? 0;
-
-  const dedupeWindow = localFingerprint.text
-    ? LOCAL_USER_DEDUPE_WINDOW_MS
-    : LOCAL_ATTACHMENT_ONLY_DEDUPE_WINDOW_MS;
-  let closestMatch: NormalizedMessage | null = null;
-  let closestTimeDifference = Number.POSITIVE_INFINITY;
 
   for (let index = firstEligibleIndex; index < serverMessages.length; index++) {
     const serverMessage = serverMessages[index];
@@ -73,36 +57,40 @@ function findServerEchoForLocalUser(
       continue;
     }
 
-    const serverTime = readMessageTime(serverMessage);
-    if (
-      serverTime === null
-      || serverTime < localTime - LOCAL_USER_DEDUPE_CLOCK_SKEW_MS
-      || serverTime - localTime > dedupeWindow
-    ) {
-      continue;
-    }
-
-    const timeDifference = Math.abs(serverTime - localTime);
-    if (timeDifference < closestTimeDifference) {
-      closestMatch = serverMessage;
-      closestTimeDifference = timeDifference;
-    }
+    // The earliest eligible match wins: repeated sends of the same prompt pair
+    // in order, so the nth echo retires against the nth persisted turn.
+    return serverMessage;
   }
 
-  return closestMatch;
+  return null;
 }
 
 /**
- * Removes local optimistic user rows once a corresponding persisted turn is
- * available. Matches are one-to-one so repeated sends cannot claim one row.
+ * The result of retiring optimistic user rows against the persisted transcript.
+ *
+ * `retiredAnchors` is the pairing the filter had to compute anyway: which
+ * persisted turn took over from which optimistic row. It is what lets the
+ * merge keep a live reply below the user turn that caused it after the
+ * optimistic row is gone, so it is returned rather than discarded.
  */
-export function removeOptimisticUserEchoes(
+export type OptimisticUserEchoReconciliation = {
+  messages: NormalizedMessage[];
+  retiredAnchors: Map<string, string>;
+};
+
+/**
+ * Retires local optimistic user rows once a corresponding persisted turn is
+ * available, reporting which persisted row claimed each one. Matches are
+ * one-to-one so repeated sends cannot claim one row.
+ */
+export function reconcileOptimisticUserEchoes(
   serverMessages: NormalizedMessage[],
   realtimeMessages: NormalizedMessage[],
-): NormalizedMessage[] {
+): OptimisticUserEchoReconciliation {
   const claimedServerIds = new Set<string>();
+  const retiredAnchors = new Map<string, string>();
 
-  return realtimeMessages.filter((message) => {
+  const messages = realtimeMessages.filter((message) => {
     if (!message.id.startsWith('local_')) {
       return true;
     }
@@ -113,8 +101,11 @@ export function removeOptimisticUserEchoes(
     }
 
     claimedServerIds.add(serverEcho.id);
+    retiredAnchors.set(message.id, serverEcho.id);
     return false;
   });
+
+  return { messages, retiredAnchors };
 }
 
 /**

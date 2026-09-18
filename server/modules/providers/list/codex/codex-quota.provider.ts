@@ -136,7 +136,9 @@ function normalizeQuotaResponse(value: unknown, nowTimestamp: number): ProviderQ
       .filter((group): group is ProviderQuotaGroup => group !== null);
 
   return groups.length > 0
-    ? { groups, updatedAt: new Date(nowTimestamp).toISOString() }
+    // One family, split by allowance: the gpt-reserve carve-out sits beside
+    // the main pool, so a family match cannot tell them apart.
+    ? { groups, updatedAt: new Date(nowTimestamp).toISOString(), partitioning: 'bucket' as const }
     : null;
 }
 

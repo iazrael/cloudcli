@@ -4,8 +4,89 @@ import type { NavigateFunction } from 'react-router-dom';
 
 //----------------- LLM PROVIDER MODEL CATALOG ------------
 
-/** Identifies which coding-agent CLI backs a session, project selection or model list. */
-export type LLMProvider = 'claude' | 'cursor' | 'codex' | 'opencode' | 'zcode' | 'antigravity';
+/**
+ * The chat wire contract is defined once in `shared/protocol/chatEvents.ts`.
+ * The client re-exports it instead of restating it: the previous second copy
+ * had silently drifted from the server's by seven fields.
+ */
+import type { McpScope, McpTransport } from '@shared/protocol/capabilities';
+import type { LoadingProgressEvent as LoadingProgress } from '@shared/protocol/frames';
+import type {
+  LLMProvider,
+  MessageKind,
+  NormalizedMessage as WireNormalizedMessage,
+} from '@shared/protocol/chatEvents';
+
+export type {
+  ChatSubscribedEvent,
+  LoadingProgressEvent,
+  LoadingProgressEvent as LoadingProgress,
+  ProtocolErrorEvent,
+  ServerEvent,
+  WebsocketReconnectedEvent,
+} from '@shared/protocol/frames';
+
+export type {
+  McpScope,
+  McpTransport,
+  ProviderCapabilities,
+  ProviderMcpCapabilities,
+} from '@shared/protocol/capabilities';
+
+export type {
+  ProviderQuotaBucket,
+  ProviderQuotaData,
+  ProviderQuotaGroup,
+  ProviderQuotaGroupPartitioning,
+} from '@shared/protocol/quota';
+
+export type {
+  GatewayEventKind,
+  LLMProvider,
+  MemoryCitation,
+  MessageKind,
+  ServerEventKind,
+  SessionRemovedEvent,
+  SessionUpsertedEvent,
+  SessionUpsertedProject,
+  SubagentActivity,
+  SubagentInfo,
+} from '@shared/protocol/chatEvents';
+
+/**
+ * Kinds a timeline row can carry: the wire kinds plus the ones the client
+ * builds for itself and never receives from a provider.
+ *
+ * `interactive_prompt` is the only such kind today — the composer synthesizes
+ * it locally so a prompt the user is answering renders in place. Keeping it out
+ * of `MessageKind` is what stops it from looking like something an engine may
+ * emit.
+ */
+export type TimelineMessageKind = MessageKind | 'interactive_prompt';
+
+/**
+ * One row as the session timeline holds it: the wire message plus the local
+ * bookkeeping the client adds to it.
+ *
+ * The extra fields never travel — they exist only between a send and the
+ * persisted turn that retires its optimistic echo — so they are stated here
+ * rather than widening the wire contract everyone else has to honour.
+ */
+export type NormalizedMessage = Omit<WireNormalizedMessage, 'kind'> & {
+  kind: TimelineMessageKind;
+  /**
+   * Set on the optimistic echo of a message sent as a replacement for an
+   * already-sent one; the truncate that follows spares the newest echo with
+   * this stamp from being dropped with the turns it replaces.
+   */
+  replacesAnchorId?: string;
+  /**
+   * How many rows the transcript held when the replaced turn was cut, so the
+   * echo can only be retired by a persisted row that did not exist back then.
+   */
+  replacesAfterRowCount?: number;
+};
+
 
 /** One selectable model in a provider's model menu, including its optional reasoning-effort choices. */
 export type ProviderModelOption = {
@@ -71,8 +152,14 @@ export type ScheduledMessage = {
 export type ProjectSession = {
   id: string;
   title?: string;
+  /**
+   * The session's label. Every provider's row carries it here: the
+   * synchronizers write what they derive into `custom_name` and the row
+   * surfaces that as `summary`. There is deliberately no `name` alternative —
+   * one used to be declared, nothing ever sent it, and the readers that
+   * preferred it showed a placeholder instead of the real label.
+   */
   summary?: string;
-  name?: string;
   createdAt?: string;
   created_at?: string;
   updated_at?: string;
@@ -118,15 +205,6 @@ export type Project = {
   [key: string]: unknown;
 }
 
-/** Progress payload streamed while the backend enumerates projects, used to drive the sidebar loading bar. */
-export type LoadingProgress = {
-  kind?: 'loading_progress';
-  phase?: string;
-  current: number;
-  total: number;
-  currentProject?: string;
-  [key: string]: unknown;
-}
 
 // ---------------------------
 
@@ -194,20 +272,6 @@ export type SessionActivitySnapshot = {
 
 //----------------- REALTIME TRANSPORT ------------
 
-/**
- * One frame received from the chat websocket. The server guarantees every
- * frame carries a `kind` (provider message kinds plus gateway kinds such as
- * `chat_subscribed`, `session_upserted`, `loading_progress`,
- * `protocol_error`). The synthetic `websocket_reconnected` kind is injected
- * client-side when the socket re-opens after a drop.
- */
-export type ServerEvent = {
-  kind?: string;
-  type?: string;
-  sessionId?: string;
-  seq?: number;
-  [key: string]: unknown;
-};
 
 
 // ---------------------------
@@ -244,36 +308,8 @@ export type ChatImage = {
   data?: string;
 } & ChatAttachment;
 
-/** One stored memory an assistant reply drew on, naming the file and line range read plus what was taken from it, shown as a footnote under the reply so a memory-derived claim stays traceable. */
-export type MemoryCitation = {
-  /** File and line range that was read, e.g. `MEMORY.md:137-142`. */
-  source: string;
-  /** What the reply took from that range, when the provider states it. */
-  note?: string;
-};
 
-/** One entry in a subagent's recorded timeline, normalized by the backend from either provider's transcript; `kind` decides whether the tool fields or `content` carry the entry, so read only the set that matches. */
-export type SubagentActivity = {
-  kind: 'tool' | 'text' | 'thinking';
-  timestamp?: string;
-  toolId?: string;
-  toolName?: string;
-  toolInput?: unknown;
-  toolResult?: ToolResult | null;
-  content?: string;
-};
 
-/** Identity and lifecycle of one spawned subagent as the backend reports it; present on the tool call that spawned the agent and used to draw its container header. */
-export type SubagentInfo = {
-  id: string;
-  name?: string;
-  type?: string;
-  description?: string;
-  status: 'running' | 'completed' | 'failed';
-  model?: string;
-  /** Total entries the agent recorded, which exceeds the received timeline when a long run was truncated for transport. */
-  activityCount?: number;
-};
 
 /** One rendered entry in a chat transcript — a user turn, an assistant turn (plain text, tool call, thinking, interactive prompt, task notification, compaction summary, streaming segment) or an error row — and the shape the chat message list and message components consume. `isToolUse`/`isThinking`/… flags distinguish the assistant sub-shapes; `type` only carries user/assistant/error. */
 export type ChatMessageType = 'user' | 'assistant' | 'error';
@@ -397,104 +433,8 @@ export type QuestionOption = {
 
 //----------------- CHAT SESSION STORE ------------
 
-/** A provider-agnostic transcript event as normalized by the backend adapters, with all kind-specific fields kept flat; it is the shape the session store holds and that chat converts into ChatMessage for rendering, so treat it as the wire contract rather than a view model. */
-export type NormalizedMessage = {
-  id: string;
-  sessionId: string;
-  timestamp: string;
-  provider: LLMProvider;
-  kind: MessageKind;
-  /**
-   * Per-session monotonic sequence number assigned by the backend to live
-   * websocket events (the counter continues across runs). Used to compute
-   * `lastSeq` for `chat.subscribe` replay; REST history messages do not carry
-   * it.
-   */
-  seq?: number;
-
-  // kind-specific fields (flat for simplicity)
-  role?: 'user' | 'assistant';
-  content?: string;
-  /**
-   * Mirrors optional transcript metadata from the server.
-   *
-   * These fields are currently used by Claude history normalization so local
-   * slash commands, local stdout, and compact summaries do not disappear when
-   * the session store hydrates from REST history.
-   */
-  displayText?: string;
-  commandName?: string;
-  commandMessage?: string;
-  commandArgs?: string;
-  isLocalCommand?: boolean;
-  isLocalCommandStdout?: boolean;
-  isCompactSummary?: boolean;
-  images?: Array<{ path?: string; data?: string; name?: string }>;
-  files?: Array<{ path?: string; name?: string; mimeType?: string; size?: number }>;
-  toolName?: string;
-  toolInput?: unknown;
-  toolId?: string;
-  toolResult?: { content: string; isError: boolean; toolUseResult?: unknown } | null;
-  isError?: boolean;
-  text?: string;
-  tokens?: number;
-  canInterrupt?: boolean;
-  tokenBudget?: unknown;
-  requestId?: string;
-  input?: unknown;
-  context?: unknown;
-  newSessionId?: string;
-  status?: string;
-  summary?: string;
-  /**
-   * i18n key resolving `summary` in the viewer's locale (chat namespace),
-   * set by the server on task notices whose wording is ours. When absent the
-   * row renders the verbatim summary.
-   */
-  summaryKey?: string;
-  exitCode?: number;
-  actualSessionId?: string;
-  parentToolUseId?: string;
-  subagentTools?: unknown[];
-  isFinal?: boolean;
-  subagent?: SubagentInfo;
-  /**
-   * The provider's identifier for the persisted row this event came from, when
-   * the provider has stable per-row identity. Client counterpart of the
-   * transcript anchor used by message editing.
-   */
-  transcriptAnchorId?: string;
-  /**
-   * Set on the optimistic echo of a message sent as a replacement for an
-   * already-sent one; the truncate that follows spares the newest echo with
-   * this stamp from being dropped with the turns it replaces.
-   */
-  replacesAnchorId?: string;
-  replacesAfterRowCount?: number;
-  // Cursor-specific ordering
-  sequence?: number;
-  rowid?: number;
-}
 
 
-/** Discriminator on NormalizedMessage naming which kind of transcript event it carries — plain text, tool use or result, thinking, stream delta or end, error, completion, status, permission request/resolution/cancellation, session creation, interactive prompt, or task notification. */
-export type MessageKind =
-  | 'text'
-  | 'tool_use'
-  | 'tool_result'
-  | 'thinking'
-  | 'stream_delta'
-  | 'stream_end'
-  | 'error'
-  | 'complete'
-  | 'status'
-  | 'permission_request'
-  | 'permission_resolved'
-  | 'permission_cancelled'
-  | 'session_created'
-  | 'history_truncated'
-  | 'interactive_prompt'
-  | 'task_notification';
 
 // ---------------------------
 
@@ -889,11 +829,7 @@ export type CommitGraphRow = {
 /** The LLM provider whose MCP server configuration is being read or written; use it to key provider-specific MCP capabilities such as supported scopes and transports. */
 export type McpProvider = LLMProvider;
 
-/** Where an MCP server definition is stored - the user's global provider config, Claude's project-local config, or a project workspace config - and therefore which config file a read or write targets. */
-export type McpScope = 'user' | 'local' | 'project';
 
-/** How a client connects to an MCP server (a stdio subprocess, streamable HTTP, or SSE); use it to decide which connection fields of a server or form apply. */
-export type McpTransport = 'stdio' | 'http' | 'sse';
 
 /** A plain string-to-string map used for the MCP environment variables and HTTP headers that are edited as `KEY=value` lines and sent as objects. */
 export type KeyValueMap = Record<string, string>;

@@ -596,16 +596,14 @@ export class ZCodeSessionsProvider implements IProviderSessions {
         continue;
       }
 
-      // Handle step completion (run end marker)
+      // A finished step is a run-lifecycle signal, not a transcript row.
+      // `complete` is emitted once per live run and terminates it; a stored
+      // transcript has no run in flight, and emitting one row per persisted
+      // step filled about a third of a real session's history with rows that
+      // render nothing — skewing every page of pagination and every scan that
+      // walks the transcript. Token totals reach the client through the
+      // session's own token usage, not through these.
       if (partType === 'step-finish' || partType === 'done') {
-        normalized.push(createNormalizedMessage({
-          id: baseId,
-          sessionId,
-          timestamp,
-          provider: PROVIDER,
-          kind: 'complete',
-          tokens: readZCodeTokenUsedCount(messageInfo?.tokens),
-        }));
         continue;
       }
     }

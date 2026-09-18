@@ -26,6 +26,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { setTimeout as setTimeoutFn, clearTimeout as clearTimeoutFn } from 'node:timers';
 
 import { getZCodeStorageDir } from './zcode-data-root.js';
+import { resolveZCodeProviderConfigEnv } from './zcode-provider-config.js';
 import { tryResolveEnginePath } from './zcode-engine-path.js';
 
 /** How much of the engine's stderr to keep for crash explanations. */
@@ -104,6 +105,9 @@ export class EngineSupervisor {
           // Ensure ZCode uses the expected storage directory (shared data-root
           // helper, so ZCODE_STORAGE_DIR isolation applies uniformly).
           ZCODE_STORAGE_DIR: getZCodeStorageDir(),
+          // The packaged engine cannot locate its own built-in provider config
+          // (see zcode-provider-config); hand it the resolved paths instead.
+          ...resolveZCodeProviderConfigEnv(enginePath),
         },
         stdio: ['pipe', 'pipe', 'pipe'],
         detached: false,

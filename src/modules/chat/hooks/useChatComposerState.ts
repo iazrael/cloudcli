@@ -29,7 +29,7 @@ import type {
   PermissionMode,
   SessionEstablishedContext,
 } from '@/shared/types';
-import type { Project, ProjectSession, LLMProvider, ProviderModelOption } from '@/shared/types';
+import type { Project, ProjectSession, LLMProvider, ProviderModelOption, ProviderQuotaData } from '@/shared/types';
 import { escapeRegExp } from '@/modules/chat/utils/chatFormatting';
 
 import { useFileMentions } from '@/modules/chat/hooks/useFileMentions';
@@ -102,25 +102,15 @@ export type ModelCommandData = {
   defaultModel?: string;
 };
 
-export type QuotaBucket = {
-  id: string;
-  name: string;
-  description?: string;
-  window: '5h' | 'weekly' | string;
-  remainingFraction: number;
-  resetTime?: string;
-};
-
-export type QuotaGroup = {
-  name: string;
-  description?: string;
-  buckets: QuotaBucket[];
-};
-
-export type ProviderQuotaData = {
-  groups: QuotaGroup[];
-  updatedAt?: string;
-};
+/**
+ * Quota shapes come from the wire contract; this module used to restate them
+ * under different names and had already drifted on `updatedAt`.
+ */
+export type {
+  ProviderQuotaBucket as QuotaBucket,
+  ProviderQuotaData,
+  ProviderQuotaGroup as QuotaGroup,
+} from '@/shared/types';
 
 export type CostCommandData = {
   tokenUsage?: {

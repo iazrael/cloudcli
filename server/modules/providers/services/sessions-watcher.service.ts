@@ -6,7 +6,12 @@ import chokidar, { type FSWatcher } from 'chokidar';
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import { sessionSynchronizerService } from '@/modules/providers/services/session-synchronizer.service.js';
-import { broadcastSessionUpsertedBatch, WS_OPEN_STATE, connectedClients } from '@/modules/websocket/index.js';
+import {
+  broadcastSessionRemoved,
+  broadcastSessionUpsertedBatch,
+  WS_OPEN_STATE,
+  connectedClients,
+} from '@/modules/websocket/index.js';
 import type { LLMProvider, ProviderSessionWatchTarget } from '@/shared/types.js';
 import { generateDisplayName } from '@/modules/projects/index.js';
 
@@ -33,11 +38,12 @@ type PendingWatcherUpdate = {
   providers: Set<LLMProvider>;
   changeTypes: Set<WatcherEventType>;
   /**
-   * Provider-native session ids reported by the synchronizers. They are
-   * translated back to app-facing session rows at flush time, because the
-   * transcript file names on disk only ever contain provider ids.
+   * CloudCLI app session ids reported by the synchronizers. They can be
+   * broadcast directly at flush time, even though watched transcript file
+   * names themselves only contain provider-native ids.
    */
   updatedSessionIds: Set<string>;
+  removedSessionIds: Set<string>;
 };
 
 let pendingWatcherUpdate: PendingWatcherUpdate | null = null;
@@ -45,6 +51,26 @@ let pendingWatcherUpdateStartedAt: number | null = null;
 let pendingWatcherFlushTimer: ReturnType<typeof setTimeout> | null = null;
 let watcherRefreshInFlight = false;
 let watcherRescheduleAfterRefresh = false;
+
+/**
+ * Consumed by this watcher's debounce queue and its focused service test to
+ * preserve the latest lifecycle fact for every CloudCLI app session id.
+ */
+export function applySessionLifecycleDeltaToQueue(
+  updatedSessionIds: Set<string>,
+  removedSessionIds: Set<string>,
+  updatedSessionId: string | null,
+  newlyRemovedSessionIds: readonly string[],
+): void {
+  for (const sessionId of newlyRemovedSessionIds) {
+    updatedSessionIds.delete(sessionId);
+    removedSessionIds.add(sessionId);
+  }
+  if (updatedSessionId) {
+    removedSessionIds.delete(updatedSessionId);
+    updatedSessionIds.add(updatedSessionId);
+  }
+}
 
 /**
  * Handles file watcher updates and triggers provider file-level synchronization.
@@ -61,7 +87,7 @@ async function onUpdate(
 
   try {
     const result = await sessionSynchronizerService.synchronizeProviderFile(provider, filePath);
-    if (!result.indexed) {
+    if (!result.indexed && result.removedSessionIds.length === 0) {
       return;
     }
 
@@ -69,7 +95,7 @@ async function onUpdate(
       filePath,
       sessionId: result.sessionId,
     });
-    queuePendingWatcherUpdate(eventType, provider, result.sessionId);
+    queuePendingWatcherUpdate(eventType, provider, result.sessionId, result.removedSessionIds);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`Session watcher sync failed for provider "${provider}"`, {
@@ -110,21 +136,26 @@ function schedulePendingWatcherFlush(): void {
 function queuePendingWatcherUpdate(
   eventType: WatcherEventType,
   provider: LLMProvider,
-  updatedSessionId: string | null
+  updatedSessionId: string | null,
+  removedSessionIds: string[] = [],
 ): void {
   if (!pendingWatcherUpdate) {
     pendingWatcherUpdate = {
       providers: new Set<LLMProvider>(),
       changeTypes: new Set<WatcherEventType>(),
       updatedSessionIds: new Set<string>(),
+      removedSessionIds: new Set<string>(),
     };
   }
 
   pendingWatcherUpdate.providers.add(provider);
   pendingWatcherUpdate.changeTypes.add(eventType);
-  if (updatedSessionId) {
-    pendingWatcherUpdate.updatedSessionIds.add(updatedSessionId);
-  }
+  applySessionLifecycleDeltaToQueue(
+    pendingWatcherUpdate.updatedSessionIds,
+    pendingWatcherUpdate.removedSessionIds,
+    updatedSessionId,
+    removedSessionIds,
+  );
 
   schedulePendingWatcherFlush();
 }
@@ -151,6 +182,7 @@ async function flushPendingWatcherUpdate(): Promise<void> {
     // session can never clobber unrelated client state, so the frontend needs
     // no "suppress updates while a run is active" protection logic.
     await broadcastSessionUpsertedBatch(queuedUpdate.updatedSessionIds);
+    broadcastSessionRemoved([...queuedUpdate.removedSessionIds]);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error('Session watcher refresh failed while broadcasting session_upserted', { error: message });

@@ -6,10 +6,13 @@ import { defaultUrlTransform } from 'react-markdown';
 // are kept verbatim and converted back to a filesystem path when clicked.
 export const isFileUrl = (url?: string): boolean => /^file:\/\//i.test(url ?? '');
 
-// react-markdown `urlTransform` hook: keep `file://` URLs intact and delegate
-// every other URL to the library's default sanitization.
+export const isWindowsAbsolutePath = (url?: string): boolean =>
+  /^[a-zA-Z]:([/\\]|%5[cC])/i.test(url ?? '');
+
+// react-markdown `urlTransform` hook: keep `file://` URLs and Windows absolute paths
+// intact and delegate every other URL to the library's default sanitization.
 export const markdownUrlTransform = (url: string): string =>
-  isFileUrl(url) ? url : defaultUrlTransform(url);
+  isFileUrl(url) || isWindowsAbsolutePath(url) ? url : defaultUrlTransform(url);
 
 // Converts a `file://` URL back into an absolute filesystem path, decoding
 // percent-escapes so paths with spaces or non-ASCII characters survive.
@@ -27,5 +30,29 @@ export const filePathFromFileUrl = (href?: string): string | undefined => {
     return decodeURIComponent(url.pathname);
   } catch {
     return undefined;
+  }
+};
+
+// react-markdown percent-escapes non-ASCII characters and spaces before it
+// hands an href to custom renderers. Decode filesystem references back to the
+// path the editor can read, while leaving web and other non-file schemes alone.
+export const fileReferenceFromMarkdownHref = (href?: string): string | undefined => {
+  if (!href) {
+    return undefined;
+  }
+
+  if (isFileUrl(href)) {
+    return filePathFromFileUrl(href) ?? href;
+  }
+
+  if (!isWindowsAbsolutePath(href) && /^[a-z][a-z0-9+.-]*:/i.test(href)) {
+    return href;
+  }
+
+  try {
+    return decodeURIComponent(href);
+  } catch {
+    // A literal or incomplete percent escape may be part of a valid filename.
+    return href;
   }
 };

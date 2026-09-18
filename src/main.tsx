@@ -1,6 +1,5 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
-import { scan } from 'react-scan'
 
 import App from '@/App'
 // Self-hosted fonts (formerly Google Fonts CDN): a render-blocking stylesheet
@@ -25,7 +24,11 @@ import '@/modules/i18n'
 // a few thousand DOM nodes of its own. It is worth all of that while hunting a
 // render bug and worth none of it the rest of the time, so it is opt-in —
 // `localStorage.setItem('react-scan', 'on')` and reload.
-scan({ enabled: import.meta.env.DEV && localStorage.getItem('react-scan') === 'on' })
+if (import.meta.env.DEV && localStorage.getItem('react-scan') === 'on') {
+  import('react-scan').then(({ scan }) => {
+    scan({ enabled: true });
+  });
+}
 
 // Register service worker for PWA + Web Push support
 if ('serviceWorker' in navigator) {

@@ -1,7 +1,7 @@
 import path from 'node:path';
 
 import type { IProviderMcp } from '@/shared/interfaces.js';
-import type { LLMProvider, McpScope, McpTransport, ProviderMcpServer, UpsertProviderMcpServerInput } from '@/shared/types.js';
+import type { LLMProvider, McpScope, McpTransport, ProviderMcpCapabilities, ProviderMcpServer, UpsertProviderMcpServerInput } from '@/shared/types.js';
 import { AppError, validatePathSecurity } from '@/shared/utils.js';
 
 const resolveWorkspacePath = (workspacePath?: string): string =>
@@ -24,6 +24,13 @@ const normalizeServerName = (name: string): string => {
  */
 export abstract class McpProvider implements IProviderMcp {
   protected readonly provider: LLMProvider;
+  /**
+   * What this provider's config format supports, declared by the subclass.
+   * It is what the frontend renders the server form from, so a format that
+   * grows a field announces it here instead of the form growing a branch on
+   * the provider's name.
+   */
+  readonly capabilities: ProviderMcpCapabilities;
   protected readonly supportedScopes: McpScope[];
   protected readonly supportedTransports: McpTransport[];
 
@@ -35,14 +42,11 @@ export abstract class McpProvider implements IProviderMcp {
     validatePathSecurity(targetPath, rootPath);
   }
 
-  protected constructor(
-    provider: LLMProvider,
-    supportedScopes: McpScope[],
-    supportedTransports: McpTransport[],
-  ) {
+  protected constructor(provider: LLMProvider, capabilities: ProviderMcpCapabilities) {
     this.provider = provider;
-    this.supportedScopes = supportedScopes;
-    this.supportedTransports = supportedTransports;
+    this.capabilities = capabilities;
+    this.supportedScopes = capabilities.scopes;
+    this.supportedTransports = capabilities.transports;
   }
 
   async listServers(options?: { workspacePath?: string }): Promise<Record<McpScope, ProviderMcpServer[]>> {

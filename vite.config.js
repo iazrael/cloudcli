@@ -34,8 +34,10 @@ export default defineConfig(({ mode }) => {
   let buildCommit = 'unknown'
   let buildDescribe = buildCommit
   try {
-    buildCommit = execSync('git describe --tags --always --dirty', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim()
-    buildDescribe = execSync('git describe --tags --dirty --always', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim()
+    const gitHash = execSync('git rev-parse --short HEAD', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim()
+    const isDirty = execSync('git status --porcelain', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim().length > 0 ? '-dirty' : ''
+    buildCommit = `${gitHash}${isDirty}`
+    buildDescribe = `v${pkg.version}-${gitHash}${isDirty}`
   } catch {
     // Outside a git repository (e.g. building from a release tarball)
   }
@@ -51,7 +53,8 @@ export default defineConfig(({ mode }) => {
     },
     resolve: {
       alias: {
-        '@': fileURLToPath(new URL('./src', import.meta.url))
+        '@': fileURLToPath(new URL('./src', import.meta.url)),
+        '@shared': fileURLToPath(new URL('./shared', import.meta.url))
       }
     },
     server: {
@@ -82,19 +85,82 @@ export default defineConfig(({ mode }) => {
       sourcemap: 'hidden',
       rollupOptions: {
         output: {
-          manualChunks: {
-            'vendor-react': ['react', 'react-dom', 'react-router-dom'],
-            'vendor-codemirror': [
-              '@uiw/react-codemirror',
-              '@codemirror/lang-css',
-              '@codemirror/lang-html',
-              '@codemirror/lang-javascript',
-              '@codemirror/lang-json',
-              '@codemirror/lang-markdown',
-              '@codemirror/lang-python',
-              '@codemirror/theme-one-dark'
-            ],
-            'vendor-xterm': ['@xterm/xterm', '@xterm/addon-fit', '@xterm/addon-clipboard', '@xterm/addon-webgl']
+          manualChunks(id) {
+            if (id.includes('node_modules')) {
+              if (id.includes('react/') || id.includes('react-dom/') || id.includes('react-router-dom/') || id.includes('react-error-boundary/')) {
+                return 'vendor-react';
+              }
+              if (id.includes('@codemirror') || id.includes('@uiw/react-codemirror') || id.includes('@replit/codemirror-minimap')) {
+                return 'vendor-codemirror';
+              }
+              if (id.includes('@xterm')) {
+                return 'vendor-xterm';
+              }
+              if (id.includes('react-syntax-highlighter') || id.includes('refractor') || id.includes('prismjs')) {
+                return 'vendor-highlight';
+              }
+              if (id.includes('katex') || id.includes('rehype-katex') || id.includes('remark-math')) {
+                return 'vendor-katex';
+              }
+              if (
+                id.includes('react-markdown') ||
+                id.includes('remark-') ||
+                id.includes('rehype-') ||
+                id.includes('dompurify') ||
+                id.includes('gray-matter') ||
+                id.includes('micromark') ||
+                id.includes('unist-') ||
+                id.includes('mdast-') ||
+                id.includes('vfile')
+              ) {
+                return 'vendor-markdown';
+              }
+              if (id.includes('lucide-react')) {
+                return 'vendor-icons';
+              }
+              if (id.includes('@octokit')) {
+                return 'vendor-octokit';
+              }
+              if (id.includes('i18next') || id.includes('react-i18next')) {
+                return 'vendor-i18n';
+              }
+              if (
+                id.includes('jszip') ||
+                id.includes('tailwind-merge') ||
+                id.includes('clsx') ||
+                id.includes('class-variance-authority') ||
+                id.includes('cmdk') ||
+                id.includes('fuse.js') ||
+                id.includes('react-dropzone') ||
+                id.includes('file-selector')
+              ) {
+                return 'vendor-utils';
+              }
+            }
+            if (id.includes('/src/modules/i18n/locales/')) {
+              return 'i18n-locales';
+            }
+            if (id.includes('/src/modules/settings/')) {
+              return 'module-settings';
+            }
+            if (id.includes('/src/modules/task-master/')) {
+              return 'module-task-master';
+            }
+            if (id.includes('/src/modules/git-panel/')) {
+              return 'module-git';
+            }
+            if (id.includes('/src/modules/plugins/')) {
+              return 'module-plugins';
+            }
+            if (id.includes('/src/modules/mcp/')) {
+              return 'module-mcp';
+            }
+            if (id.includes('/src/modules/skills/')) {
+              return 'module-skills';
+            }
+            if (id.includes('/src/modules/browser-use/')) {
+              return 'module-browser-use';
+            }
           }
         }
       }

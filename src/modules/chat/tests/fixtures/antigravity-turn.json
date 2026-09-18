@@ -1,0 +1,122 @@
+{
+  "provider": "antigravity",
+  "prompt": "用 ls 列出当前目录文件，然后只回答文件名",
+  "live": [
+    {
+      "kind": "session_created",
+      "sessionId": "2e161f87-f8ea-49b2-a15c-0700b8f00e9d",
+      "newSessionId": "2e161f87-f8ea-49b2-a15c-0700b8f00e9d",
+      "provider": "antigravity",
+      "content": "Session initialized: 2e161f87-f8ea-49b2-a15c-0700b8f00e9d",
+      "id": "session_created_e9e698da-d00f-4970-a193-6a34729cb475",
+      "timestamp": "2026-09-18T10:49:19.771Z"
+    },
+    {
+      "id": "antigravity_fd68b389-700a-4aaa-9471-26550ca41ef1",
+      "kind": "tool_use",
+      "toolName": "run_command",
+      "toolInput": {
+        "CommandLine": "ls -a"
+      },
+      "toolId": "tool_2",
+      "sessionId": "2e161f87-f8ea-49b2-a15c-0700b8f00e9d",
+      "provider": "antigravity",
+      "sequence": 2,
+      "timestamp": "2026-09-18T10:49:19.772Z"
+    },
+    {
+      "id": "antigravity_98ed46bb-47c9-47ef-8708-048b09f650b2",
+      "kind": "tool_result",
+      "toolId": "tool_2",
+      "content": ".\t..\tx.txt",
+      "isError": false,
+      "sessionId": "2e161f87-f8ea-49b2-a15c-0700b8f00e9d",
+      "provider": "antigravity",
+      "sequence": 2,
+      "timestamp": "2026-09-18T10:49:19.772Z"
+    },
+    {
+      "id": "antigravity_41db39d7-98e7-4227-9167-1051a457d17e",
+      "kind": "stream_delta",
+      "content": "[x.txt](file:///var",
+      "sessionId": "2e161f87-f8ea-49b2-a15c-0700b8f00e9d",
+      "provider": "antigravity",
+      "sequence": 3,
+      "providerRowKey": "assistant-step:3",
+      "timestamp": "2026-09-18T10:49:19.772Z"
+    },
+    {
+      "id": "antigravity_6f3edb61-cbae-4378-92ed-c2161fd1d855",
+      "kind": "stream_delta",
+      "content": "/folders/8d/70vkyqz95_11",
+      "sessionId": "2e161f87-f8ea-49b2-a15c-0700b8f00e9d",
+      "provider": "antigravity",
+      "sequence": 3,
+      "providerRowKey": "assistant-step:3",
+      "timestamp": "2026-09-18T10:49:19.772Z"
+    },
+    {
+      "id": "antigravity_585773de-317e-4cab-b826-d482dd9b3d60",
+      "kind": "stream_delta",
+      "content": "cmcr0t8bdcv00000gn/T/tmp.e88Dyk0dRW/x.txt)",
+      "sessionId": "2e161f87-f8ea-49b2-a15c-0700b8f00e9d",
+      "provider": "antigravity",
+      "sequence": 3,
+      "providerRowKey": "assistant-step:3",
+      "timestamp": "2026-09-18T10:49:19.772Z"
+    },
+    {
+      "id": "antigravity_88e5e940-0e67-4938-8cc2-77526c920edb",
+      "kind": "complete",
+      "sessionId": "2e161f87-f8ea-49b2-a15c-0700b8f00e9d",
+      "provider": "antigravity",
+      "tokens": 31726,
+      "timestamp": "2026-09-18T10:49:19.772Z"
+    }
+  ],
+  "history": [
+    {
+      "id": "msg_2e161f87-f8ea-49b2-a15c-0700b8f00e9d_0",
+      "sessionId": "2e161f87-f8ea-49b2-a15c-0700b8f00e9d",
+      "timestamp": "2026-09-18T10:45:46Z",
+      "provider": "antigravity",
+      "kind": "text",
+      "role": "user",
+      "content": "用 ls 列出当前目录文件，然后只回答文件名",
+      "sequence": 0
+    },
+    {
+      "id": "msg_2e161f87-f8ea-49b2-a15c-0700b8f00e9d_1_tc_0",
+      "sessionId": "2e161f87-f8ea-49b2-a15c-0700b8f00e9d",
+      "timestamp": "2026-09-18T10:45:46Z",
+      "provider": "antigravity",
+      "kind": "tool_use",
+      "toolName": "run_command",
+      "toolInput": {
+        "CommandLine": "ls -a",
+        "Cwd": "/var/folders/8d/70vkyqz95_11cmcr0t8bdcv00000gn/T/tmp.e88Dyk0dRW",
+        "WaitMsBeforeAsync": 5000,
+        "toolAction": "Listing files in current directory",
+        "toolSummary": "List directory contents"
+      },
+      "toolId": "tool_2",
+      "sequence": 1,
+      "toolResult": {
+        "content": "Created At: 2026-09-18T18:45:49+08:00\nCompleted At: 2026-09-18T18:45:49+08:00\n\nThe command exited with code 0.\nOutput:\n.\t..\tx.txt",
+        "isError": false
+      }
+    },
+    {
+      "id": "msg_2e161f87-f8ea-49b2-a15c-0700b8f00e9d_3",
+      "sessionId": "2e161f87-f8ea-49b2-a15c-0700b8f00e9d",
+      "timestamp": "2026-09-18T10:45:49Z",
+      "provider": "antigravity",
+      "kind": "text",
+      "role": "assistant",
+      "content": "[x.txt](file:///var/folders/8d/70vkyqz95_11cmcr0t8bdcv00000gn/T/tmp.e88Dyk0dRW/x.txt)",
+      "sequence": 3,
+      "providerRowKey": "assistant-step:3",
+      "contentCompleteness": "complete"
+    }
+  ]
+}

@@ -712,7 +712,38 @@ function readClaudeTokenUsage(
   };
 }
 
+/**
+ * Latch key for a session's pending compact boundary. A live stream can reach
+ * normalization before its session id is known, so unattributed events share a
+ * single key rather than being dropped.
+ */
+function compactBoundaryKey(sessionId: string | null): string {
+  return sessionId ?? '<pending-session>';
+}
+
+/** Flattens a Messages API content payload (string or blocks) to plain text. */
+function readMessageText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .map((part) => (readObjectRecord(part)?.type === 'text' ? String(readObjectRecord(part)?.text ?? '') : ''))
+    .join('');
+}
+
 export class ClaudeSessionsProvider implements IProviderSessions {
+  /**
+   * Sessions whose next user-role event is the auto-compaction summary.
+   *
+   * Persisted transcripts tag that row `isCompactSummary: true`, but the live
+   * SDK's user message carries no such marker (`SDKUserMessage` has no
+   * `isCompactSummary`/`isMeta`/`isVisibleInTranscriptOnly` field), so during a
+   * run the summary would render as a giant user bubble that the user never
+   * typed, and then turn into an assistant summary on reload. The SDK does
+   * announce the compaction structurally, via a `compact_boundary` system
+   * event, so we latch that and label the user row it precedes.
+   */
+  private readonly sessionsAwaitingCompactSummary = new Set<string>();
+
   /**
    * Normalizes one Claude JSONL entry or live SDK stream event into the shared
    * message shape consumed by REST and WebSocket clients.
@@ -740,9 +771,23 @@ export class ClaudeSessionsProvider implements IProviderSessions {
     return messages;
   }
 
+  /**
+   * Consumes a pending compact-boundary latch for a session, if one is set.
+   * The latch is one-shot: only the first user row after the boundary is the
+   * summary, and a stale latch would mislabel a real prompt.
+   */
+  private consumeCompactBoundary(sessionId: string | null): boolean {
+    return this.sessionsAwaitingCompactSummary.delete(compactBoundaryKey(sessionId));
+  }
+
   private normalizeMessageRows(rawMessage: unknown, sessionId: string | null): NormalizedMessage[] {
     const raw = readObjectRecord(rawMessage);
     if (!raw) {
+      return [];
+    }
+
+    if (raw.type === 'system' && raw.subtype === 'compact_boundary') {
+      this.sessionsAwaitingCompactSummary.add(compactBoundaryKey(sessionId));
       return [];
     }
 
@@ -757,7 +802,50 @@ export class ClaudeSessionsProvider implements IProviderSessions {
     const ts = raw.timestamp || new Date().toISOString();
     const baseId = raw.uuid || generateMessageId('claude');
 
-    if (raw.message?.role === 'user' && raw.message?.content && raw.isMeta !== true) {
+    if (raw.message?.role === 'user') {
+      /**
+       * Claude stores compact summaries as synthetic "user" rows so the CLI can
+       * resume the next session turn with the summary in-context. For the web
+       * UI this is assistant-authored summary text; left as a user row it is
+       * both visually mislabeled and attributed to a prompt nobody sent.
+       *
+       * Checked before the generic user branch so it covers both content
+       * shapes: the transcript writes the summary as a plain string, while the
+       * live stream may deliver it as text blocks.
+       */
+      const summaryByBoundary = this.consumeCompactBoundary(sessionId);
+      if (raw.isCompactSummary === true || summaryByBoundary) {
+        const summaryText = readMessageText(raw.message.content);
+        if (summaryText.trim()) {
+          messages.push(createNormalizedMessage({
+            id: baseId,
+            sessionId,
+            timestamp: ts,
+            provider: PROVIDER,
+            kind: 'text',
+            role: 'assistant',
+            content: summaryText,
+            isCompactSummary: true,
+          }));
+        }
+        return messages;
+      }
+    }
+
+    /**
+     * `isMeta` and `isVisibleInTranscriptOnly` both mean "not a conversation
+     * message": the CLI injected this row so the model can keep working, and
+     * even Claude Code's own TUI keeps the latter out of the normal view. The
+     * compact-summary gate above runs first, so the one row that carries both
+     * still gets its quiet system line; anything else transcript-only is
+     * dropped rather than attributed to a prompt the user never sent.
+     */
+    if (
+      raw.message?.role === 'user'
+      && raw.message?.content
+      && raw.isMeta !== true
+      && raw.isVisibleInTranscriptOnly !== true
+    ) {
       if (Array.isArray(raw.message.content)) {
         // Image attachments sent through the SDK are persisted as base64
         // `image` blocks next to the prompt text. Collect them so the UI can
@@ -848,28 +936,6 @@ export class ClaudeSessionsProvider implements IProviderSessions {
         }
       } else if (typeof raw.message.content === 'string') {
         const text = raw.message.content;
-
-        /**
-         * Claude stores compact summaries as synthetic "user" rows so the CLI
-         * can resume the next session turn with the summary in-context.
-         *
-         * For the web UI this is much more useful as assistant-authored summary
-         * text; otherwise it is both filtered by the generic internal-prefix
-         * check and visually mislabeled as a user message.
-         */
-        if (raw.isCompactSummary === true && text.trim()) {
-          messages.push(createNormalizedMessage({
-            id: baseId,
-            sessionId,
-            timestamp: ts,
-            provider: PROVIDER,
-            kind: 'text',
-            role: 'assistant',
-            content: text,
-            isCompactSummary: true,
-          }));
-          return messages;
-        }
 
         /**
          * Local slash commands are serialized as tagged text even though they

@@ -21,10 +21,17 @@ test('uses the selected session summary as the page title', () => {
   assert.equal(getPageTitle(project, session), 'Fix browser tab title');
 });
 
-test('uses the selected Cursor session name as the page title', () => {
+/**
+ * This case used to build its session with a `name` field and assert the title
+ * came from it. No endpoint sends one — Cursor's synchronizer writes the name
+ * it derives into `custom_name`, which every session row surfaces as `summary`
+ * — so the fixture proved a contract the backend never produced while real
+ * Cursor sessions fell through to the placeholder.
+ */
+test('a Cursor session title comes from the same field as every other provider', () => {
   const session: ProjectSession = {
     id: 'session-1',
-    name: 'Cursor session name',
+    summary: 'Cursor session name',
     __provider: 'cursor',
   };
 

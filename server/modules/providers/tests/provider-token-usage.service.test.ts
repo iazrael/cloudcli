@@ -139,6 +139,7 @@ test('quota dispatches to the provider auth facet', async () => {
       },
     ],
     updatedAt: '2026-09-03T08:00:00.000Z',
+    partitioning: 'model-family' as const,
   };
 
   const service = createProviderTokenUsageService({

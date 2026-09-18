@@ -20,6 +20,9 @@ import { PROVIDER_CATALOG } from '../services/provider-capabilities.catalog.js';
 // boundaries plugin correctly flags it as an unknown dependency direction.
 // oxlint-disable-next-line boundaries/no-unknown
 import { PROVIDER_FALLBACK_CATALOG } from '../../../../src/shared/providerCatalogFallback.js';
+// oxlint-disable-next-line boundaries/no-unknown
+import { MCP_FALLBACK_CAPABILITIES } from '../../../../src/shared/mcpCapabilitiesFallback.js';
+import { providerRegistry } from '../provider.registry.js';
 
 test('the frontend fallback catalog mirrors the backend catalog', () => {
   const backendProviders = Object.keys(PROVIDER_CATALOG).sort();
@@ -40,6 +43,36 @@ test('the frontend fallback catalog mirrors the backend catalog', () => {
       frontend.permissionModes,
       [...backend.permissionModes],
       `${provider}: fallback permission modes drifted from the backend catalog (order included)`,
+    );
+  }
+});
+
+/**
+ * The MCP half of the same guarantee.
+ *
+ * Each provider's MCP facet declares what its config format supports; the
+ * frontend mirrors it so the server form paints before the capability matrix
+ * arrives. The three tables this mirror replaced had no such test and had gone
+ * stale — Cursor writes a working directory, but the table said it did not, so
+ * the field was hidden from Cursor users for as long as nobody noticed.
+ */
+test('the frontend MCP fallback mirrors each provider MCP facet', () => {
+  const backendProviders = providerRegistry.listProviders().map((provider) => provider.id).sort();
+  const frontendProviders = Object.keys(MCP_FALLBACK_CAPABILITIES).sort();
+  assert.deepEqual(frontendProviders, backendProviders,
+    'frontend MCP fallback and provider registry must cover the same provider set');
+
+  for (const provider of providerRegistry.listProviders()) {
+    const mirrored = MCP_FALLBACK_CAPABILITIES[provider.id as keyof typeof MCP_FALLBACK_CAPABILITIES];
+    assert.deepEqual(
+      {
+        scopes: [...mirrored.scopes],
+        transports: [...mirrored.transports],
+        supportsWorkingDirectory: mirrored.supportsWorkingDirectory,
+        supportsEnvVarIndirection: mirrored.supportsEnvVarIndirection,
+      },
+      provider.mcp.capabilities,
+      `${provider.id}: frontend MCP fallback must mirror the provider's declaration`,
     );
   }
 });

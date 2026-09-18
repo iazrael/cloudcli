@@ -11,7 +11,7 @@ import type {DiffLine,
   PermissionGrantResult,
   Provider,
 } from '@/shared/types';
-import { formatUsageLimitText, stripProposedPlanEnvelope } from '@/modules/chat/utils/chatFormatting';
+import { formatUsageLimitText } from '@/modules/chat/utils/chatFormatting';
 import { parseErrorCardContent } from '@/modules/chat/utils/errorCardContent';
 import type { Project } from '@/shared/types';
 import { getToolConfig, isCommandTool, ToolRenderer, ToolErrorDisplay, shouldHideToolResult } from '@/modules/chat/tools';
@@ -73,14 +73,13 @@ const MessageComponent = memo(({ message, prevMessage, turnAnchorMessage, isTurn
       (prevMessage.type === 'error'));
   const messageRef = useRef<HTMLDivElement | null>(null);
   const userCopyContent = String(message.content || '');
+  // No provider-specific shaping here: Codex's `<proposed_plan>` envelope is
+  // unwrapped onto a plan card by its adapter, like every other engine's
+  // private wrapping. A renderer shared by all providers must not know any of
+  // them by name.
   const formattedMessageContent = useMemo(
-    () => {
-      const content = formatUsageLimitText(String(message.content || ''));
-      return provider === 'codex' && message.type === 'assistant' && !message.isThinking
-        ? stripProposedPlanEnvelope(content)
-        : content;
-    },
-    [message.content, message.isThinking, message.type, provider]
+    () => formatUsageLimitText(String(message.content || '')),
+    [message.content]
   );
   const assistantCopyContent = message.isToolUse
     ? String(message.displayText || message.content || '')

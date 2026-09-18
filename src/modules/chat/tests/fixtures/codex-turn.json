@@ -1,0 +1,73 @@
+{
+  "provider": "codex",
+  "prompt": "用 ls 列出当前目录，然后只回答文件名",
+  "live": [
+    {
+      "id": "item_0",
+      "sessionId": "f1",
+      "timestamp": "2026-09-18T10:55:11.097Z",
+      "provider": "codex",
+      "kind": "tool_use",
+      "toolName": "Bash",
+      "toolInput": {
+        "command": "ls"
+      },
+      "toolId": "item_0",
+      "status": "completed"
+    },
+    {
+      "id": "item_0_result",
+      "sessionId": "f1",
+      "timestamp": "2026-09-18T10:55:11.097Z",
+      "provider": "codex",
+      "kind": "tool_result",
+      "toolId": "item_0",
+      "content": "y.txt\n",
+      "isError": false
+    },
+    {
+      "id": "codex_fff1884e-54b7-45ed-b30b-264d0db73526",
+      "sessionId": "f1",
+      "timestamp": "2026-09-18T10:55:11.097Z",
+      "provider": "codex",
+      "kind": "text",
+      "role": "assistant",
+      "content": "y.txt"
+    }
+  ],
+  "history": [
+    {
+      "id": "codex_cb7bc032-6533-4e73-a3da-4f15726b4238",
+      "sessionId": "f1",
+      "timestamp": "2026-09-18T10:53:26.862Z",
+      "provider": "codex",
+      "kind": "text",
+      "role": "user",
+      "content": "用 ls 列出当前目录，然后只回答文件名\n",
+      "transcriptAnchorId": "01a0b426-4bca-70f0-8b03-c150356257fe"
+    },
+    {
+      "id": "codex_185d6605-a1ce-468f-bb3a-f06ce813fff7",
+      "sessionId": "f1",
+      "timestamp": "2026-09-18T10:53:30.630Z",
+      "provider": "codex",
+      "kind": "tool_use",
+      "toolName": "Bash",
+      "toolInput": "{\"command\":\"ls\"}",
+      "toolId": "call_wDZOSrPBHPPHiNfa8rYyPWUw",
+      "toolResult": {
+        "content": "y.txt\n",
+        "isError": false
+      }
+    },
+    {
+      "id": "codex_bf760799-d8c9-41c8-b5a0-8ffb5206e4af",
+      "sessionId": "f1",
+      "timestamp": "2026-09-18T10:53:34.063Z",
+      "provider": "codex",
+      "kind": "text",
+      "role": "assistant",
+      "content": "y.txt"
+    }
+  ]
+}

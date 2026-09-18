@@ -26,7 +26,10 @@ const projectsDb = { getProjectPathById: dependencies.resolveProjectPathById };
 const queryClaudeSDK = dependencies.queryClaude;
 const spawnCursor = dependencies.queryCursor;
 const router = express.Router();
-const COMMIT_DIFF_CHARACTER_LIMIT = 500_000;
+// One shared ceiling for every diff the panel renders (a file's working-tree
+// diff and a commit's full diff): both are previews, so streaming more than
+// this only costs browser memory.
+const DIFF_CHARACTER_LIMIT = 500_000;
 
 function spawnAsync(command, args, options = {}) {
   return new Promise((resolve, reject) => {
@@ -135,6 +138,17 @@ async function getActualProjectPath(projectId) {
     throw new Error(`Unable to resolve project path for "${projectId}"`);
   }
   return validateProjectPath(projectPath);
+}
+
+/** Caps a diff at DIFF_CHARACTER_LIMIT; shape matches what /commit-diff returns. */
+function toDiffPreview(diff) {
+  const isTruncated = Boolean(diff) && diff.length > DIFF_CHARACTER_LIMIT;
+  return {
+    diff: isTruncated
+      ? `${diff.slice(0, DIFF_CHARACTER_LIMIT)}\n\n... Diff truncated to keep the UI responsive ...`
+      : diff,
+    isTruncated,
+  };
 }
 
 // Helper function to strip git diff headers
@@ -444,6 +458,10 @@ router.get('/diff', async (req, res) => {
       if (stats.isDirectory()) {
         // For directories, show a simple message
         diff = `Directory: ${repositoryRelativeFilePath}\n(Cannot show diff for directories)`;
+      } else if (stats.size > DIFF_CHARACTER_LIMIT) {
+        // Untracked files are rendered by reading the whole file; a huge one
+        // would be read into memory only to be truncated on the way out.
+        diff = `--- /dev/null\n+++ b/${repositoryRelativeFilePath}\n@@ -0,0 +1,1 @@\n+(new file, ${stats.size} bytes — too large to preview)`;
       } else {
         const fileContent = await fs.readFile(filePath, 'utf-8');
         const lines = fileContent.split('\n');
@@ -483,7 +501,7 @@ router.get('/diff', async (req, res) => {
       }
     }
 
-    res.json({ diff });
+    res.json(toDiffPreview(diff));
   } catch (error) {
     console.error('Git diff error:', error);
     res.json({ error: error.message });
@@ -937,12 +955,7 @@ router.get('/commit-diff', async (req, res) => {
       { cwd: projectPath }
     );
 
-    const isTruncated = stdout.length > COMMIT_DIFF_CHARACTER_LIMIT;
-    const diff = isTruncated
-      ? `${stdout.slice(0, COMMIT_DIFF_CHARACTER_LIMIT)}\n\n... Diff truncated to keep the UI responsive ...`
-      : stdout;
-
-    res.json({ diff, isTruncated });
+    res.json(toDiffPreview(stdout));
   } catch (error) {
     console.error('Git commit diff error:', error);
     res.json({ error: error.message });

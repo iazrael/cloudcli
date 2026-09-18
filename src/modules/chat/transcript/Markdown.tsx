@@ -1,4 +1,4 @@
-import React, { memo, useMemo, useState } from 'react';
+import React, { memo, useEffect, useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
@@ -10,8 +10,15 @@ import { useTranslation } from 'react-i18next';
 import { SyntaxHighlighter, isRegisteredLanguage } from '@/modules/chat/composer/codeHighlightLanguages';
 import { MermaidDiagram } from '@/modules/code-editor';
 import { normalizeInlineCodeFences } from '@/modules/chat/utils/chatFormatting';
-import { filePathFromFileUrl, markdownUrlTransform } from '@/modules/chat/utils/fileLink';
+import {
+  filePathFromFileUrl,
+  fileReferenceFromMarkdownHref,
+  isFileUrl,
+  markdownUrlTransform,
+} from '@/modules/chat/utils/fileLink';
+import { readExternalFileContent } from '@/shared/api';
 import { copyTextToClipboard } from '@/shared/utils';
+import { UnifiedImageViewer } from '@/shared/ui';
 import { usePaletteOps } from '@/modules/command-palette';
 import { useTheme } from '@/shared/context/ThemeContext';
 
@@ -178,6 +185,153 @@ const CodeBlock = memo(function CodeBlock({ node: _node, className, children, fo
   );
 });
 
+const LOCAL_IMAGE_EXTENSION_RE = /\.(png|jpe?g|gif|webp|svg|avif|bmp)$/i;
+const SYSTEM_ABSOLUTE_PREFIX_RE = /^\/(Users|home|var|tmp|private|Volumes|opt|mnt|root)\//i;
+const WINDOWS_ABSOLUTE_PATH_RE = /^[a-zA-Z]:([/\\]|%5[cC])/i;
+const COMMON_STATIC_WEB_PREFIX_RE = /^\/(assets|static|public|icons|images|favicon|logo)[/.?#]/i;
+
+const isLikelyLocalFilesystemPath = (rawPath: string): boolean => {
+  if (COMMON_STATIC_WEB_PREFIX_RE.test(rawPath)) {
+    return false;
+  }
+  if (SYSTEM_ABSOLUTE_PREFIX_RE.test(rawPath) || WINDOWS_ABSOLUTE_PATH_RE.test(rawPath)) {
+    return true;
+  }
+  const clean = rawPath.split('?')[0].split('#')[0];
+  const segments = clean.replace(/\\/g, '/').split('/').filter(Boolean);
+  return segments.length >= 3;
+};
+
+const localPathFromImageSrc = (src?: string): string | undefined => {
+  if (!src) {
+    return undefined;
+  }
+  if (isFileUrl(src)) {
+    return filePathFromFileUrl(src);
+  }
+  let decoded = src;
+  try {
+    decoded = decodeURIComponent(src);
+  } catch {
+    // Keep raw src if decode fails
+  }
+  if (!decoded.startsWith('/') && !WINDOWS_ABSOLUTE_PATH_RE.test(decoded)) {
+    return undefined;
+  }
+  const clean = decoded.split('?')[0].split('#')[0];
+  if (!LOCAL_IMAGE_EXTENSION_RE.test(clean)) {
+    return undefined;
+  }
+  return isLikelyLocalFilesystemPath(clean) ? clean : undefined;
+};
+
+type MarkdownImageProps = { node?: unknown } & React.ImgHTMLAttributes<HTMLImageElement>;
+
+// Renders markdown <img> inside chat messages — both the live stream and
+// restored history go through here. Remote and data images render as-is;
+// local filesystem images resolve into a blob URL (a bare <img> cannot carry
+// the auth header) and expand into the unified image viewer on click.
+function MarkdownImage({ src, alt, node: _node, ...props }: MarkdownImageProps) {
+  const { t } = useTranslation('chat');
+  const localPath = localPathFromImageSrc(src);
+  // Blob URL handed to <img> once the bytes arrive; null while loading.
+  const [blobSrc, setBlobSrc] = useState<string | null>(null);
+  // Set when the endpoint refuses the path (not allowlisted / deleted): fall
+  // back to the raw src, i.e. exactly the pre-fix rendering.
+  const [resolveFailed, setResolveFailed] = useState(false);
+  // Controls the viewer only after a resolved image is clicked; it is not
+  // derivable from the URL because closing the viewer must preserve the image.
+  const [expanded, setExpanded] = useState(false);
+
+  useEffect(() => {
+    if (!localPath) {
+      setBlobSrc(null);
+      setResolveFailed(false);
+      return;
+    }
+
+    setBlobSrc(null);
+    setResolveFailed(false);
+    const controller = new AbortController();
+    let objectUrl: string | null = null;
+    let revoked = false;
+    const revokeObjectUrl = () => {
+      if (objectUrl && !revoked) {
+        revoked = true;
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+    const load = async () => {
+      try {
+        const response = await readExternalFileContent(localPath, { signal: controller.signal });
+        if (!response.ok) {
+          throw new Error(`Image request failed with status ${response.status}`);
+        }
+        const blob = await response.blob();
+        objectUrl = URL.createObjectURL(blob);
+        if (controller.signal.aborted) {
+          revokeObjectUrl();
+          return;
+        }
+        setBlobSrc(objectUrl);
+      } catch {
+        if (!controller.signal.aborted) {
+          setResolveFailed(true);
+        }
+      }
+    };
+    void load();
+    return () => {
+      controller.abort();
+      revokeObjectUrl();
+    };
+  }, [localPath]);
+
+  if (!localPath || resolveFailed) {
+    return (
+      // Lazy decoding keeps late image loads from shifting scroll position
+      // while the user reads (native anchoring absorbs what remains).
+      <img src={src} alt={alt} loading="lazy" decoding="async" className="rounded-lg" {...props} />
+    );
+  }
+
+  if (!blobSrc) {
+    // Placeholder holds the layout while the bytes load.
+    return (
+      <div
+        role="img"
+        aria-label={alt || 'Image loading'}
+        className="my-1 h-28 max-w-sm animate-pulse rounded-lg bg-muted"
+      />
+    );
+  }
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          setExpanded(true);
+        }}
+        aria-label={t('misc.expandImage', { name: alt ?? '' })}
+        className="block max-w-full cursor-zoom-in"
+      >
+        <img src={blobSrc} alt={alt} loading="lazy" decoding="async" className="rounded-lg" {...props} />
+      </button>
+      {expanded && (
+        <UnifiedImageViewer
+          src={blobSrc}
+          alt={alt ?? ''}
+          title={alt ?? ''}
+          filePath={localPath}
+          onClose={() => setExpanded(false)}
+        />
+      )}
+    </>
+  );
+}
+
 const markdownComponents = {
   code: CodeBlock,
   // Fenced/indented code arrives as <pre><code>. Re-render the child CodeBlock
@@ -211,11 +365,7 @@ const markdownComponents = {
       <table className="my-0 min-w-full border-collapse text-sm">{children}</table>
     </div>
   ),
-  img: ({ src, alt, node: _node, ...props }: { node?: unknown } & React.ImgHTMLAttributes<HTMLImageElement>) => (
-    // Lazy decoding keeps late image loads from shifting scroll position
-    // while the user reads (native anchoring absorbs what remains).
-    <img src={src} alt={alt} loading="lazy" decoding="async" className="rounded-lg" {...props} />
-  ),
+  img: MarkdownImage,
   thead: ({ children }: { children?: React.ReactNode }) => <thead className="bg-muted/60">{children}</thead>,
   tr: ({ children }: { children?: React.ReactNode }) => (
     <tr className="[&:last-child>td]:border-b-0">{children}</tr>
@@ -259,10 +409,10 @@ export const MarkdownBody = memo(function MarkdownBody({ children, breaks = fals
       a: ({ href, children: linkChildren }: { href?: string; children?: React.ReactNode }) => {
         // Prefer the href when it is a real path; otherwise fall back to the
         // link text, since models often emit `[src/foo.ts]()` with an empty href.
-        // `file://` URLs are decoded to their absolute path first so external
-        // documents (e.g. Antigravity plan files) open read-only in the editor.
+        // Normalize Markdown's percent-escaped local paths and `file://` URLs
+        // before handing them to the editor.
         const linkText = childrenToText(linkChildren);
-        const pathHref = filePathFromFileUrl(href) ?? href;
+        const pathHref = fileReferenceFromMarkdownHref(href);
         const fileRef = looksLikeFilePath(pathHref) ? pathHref : looksLikeFilePath(linkText) ? linkText : undefined;
 
         if (fileRef && !isExternalHref(pathHref)) {

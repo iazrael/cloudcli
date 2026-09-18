@@ -1,8 +1,8 @@
-import type { LLMProvider } from '@/shared/types';
+import type { LLMProvider, McpScope, McpTransport } from '@/shared/types';
+
+export type { McpScope, McpTransport };
 
 export type McpProvider = LLMProvider;
-export type McpScope = 'user' | 'local' | 'project';
-export type McpTransport = 'stdio' | 'http' | 'sse';
 export type McpImportMode = 'form' | 'json';
 export type McpFormMode = 'provider' | 'global';
 export type KeyValueMap = Record<string, string>;

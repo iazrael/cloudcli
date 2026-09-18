@@ -71,6 +71,7 @@ export default function GitPanel({
     deleteUntrackedFile,
     stageFiles,
     unstageFiles,
+    fetchFileDiff,
     fetchCommitDiff,
     commitChanges,
     createInitialCommit,
@@ -186,6 +187,7 @@ export default function GitPanel({
               onCommitChanges={commitChanges}
               onRequestConfirmation={setConfirmAction}
               onExpandedFilesChange={setHasExpandedFiles}
+              onFetchFileDiff={fetchFileDiff}
             />
           )}
 

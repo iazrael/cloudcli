@@ -43,6 +43,11 @@ function emit(store: SessionTimelineStore, frame: Record<string, unknown>): void
   store.applyServerEvent(frame as ServerEvent, { provider: 'claude' });
 }
 
+/** Drives one Antigravity frame so its provider-native row identity is exercised. */
+function emitAntigravity(store: SessionTimelineStore, frame: Record<string, unknown>): void {
+  store.applyServerEvent(frame as ServerEvent, { provider: 'antigravity' });
+}
+
 /**
  * A scripted transport: each call must match the next entry's limit/offset
  * (pinning offset bookkeeping), and unexpected calls fail the test.
@@ -226,6 +231,539 @@ test('a streaming row anchors its timestamp at segment start and finalizes in pl
   assert.equal(nextSegment!.content, 'Next');
 });
 
+test('a persisted Antigravity row replaces its keyed stream even after a newer user turn exists', async () => {
+  const streamedContent = 'A concrete implementation plan with enough text to identify the persisted row.';
+  const providerRowKey = 'assistant-step:2';
+  const initialUser = msg(1, { provider: 'antigravity', content: 'please propose a plan' });
+  const persistedReply = msg(2, {
+    id: 'msg_session_2',
+    provider: 'antigravity',
+    content: streamedContent,
+    providerRowKey,
+  });
+  const newerUser = msg(3, { provider: 'antigravity', content: 'continue with the implementation' });
+  const fetchPage = scriptedFetcher([
+    {
+      params: { limit: 20, offset: 0 },
+      page: { messages: [initialUser], total: 1, hasMore: false },
+    },
+    {
+      params: { limit: 20, offset: 0 },
+      page: { messages: [initialUser, persistedReply, newerUser], total: 3, hasMore: false },
+    },
+  ]);
+  const store = new SessionTimelineStore({ fetchPage });
+
+  await store.fetchFromServer(SESSION_ID, { limit: 20, offset: 0 });
+  emitAntigravity(store, {
+    kind: 'stream_delta',
+    sessionId: SESSION_ID,
+    content: streamedContent,
+    providerRowKey,
+  });
+  emitAntigravity(store, { kind: 'complete', sessionId: SESSION_ID });
+
+  await store.refreshLatestFromServer(SESSION_ID);
+
+  assert.deepEqual(
+    store.getMessages(SESSION_ID).filter((row) => row.content === streamedContent).map((row) => row.id),
+    ['msg_session_2'],
+  );
+  assert.equal(store.getSessionSlot(SESSION_ID)!.realtimeMessages.length, 0);
+});
+
+test('a keyed Antigravity stream survives an empty first refresh and is pruned when the second refresh lands it', async () => {
+  const streamedContent = 'The transcript is deliberately one refresh behind this completed stream.';
+  const providerRowKey = 'assistant-step:4';
+  const initialUser = msg(1, { provider: 'antigravity', content: 'draft the migration steps' });
+  const newerUser = msg(3, { provider: 'antigravity', content: 'go ahead' });
+  const persistedReply = msg(2, {
+    id: 'msg_session_4',
+    provider: 'antigravity',
+    content: streamedContent,
+    providerRowKey,
+  });
+  const fetchPage = scriptedFetcher([
+    {
+      params: { limit: 20, offset: 0 },
+      page: { messages: [initialUser], total: 1, hasMore: false },
+    },
+    {
+      params: { limit: 20, offset: 0 },
+      page: { messages: [initialUser, newerUser], total: 2, hasMore: false },
+    },
+    {
+      params: { limit: 20, offset: 0 },
+      page: { messages: [initialUser, persistedReply, newerUser], total: 3, hasMore: false },
+    },
+  ]);
+  const store = new SessionTimelineStore({ fetchPage });
+
+  await store.fetchFromServer(SESSION_ID, { limit: 20, offset: 0 });
+  emitAntigravity(store, {
+    kind: 'stream_delta',
+    sessionId: SESSION_ID,
+    content: streamedContent,
+    providerRowKey,
+  });
+  emitAntigravity(store, { kind: 'complete', sessionId: SESSION_ID });
+
+  await store.refreshLatestFromServer(SESSION_ID);
+  let matchingRows = store.getMessages(SESSION_ID).filter((row) => row.content === streamedContent);
+  assert.equal(matchingRows.length, 1);
+  assert.match(matchingRows[0].id, /^text_/);
+  assert.equal(matchingRows[0].providerRowKey, providerRowKey);
+
+  await store.refreshLatestFromServer(SESSION_ID);
+  matchingRows = store.getMessages(SESSION_ID).filter((row) => row.content === streamedContent);
+  assert.deepEqual(matchingRows.map((row) => row.id), ['msg_session_4']);
+  assert.equal(store.getSessionSlot(SESSION_ID)!.realtimeMessages.length, 0);
+});
+
+test('a complete keyed history row owns its realtime counterpart regardless of body differences', async () => {
+  const providerRowKey = 'assistant-step:6';
+  const initialUser = msg(1, { provider: 'antigravity', content: 'prepare the final answer' });
+  const persistedReply = msg(2, {
+    id: 'msg_session_6',
+    provider: 'antigravity',
+    content: 'Persisted partial answer.',
+    providerRowKey,
+  });
+  const fetchPage = scriptedFetcher([
+    {
+      params: { limit: 20, offset: 0 },
+      page: { messages: [initialUser], total: 1, hasMore: false },
+    },
+    {
+      params: { limit: 20, offset: 0 },
+      page: { messages: [initialUser, persistedReply], total: 2, hasMore: false },
+    },
+  ]);
+  const store = new SessionTimelineStore({ fetchPage });
+
+  await store.fetchFromServer(SESSION_ID, { limit: 20, offset: 0 });
+  emitAntigravity(store, {
+    kind: 'stream_delta',
+    sessionId: SESSION_ID,
+    content: 'Live complete answer with content that has not landed in history.',
+    providerRowKey,
+  });
+  emitAntigravity(store, { kind: 'complete', sessionId: SESSION_ID });
+
+  await store.refreshLatestFromServer(SESSION_ID);
+
+  assert.deepEqual(
+    store.getMessages(SESSION_ID)
+      .filter((row) => row.role === 'assistant')
+      .map((row) => row.content),
+    ['Persisted partial answer.'],
+  );
+});
+
+test('a keyed history prefix yields to the complete Antigravity stream', async () => {
+  const providerRowKey = 'assistant-step:7';
+  const completeReply = `${'A detailed implementation step with concrete safeguards. '.repeat(8)}Final verification.`;
+  const persistedPrefix = completeReply.slice(0, Math.floor(completeReply.length * 0.3));
+  const initialUser = msg(1, { provider: 'antigravity', content: 'write the complete plan' });
+  const fetchPage = scriptedFetcher([
+    {
+      params: { limit: 20, offset: 0 },
+      page: { messages: [initialUser], total: 1, hasMore: false },
+    },
+    {
+      params: { limit: 20, offset: 0 },
+      page: {
+        messages: [initialUser, msg(2, {
+          id: 'msg_session_7',
+          provider: 'antigravity',
+          content: persistedPrefix,
+          providerRowKey,
+          contentCompleteness: 'truncated',
+        })],
+        total: 2,
+        hasMore: false,
+      },
+    },
+  ]);
+  const store = new SessionTimelineStore({ fetchPage });
+
+  await store.fetchFromServer(SESSION_ID, { limit: 20, offset: 0 });
+  emitAntigravity(store, {
+    kind: 'stream_delta',
+    sessionId: SESSION_ID,
+    content: completeReply,
+    providerRowKey,
+  });
+  emitAntigravity(store, { kind: 'complete', sessionId: SESSION_ID });
+
+  await store.refreshLatestFromServer(SESSION_ID);
+
+  assert.deepEqual(
+    store.getMessages(SESSION_ID)
+      .filter((row) => row.role === 'assistant')
+      .map((row) => row.content),
+    [completeReply],
+  );
+});
+
+test('a near-identical keyed Antigravity history row yields to richer markdown-formatted stream text', async () => {
+  const providerRowKey = 'assistant-step:7b';
+  const shared = '游戏世界与界面分工协作是现代 Web 游戏的常见架构。'.repeat(18);
+  const persistedReply = `${shared}原版客户端在同一绘制表面中逐层绘制。`;
+  const streamedReply = `## 结论\n\n${shared}\n\n**原版客户端**在同一绘制表面中逐层绘制。\n\n- Canvas 负责动态世界\n- DOM 负责复杂交互`;
+  const initialUser = msg(1, { provider: 'antigravity', content: '解释 Canvas 和 DOM 的分工' });
+  const fetchPage = scriptedFetcher([
+    {
+      params: { limit: 20, offset: 0 },
+      page: { messages: [initialUser], total: 1, hasMore: false },
+    },
+    {
+      params: { limit: 20, offset: 0 },
+      page: {
+        messages: [initialUser, msg(2, {
+          id: 'msg_session_7b',
+          provider: 'antigravity',
+          content: persistedReply,
+          providerRowKey,
+          contentCompleteness: 'truncated',
+        })],
+        total: 2,
+        hasMore: false,
+      },
+    },
+  ]);
+  const store = new SessionTimelineStore({ fetchPage });
+
+  await store.fetchFromServer(SESSION_ID, { limit: 20, offset: 0 });
+  emitAntigravity(store, {
+    kind: 'stream_delta',
+    sessionId: SESSION_ID,
+    content: streamedReply,
+    providerRowKey,
+  });
+  emitAntigravity(store, { kind: 'complete', sessionId: SESSION_ID });
+
+  await store.refreshLatestFromServer(SESSION_ID);
+
+  assert.deepEqual(
+    store.getMessages(SESSION_ID)
+      .filter((row) => row.role === 'assistant')
+      .map((row) => row.content),
+    [streamedReply],
+  );
+});
+
+test('a unique provider row key treats changed wording as the same persisted row', async () => {
+  const providerRowKey = 'assistant-step:7c';
+  const shared = '这一段用于保证回答足够长，同时验证不能因为大部分文字相同就吞掉修改过的事实。'.repeat(5);
+  const persistedReply = `该方案支持离线模式。${shared}`;
+  const streamedReply = `该方案不支持离线模式。${shared}`;
+  const initialUser = msg(1, { provider: 'antigravity', content: '确认离线模式是否可用' });
+  const fetchPage = scriptedFetcher([
+    {
+      params: { limit: 20, offset: 0 },
+      page: { messages: [initialUser], total: 1, hasMore: false },
+    },
+    {
+      params: { limit: 20, offset: 0 },
+      page: {
+        messages: [initialUser, msg(2, {
+          id: 'msg_session_7c',
+          provider: 'antigravity',
+          content: persistedReply,
+          providerRowKey,
+        })],
+        total: 2,
+        hasMore: false,
+      },
+    },
+  ]);
+  const store = new SessionTimelineStore({ fetchPage });
+
+  await store.fetchFromServer(SESSION_ID, { limit: 20, offset: 0 });
+  emitAntigravity(store, {
+    kind: 'stream_delta',
+    sessionId: SESSION_ID,
+    content: streamedReply,
+    providerRowKey,
+  });
+  emitAntigravity(store, { kind: 'complete', sessionId: SESSION_ID });
+
+  await store.refreshLatestFromServer(SESSION_ID);
+
+  assert.deepEqual(
+    store.getMessages(SESSION_ID)
+      .filter((row) => row.role === 'assistant')
+      .map((row) => row.content),
+    [persistedReply],
+  );
+});
+
+test('a partial Antigravity stream suffix yields to the complete persisted history row', async () => {
+  const providerRowKey = 'assistant-step:7d';
+  const prefix = '在系统设计中，界面的对话消息有两条流向：第一条路是 REST 历史记录；第二条路是 WebSocket 实时流。'.repeat(4);
+  const suffix = '去重机制如果失效，就会在时间线上留下两个分身并被折叠显示。'.repeat(5);
+  const completePersistedReply = `${prefix}${suffix}`;
+  const partialStreamedSuffix = suffix;
+  const initialUser = msg(1, { provider: 'antigravity', content: '解释去重机制' });
+  const fetchPage = scriptedFetcher([
+    {
+      params: { limit: 20, offset: 0 },
+      page: { messages: [initialUser], total: 1, hasMore: false },
+    },
+    {
+      params: { limit: 20, offset: 0 },
+      page: {
+        messages: [initialUser, msg(2, {
+          id: 'msg_session_7d',
+          provider: 'antigravity',
+          content: completePersistedReply,
+          providerRowKey,
+        })],
+        total: 2,
+        hasMore: false,
+      },
+    },
+  ]);
+  const store = new SessionTimelineStore({ fetchPage });
+
+  await store.fetchFromServer(SESSION_ID, { limit: 20, offset: 0 });
+  emitAntigravity(store, {
+    kind: 'stream_delta',
+    sessionId: SESSION_ID,
+    content: partialStreamedSuffix,
+    providerRowKey,
+  });
+  emitAntigravity(store, { kind: 'complete', sessionId: SESSION_ID });
+
+  await store.refreshLatestFromServer(SESSION_ID);
+
+  assert.deepEqual(
+    store.getMessages(SESSION_ID)
+      .filter((row) => row.role === 'assistant')
+      .map((row) => row.content),
+    [completePersistedReply],
+  );
+});
+
+test('a keyed Antigravity stream suffix with pangu spacing and missing markdown newlines yields to complete formatted history', async () => {
+  const providerRowKey = 'assistant-step:7e';
+  const prefix = '从你的截图来看，每一个显示 x2 的工具调用，点开后里面其实都是同一个操作的两个分身：后端历史记录与 WebSocket 实时流。'.repeat(3);
+  const formattedSuffix = [
+    '### 为什么会出现两个分身？（根本原因）',
+    '',
+    '在 CloudCLI 的设计中，界面的对话消息有**两条流向**：',
+    '- **第一条路（REST 历史记录）**：当你打开页面、切换会话时，前端拉取最新的历史记录。',
+    '- **第二条路（WebSocket 实时流）**：正在运行的 Codex 任务，会把实时事件一条条推送给前端。',
+    '',
+    '#### 1. 两边的“身份证（ID）”天然对不上',
+    'Codex SDK 实时推过来的事件使用的是 SDK 内部临时生成的 ID，而写入日志历史文件的则是底层的 ID。',
+    '',
+    '#### 2. “指纹比对”因为 diff 数据缺失导致不一致',
+    '比对算法发现两者的参数内容完全不同，判定它们是两次不同的工具调用。',
+    '',
+    '2. 在后端实时流处理时补齐对应的 tool_result 完成帧。',
+  ].join('\n');
+
+  const rawStreamSuffix = [
+    '的对话消息有**两条流向**：',
+    '- **第一条路（REST历史记录）**：当你打开页面、切换会话时，前端拉取最新的历史记录。- **第二条路（WebSocket 实时流）**：正在运行的 Codex任务，会把实时事件一条条推送给前端。',
+    '#### 1.两边的“身份证（ID）”天然对不上Codex SDK实时推过来的事件使用的是SDK内部临时生成的 ID，而写入日志历史文件的则是底层的 ID。',
+    '#### 2. “指纹比对”因为diff数据缺失导致不一致比对算法发现两者的参数内容完全不同，判定它们是两次不同的工具调用。',
+    '2.在后端实时流处理时补齐对应的 tool_result完成帧。',
+  ].join('\n');
+
+  const completePersistedReply = `${prefix}\n\n${formattedSuffix}`;
+  const initialUser = msg(1, { provider: 'antigravity', content: '分析原因' });
+  const fetchPage = scriptedFetcher([
+    {
+      params: { limit: 20, offset: 0 },
+      page: { messages: [initialUser], total: 1, hasMore: false },
+    },
+    {
+      params: { limit: 20, offset: 0 },
+      page: {
+        messages: [initialUser, msg(2, {
+          id: 'msg_session_7e',
+          provider: 'antigravity',
+          content: completePersistedReply,
+          providerRowKey,
+        })],
+        total: 2,
+        hasMore: false,
+      },
+    },
+  ]);
+  const store = new SessionTimelineStore({ fetchPage });
+
+  await store.fetchFromServer(SESSION_ID, { limit: 20, offset: 0 });
+  emitAntigravity(store, {
+    kind: 'stream_delta',
+    sessionId: SESSION_ID,
+    content: rawStreamSuffix,
+    providerRowKey,
+  });
+  emitAntigravity(store, { kind: 'complete', sessionId: SESSION_ID });
+
+  await store.refreshLatestFromServer(SESSION_ID);
+
+  assert.deepEqual(
+    store.getMessages(SESSION_ID)
+      .filter((row) => row.role === 'assistant')
+      .map((row) => row.content),
+    [completePersistedReply],
+  );
+});
+
+test('different provider row keys preserve identical Antigravity text as distinct rows', async () => {
+  const repeatedContent = 'This answer is intentionally repeated in two distinct provider steps.';
+  const initialUser = msg(1, { provider: 'antigravity', content: 'answer twice' });
+  const persistedReply = msg(2, {
+    id: 'msg_session_8',
+    provider: 'antigravity',
+    content: repeatedContent,
+    providerRowKey: 'assistant-step:8',
+  });
+  const fetchPage = scriptedFetcher([
+    {
+      params: { limit: 20, offset: 0 },
+      page: { messages: [initialUser], total: 1, hasMore: false },
+    },
+    {
+      params: { limit: 20, offset: 0 },
+      page: { messages: [initialUser, persistedReply], total: 2, hasMore: false },
+    },
+  ]);
+  const store = new SessionTimelineStore({ fetchPage });
+
+  await store.fetchFromServer(SESSION_ID, { limit: 20, offset: 0 });
+  emitAntigravity(store, {
+    kind: 'stream_delta',
+    sessionId: SESSION_ID,
+    content: repeatedContent,
+    providerRowKey: 'assistant-step:9',
+  });
+  emitAntigravity(store, { kind: 'complete', sessionId: SESSION_ID });
+
+  await store.refreshLatestFromServer(SESSION_ID);
+
+  assert.equal(
+    store.getMessages(SESSION_ID).filter((row) => row.content === repeatedContent).length,
+    2,
+  );
+});
+
+test('a duplicated persisted provider row key does not discard any candidate by content', async () => {
+  const repeatedContent = 'A provider key collision must stay visible instead of deleting user-visible text.';
+  const providerRowKey = 'assistant-step:9';
+  const initialUser = msg(1, { provider: 'antigravity', content: 'show the plan' });
+  const firstPersistedReply = msg(2, {
+    id: 'msg_session_9_a',
+    provider: 'antigravity',
+    content: repeatedContent,
+    providerRowKey,
+  });
+  const secondPersistedReply = msg(4, {
+    id: 'msg_session_9_b',
+    provider: 'antigravity',
+    content: repeatedContent,
+    providerRowKey,
+  });
+  const fetchPage = scriptedFetcher([
+    {
+      params: { limit: 20, offset: 0 },
+      page: { messages: [initialUser], total: 1, hasMore: false },
+    },
+    {
+      params: { limit: 20, offset: 0 },
+      page: {
+        messages: [initialUser, firstPersistedReply, secondPersistedReply],
+        total: 3,
+        hasMore: false,
+      },
+    },
+  ]);
+  const store = new SessionTimelineStore({ fetchPage });
+
+  await store.fetchFromServer(SESSION_ID, { limit: 20, offset: 0 });
+  emitAntigravity(store, {
+    kind: 'stream_delta',
+    sessionId: SESSION_ID,
+    content: repeatedContent,
+    providerRowKey,
+  });
+  emitAntigravity(store, { kind: 'complete', sessionId: SESSION_ID });
+
+  await store.refreshLatestFromServer(SESSION_ID);
+
+  assert.equal(
+    store.getMessages(SESSION_ID).filter((row) => row.content === repeatedContent).length,
+    3,
+  );
+  assert.equal(store.getSessionSlot(SESSION_ID)!.realtimeMessages.length, 1);
+});
+
+test('a new provider row key splits Antigravity deltas even when no stream_end arrives', () => {
+  const store = new SessionTimelineStore();
+
+  emitAntigravity(store, {
+    kind: 'stream_delta',
+    sessionId: SESSION_ID,
+    content: 'First provider step.',
+    providerRowKey: 'assistant-step:10',
+  });
+  emitAntigravity(store, {
+    kind: 'stream_delta',
+    sessionId: SESSION_ID,
+    content: 'Second provider step.',
+    providerRowKey: 'assistant-step:11',
+  });
+  emitAntigravity(store, { kind: 'complete', sessionId: SESSION_ID });
+
+  assert.deepEqual(
+    store.getMessages(SESSION_ID)
+      .filter((row) => row.kind === 'text' && row.role === 'assistant')
+      .map((row) => ({ content: row.content, providerRowKey: row.providerRowKey })),
+    [
+      { content: 'First provider step.', providerRowKey: 'assistant-step:10' },
+      { content: 'Second provider step.', providerRowKey: 'assistant-step:11' },
+    ],
+  );
+});
+
+test('crossing between unkeyed stdout and keyed Antigravity text closes each stream segment', () => {
+  const store = new SessionTimelineStore();
+
+  emitAntigravity(store, {
+    kind: 'stream_delta',
+    sessionId: SESSION_ID,
+    content: 'Unkeyed notice before the answer.',
+  });
+  emitAntigravity(store, {
+    kind: 'stream_delta',
+    sessionId: SESSION_ID,
+    content: 'Persistable provider answer.',
+    providerRowKey: 'assistant-step:12',
+  });
+  emitAntigravity(store, {
+    kind: 'stream_delta',
+    sessionId: SESSION_ID,
+    content: 'Unkeyed notice after the answer.',
+  });
+  emitAntigravity(store, { kind: 'complete', sessionId: SESSION_ID });
+
+  assert.deepEqual(
+    store.getMessages(SESSION_ID)
+      .filter((row) => row.kind === 'text' && row.role === 'assistant')
+      .map((row) => ({ content: row.content, providerRowKey: row.providerRowKey })),
+    [
+      { content: 'Unkeyed notice before the answer.', providerRowKey: undefined },
+      { content: 'Persistable provider answer.', providerRowKey: 'assistant-step:12' },
+      { content: 'Unkeyed notice after the answer.', providerRowKey: undefined },
+    ],
+  );
+});
+
 // ─── Merged view: the three realtime-echo absorptions ────────────────────────
 
 test('optimistic user, thinking, and same-turn assistant echoes are absorbed into the merged view', async () => {
@@ -248,8 +786,16 @@ test('optimistic user, thinking, and same-turn assistant echoes are absorbed int
   await store.fetchFromServer(SESSION_ID, { limit: 20, offset: 0 });
 
   const at = (n: number) => new Date(BASE_TIME + n * 1000).toISOString();
+  // Sent before this page existed, which is the only order reality produces:
+  // a prompt is not on disk until it has been sent. The stamp is what the
+  // store records at send time.
   store.appendRealtime(SESSION_ID,
-    msg(1, { id: 'local_user_echo', content: 'what is the answer?', timestamp: at(1) }));
+    msg(1, {
+      id: 'local_user_echo',
+      content: 'what is the answer?',
+      timestamp: at(1),
+      replacesAfterRowCount: 0,
+    }));
   store.appendRealtime(SESSION_ID, {
     id: 'rt_thinking_echo',
     sessionId: SESSION_ID,
@@ -271,6 +817,40 @@ test('optimistic user, thinking, and same-turn assistant echoes are absorbed int
   assert.deepEqual(
     store.getMessages(SESSION_ID).map((row) => row.id),
     ['m1', 'm2', 'm4'],
+  );
+});
+
+test('a live assistant reply cannot overtake the optimistic user row when clocks disagree', async () => {
+  const fetchPage = scriptedFetcher([
+    {
+      params: { limit: 20, offset: 0 },
+      page: {
+        messages: [msg(2, { content: 'answer from an earlier turn' })],
+        total: 1,
+        hasMore: false,
+      },
+    },
+  ]);
+  const store = new SessionTimelineStore({ fetchPage });
+
+  await store.fetchFromServer(SESSION_ID, { limit: 20, offset: 0 });
+
+  // The browser clock is ahead of the server clock, but append order still
+  // captures causality: the question was sent before its reply arrived.
+  store.appendRealtime(SESSION_ID, msg(3, {
+    id: 'local_current_question',
+    content: 'current question',
+    timestamp: '2026-01-01T00:00:08.900Z',
+  }));
+  store.appendRealtime(SESSION_ID, msg(4, {
+    id: 'live_assistant_reply',
+    content: 'reply to current question',
+    timestamp: '2026-01-01T00:00:08.388Z',
+  }));
+
+  assert.deepEqual(
+    store.getMessages(SESSION_ID).map((row) => row.id),
+    ['m2', 'local_current_question', 'live_assistant_reply'],
   );
 });
 
@@ -343,7 +923,7 @@ test('a live card whose call is not persisted yet survives the refresh', async (
   assert.ok(merged.some((message) => message.id === 'rt-live_zcode_1'));
 });
 
-test('two identical persisted calls keep both live cards pruned one-to-one', async () => {
+test('tool cards without a provable user turn remain visible rather than cross-turn claiming', async () => {
   const fetchPage = scriptedFetcher([
     {
       params: { limit: 20, offset: 0 },
@@ -361,9 +941,286 @@ test('two identical persisted calls keep both live cards pruned one-to-one', asy
   await store.fetchFromServer(SESSION_ID, { limit: 20, offset: 0 });
 
   const toolCards = store.getMessages(SESSION_ID).filter((message) => message.kind === 'tool_use');
-  assert.equal(toolCards.length, 2, 'identical repeat calls stay distinct');
+  assert.equal(toolCards.length, 4, 'unanchored calls stay visible');
   assert.deepEqual(
     toolCards.map((message) => message.toolId).sort(),
-    ['msg_1_part_2', 'msg_3_part_4'],
+    ['live_zcode_1', 'live_zcode_2', 'msg_1_part_2', 'msg_3_part_4'],
   );
+});
+
+test('a repeated local user prompt cannot prove a stale server turn for tool reconciliation', async () => {
+  const staleServerUser = msg(1, { id: 'server-old-user', content: '继续', role: 'user' });
+  const staleServerTool = persistedWriteCard('server-old-tool');
+  const fetchPage = scriptedFetcher([{
+    params: { limit: 20, offset: 0 },
+    page: { messages: [staleServerUser, staleServerTool], total: 2, hasMore: false },
+  }]);
+  const store = new SessionTimelineStore({ fetchPage });
+  const currentLocalUser = msg(2, { id: 'local-current-user', content: '继续', role: 'user' });
+
+  store.appendRealtime(SESSION_ID, currentLocalUser);
+  store.appendRealtime(SESSION_ID, liveWriteCard('live-current-tool'));
+  await store.fetchFromServer(SESSION_ID, { limit: 20, offset: 0 });
+
+  const toolCards = store.getMessages(SESSION_ID).filter((message) => message.kind === 'tool_use');
+  assert.deepEqual(
+    toolCards.map((message) => message.toolId).sort(),
+    ['live-current-tool', 'server-old-tool'],
+  );
+});
+
+test('an Edit for the same path in a later user turn cannot claim an earlier persisted Edit', async () => {
+  const firstUser = msg(1, { id: 'server-user-one', content: 'first edit' });
+  const secondUser = msg(3, { id: 'server-user-two', content: 'second edit' });
+  const firstEdit = persistedWriteCard('server-edit-one');
+  const secondEdit = persistedWriteCard('server-edit-two');
+  firstEdit.toolInput = { file_path: '/a.ts', content: 'first change' };
+  secondEdit.toolInput = { file_path: '/a.ts', content: 'second change' };
+  const fetchPage = scriptedFetcher([{
+    params: { limit: 20, offset: 0 },
+    page: { messages: [firstUser, firstEdit, secondUser, secondEdit], total: 4, hasMore: false },
+  }]);
+  const store = new SessionTimelineStore({ fetchPage });
+  emit(store, firstUser);
+  emit(store, firstEdit);
+  emit(store, secondUser);
+  emit(store, liveWriteCard('live-second-edit'));
+
+  await store.fetchFromServer(SESSION_ID, { limit: 20, offset: 0 });
+
+  assert.ok(store.getMessages(SESSION_ID).some((message) => message.id === 'rt-live-second-edit'));
+});
+
+// ─── Cross-source ordering: causal anchor over wall clock ────────────────────
+
+/**
+ * The reported Codex symptom: the live reply renders *above* the user message
+ * that caused it.
+ *
+ * The two sources carry timestamps from two machines — the streaming row is
+ * stamped by the browser, the persisted user turn by the engine. While the
+ * optimistic `local_` row is still present both rows sit in `realtimeMessages`
+ * and array order keeps them straight; once the history refresh retires the
+ * optimistic row, the pair is split across sources and a browser clock running
+ * slightly behind the engine's flips them.
+ *
+ * Ordering must come from the causal anchor (this stream belongs to that user
+ * turn), never from comparing two machines' clocks.
+ */
+test('a live stream stays below its user turn when the browser clock lags the engine', async () => {
+  const ENGINE_USER_TIME = new Date(BASE_TIME + 60_000).toISOString();
+  const BROWSER_SKEW_MS = 2_000;
+
+  const persistedUserTurn: NormalizedMessage = {
+    id: 'engine-user-1',
+    sessionId: SESSION_ID,
+    timestamp: ENGINE_USER_TIME,
+    provider: 'codex',
+    kind: 'text',
+    role: 'user',
+    content: 'explain the merge',
+  };
+
+  const fetchPage = scriptedFetcher([
+    { params: { limit: 50, offset: 0 }, page: { messages: [persistedUserTurn], total: 1, hasMore: false } },
+  ]);
+  const store = new SessionTimelineStore({ fetchPage });
+
+  // The browser stamps the optimistic user row and the stream that follows it
+  // with a clock running behind the engine's.
+  vi.setSystemTime(new Date(BASE_TIME + 60_000 - BROWSER_SKEW_MS));
+
+  store.appendRealtime(SESSION_ID, {
+    id: 'local_1',
+    sessionId: SESSION_ID,
+    timestamp: new Date(BASE_TIME + 60_000 - BROWSER_SKEW_MS).toISOString(),
+    provider: 'codex',
+    kind: 'text',
+    role: 'user',
+    content: 'explain the merge',
+  });
+
+  store.applyServerEvent(
+    { kind: 'stream_delta', sessionId: SESSION_ID, content: 'The merge interleaves' } as unknown as ServerEvent,
+    { provider: 'codex' },
+  );
+  await tickThrottle();
+
+  // The history refresh lands the engine's copy of the user turn, retiring the
+  // optimistic row and splitting the pair across the two sources.
+  await store.refreshLatestFromServer(SESSION_ID, { limit: 50 });
+
+  const rows = store.getMessages(SESSION_ID);
+  const userIndex = rows.findIndex((row) => row.role === 'user');
+  const streamIndex = rows.findIndex((row) => row.id === `__streaming_${SESSION_ID}`);
+
+  assert.ok(userIndex >= 0, 'the user turn must survive the refresh');
+  assert.ok(streamIndex >= 0, 'the live stream must survive the refresh');
+  assert.ok(
+    userIndex < streamIndex,
+    `the live stream must stay below its user turn (user@${userIndex}, stream@${streamIndex})`,
+  );
+});
+
+/**
+ * The same split, minus the causal anchor: a second tab (or a tab that
+ * reconnected mid-run) never created an optimistic row, so nothing records
+ * which turn the live stream belongs to. Placement falls back to the clocks,
+ * and this tab's clock also lags the engine's.
+ */
+test('a live stream stays below its user turn even without an optimistic row to anchor it', async () => {
+  const ENGINE_USER_TIME = new Date(BASE_TIME + 60_000).toISOString();
+
+  const persistedUserTurn: NormalizedMessage = {
+    id: 'engine-user-1',
+    sessionId: SESSION_ID,
+    timestamp: ENGINE_USER_TIME,
+    provider: 'codex',
+    kind: 'text',
+    role: 'user',
+    content: 'explain the merge',
+  };
+
+  const fetchPage = scriptedFetcher([
+    { params: { limit: 50, offset: 0 }, page: { messages: [persistedUserTurn], total: 1, hasMore: false } },
+  ]);
+  const store = new SessionTimelineStore({ fetchPage });
+
+  await store.refreshLatestFromServer(SESSION_ID, { limit: 50 });
+
+  vi.setSystemTime(new Date(BASE_TIME + 60_000 - 2_000));
+  store.applyServerEvent(
+    { kind: 'stream_delta', sessionId: SESSION_ID, content: 'The merge interleaves' } as unknown as ServerEvent,
+    { provider: 'codex' },
+  );
+  await tickThrottle();
+
+  const rows = store.getMessages(SESSION_ID);
+  const userIndex = rows.findIndex((row) => row.role === 'user');
+  const streamIndex = rows.findIndex((row) => row.id === `__streaming_${SESSION_ID}`);
+
+  assert.ok(userIndex >= 0 && streamIndex >= 0);
+  assert.ok(
+    userIndex < streamIndex,
+    `the live stream must stay below its user turn (user@${userIndex}, stream@${streamIndex})`,
+  );
+});
+
+/**
+ * With a provider row key present, reconciliation is decided by identity.
+ *
+ * This is what the key is for: two bodies that differ only because one was
+ * still streaming used to be judged by a text-similarity rule, and two bodies
+ * that genuinely differ could be collapsed by it. A key says outright whether
+ * these are one row, and a *different* key says outright that they are two.
+ */
+test('two Codex replies with different provider row keys both survive the refresh', async () => {
+  const first: NormalizedMessage = {
+    id: 'hist-1',
+    sessionId: SESSION_ID,
+    timestamp: new Date(BASE_TIME + 1000).toISOString(),
+    provider: 'codex',
+    kind: 'text',
+    role: 'assistant',
+    providerRowKey: 'msg_first',
+    content: 'Checking the merge helper to see how the two sources interleave today.',
+  };
+
+  const fetchPage = scriptedFetcher([
+    { params: { limit: 50, offset: 0 }, page: { messages: [first], total: 1, hasMore: false } },
+  ]);
+  const store = new SessionTimelineStore({ fetchPage });
+
+  // A second reply that begins with the same long prefix — the shape the
+  // text-similarity rule would have collapsed into the first one.
+  store.appendRealtime(SESSION_ID, {
+    id: 'live-2',
+    sessionId: SESSION_ID,
+    timestamp: new Date(BASE_TIME + 2000).toISOString(),
+    provider: 'codex',
+    kind: 'text',
+    role: 'assistant',
+    providerRowKey: 'msg_second',
+    content: 'Checking the merge helper to see how the two sources interleave today, and the anchors now decide it.',
+  });
+
+  await store.refreshLatestFromServer(SESSION_ID, { limit: 50 });
+
+  const keys = store.getMessages(SESSION_ID)
+    .filter((row) => row.kind === 'text' && row.role === 'assistant')
+    .map((row) => row.providerRowKey);
+
+  assert.deepEqual(keys, ['msg_first', 'msg_second'], 'distinct keys are distinct rows');
+});
+
+/**
+ * Re-sending a prompt the transcript already contains must not make the new
+ * message disappear into the old turn.
+ */
+test('a repeated prompt is not retired by the identical prompt already on screen', async () => {
+  const earlier: NormalizedMessage = {
+    id: 'srv-old', sessionId: SESSION_ID, timestamp: new Date(BASE_TIME).toISOString(),
+    provider: 'antigravity', kind: 'text', role: 'user', content: 'continue',
+  };
+  const reply: NormalizedMessage = { ...earlier, id: 'srv-reply', role: 'assistant', content: 'done' };
+
+  const fetchPage = scriptedFetcher([
+    { params: { limit: 50, offset: 0 }, page: { messages: [earlier, reply], total: 2, hasMore: false } },
+  ]);
+  const store = new SessionTimelineStore({ fetchPage });
+  await store.fetchFromServer(SESSION_ID, { limit: 50, offset: 0 });
+
+  store.appendRealtime(SESSION_ID, {
+    id: 'local_repeat', sessionId: SESSION_ID, timestamp: new Date(BASE_TIME + 60_000).toISOString(),
+    provider: 'antigravity', kind: 'text', role: 'user', content: 'continue',
+  });
+
+  const userRows = store.getMessages(SESSION_ID).filter((row) => row.role === 'user');
+  assert.equal(userRows.length, 2, 'the newly sent prompt must still be visible');
+});
+
+/**
+ * The send-time row count has to survive the pages that arrive after it.
+ *
+ * `replacesAfterRowCount` records how much transcript was on screen when a
+ * prompt was sent, and retiring the optimistic echo trusts it as an index into
+ * `serverMessages`. Loading an older page prepends rows, so every index shifts;
+ * left unadjusted, the stamp points into the middle of history and an
+ * identical earlier prompt retires the message the user just sent.
+ */
+test('an older page prepended after sending does not strand the optimistic prompt', async () => {
+  const newest: NormalizedMessage = {
+    id: 'srv-new', sessionId: SESSION_ID, timestamp: new Date(BASE_TIME + 10_000).toISOString(),
+    provider: 'claude', kind: 'text', role: 'assistant', content: 'newest reply',
+  };
+  const older: NormalizedMessage = {
+    id: 'srv-older', sessionId: SESSION_ID, timestamp: new Date(BASE_TIME).toISOString(),
+    provider: 'claude', kind: 'text', role: 'user', content: 'continue',
+  };
+
+  const fetchPage = scriptedFetcher([
+    { params: { limit: 20, offset: 0 }, page: { messages: [newest], total: 2, hasMore: true } },
+    { params: { limit: 20, offset: 1 }, page: { messages: [older], total: 2, hasMore: false } },
+  ]);
+  const store = new SessionTimelineStore({ fetchPage });
+  await store.fetchFromServer(SESSION_ID, { limit: 20, offset: 0 });
+
+  // Sent when one row was on screen.
+  store.appendRealtime(SESSION_ID, {
+    id: 'local_repeat', sessionId: SESSION_ID, timestamp: new Date(BASE_TIME + 20_000).toISOString(),
+    provider: 'claude', kind: 'text', role: 'user', content: 'continue',
+  });
+  assert.equal(
+    store.getSessionSlot(SESSION_ID)?.realtimeMessages.find((row) => row.id === 'local_repeat')?.replacesAfterRowCount,
+    1,
+  );
+
+  await store.fetchMore(SESSION_ID, { limit: 20 });
+
+  const stamp = store.getSessionSlot(SESSION_ID)
+    ?.realtimeMessages.find((row) => row.id === 'local_repeat')?.replacesAfterRowCount;
+  assert.equal(stamp, 2, 'the stamp must shift by the number of rows prepended');
+
+  const userRows = store.getMessages(SESSION_ID).filter((row) => row.role === 'user');
+  assert.equal(userRows.length, 2, 'the sent prompt must not be retired by the older identical one');
 });

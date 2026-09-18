@@ -41,7 +41,7 @@ function buildContext(
     session: selectedSession
       ? {
         id: selectedSession.id,
-        title: selectedSession.title || selectedSession.name || selectedSession.id,
+        title: selectedSession.title || selectedSession.summary || selectedSession.id,
       }
       : null,
   };

@@ -90,9 +90,7 @@ function toArchivedSessionListItem(project: ArchivedProjectListItem, session: Se
   const sessionTitle =
     typeof session.summary === 'string' && session.summary.trim().length > 0
       ? session.summary
-      : typeof session.name === 'string' && session.name.trim().length > 0
-        ? session.name
-        : String(session.id);
+      : String(session.id);
 
   return {
     sessionId: String(session.id),

@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { api } from '@/shared/api';
-import { MCP_GLOBAL_SUPPORTED_TRANSPORTS, MCP_PROVIDER_NAMES, MCP_SUPPORTED_SCOPES } from '@/shared/constants';
+import { MCP_GLOBAL_SUPPORTED_TRANSPORTS, MCP_PROVIDER_NAMES } from '@/shared/constants';
+import { useProviderMcpCapabilities } from '@/shared/hooks/useProviderCapabilities';
 import type { McpFormState, McpProject, McpProvider, McpScope, McpTransport, ProviderMcpServer, UpsertProviderMcpServerPayload } from '@/shared/types';
 import {
   createMcpPayloadFromForm,
@@ -317,6 +318,12 @@ export function useMcpServers({ selectedProvider, currentProjects }: UseMcpServe
   const projectTargets = useMemo(() => createProjectTargets(currentProjects), [currentProjects]);
   const cacheKey = useMemo(() => getCacheKey(selectedProvider, projectTargets), [projectTargets, selectedProvider]);
 
+  // Which scopes to read is the provider's own declaration, not a table kept
+  // on this side. The reload is keyed on it so a late-arriving capability
+  // matrix re-reads the scopes it turns out the provider actually has.
+  const mcpCapabilities = useProviderMcpCapabilities(selectedProvider);
+  const mcpScopes = mcpCapabilities.scopes;
+
   const refreshServers = useCallback(async (options: { force?: boolean } = {}) => {
     const loadId = activeLoadIdRef.current + 1;
     activeLoadIdRef.current = loadId;
@@ -341,7 +348,7 @@ export function useMcpServers({ selectedProvider, currentProjects }: UseMcpServe
     setIsLoadingProjectScopes(false);
     setLoadError(null);
 
-    const supportedScopes = MCP_SUPPORTED_SCOPES[selectedProvider];
+    const supportedScopes = mcpScopes;
     let nextServers: ProviderMcpServer[] = cachedEntry && !options.force ? cachedEntry.servers : [];
     let firstError: string | null = null;
 
@@ -413,7 +420,7 @@ export function useMcpServers({ selectedProvider, currentProjects }: UseMcpServe
     setServers(finalServers);
     setLoadError(firstError);
     setIsLoadingProjectScopes(false);
-  }, [cacheKey, projectTargets, selectedProvider]);
+  }, [cacheKey, mcpScopes, projectTargets, selectedProvider]);
 
   const openForm = useCallback((server?: ProviderMcpServer) => {
     setServerForm({ scope: 'provider', editingServer: server || null });

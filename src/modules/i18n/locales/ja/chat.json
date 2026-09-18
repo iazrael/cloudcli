@@ -255,7 +255,6 @@
     "fetchingQuota": "最新の使用状況を取得中...",
     "syncingWithProvider": "{{provider}} から 5 時間制限と週間クォータを同期中",
     "noQuotaData": "このアカウントで表示できるクォータデータはありません",
-    "apiKeyNotice": "API キーでのログインでは通常、5時間や週間の制限は提供されません",
     "refreshFailedNotice": "更新に失敗しました。前回取得したデータを表示しています",
     "fetchFailed": "クォータの取得に失敗しました。後でもう一度お試しください",
     "currentGroup": "現在のセッションモデル",
@@ -268,6 +267,10 @@
     "resetSoon": "まもなくリセット",
     "resetDaysHours": "{{days}}日{{hours}}時間後にリセット",
     "resetHoursMinutes": "{{hours}}時間{{minutes}}分後にリセット",
-    "resetMinutes": "{{minutes}}分後にリセット"
+    "resetMinutes": "{{minutes}}分後にリセット",
+    "emptyQuotaHint": {
+      "claude": "API キー・Bedrock・Vertex でのログインには claude.ai のサブスクリプション制限がありません",
+      "codex": "API キーでのログインでは通常、5時間や週間の制限は提供されません"
+    }
   }
 }

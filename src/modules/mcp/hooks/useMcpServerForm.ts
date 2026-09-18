@@ -1,7 +1,7 @@
 import { type FormEvent, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { MCP_SUPPORTED_SCOPES, MCP_SUPPORTED_TRANSPORTS } from '@/shared/constants';
+import { MCP_FALLBACK_CAPABILITIES } from '@/shared/mcpCapabilitiesFallback';
 import type { McpFormState, McpProject, McpProvider, McpScope, McpTransport, ProviderMcpServer } from '@/shared/types';
 import {
   formatKeyValueLines,
@@ -50,8 +50,8 @@ const DEFAULT_MCP_FORM: McpFormState = {
 
 const cloneDefaultForm = (
   provider: McpProvider,
-  supportedScopes = MCP_SUPPORTED_SCOPES[provider],
-  supportedTransports = MCP_SUPPORTED_TRANSPORTS[provider],
+  supportedScopes = [...MCP_FALLBACK_CAPABILITIES[provider].scopes],
+  supportedTransports = [...MCP_FALLBACK_CAPABILITIES[provider].transports],
 ): McpFormState => ({
   ...DEFAULT_MCP_FORM,
   scope: supportedScopes[0],
@@ -105,8 +105,8 @@ export function useMcpServerForm({
   provider,
   editingServer,
   currentProjects,
-  supportedScopes = MCP_SUPPORTED_SCOPES[provider],
-  supportedTransports = MCP_SUPPORTED_TRANSPORTS[provider],
+  supportedScopes = [...MCP_FALLBACK_CAPABILITIES[provider].scopes],
+  supportedTransports = [...MCP_FALLBACK_CAPABILITIES[provider].transports],
   unsupportedTransportMessage,
   onSubmit,
 }: UseMcpServerFormArgs) {

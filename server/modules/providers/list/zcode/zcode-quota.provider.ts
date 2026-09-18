@@ -163,6 +163,8 @@ function normalizeQuotaPayload(
   return {
     groups: [group],
     updatedAt: new Date(nowTimestamp).toISOString(),
+    // One family (GLM), split by allowance rather than by model family.
+    partitioning: 'bucket',
   };
 }
 

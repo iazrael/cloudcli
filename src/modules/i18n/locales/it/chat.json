@@ -268,7 +268,6 @@
     "fetchingQuota": "Recupero quota più recente...",
     "syncingWithProvider": "Sincronizzazione dei limiti di 5 ore e settimanali da {{provider}}",
     "noQuotaData": "Nessun dato di quota disponibile per questo account",
-    "apiKeyNotice": "L'accesso tramite chiave API di solito non riporta limiti di 5 ore o settimanali",
     "refreshFailedNotice": "Aggiornamento non riuscito; visualizzazione degli ultimi dati recuperati",
     "fetchFailed": "Impossibile caricare la quota, riprova più tardi",
     "currentGroup": "Modelli della sessione corrente",
@@ -281,6 +280,10 @@
     "resetSoon": "Ripristino a breve",
     "resetDaysHours": "Si ripristina in {{days}}g {{hours}}h",
     "resetHoursMinutes": "Si ripristina in {{hours}}h {{minutes}}m",
-    "resetMinutes": "Si ripristina in {{minutes}}m"
+    "resetMinutes": "Si ripristina in {{minutes}}m",
+    "emptyQuotaHint": {
+      "claude": "Gli accessi con chiave API, Bedrock o Vertex non hanno limiti di abbonamento claude.ai",
+      "codex": "L'accesso tramite chiave API di solito non riporta limiti di 5 ore o settimanali"
+    }
   }
 }

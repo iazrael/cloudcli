@@ -15,7 +15,13 @@ import {
 
 export class CursorMcpProvider extends McpProvider {
   constructor() {
-    super('cursor', ['user', 'project'], ['stdio', 'http']);
+    super('cursor', {
+      scopes: ['user', 'project'],
+      transports: ['stdio', 'http'],
+      // `buildServerConfig` writes `cwd`.
+      supportsWorkingDirectory: true,
+      supportsEnvVarIndirection: false,
+    });
   }
 
   protected async readScopedServers(scope: McpScope, workspacePath: string): Promise<Record<string, unknown>> {

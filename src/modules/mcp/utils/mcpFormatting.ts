@@ -1,4 +1,4 @@
-import { MCP_SUPPORTED_TRANSPORTS, MCP_SUPPORTS_WORKING_DIRECTORY } from '@/shared/constants';
+import { MCP_FALLBACK_CAPABILITIES } from '@/shared/mcpCapabilitiesFallback';
 import type { KeyValueMap, McpFormState, McpProvider, McpScope, McpTransport, UpsertProviderMcpServerPayload } from '@/shared/types';
 
 type CreateMcpPayloadOptions = {
@@ -84,7 +84,7 @@ const assertSupportedTransport = (
   transport: McpTransport,
   options?: CreateMcpPayloadOptions,
 ) => {
-  const supportedTransports = options?.supportedTransports ?? MCP_SUPPORTED_TRANSPORTS[provider];
+  const supportedTransports = options?.supportedTransports ?? [...MCP_FALLBACK_CAPABILITIES[provider].transports];
   if (supportedTransports.includes(transport)) {
     return;
   }
@@ -128,18 +128,18 @@ export const parseJsonMcpPayload = (
     command: readString(parsed.command),
     args: readStringArray(parsed.args) ?? [],
     env: readStringRecord(parsed.env) ?? {},
-    cwd: (options?.supportsWorkingDirectory ?? MCP_SUPPORTS_WORKING_DIRECTORY[provider])
+    cwd: (options?.supportsWorkingDirectory ?? MCP_FALLBACK_CAPABILITIES[provider].supportsWorkingDirectory)
       ? readString(parsed.cwd)
       : undefined,
     url: readString(parsed.url),
     headers: readStringRecord(parsed.headers ?? parsed.http_headers) ?? {},
-    envVars: (options?.includeProviderSpecificFields ?? provider === 'codex')
+    envVars: (options?.includeProviderSpecificFields ?? MCP_FALLBACK_CAPABILITIES[provider].supportsEnvVarIndirection)
       ? readStringArray(parsed.envVars ?? parsed.env_vars) ?? []
       : undefined,
-    bearerTokenEnvVar: (options?.includeProviderSpecificFields ?? provider === 'codex')
+    bearerTokenEnvVar: (options?.includeProviderSpecificFields ?? MCP_FALLBACK_CAPABILITIES[provider].supportsEnvVarIndirection)
       ? readString(parsed.bearerTokenEnvVar ?? parsed.bearer_token_env_var)
       : undefined,
-    envHttpHeaders: (options?.includeProviderSpecificFields ?? provider === 'codex')
+    envHttpHeaders: (options?.includeProviderSpecificFields ?? MCP_FALLBACK_CAPABILITIES[provider].supportsEnvVarIndirection)
       ? readStringRecord(parsed.envHttpHeaders ?? parsed.env_http_headers) ?? {}
       : undefined,
   };
@@ -156,8 +156,9 @@ export const createMcpPayloadFromForm = (
 
   assertSupportedTransport(provider, formData.transport, options);
 
-  const supportsWorkingDirectory = options?.supportsWorkingDirectory ?? MCP_SUPPORTS_WORKING_DIRECTORY[provider];
-  const includeProviderSpecificFields = options?.includeProviderSpecificFields ?? provider === 'codex';
+  const supportsWorkingDirectory = options?.supportsWorkingDirectory ?? MCP_FALLBACK_CAPABILITIES[provider].supportsWorkingDirectory;
+  const includeProviderSpecificFields = options?.includeProviderSpecificFields
+    ?? MCP_FALLBACK_CAPABILITIES[provider].supportsEnvVarIndirection;
 
   return {
     name: formData.name.trim(),

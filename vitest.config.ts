@@ -7,11 +7,16 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   resolve: {
     alias: {
+      'node:assert/strict': fileURLToPath(new URL('./vitest.assert-shim.ts', import.meta.url)),
       '@': fileURLToPath(new URL('./src', import.meta.url)),
+      // Mirrors vite.config.js: the wire contract lives at the repository root
+      // so both builds compile exactly one copy of it.
+      '@shared': fileURLToPath(new URL('./shared', import.meta.url)),
     },
   },
   define: {
     __APP_VERSION__: JSON.stringify('0.0.0-test'),
+    'process.env.NODE_ENV': JSON.stringify('test'),
   },
   test: {
     environment: 'jsdom',

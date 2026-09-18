@@ -670,7 +670,11 @@ test('fetchHistory loads and paginates the fixture database', async () => {
     const result = await provider.fetchHistory('sess_hist');
 
     const kinds = result.messages.map((message) => message.kind);
-    assert.deepEqual(kinds, ['text', 'text', 'thinking', 'text', 'tool_use', 'complete']);
+    // No `complete`: that is a run-lifecycle signal, emitted once per live run
+    // and terminating it. A stored transcript has no run in flight, and one row
+    // per persisted step used to fill about a third of a real session's
+    // history with rows that render nothing.
+    assert.deepEqual(kinds, ['text', 'text', 'thinking', 'text', 'tool_use']);
     assert.equal(result.messages[0].role, 'user');
     assert.equal(result.messages[0].content, 'List the files');
     assert.equal(result.messages[1].role, 'user');

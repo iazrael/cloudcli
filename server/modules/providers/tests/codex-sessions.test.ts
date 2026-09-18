@@ -7,7 +7,7 @@ import test from 'node:test';
 import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
 import { CodexSessionSynchronizer } from '@/modules/providers/list/codex/codex-session-synchronizer.provider.js';
 import { AppError } from '@/shared/utils.js';
-import { CodexSessionsProvider, parseCodexExecScript, readCodexMemoryCitations } from '@/modules/providers/list/codex/codex-sessions.provider.js';
+import { CodexSessionsProvider, parseCodexExecScript, readCodexMemoryCitations, readCodexProposedPlan } from '@/modules/providers/list/codex/codex-sessions.provider.js';
 
 const patchHomeDir = (nextHomeDir: string) => {
   const original = os.homedir;
@@ -169,7 +169,10 @@ test('Codex history translates wrapped exec scripts into the tools they ran', { 
         callId: 'shell-command-1',
         input: 'const cmds = ["echo one", "echo two"]; await Promise.all(cmds.map(command => tools.shell_command({ command })));',
         expectedToolName: 'Bash',
-        expectedToolInput: JSON.stringify({ command: 'echo one\necho two' }),
+        // One row per command now: the live stream emits a command_execution
+        // item each, and a joined card matches none of them. The first row
+        // keeps the call id; the second is asserted separately below.
+        expectedToolInput: JSON.stringify({ command: 'echo one' }),
       },
       {
         callId: 'json-shell-command-1',
@@ -222,7 +225,14 @@ test('Codex history translates wrapped exec scripts into the tools they ran', { 
       const toolUses = history.messages.filter((message) => message.kind === 'tool_use');
       const toolUsesById = new Map(toolUses.map((message) => [message.toolId, message]));
 
-      assert.equal(toolUses.length, wrappedCalls.length);
+      // The two-command script contributes one extra row beyond its call.
+      assert.equal(toolUses.length, wrappedCalls.length + 1);
+      const secondCommandRow = toolUses.find(
+        (message) => message.toolId?.startsWith('shell-command-1~'),
+      );
+      assert.ok(secondCommandRow, 'the script\'s second command needs its own row');
+      assert.equal(secondCommandRow.toolInput, JSON.stringify({ command: 'echo two' }));
+
       for (const call of wrappedCalls) {
         const toolUse = toolUsesById.get(call.callId);
         assert.ok(toolUse, `missing row for ${call.callId}`);
@@ -795,6 +805,436 @@ test('an interrupted subagent closes its Task row instead of running forever', a
       assert.ok(task.toolResult, 'an interrupted subagent must not leave its card running');
       assert.match(String(task.toolResult?.content), /interrupted/i);
       assert.equal(task.toolResult?.isError, false);
+    });
+  } finally {
+    restoreHomeDir();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('normalizeMessage on completed file_change emits tool_use and tool_result pairs', () => {
+  const provider = new CodexSessionsProvider();
+  const event = {
+    type: 'item',
+    itemType: 'file_change',
+    itemId: 'item_file_change_1',
+    status: 'completed',
+    changes: [
+      { path: '/repo/docs/AGENTS.md', kind: 'update' },
+      { path: '/repo/README.md', kind: 'add' },
+    ],
+  };
+  const messages = provider.normalizeMessage(event, 'session-1');
+
+  assert.equal(messages.length, 4);
+
+  // First file: Edit
+  assert.equal(messages[0].kind, 'tool_use');
+  assert.equal(messages[0].toolName, 'Edit');
+  assert.equal(messages[0].toolId, 'item_file_change_1_0');
+  assert.deepEqual(messages[0].toolInput, { file_path: '/repo/docs/AGENTS.md', old_string: '', new_string: '' });
+
+  assert.equal(messages[1].kind, 'tool_result');
+  assert.equal(messages[1].toolId, 'item_file_change_1_0');
+  assert.equal(messages[1].isError, false);
+
+  // Second file: Write
+  assert.equal(messages[2].kind, 'tool_use');
+  assert.equal(messages[2].toolName, 'Write');
+  assert.equal(messages[2].toolId, 'item_file_change_1_1');
+  assert.deepEqual(messages[2].toolInput, { file_path: '/repo/README.md', old_string: '', new_string: '' });
+
+  assert.equal(messages[3].kind, 'tool_result');
+  assert.equal(messages[3].toolId, 'item_file_change_1_1');
+  assert.equal(messages[3].isError, false);
+});
+
+test('normalizeMessage on in_progress file_change emits only tool_use', () => {
+  const provider = new CodexSessionsProvider();
+  const event = {
+    type: 'item',
+    itemType: 'file_change',
+    itemId: 'item_file_change_2',
+    status: 'in_progress',
+    changes: [{ path: '/repo/docs/AGENTS.md', kind: 'update' }],
+  };
+  const messages = provider.normalizeMessage(event, 'session-1');
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].kind, 'tool_use');
+  assert.equal(messages[0].status, 'in_progress');
+});
+
+test('normalizeMessage on failed file_change marks result as error', () => {
+  const provider = new CodexSessionsProvider();
+  const event = {
+    type: 'item',
+    itemType: 'file_change',
+    itemId: 'item_file_change_failed',
+    status: 'failed',
+    changes: [{ path: '/repo/docs/AGENTS.md', kind: 'update' }],
+  };
+  const messages = provider.normalizeMessage(event, 'session-1');
+
+  assert.equal(messages.length, 2);
+  assert.equal(messages[0].kind, 'tool_use');
+  assert.equal(messages[0].status, 'failed');
+  assert.equal(messages[1].kind, 'tool_result');
+  assert.equal(messages[1].isError, true);
+  assert.equal(messages[1].content, 'Failed to apply file changes');
+});
+
+test('normalizeMessage on file_change with empty or non-array changes returns empty array', () => {
+  const provider = new CodexSessionsProvider();
+  assert.deepEqual(
+    provider.normalizeMessage({ type: 'item', itemType: 'file_change', itemId: 'empty_1', status: 'completed', changes: [] }, 'session-1'),
+    [],
+  );
+  assert.deepEqual(
+    provider.normalizeMessage({ type: 'item', itemType: 'file_change', itemId: 'empty_2', status: 'completed', changes: null }, 'session-1'),
+    [],
+  );
+});
+
+
+
+/**
+ * A proposed plan is a plan card on every path into the normalizer.
+ *
+ * Codex wraps a plan in `<proposed_plan>` instead of calling a tool the way
+ * Claude does, and the adapter unwraps it onto the same `ExitPlanMode` card so
+ * the two providers render identically. Two of the three assistant paths did
+ * that; the persisted-message path did not, and the envelope reached the
+ * transcript intact — which is why a shared renderer had grown a
+ * `provider === 'codex'` branch to strip the tags itself.
+ */
+test('a persisted assistant plan normalizes to the same plan card as a live one', () => {
+  const provider = new CodexSessionsProvider();
+  const plan = '# Rework the merge\n\n1. Anchor the order\n2. Delete the guess';
+
+  const persisted = provider.normalizeMessage({
+    uuid: 'row-1',
+    timestamp: '2026-01-01T00:00:00.000Z',
+    message: { role: 'assistant', content: `<proposed_plan>\n${plan}\n</proposed_plan>` },
+  }, 'session-1');
+
+  assert.equal(persisted.length, 1);
+  assert.equal(persisted[0].kind, 'tool_use');
+  assert.equal(persisted[0].toolName, 'ExitPlanMode');
+  assert.deepEqual(persisted[0].toolInput, { plan });
+});
+
+test('a persisted assistant message without a plan envelope stays prose', () => {
+  const provider = new CodexSessionsProvider();
+
+  const persisted = provider.normalizeMessage({
+    uuid: 'row-2',
+    timestamp: '2026-01-01T00:00:00.000Z',
+    message: { role: 'assistant', content: 'Here is what I found.' },
+  }, 'session-1');
+
+  assert.equal(persisted.length, 1);
+  assert.equal(persisted[0].kind, 'text');
+  assert.equal(persisted[0].content, 'Here is what I found.');
+});
+
+/**
+ * Envelope edge cases. These moved here with the unwrapping itself: they used
+ * to guard a client-side copy that stripped the tags at render time.
+ */
+test('readCodexProposedPlan reads a complete outer envelope', () => {
+  assert.equal(
+    readCodexProposedPlan('<proposed_plan>\n# Session Timeline\n\nPlan body\n</proposed_plan>'),
+    '# Session Timeline\n\nPlan body',
+  );
+});
+
+test('readCodexProposedPlan reads a plan whose closing tag has not streamed yet', () => {
+  assert.equal(readCodexProposedPlan('<proposed_plan>\n# Partial plan'), '# Partial plan');
+});
+
+test('readCodexProposedPlan ignores a tag that is not the outer envelope', () => {
+  assert.equal(readCodexProposedPlan('Use `<proposed_plan>` only for plans.'), null);
+});
+
+test('readCodexProposedPlan ignores an unmatched terminal closing tag', () => {
+  assert.equal(
+    readCodexProposedPlan('Ordinary text that mentions a terminal tag.\n</proposed_plan>'),
+    null,
+  );
+});
+
+/**
+ * Codex assistant text carries no provider row key, on purpose.
+ *
+ * The two transports do not share a row identity: the SDK stream numbers items
+ * per turn (`item_0`, `item_1`) while the rollout records the model's response
+ * id (`msg_…`). An earlier attempt keyed each side with its own value, which is
+ * strictly worse than leaving it unset — reconciliation then takes the identity
+ * branch, finds no match, declares the rows distinct and renders the reply
+ * twice, with the causal fallback skipped entirely.
+ */
+test('a Codex reply is left unkeyed because the transports do not share one', () => {
+  const provider = new CodexSessionsProvider();
+
+  const live = provider.normalizeMessage({
+    type: 'item',
+    itemType: 'agent_message',
+    itemId: 'item_1',
+    message: { role: 'assistant', content: 'y.txt' },
+  }, 'sess');
+
+  assert.equal(live.length, 1);
+  assert.equal(live[0].kind, 'text');
+  assert.equal(live[0].providerRowKey, undefined);
+});
+
+/**
+ * Tool cards have to describe the same call the same way on both transports,
+ * or the client cannot pair them and renders each call twice.
+ *
+ * Verified against a real rollout: the persisted side parses the `cmd`
+ * argument out of the exec script, while the live item reports the command as
+ * the shell invocation that ran it — `["/bin/zsh", "-lc", "<cmd>"]` in every
+ * one of that session's 124 command executions. Storing the array verbatim can
+ * never fingerprint-match the parsed string.
+ */
+test('a live command card reports the command, not the shell that ran it', () => {
+  const provider = new CodexSessionsProvider();
+
+  const rows = provider.normalizeMessage({
+    type: 'item',
+    itemType: 'command_execution',
+    itemId: 'exec-1',
+    command: ['/bin/zsh', '-lc', "sed -n '1,240p' /tmp/notes.md"],
+    status: 'completed',
+    output: '',
+  }, 'sess-cmd');
+
+  const toolUse = rows.find((row) => row.kind === 'tool_use');
+  assert.ok(toolUse);
+  assert.deepEqual(toolUse.toolInput, { command: "sed -n '1,240p' /tmp/notes.md" });
+});
+
+test('a live command card already given a plain string keeps it unchanged', () => {
+  const provider = new CodexSessionsProvider();
+
+  const rows = provider.normalizeMessage({
+    type: 'item',
+    itemType: 'command_execution',
+    itemId: 'exec-2',
+    command: 'npm test',
+    status: 'completed',
+    output: '',
+  }, 'sess-cmd');
+
+  const toolUse = rows.find((row) => row.kind === 'tool_use');
+  assert.ok(toolUse);
+  assert.deepEqual(toolUse.toolInput, { command: 'npm test' });
+});
+
+
+/**
+ * A spawned agent's timeline only loads if the adapter learns its thread id.
+ *
+ * Codex reports that id on a SubAgentActivity item. Current builds deliver it
+ * inside `item_completed` — a real session's rollout carries ten of them
+ * (started / completed / interacted) and not a single legacy
+ * `sub_agent_activity` payload, which is the only shape the adapter read. The
+ * id therefore never arrived, `findCodexSubagentRollout` was never called, and
+ * every Task card rendered with an empty timeline.
+ */
+test('a spawned agent picks up its thread id from a SubAgentActivity item', { concurrency: false }, async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'codex-subagent-item-'));
+  const workspacePath = path.join(tempRoot, 'workspace');
+  await mkdir(workspacePath, { recursive: true });
+  const restoreHomeDir = patchHomeDir(tempRoot);
+  const providerSessionId = 'codex-subagent-parent';
+  const agentThreadId = 'agent-thread-7c02';
+  const callId = 'call_spawn_1';
+
+  try {
+    const sessionsDir = path.join(tempRoot, '.codex', 'sessions', '2026', '07', '07');
+    await mkdir(sessionsDir, { recursive: true });
+
+    // The spawned agent's own transcript is a sibling rollout named by its
+    // thread id — the file the parent can only find once it knows that id.
+    await writeFile(path.join(sessionsDir, `rollout-${agentThreadId}.jsonl`), [
+      JSON.stringify({ type: 'session_meta', payload: { id: agentThreadId, cwd: workspacePath } }),
+      JSON.stringify({
+        type: 'response_item',
+        payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'looked at the lighting code' }] },
+      }),
+    ].join('\n') + '\n', 'utf8');
+
+    await writeFile(path.join(sessionsDir, `rollout-${providerSessionId}.jsonl`), [
+      JSON.stringify({ type: 'session_meta', payload: { id: providerSessionId, cwd: workspacePath } }),
+      JSON.stringify({ type: 'event_msg', payload: { type: 'task_started', turn_id: 'turn-1' } }),
+      JSON.stringify({
+        type: 'event_msg',
+        payload: { type: 'item_completed', turn_id: 'turn-1', item: { type: 'UserMessage', id: 'u1', content: [{ type: 'text', text: 'check the lighting' }] } },
+      }),
+      JSON.stringify({
+        type: 'response_item',
+        payload: {
+          type: 'function_call',
+          name: 'spawn_agent',
+          call_id: callId,
+          id: 'fc_spawn_1',
+          arguments: JSON.stringify({ task_name: 'original_lighting', message: 'go look' }),
+        },
+      }),
+      // The shape current Codex emits: a SubAgentActivity inside item_completed.
+      JSON.stringify({
+        type: 'event_msg',
+        payload: {
+          type: 'item_completed',
+          turn_id: 'turn-1',
+          item: { type: 'SubAgentActivity', id: callId, kind: 'started', agent_thread_id: agentThreadId, agent_path: '/root/original_lighting' },
+        },
+      }),
+      JSON.stringify({ type: 'response_item', payload: { type: 'function_call_output', call_id: callId, output: 'FINAL_ANSWER: done' } }),
+      JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete', turn_id: 'turn-1' } }),
+    ].join('\n') + '\n', 'utf8');
+
+    await withIsolatedDatabase(async () => {
+      sessionsDb.createAppSession('app-subagent-1', 'codex', workspacePath);
+      sessionsDb.assignProviderSessionId('app-subagent-1', providerSessionId);
+      await new CodexSessionSynchronizer().synchronize();
+
+      const history = await new CodexSessionsProvider().fetchHistory('app-subagent-1');
+      const spawned = history.messages.find((message) => message.subagent);
+
+      assert.ok(spawned, 'the spawn should produce a card carrying subagent info');
+      assert.equal(spawned.subagent?.id, agentThreadId, 'the thread id must reach the card');
+      assert.ok(
+        (spawned.subagentTools?.length ?? 0) > 0,
+        "the agent's own transcript must be attached, not an empty timeline",
+      );
+    });
+  } finally {
+    restoreHomeDir();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('a live command card unwraps the shell invocation the SDK reports as a string', () => {
+  const provider = new CodexSessionsProvider();
+  const cases: Array<[string, string]> = [
+    ['/bin/zsh -lc ls', 'ls'],
+    ['/bin/zsh -lc "sed -n \'1,20p\' a.md"', "sed -n '1,20p' a.md"],
+    ['/bin/bash -c \'echo hi\'', 'echo hi'],
+    ['npm test', 'npm test'],
+  ];
+
+  for (const [reported, expected] of cases) {
+    const rows = provider.normalizeMessage({
+      type: 'item', itemType: 'command_execution', itemId: 'exec-x',
+      command: reported, status: 'completed', output: '',
+    }, 'sess');
+    const toolUse = rows.find((row) => row.kind === 'tool_use');
+    assert.ok(toolUse, reported);
+    assert.deepEqual(toolUse.toolInput, { command: expected }, `from ${reported}`);
+  }
+});
+
+/**
+ * Splitting a multi-command script must not leave cards spinning.
+ *
+ * The call carries one output, which goes to the row that kept the call id.
+ * The rows split out beside it can never receive it, and a tool row without a
+ * result renders as still running — permanently, because the call is long
+ * finished. They are settled explicitly instead.
+ */
+test('every row split out of one exec script is settled, not left running', async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'codex-split-settle-'));
+  const workspacePath = path.join(tempRoot, 'workspace');
+  await mkdir(workspacePath, { recursive: true });
+  const restoreHomeDir = patchHomeDir(tempRoot);
+  const providerSessionId = 'codex-split-settle';
+
+  try {
+    const script = 'const r = await Promise.all(['
+      + 'tools.exec_command({"cmd":"echo one"}),'
+      + 'tools.exec_command({"cmd":"echo two"})'
+      + ']);';
+    const sessionsDir = path.join(tempRoot, '.codex', 'sessions', '2026', '07', '07');
+    await mkdir(sessionsDir, { recursive: true });
+    await writeFile(path.join(sessionsDir, `rollout-${providerSessionId}.jsonl`), [
+      JSON.stringify({ type: 'session_meta', payload: { id: providerSessionId, cwd: workspacePath } }),
+      JSON.stringify({ type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: script } }),
+      JSON.stringify({ type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'one\ntwo' } }),
+    ].join('\n') + '\n', 'utf8');
+
+    await withIsolatedDatabase(async () => {
+      sessionsDb.createAppSession('app-split-1', 'codex', workspacePath);
+      sessionsDb.assignProviderSessionId('app-split-1', providerSessionId);
+      await new CodexSessionSynchronizer().synchronize();
+
+      const history = await new CodexSessionsProvider().fetchHistory('app-split-1');
+      const shellRows = history.messages.filter(
+        (message) => message.kind === 'tool_use' && message.toolName === 'Bash',
+      );
+
+      assert.equal(shellRows.length, 2);
+      for (const row of shellRows) {
+        assert.ok(row.toolResult, `${row.toolId} would render as still running`);
+      }
+    });
+  } finally {
+    restoreHomeDir();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+/**
+ * A failed script must not show a green tick on the command that broke.
+ *
+ * The call reports one outcome for the whole script. The rows split out beside
+ * the one that kept the call id inherit it, because claiming success on a
+ * command nobody verified is worse than the duplicate card the split prevents.
+ */
+test('every command of a failed exec script reports the failure', async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'codex-split-fail-'));
+  const workspacePath = path.join(tempRoot, 'workspace');
+  await mkdir(workspacePath, { recursive: true });
+  const restoreHomeDir = patchHomeDir(tempRoot);
+  const providerSessionId = 'codex-split-fail';
+
+  try {
+    const script = 'await Promise.all(['
+      + 'tools.exec_command({"cmd":"echo one"}),'
+      + 'tools.exec_command({"cmd":"exit 1"})'
+      + ']);';
+    const sessionsDir = path.join(tempRoot, '.codex', 'sessions', '2026', '07', '07');
+    await mkdir(sessionsDir, { recursive: true });
+    await writeFile(path.join(sessionsDir, `rollout-${providerSessionId}.jsonl`), [
+      JSON.stringify({ type: 'session_meta', payload: { id: providerSessionId, cwd: workspacePath } }),
+      JSON.stringify({ type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c1', input: script } }),
+      JSON.stringify({
+        type: 'response_item',
+        // The engine's own shape: the exit code leads the payload.
+        payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'Exit code: 1\nOutput:\none\n' },
+      }),
+    ].join('\n') + '\n', 'utf8');
+
+    await withIsolatedDatabase(async () => {
+      sessionsDb.createAppSession('app-split-fail', 'codex', workspacePath);
+      sessionsDb.assignProviderSessionId('app-split-fail', providerSessionId);
+      await new CodexSessionSynchronizer().synchronize();
+
+      const history = await new CodexSessionsProvider().fetchHistory('app-split-fail');
+      const shellRows = history.messages.filter(
+        (message) => message.kind === 'tool_use' && message.toolName === 'Bash',
+      );
+
+      assert.equal(shellRows.length, 2);
+      const outcomes = shellRows.map((row) => row.toolResult?.isError);
+      assert.deepEqual(
+        outcomes,
+        [true, true],
+        'the second command must not render as a success when the script failed',
+      );
     });
   } finally {
     restoreHomeDir();

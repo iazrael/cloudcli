@@ -54,7 +54,7 @@ const getSessionDate = (session: SessionWithProvider): Date => {
 };
 
 const getSessionName = (session: SessionWithProvider, t: TFunction): string => {
-  return session.summary || session.name || t('projects.newSession');
+  return session.summary || t('projects.newSession');
 };
 
 const getSessionTime = (session: SessionWithProvider): string => {

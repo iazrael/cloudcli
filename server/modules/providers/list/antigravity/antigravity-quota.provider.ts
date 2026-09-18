@@ -116,6 +116,9 @@ function normalizeQuotaPayload(raw: RawAgyUsageResponse, nowTimestamp: number): 
   return {
     groups,
     updatedAt: new Date(nowTimestamp).toISOString(),
+    // Antigravity splits its allowance by model family: a Gemini group beside
+    // a Claude/GPT one, each naming its family in its own text.
+    partitioning: 'model-family',
   };
 }
 

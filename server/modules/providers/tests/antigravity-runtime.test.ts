@@ -237,6 +237,7 @@ test('runtime emits one session_created, stream deltas and a token-bearing compl
   assert.equal(messages.filter((msg) => msg.kind === 'session_created').length, 1);
   const delta = messages.find((msg) => msg.kind === 'stream_delta');
   assert.equal(delta?.content, 'OK');
+  assert.equal(delta?.providerRowKey, 'assistant-step:2');
   const complete = messages.find((msg) => msg.kind === 'complete');
   assert.equal(complete?.tokens, 42);
 });

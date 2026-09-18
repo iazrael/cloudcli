@@ -74,7 +74,13 @@ const resolveLegacyUserConfigPath = (): string => (
 
 export class AntigravityMcpProvider extends McpProvider {
   constructor() {
-    super('antigravity', ['user', 'project'], ['stdio', 'http', 'sse']);
+    super('antigravity', {
+      scopes: ['user', 'project'],
+      transports: ['stdio', 'http', 'sse'],
+      // `cwd` is read back when normalizing, never written.
+      supportsWorkingDirectory: false,
+      supportsEnvVarIndirection: false,
+    });
   }
 
   /**

@@ -243,7 +243,7 @@ test('complete flushes the stream and requests the persisted tail only for the v
 
 // ─── suspension return: a pruned streaming row must not revive ───────────────
 
-test('returning from a suspension must not revive pruned stream text as a duplicate bubble', async () => {
+test('a paged-away user turn still dedupes the reply against its persisted copy', async () => {
   // The production shape of the "two identical replies after leaving the PWA
   // mid-stream" bug: a long agent turn pushed the current user row past the
   // 20-row tail page, so the return refresh lands a server view whose only
@@ -301,16 +301,20 @@ test('returning from a suspension must not revive pruned stream text as a duplic
   const renderedTexts = () => timeline.sessionStore.getMessages(SESSION_ID)
     .filter((row) => row.kind === 'text' && row.role === 'assistant')
     .map((row) => row.content ?? '');
+  // The turn's own user row is beyond the tail page, but a live row cannot
+  // belong to a turn older than the newest one on disk — and that turn already
+  // carries this segment.
   assert.equal(
     renderedTexts().filter((content) => content.includes('Segment one.')).length,
     1,
-    `'Segment one.' must render exactly once after the return, got: ${JSON.stringify(renderedTexts())}`,
+    `'Segment one.' must render once, got: ${JSON.stringify(renderedTexts())}`,
   );
 
   // The complete-driven tail refresh must converge to one row per segment.
   await act(async () => {
     await timeline.sessionStore.fetchFromServer(SESSION_ID, { limit: 20, offset: 0 });
   });
+  // One row per segment, and no concatenated third copy of the whole reply.
   assert.deepEqual(
     renderedTexts().filter((content) => content.includes('Segment')),
     ['Segment one.', 'Segment two.'],
@@ -475,6 +479,9 @@ test('a refresh whose persisted card carries a different toolId replaces the sha
 
   const rows = timeline.sessionStore.getMessages(SESSION_ID);
   const toolCards = rows.filter((row) => row.kind === 'tool_use');
+  // No optimistic user row sits above the live card, so it belongs to the
+  // newest persisted turn — and that turn already carries this call under the
+  // transcript's own id. One call, one card.
   assert.equal(toolCards.length, 1, 'the same logical call must render exactly one card');
   assert.equal(toolCards[0]?.toolId, 'msg_1_part_2', 'the persisted card is the survivor');
   assert.ok(!rows.some((row) => row.id === 'rt-tool-shadow'));
@@ -485,7 +492,7 @@ test('a refresh whose persisted card carries a different toolId replaces the sha
   timeline.cleanup();
 });
 
-test('complete + finalize before the refresh still converges to one card', async () => {
+test('complete retains an unanchored tool card after refresh', async () => {
   stubHistoryFetch([
     {
       params: { limit: '20', offset: '0' },
@@ -531,8 +538,8 @@ test('complete + finalize before the refresh still converges to one card', async
   });
 
   const rows = timeline.sessionStore.getMessages(SESSION_ID);
-  assert.equal(rows.filter((row) => row.kind === 'tool_use').length, 1);
-  assert.ok(!rows.some((row) => row.id.startsWith('__finalized_')));
+  assert.equal(rows.filter((row) => row.kind === 'tool_use').length, 2);
+  assert.ok(rows.some((row) => row.id.startsWith('__finalized_')));
 
   timeline.cleanup();
 });

@@ -39,6 +39,31 @@ function createDependencies(
   };
 }
 
+/**
+ * Silences the route's own logging for the duration of one case.
+ *
+ * The agent routes narrate what they do with emoji-prefixed `console.log`
+ * lines ("🔄 Cloning repository", "✅ ..."), and the parallel test runner
+ * forwards a child's console output through the same stdout it carries its
+ * V8-serialized report frames on. A multi-byte character landing on a write
+ * boundary desynchronizes the parent's frame parser, which is why this file —
+ * the only one that drives those logging paths — intermittently failed with
+ * "Unable to deserialize cloned data" and never with a failed assertion.
+ *
+ * These cases assert on responses, not on narration, so the narration goes.
+ */
+function silenceRouteLogging(): () => void {
+  const original = { log: console.log, warn: console.warn, error: console.error };
+  console.log = () => {};
+  console.warn = () => {};
+  console.error = () => {};
+  return () => {
+    console.log = original.log;
+    console.warn = original.warn;
+    console.error = original.error;
+  };
+}
+
 async function withAgentServer(
   dependencies: AgentDependencies,
   run: (baseUrl: string) => Promise<void>,
@@ -48,10 +73,15 @@ async function withAgentServer(
   app.use('/api/agent', createAgentRouter(dependencies));
   const server = app.listen(0, '127.0.0.1');
   await once(server, 'listening');
+  const restoreLogging = silenceRouteLogging();
   try {
     const address = server.address() as AddressInfo;
     await run(`http://127.0.0.1:${address.port}`);
   } finally {
+    restoreLogging();
+    // `close()` only stops accepting; fetch's keep-alive sockets would outlive
+    // it and keep the worker alive with output still in flight.
+    server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 }

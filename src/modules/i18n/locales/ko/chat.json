@@ -289,7 +289,6 @@
     "fetchingQuota": "최신 한도 정보 가져오는 중...",
     "syncingWithProvider": "{{provider}}에서 5시간 및 주간 한도 동기화 중",
     "noQuotaData": "이 계정에 표시할 한도 데이터가 없습니다",
-    "apiKeyNotice": "API 키 로그인은 일반적으로 5시간 또는 주간 한도를 제공하지 않습니다",
     "refreshFailedNotice": "새로고침 실패. 마지막으로 성공한 한도 데이터를 표시합니다",
     "fetchFailed": "한도 정보를 불러오지 못했습니다. 잠시 후 다시 시도해주세요",
     "currentGroup": "현재 세션 모델 그룹",
@@ -302,6 +301,10 @@
     "resetSoon": "곧 리셋됨",
     "resetDaysHours": "{{days}}일 {{hours}}시간 후 리셋",
     "resetHoursMinutes": "{{hours}}시간 {{minutes}}분 후 리셋",
-    "resetMinutes": "{{minutes}}분 후 리셋"
+    "resetMinutes": "{{minutes}}분 후 리셋",
+    "emptyQuotaHint": {
+      "claude": "API 키, Bedrock, Vertex 로그인에는 claude.ai 구독 한도가 없습니다",
+      "codex": "API 키 로그인은 일반적으로 5시간 또는 주간 한도를 제공하지 않습니다"
+    }
   }
 }

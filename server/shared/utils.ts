@@ -19,11 +19,14 @@ import { fileURLToPath } from 'node:url';
 
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 
+import type { MessageInputForKind } from '../../shared/protocol/messageKinds.js';
+
 import { parseFrontMatter } from './frontmatter.js';
 import type {
   AnyRecord,
   ApiSuccessShape,
   AppErrorOptions,
+  MessageKind,
   NormalizedMessage,
   ProviderCurrentActiveModel,
   ProviderModelsDefinition,
@@ -50,14 +53,7 @@ export const IS_PLATFORM = process.env.VITE_IS_PLATFORM === 'true';
  * pair; this helper fills missing envelope fields (`id`, `sessionId`,
  * `timestamp`) in a consistent way.
  */
-type NormalizedMessageInput =
-  {
-    kind: NormalizedMessage['kind'];
-    provider: NormalizedMessage['provider'];
-    id?: string | null;
-    sessionId?: string | null;
-    timestamp?: string | null;
-  } & Record<string, unknown>;
+
 
 // ---------------------------
 //----------------- HTTP HANDLER UTILITIES ------------
@@ -365,7 +361,9 @@ export function generateMessageId(prefix = 'msg'): string {
  * while this helper guarantees every emitted event has an id, session id,
  * timestamp, and provider marker.
  */
-export function createNormalizedMessage(fields: NormalizedMessageInput): NormalizedMessage {
+export function createNormalizedMessage<K extends MessageKind>(
+  fields: MessageInputForKind<K>,
+): NormalizedMessage {
   return {
     ...fields,
     id: fields.id || generateMessageId(fields.kind),
@@ -405,7 +403,7 @@ export function createCompleteMessage(opts: {
     kind: 'complete',
     provider: opts.provider,
     sessionId: opts.sessionId || null,
-    actualSessionId: opts.actualSessionId || opts.sessionId || null,
+    actualSessionId: opts.actualSessionId || opts.sessionId || undefined,
     exitCode,
     success: exitCode === 0 && !aborted,
     aborted,
