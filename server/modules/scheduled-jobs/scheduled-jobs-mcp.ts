@@ -69,10 +69,10 @@ const tools: McpToolDefinition[] = [
   {
     name: 'create_scheduled_task',
     description:
-      'Create a recurring task that sends a prompt on a cron schedule. By default it runs in the current '
-      + "session; pass sessionMode='new' to give each run a fresh session in the workspace (projectPath is "
-      + 'required then, unless a running session lets it be inferred). Runs never interrupt a session that is '
-      + 'busy — a conflicting occurrence is skipped.',
+      'Create a recurring task that sends a prompt on a cron schedule. sessionMode decides where each '
+      + "occurrence goes: 'reuse' sends every run into one existing session, 'new' creates a fresh session "
+      + 'per occurrence. Tasks default to reusing the session that called this tool; a conflicting occurrence '
+      + 'is skipped while that session is busy, never interrupting a run in progress.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -80,9 +80,17 @@ const tools: McpToolDefinition[] = [
         prompt: { type: 'string', description: 'The prompt to send on every run.' },
         cron: { type: 'string', description: cronDescription },
         timezone: { type: 'string', description: 'IANA timezone; defaults to this machine\'s timezone.' },
-        sessionId: { type: 'string', description: 'Run in this existing session (overrides inference).' },
-        sessionMode: { type: 'string', enum: ['reuse', 'new'], description: "Use 'new' for a fresh session per run." },
-        projectPath: { type: 'string', description: 'Workspace path for fresh-session tasks; defaults to the calling session\'s workspace.' },
+        sessionId: { type: 'string', description: 'Bind runs to this existing session (forces sessionMode "reuse").' },
+        sessionMode: {
+          type: 'string',
+          enum: ['reuse', 'new'],
+          description:
+            "'reuse': every run goes into one existing session (the calling session by default); a "
+            + 'conflicting occurrence is skipped while that session is busy, so runs never interrupt it. '
+            + "'new': each run creates its own session in the workspace, so occurrences never collide. "
+            + 'Defaults to "reuse" when the calling session can be identified, otherwise falls back to "new".',
+        },
+        projectPath: { type: 'string', description: 'Workspace for the task. Required for sessionMode "new" unless a running session lets it be inferred; for "reuse" the bound session\'s workspace wins.' },
         provider: { type: 'string', description: 'Engine for new sessions; defaults to the calling engine.' },
         permissionMode: { type: 'string', description: 'Permission mode for runs; defaults to bypassPermissions.' },
       },
@@ -106,7 +114,8 @@ const tools: McpToolDefinition[] = [
     name: 'update_scheduled_task',
     description:
       'Update a scheduled task: name, prompt, cron schedule, timezone, permission mode, or enabled state '
-      + '(set enabled=false to pause it, true to resume).',
+      + '(set enabled=false to pause it, true to resume). The session binding (reuse vs new, sessionId) '
+      + 'cannot be changed here; delete the task and create a new one to switch it.',
     inputSchema: {
       type: 'object',
       properties: {
