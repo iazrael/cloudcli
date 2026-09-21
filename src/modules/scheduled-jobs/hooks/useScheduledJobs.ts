@@ -52,11 +52,19 @@ export function useScheduledJobs(filter: ScheduledJobFilter) {
   const [error, setError] = useState<string | null>(null);
 
   const scopeKey = `${filter.sessionId ?? ''}|${filter.projectPath ?? ''}`;
+  // A caller with neither a session nor a workspace has no scope to show: an
+  // unfiltered request would return every job the user owns, from every
+  // project, and the composer banner would show another project's tasks on a
+  // brand-new session.
+  const hasScope = Boolean(filter.sessionId || filter.projectPath);
   // Which scope the jobs on screen belong to; a fetch that resolves after the
   // user moved on must not paint the old scope's jobs over the new one.
   const activeScopeRef = useRef(scopeKey);
 
   const refresh = useCallback(async () => {
+    if (!hasScope) {
+      return;
+    }
     try {
       const response = await api.scheduledJobs.list({
         sessionId: filter.sessionId ?? undefined,
@@ -81,14 +89,19 @@ export function useScheduledJobs(filter: ScheduledJobFilter) {
     // `scopeKey` encodes the filter's contents, so a caller passing an inline
     // object does not refetch on every render.
     // eslint-disable-next-line react/exhaustive-deps
-  }, [scopeKey]);
+  }, [scopeKey, hasScope]);
 
   useEffect(() => {
     activeScopeRef.current = scopeKey;
-    setLoading(true);
     setJobs([]);
+    if (!hasScope) {
+      setLoading(false);
+      setError(null);
+      return;
+    }
+    setLoading(true);
     void refresh();
-  }, [refresh, scopeKey]);
+  }, [refresh, scopeKey, hasScope]);
 
   const createJob = useCallback(async (draft: ScheduledJobDraft) => {
     const response = await api.scheduledJobs.create(draft);

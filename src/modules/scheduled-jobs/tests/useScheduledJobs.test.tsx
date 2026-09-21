@@ -43,6 +43,16 @@ test('loads the jobs for the requested scope', async () => {
   assert.equal(result.current.jobs[0].name, 'Nightly');
 });
 
+test('an unscoped call loads nothing instead of every job the user owns', async () => {
+  const list = vi.spyOn(api.scheduledJobs, 'list').mockImplementation(async () => okResponse([JOB_A]));
+
+  const { result } = renderHook(() => useScheduledJobs({ sessionId: null }));
+
+  await waitFor(() => assert.equal(result.current.loading, false));
+  assert.equal(list.mock.calls.length, 0);
+  assert.equal(result.current.jobs.length, 0);
+});
+
 test('switching scope clears the previous scope\'s jobs immediately', async () => {
   vi.spyOn(api.scheduledJobs, 'list').mockImplementation(async () => okResponse([JOB_A]));
 
