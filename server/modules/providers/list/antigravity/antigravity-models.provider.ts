@@ -89,6 +89,7 @@ async function fetchModelsFromCli(): Promise<ProviderModelsDefinition | null> {
       // A healthy `agy models` takes ~5s cold (token refresh included);
       // leave headroom so a cold start is not misread as a dead CLI.
       timeout: 15000,
+      windowsHide: true,
     });
 
     const entries: AntigravityRawModelEntry[] = [];
