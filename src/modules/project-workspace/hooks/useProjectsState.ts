@@ -280,7 +280,7 @@ const projectFromRegistration = (project: Project): Project => ({
   sessionMeta: project.sessionMeta ?? { hasMore: false, total: countLoadedProjectSessions(project) },
 });
 
-const VALID_TABS: Set<string> = new Set(['chat', 'files', 'shell', 'git', 'browser']);
+const VALID_TABS: Set<string> = new Set(['chat', 'files', 'shell', 'git', 'browser', 'scheduled']);
 
 const isValidTab = (tab: string): tab is AppTab => {
   return VALID_TABS.has(tab) || tab.startsWith('plugin:');
@@ -1048,7 +1048,7 @@ export function useProjectsState({
       clearSessionAttention(session.id);
       setSelectedSession(session);
 
-      if (activeTab === 'browser') {
+      if (activeTab === 'browser' || activeTab === 'scheduled') {
         setActiveTab('chat');
       }
 

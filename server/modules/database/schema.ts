@@ -120,6 +120,71 @@ CREATE TABLE IF NOT EXISTS scheduled_messages (
 );
 `;
 
+/**
+ * Recurring scheduled jobs: a prompt that runs on a cron schedule, into a
+ * bound session (`reuse`) or into a fresh session per occurrence (`new`).
+ *
+ * Unlike `scheduled_messages`, a job is not tied to an existing conversation:
+ * it belongs to a workspace and a provider, survives the session it was
+ * created from, and keeps firing until it is paused or deleted. `session_id`
+ * deliberately carries no foreign key — deleting a conversation must not
+ * silently delete the user's recurring task; the job records a failed run
+ * instead and waits to be rebound or removed.
+ */
+export const SCHEDULED_JOBS_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS scheduled_jobs (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    provider TEXT NOT NULL DEFAULT 'claude',
+    project_path TEXT NOT NULL,
+    -- Bound session for 'reuse' jobs; NULL for 'new' jobs.
+    session_id TEXT,
+    -- reuse | new
+    session_mode TEXT NOT NULL DEFAULT 'reuse',
+    prompt TEXT NOT NULL,
+    -- Composer preferences (model, effort, permission mode) as they were when
+    -- the job was created, so each occurrence runs the way the user set it up.
+    options TEXT NOT NULL DEFAULT '{}',
+    -- Standard 5-field cron expression, evaluated in the job's timezone.
+    cron_expression TEXT NOT NULL,
+    -- IANA zone captured from the client that created the job, so "09:00"
+    -- means 09:00 for the user rather than for the server's locale.
+    timezone TEXT NOT NULL,
+    enabled BOOLEAN NOT NULL DEFAULT 1,
+    -- UTC instant of the next occurrence. Advanced inside the claim
+    -- transaction, so a claimed job can never fire twice for one occurrence.
+    next_run_at DATETIME NOT NULL,
+    last_run_at DATETIME,
+    -- Status of the last finished run: succeeded | failed | skipped | missed.
+    last_status TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+`;
+
+/**
+ * One attempt of one scheduled job, kept so the UI can show what happened
+ * while the user was away. `session_id` is the session the occurrence ran in:
+ * the bound one for `reuse` jobs, a freshly created one for `new` jobs.
+ */
+export const SCHEDULED_JOB_RUNS_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS scheduled_job_runs (
+    id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL,
+    session_id TEXT,
+    -- schedule | manual
+    trigger TEXT NOT NULL DEFAULT 'schedule',
+    -- running | succeeded | failed | skipped | missed
+    status TEXT NOT NULL,
+    error TEXT,
+    started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    finished_at DATETIME,
+    FOREIGN KEY (job_id) REFERENCES scheduled_jobs(id) ON DELETE CASCADE
+);
+`;
+
 export const SESSIONS_TABLE_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT NOT NULL,

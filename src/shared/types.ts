@@ -182,7 +182,7 @@ export type ProviderModelActions = {
 //----------------- PROJECTS AND SESSIONS ------------
 
 /** Identifies the workspace pane the user is looking at; plugin panes are namespaced by plugin id. */
-export type AppTab = 'chat' | 'files' | 'shell' | 'git' | 'browser' | `plugin:${string}`;
+export type AppTab = 'chat' | 'files' | 'shell' | 'git' | 'browser' | 'scheduled' | `plugin:${string}`;
 
 /** A message queued to be sent to a session at a future time. */
 export type ScheduledMessage = {
@@ -196,6 +196,49 @@ export type ScheduledMessage = {
   /** Why it did not go, when `status` is `failed`. */
   failureReason: string | null;
   createdAt: string;
+};
+
+/** How a scheduled job's last finished run ended. */
+export type ScheduledJobStatus = 'succeeded' | 'failed' | 'skipped' | 'missed';
+
+/**
+ * A recurring prompt the server fires on a cron schedule.
+ *
+ * `sessionMode` decides where each occurrence runs: `reuse` sends it into the
+ * bound conversation, `new` creates a fresh session per run so a daily job's
+ * context never accumulates.
+ */
+export type ScheduledJob = {
+  id: string;
+  name: string;
+  provider: LLMProvider;
+  projectPath: string;
+  sessionId: string | null;
+  sessionMode: 'reuse' | 'new';
+  prompt: string;
+  options: Record<string, unknown>;
+  /** Standard five-field cron expression, evaluated in `timezone`. */
+  cronExpression: string;
+  /** IANA zone the expression is read in, captured from the creating client. */
+  timezone: string;
+  enabled: boolean;
+  nextRunAt: string;
+  lastRunAt: string | null;
+  lastStatus: ScheduledJobStatus | null;
+  createdAt: string;
+};
+
+/** One attempt of a scheduled job, shown in the job's run history. */
+export type ScheduledJobRun = {
+  id: string;
+  jobId: string;
+  /** The session the occurrence ran in; for `new` jobs, the one it created. */
+  sessionId: string | null;
+  trigger: 'schedule' | 'manual';
+  status: 'running' | ScheduledJobStatus;
+  error: string | null;
+  startedAt: string;
+  finishedAt: string | null;
 };
 
 /** A single conversation inside a project, as returned by the sessions API and rendered in the sidebar and chat. */

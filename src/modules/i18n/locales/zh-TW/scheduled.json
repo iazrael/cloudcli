@@ -1,0 +1,87 @@
+{
+  "panel": {
+    "title": "定時任務",
+    "description": "依 cron 週期在此工作區執行的提示詞，以及執行歷史。",
+    "newJob": "新增任務",
+    "loading": "正在載入定時任務…",
+    "empty": "此工作區還沒有定時任務。"
+  },
+  "form": {
+    "createTitle": "新增定時任務",
+    "editTitle": "編輯定時任務",
+    "name": "名稱",
+    "namePlaceholder": "每日巡檢",
+    "provider": "引擎",
+    "prompt": "提示詞",
+    "promptPlaceholder": "每次執行時要做什麼？",
+    "permissionMode": "權限模式",
+    "permissionHintUnattended": "無人值守執行時無法回答審批請求，建議使用 bypass。",
+    "schedule": "週期",
+    "preset": {
+      "daily": "每天",
+      "weekdays": "工作日",
+      "weekly": "每週一",
+      "hourly": "每小時",
+      "custom": "自訂 cron"
+    },
+    "cronPlaceholder": "0 9 * * 1-5",
+    "cronHint": "五段式：分 時 日 月 週。",
+    "timezone": "時區：{{timezone}}",
+    "sessionNewHint": "每次執行都會在 {{projectPath}} 建立新工作階段。",
+    "sessionReuseHint": "在建立此任務時所綁定的工作階段中執行。",
+    "nativeSchedulingHint": "此引擎本身也支援工作階段內定時。此處的執行不會打斷進行中的回合，衝突的週期會被跳過。",
+    "required": "名稱與提示詞不能為空。",
+    "invalidCron": "週期必須是五段式 cron 運算式。",
+    "save": "儲存",
+    "create": "建立",
+    "cancel": "取消"
+  },
+  "job": {
+    "nextRun": "下次執行 {{when}}",
+    "paused": "已暫停",
+    "lastRun": "上次執行 {{when}} · {{status}}",
+    "neverRan": "尚未執行",
+    "pause": "暫停",
+    "resume": "啟用",
+    "runNow": "立即執行",
+    "edit": "編輯",
+    "delete": "刪除任務",
+    "confirmDelete": "再次點擊確認刪除",
+    "history": "執行歷史",
+    "newSessionEachRun": "每次建立新工作階段",
+    "boundSession": "綁定工作階段"
+  },
+  "status": {
+    "running": "執行中",
+    "succeeded": "成功",
+    "failed": "失敗",
+    "skipped": "已跳過",
+    "missed": "已錯過"
+  },
+  "runs": {
+    "title": "執行歷史",
+    "empty": "還沒有執行紀錄。",
+    "loading": "正在載入執行紀錄…",
+    "refresh": "重新整理",
+    "close": "關閉",
+    "manual": "手動",
+    "scheduled": "定時",
+    "openSession": "開啟工作階段"
+  },
+  "presets": {
+    "daily": "每天 {{time}}",
+    "weekdays": "工作日 {{time}}",
+    "weekly": "每週一 {{time}}",
+    "hourly": "每小時第 :{{minute}} 分",
+    "custom": "{{expression}}"
+  },
+  "composer": {
+    "once": "一次",
+    "recurring": "重複",
+    "recurringHeading": "重複週期",
+    "recurringHint": "將為此工作階段建立一個循環任務。",
+    "recurringCreate": "建立任務",
+    "nativeSchedulingHint": "此引擎本身也支援工作階段內定時；此處的執行會開啟新回合，不會打斷進行中的回合。",
+    "boundJob": "重複 {{schedule}} · 下次 {{when}}"
+  }
+}

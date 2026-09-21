@@ -1,0 +1,87 @@
+{
+  "panel": {
+    "title": "定时任务",
+    "description": "按 cron 周期在此工作区运行的提示词，以及运行历史。",
+    "newJob": "新建任务",
+    "loading": "正在加载定时任务…",
+    "empty": "此工作区还没有定时任务。"
+  },
+  "form": {
+    "createTitle": "新建定时任务",
+    "editTitle": "编辑定时任务",
+    "name": "名称",
+    "namePlaceholder": "每日巡检",
+    "provider": "引擎",
+    "prompt": "提示词",
+    "promptPlaceholder": "每次运行时执行什么？",
+    "permissionMode": "权限模式",
+    "permissionHintUnattended": "无人值守运行时无法回答审批请求，建议使用 bypass。",
+    "schedule": "周期",
+    "preset": {
+      "daily": "每天",
+      "weekdays": "工作日",
+      "weekly": "每周一",
+      "hourly": "每小时",
+      "custom": "自定义 cron"
+    },
+    "cronPlaceholder": "0 9 * * 1-5",
+    "cronHint": "五段式：分 时 日 月 周。",
+    "timezone": "时区：{{timezone}}",
+    "sessionNewHint": "每次运行都会在 {{projectPath}} 新建一个会话。",
+    "sessionReuseHint": "在创建该任务时所绑定的会话里运行。",
+    "nativeSchedulingHint": "该引擎自身也支持会话内定时。此处的运行不会打断进行中的回合，冲突的周期会被跳过。",
+    "required": "名称和提示词不能为空。",
+    "invalidCron": "周期必须是五段式 cron 表达式。",
+    "save": "保存",
+    "create": "创建",
+    "cancel": "取消"
+  },
+  "job": {
+    "nextRun": "下次运行 {{when}}",
+    "paused": "已暂停",
+    "lastRun": "上次运行 {{when}} · {{status}}",
+    "neverRan": "尚未运行",
+    "pause": "暂停",
+    "resume": "启用",
+    "runNow": "立即运行",
+    "edit": "编辑",
+    "delete": "删除任务",
+    "confirmDelete": "再次点击确认删除",
+    "history": "运行历史",
+    "newSessionEachRun": "每次新建会话",
+    "boundSession": "绑定会话"
+  },
+  "status": {
+    "running": "运行中",
+    "succeeded": "成功",
+    "failed": "失败",
+    "skipped": "已跳过",
+    "missed": "已错过"
+  },
+  "runs": {
+    "title": "运行历史",
+    "empty": "还没有运行记录。",
+    "loading": "正在加载运行记录…",
+    "refresh": "刷新",
+    "close": "关闭",
+    "manual": "手动",
+    "scheduled": "定时",
+    "openSession": "打开会话"
+  },
+  "presets": {
+    "daily": "每天 {{time}}",
+    "weekdays": "工作日 {{time}}",
+    "weekly": "每周一 {{time}}",
+    "hourly": "每小时第 :{{minute}} 分",
+    "custom": "{{expression}}"
+  },
+  "composer": {
+    "once": "一次",
+    "recurring": "重复",
+    "recurringHeading": "重复周期",
+    "recurringHint": "将为此会话创建一个循环任务。",
+    "recurringCreate": "创建任务",
+    "nativeSchedulingHint": "该引擎自身也支持会话内定时；此处的运行会开启新回合，不会打断进行中的回合。",
+    "boundJob": "重复 {{schedule}} · 下次 {{when}}"
+  }
+}

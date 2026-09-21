@@ -384,6 +384,37 @@ export const api = {
     cancel: (id: string) => del(`/api/scheduled-messages/${encodeURIComponent(id)}`),
   },
 
+  // Scheduled jobs: recurring prompts the server fires on a cron schedule,
+  // into a bound session or a fresh one per run.
+  scheduledJobs: {
+    list: (filter: { projectPath?: string; sessionId?: string } = {}) =>
+      get(`/api/scheduled-jobs${query({ projectPath: filter.projectPath, sessionId: filter.sessionId })}`),
+    create: (body: {
+      name: string;
+      prompt: string;
+      sessionMode: 'reuse' | 'new';
+      sessionId?: string;
+      provider?: string;
+      projectPath?: string;
+      options?: unknown;
+      cronExpression: string;
+      timezone: string;
+    }) => post('/api/scheduled-jobs', body),
+    update: (id: string, body: {
+      name?: string;
+      prompt?: string;
+      options?: unknown;
+      cronExpression?: string;
+      timezone?: string;
+      sessionMode?: 'reuse' | 'new';
+      sessionId?: string;
+      enabled?: boolean;
+    }) => patch(`/api/scheduled-jobs/${encodeURIComponent(id)}`, body),
+    remove: (id: string) => del(`/api/scheduled-jobs/${encodeURIComponent(id)}`),
+    runNow: (id: string) => post(`/api/scheduled-jobs/${encodeURIComponent(id)}/run`),
+    runs: (id: string) => get(`/api/scheduled-jobs/${encodeURIComponent(id)}/runs`),
+  },
+
   // Workspace file tree
   readFile: (projectId: string, filePath: string) =>
     get(`/api/file-tree/projects/${projectId}/file${query({ filePath })}`),

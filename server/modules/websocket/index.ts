@@ -21,4 +21,9 @@ export {
 // engine run settles without its terminal `complete`, so the chat UI still
 // sees why the turn ended.
 export { emitRuntimeFailureFallback, runDetachedChatTurn } from './services/chat-websocket.service.js';
+export { broadcastSessionRemoved, broadcastSessionUpserted, broadcastSessionUpsertedBatch } from './services/session-upsert-broadcast.service.js';
+// runDetachedChatTurn: used by the scheduled-messages and scheduled-jobs
+// modules to run a turn from a timer, with no socket to stream to or report
+// errors on.
+export { runDetachedChatTurn } from './services/chat-websocket.service.js';
 export type { ProviderRuntimeGateway } from './services/chat-websocket.service.js';

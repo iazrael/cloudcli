@@ -15,7 +15,7 @@ import { PaperclipIcon, MessageSquareIcon, XIcon, Loader2, ArrowUpIcon, PencilIc
 import { useVoiceInput } from '@/modules/chat/hooks/useVoiceInput';
 import { useVoiceAvailable } from '@/modules/chat/hooks/useVoiceAvailable';
 import type { QueuedDraft } from '@/modules/chat/hooks/useChatComposerState';
-import type { LLMProvider, SessionActivity, ScheduledMessage } from '@/shared/types';
+import type { LLMProvider, SessionActivity, ScheduledJob, ScheduledMessage } from '@/shared/types';
 import type { BackgroundSendChoice, BackgroundSendPrompt, PendingPermissionRequest, PermissionMode } from '@/shared/types';
 import type { ComposerAttachmentBlock, ComposerAttachmentItem, ComposerAttachmentQueue } from '@/shared/types';
 import type { ProviderModelOption } from '@/shared/types';
@@ -109,8 +109,14 @@ type ChatComposerProps = {
   isEditingSentMessage: boolean;
   onCancelEditMessage: () => void;
   scheduledMessages: ScheduledMessage[];
+  /** Recurring jobs bound to this session, shown above the input. */
+  scheduledJobs: ScheduledJob[];
   onScheduleMessage: (scheduledFor: Date) => void;
+  onScheduleRecurring: (schedule: { cronExpression: string; timezone: string }) => void;
   onCancelScheduledMessage: (id: string) => void;
+  onDeleteScheduledJob: (id: string) => void;
+  /** Whether the current provider schedules inside its own session (hint only). */
+  supportsNativeScheduling: boolean;
   onDeleteQueuedDraft: () => void;
   attachments: readonly ComposerAttachmentItem[];
   attachmentQueue: ComposerAttachmentQueue;
@@ -205,8 +211,12 @@ function ChatComposer({
   isEditingSentMessage,
   onCancelEditMessage,
   scheduledMessages,
+  scheduledJobs,
   onScheduleMessage,
+  onScheduleRecurring,
   onCancelScheduledMessage,
+  onDeleteScheduledJob,
+  supportsNativeScheduling,
   onDeleteQueuedDraft,
   attachments,
   attachmentQueue,
@@ -371,7 +381,9 @@ function ChatComposer({
 
       <ScheduledMessageList
         scheduledMessages={scheduledMessages}
+        scheduledJobs={scheduledJobs}
         onCancel={onCancelScheduledMessage}
+        onDeleteJob={onDeleteScheduledJob}
       />
 
       {isEditingSentMessage && (
@@ -573,6 +585,8 @@ function ChatComposer({
               <ScheduleMessagePopover
                 disabled={!input.trim()}
                 onSchedule={onScheduleMessage}
+                onScheduleRecurring={onScheduleRecurring}
+                supportsNativeScheduling={supportsNativeScheduling}
               />
             )}
 

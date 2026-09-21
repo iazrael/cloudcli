@@ -6,6 +6,7 @@ import { StandaloneShell } from '@/modules/standalone-shell';
 import { GitPanel } from '@/modules/git-panel';
 import { PluginTabContent } from '@/modules/plugins';
 import { BrowserUsePanel, useBrowserUseEnabled } from '@/modules/browser-use';
+import { ScheduledJobsPanel } from '@/modules/scheduled-jobs';
 import { usePaletteOpsRegister } from '@/modules/command-palette';
 import type { AppTab, DirectoryRevealRequest, Project, ProjectSession, SessionEstablishedContext, SessionNavigationOptions, SettingsMainTab } from '@/shared/types';
 import { useUiPreferences } from '@/shared/context/UiPreferencesContext';
@@ -221,6 +222,15 @@ function WorkspaceMain({
           {shouldShowBrowserTab && activeTab === 'browser' && (
             <div className="h-full overflow-hidden">
               <BrowserUsePanel isVisible={activeTab === 'browser'} onShowSettings={onShowSettings} />
+            </div>
+          )}
+
+          {activeTab === 'scheduled' && (
+            <div className="h-full overflow-hidden">
+              <ScheduledJobsPanel
+                projectPath={selectedProject.fullPath}
+                onNavigateToSession={onNavigateToSession}
+              />
             </div>
           )}
 
