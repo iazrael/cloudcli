@@ -732,6 +732,12 @@ export const parseIncomingJsonObject = (payload: unknown): AnyRecord | null => {
 export const readJsonConfig = async (filePath: string): Promise<Record<string, unknown>> => {
   try {
     const content = await readFile(filePath, 'utf8');
+    // An empty file is "no configuration yet", not corruption: engines and
+    // installers leave 0-byte config placeholders behind, and a read-modify-
+    // write through them would otherwise fail every write with a parse error.
+    if (!content.trim()) {
+      return {};
+    }
     const parsed = JSON.parse(content) as Record<string, unknown>;
     return readObjectRecord(parsed) ?? {};
   } catch (error) {

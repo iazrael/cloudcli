@@ -24,6 +24,7 @@
     "git": "版本控制",
     "tasks": "任務",
     "browser": "瀏覽器",
+    "scheduled": "定時任務",
     "computer": "電腦"
   },
   "status": {

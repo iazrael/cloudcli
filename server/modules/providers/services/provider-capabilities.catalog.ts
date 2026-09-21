@@ -46,6 +46,14 @@ export type ProviderCatalogEntry = {
   supportsAbort: boolean;
   /** Whether the provider runtime can accept model-level reasoning effort. */
   supportsEffort: boolean;
+  /**
+   * Whether the engine schedules deferred work inside a session on its own
+   * (Claude's CronCreate/ScheduleWakeup). Informational: CloudCLI's scheduled
+   * jobs are offered for every provider, and this only decides whether the
+   * job form warns that the engine already has a session-scoped scheduler
+   * whose wake-ups a job's run would supersede.
+   */
+  supportsNativeScheduling: boolean;
 };
 
 export const PROVIDER_CATALOG = {
@@ -57,6 +65,9 @@ export const PROVIDER_CATALOG = {
     supportsFiles: true,
     supportsAbort: true,
     supportsEffort: true,
+    // Claude's CronCreate/ScheduleWakeup schedule work inside the running CLI
+    // process; CloudCLI holds that process open so the wake-ups can fire.
+    supportsNativeScheduling: true,
   },
   cursor: {
     permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
@@ -66,6 +77,7 @@ export const PROVIDER_CATALOG = {
     supportsFiles: true,
     supportsAbort: true,
     supportsEffort: false,
+    supportsNativeScheduling: false,
   },
   codex: {
     permissionModes: ['default', 'acceptEdits', 'bypassPermissions'],
@@ -75,6 +87,7 @@ export const PROVIDER_CATALOG = {
     supportsFiles: true,
     supportsAbort: true,
     supportsEffort: true,
+    supportsNativeScheduling: false,
   },
   opencode: {
     // Mapped by the runtime onto OpenCode's controls: `--agent plan` (plan),
@@ -87,6 +100,7 @@ export const PROVIDER_CATALOG = {
     supportsFiles: true,
     supportsAbort: true,
     supportsEffort: true,
+    supportsNativeScheduling: false,
   },
   zcode: {
     // Mapped by the runtime onto ZCode's session/setMode modes: build
@@ -103,6 +117,7 @@ export const PROVIDER_CATALOG = {
     supportsFiles: true,
     supportsAbort: true,
     supportsEffort: true,
+    supportsNativeScheduling: false,
   },
   antigravity: {
     permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
@@ -112,5 +127,6 @@ export const PROVIDER_CATALOG = {
     supportsFiles: true,
     supportsAbort: true,
     supportsEffort: true,
+    supportsNativeScheduling: false,
   },
 } as const satisfies Readonly<Record<LLMProvider, ProviderCatalogEntry>>;

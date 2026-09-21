@@ -8,7 +8,8 @@ export { chatRunRegistry } from './services/chat-run-registry.service.js';
 // and single-session archive/delete service to announce rows leaving the
 // active sidebar list.
 export { broadcastSessionRemoved, broadcastSessionUpserted, broadcastSessionUpsertedBatch } from './services/session-upsert-broadcast.service.js';
-// runDetachedChatTurn: used by the scheduled-messages module to run a turn
-// from a timer, with no socket to stream to or report errors on.
+// runDetachedChatTurn: used by the scheduled-messages and scheduled-jobs
+// modules to run a turn from a timer, with no socket to stream to or report
+// errors on.
 export { runDetachedChatTurn } from './services/chat-websocket.service.js';
 export type { ProviderRuntimeGateway } from './services/chat-websocket.service.js';

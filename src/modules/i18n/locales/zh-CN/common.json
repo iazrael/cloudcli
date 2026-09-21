@@ -24,6 +24,7 @@
     "git": "源代码管理",
     "tasks": "任务",
     "browser": "浏览器",
+    "scheduled": "定时任务",
     "computer": "计算机"
   },
   "status": {

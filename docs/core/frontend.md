@@ -91,7 +91,7 @@ MCP 服务器表单按 `useProviderMcpCapabilities()` 渲染。首屏与请求�
 
 ## i18n
 
-- 目录 `src/modules/i18n/`：11 种语言 × 7 个命名空间（auth/chat/codeEditor/common/settings/sidebar/tasks）= 77 个 JSON。
+- 目录 `src/modules/i18n/`：11 种语言 × 8 个命名空间（auth/chat/codeEditor/common/scheduled/settings/sidebar/tasks）；`scheduled` 目前只有 en / zh-CN / zh-TW 三份，其余语言整包回退英文（i18next fallback 按命名空间生效）。
 - 新增用户可见文案必须走 i18n key；**en / zh-CN / zh-TW 三份必须给全**，其余语言可暂缺（回退英文）——这是当前维护约定，翻译覆盖面以 `src/modules/i18n/locales/` 现状为准。
 
 ## PWA 与版本
@@ -106,6 +106,6 @@ MCP 服务器表单按 `useProviderMcpCapabilities()` 渲染。首屏与请求�
 | --- | --- |
 | 新增聊天 UI 块 | 遵守行身份/两种更新形态；数据进 `SessionTimelineStore`，不建平行 state；`MessageComponent` / `ToolRenderer` 已 memo，别破坏输入身份。`ChatMessage.type` 是 `user\|assistant\|error` 三值联合（无索引签名），新 assistant 子形态走 `is*` 旗标 + convertRow + MessageComponent 分支 |
 | 新增全局 Context | 挂到 `App.tsx` 并更新本文表格；能进 store 的别开新 Context |
-| 新增设置分区 | `src/modules/settings/`（各分区独立组件），文案走 i18n 三语言 |
+| 新增设置分区 | `src/modules/settings/`（各分区独立组件），文案走 i18n 三语言。全局功能开关（Browser、定时任务）都在这里：保存后广播一个 `*SettingsChanged` window 事件，工作区 Tab 与 composer 入口用对应 hook 监听，不轮询 |
 | 新增面板/标签页 | `src/modules/project-workspace/`（Shell 布局 + 标签页） |
 | 引入新依赖 | 先确认不破坏性能守则（全量 Prism、per-frame setState、CV:auto 都是禁区） |

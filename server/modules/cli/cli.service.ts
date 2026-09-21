@@ -23,6 +23,7 @@ type CliServiceDependencies = {
   updateGlobalPackage(): void;
   startServer(): Promise<void>;
   startBrowserUseMcp(): Promise<void>;
+  startScheduledJobsMcp(): Promise<void>;
 };
 
 type ParsedCliArguments = {
@@ -138,6 +139,7 @@ Commands:
   start            Start the CloudCLI server (default)
   sandbox          Manage Docker sandbox environments
   browser-use-mcp  Run Browser MCP stdio server
+  scheduled-jobs-mcp  Run Scheduled Tasks MCP stdio server
   status           Show configuration and data locations
   update           Update to the latest version
   help             Show this help information
@@ -237,6 +239,9 @@ export function createCliService(dependencies: CliServiceDependencies): CliAppli
           return dependencies.sandboxService.execute(parsedArguments.remainingArguments);
         case 'browser-use-mcp':
           await dependencies.startBrowserUseMcp();
+          return 0;
+        case 'scheduled-jobs-mcp':
+          await dependencies.startScheduledJobsMcp();
           return 0;
         case 'status':
         case 'info':

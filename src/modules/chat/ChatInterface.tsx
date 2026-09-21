@@ -15,6 +15,8 @@ import { getProviderDisplayName } from '@/shared/providerDisplay';
 import { useProviderAuthStatus } from '@/modules/provider-auth';
 
 import { useScheduledMessages } from '@/modules/chat/composer/useScheduledMessages';
+import { useScheduledJobs } from '@/modules/scheduled-jobs';
+import { useProviderCapabilitiesMap } from '@/shared/hooks/useProviderCapabilities';
 import ChatMessagesPane from '@/modules/chat/transcript/ChatMessagesPane';
 import ProviderSelectionEmptyState from '@/modules/chat/transcript/ProviderSelectionEmptyState';
 import type { ChatMessage } from '@/shared/types';
@@ -42,6 +44,7 @@ function ChatInterface({
   externalMessageUpdate,
   newSessionTrigger,
   onShowAllTasks,
+  scheduledJobsEnabled = false,
 }: ChatInterfaceProps) {
   const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings();
   const { subscribe } = useWebSocket();
@@ -330,6 +333,14 @@ function ChatInterface({
   const { scheduledMessages, schedule: scheduleMessage, cancel: cancelScheduledMessage } =
     useScheduledMessages(currentSessionId || selectedSession?.id || null);
 
+  const { jobs: scheduledJobs, createJob: createScheduledJob, removeJob: removeScheduledJob } =
+    useScheduledJobs({ sessionId: currentSessionId || selectedSession?.id || null });
+
+  const { capabilities: providerCapabilities } = useProviderCapabilitiesMap();
+  // Informational only: engines that schedule inside their own session get a
+  // hint in the repeat entry, not a disabled feature.
+  const supportsNativeScheduling = providerCapabilities?.[provider]?.supportsNativeScheduling ?? false;
+
   const handleScheduleMessage = useCallback(async (scheduledFor: Date) => {
     const content = input.trim();
     if (!content) return;
@@ -343,6 +354,42 @@ function ChatInterface({
       setInput('');
     }
   }, [currentProviderEffort, currentProviderModel, input, permissionMode, scheduleMessage, setInput]);
+
+  const handleScheduleRecurring = useCallback(async (schedule: { cronExpression: string; timezone: string }) => {
+    const content = input.trim();
+    const sessionId = currentSessionId || selectedSession?.id;
+    if (!content || !sessionId) return;
+
+    try {
+      await createScheduledJob({
+        name: content.length > 60 ? `${content.slice(0, 60)}…` : content,
+        prompt: content,
+        sessionMode: 'reuse',
+        sessionId,
+        options: { model: currentProviderModel, effort: currentProviderEffort, permissionMode },
+        cronExpression: schedule.cronExpression,
+        timezone: schedule.timezone,
+      });
+      setInput('');
+    } catch (error) {
+      console.error('Failed to create scheduled task:', error);
+    }
+  }, [
+    createScheduledJob,
+    currentProviderEffort,
+    currentProviderModel,
+    currentSessionId,
+    input,
+    permissionMode,
+    selectedSession?.id,
+    setInput,
+  ]);
+
+  const handleDeleteScheduledJob = useCallback((id: string) => {
+    void removeScheduledJob(id).catch((error) => {
+      console.error('Failed to delete scheduled task:', error);
+    });
+  }, [removeScheduledJob]);
 
   const handleForkFromMessage = useCallback(async (message: ChatMessage) => {
     const anchorId = message.transcriptAnchorId;
@@ -530,8 +577,13 @@ function ChatInterface({
           isEditingSentMessage={Boolean(editingAnchorId)}
           onCancelEditMessage={cancelEditMessage}
           scheduledMessages={scheduledMessages}
+          scheduledJobs={scheduledJobsEnabled ? scheduledJobs : []}
+          scheduledJobsEnabled={scheduledJobsEnabled}
           onScheduleMessage={handleScheduleMessage}
+          onScheduleRecurring={handleScheduleRecurring}
           onCancelScheduledMessage={cancelScheduledMessage}
+          onDeleteScheduledJob={handleDeleteScheduledJob}
+          supportsNativeScheduling={supportsNativeScheduling}
           onInputFocusChange={handleInputFocusChange}
           placeholder={t('input.placeholder', { provider: selectedProviderLabel })}
           isTextareaExpanded={isTextareaExpanded}

@@ -111,6 +111,7 @@
     "voice": "Voice",
     "tasks": "Tasks",
     "browser": "Browser",
+    "scheduled": "Scheduled tasks",
     "notifications": "Notifications",
     "plugins": "Plugins",
     "about": "About"
@@ -874,6 +875,26 @@
     "loadStatusFailed": "Failed to load Browser status",
     "saveFailed": "Failed to save Browser settings",
     "installFailed": "Failed to install browser runtime"
+  },
+  "scheduledJobsSettings": {
+    "sectionTitle": "Scheduled tasks",
+    "sectionDescription": "Recurring prompts that run on a cron schedule, in a bound session or a fresh one per run.",
+    "enableLabel": "Enable scheduled tasks",
+    "enableDescription": "Registers the scheduled-tasks MCP server for agents and shows the workspace's Scheduled tab. Turning this off unregisters the bridge, hides the tab and the composer's repeat entry, and stops tasks from firing.",
+    "enableAriaLabel": "Enable scheduled tasks",
+    "statusPrefix": "Status",
+    "checking": "checking...",
+    "enabled": "enabled",
+    "disabled": "disabled",
+    "mcpLabel": "MCP server",
+    "mcpDescription": "Agents manage tasks with the scheduled-task tools. Re-sync after installing a new engine.",
+    "providerRegistered": "registered",
+    "providerFailed": "failed",
+    "syncMcp": "Re-sync MCP",
+    "syncing": "Syncing...",
+    "loadFailed": "Failed to load scheduled-task settings",
+    "saveFailed": "Failed to save scheduled-task settings",
+    "syncFailed": "Failed to sync the scheduled-tasks MCP server"
   },
   "mcpServersAdd": {
     "menuLabel": "Add MCP Server",

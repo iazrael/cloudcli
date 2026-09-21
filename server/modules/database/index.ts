@@ -25,3 +25,15 @@ export { userPreferencesDb } from '@/modules/database/repositories/user-preferen
 export { vapidKeysDb } from '@/modules/database/repositories/vapid-keys.js';
 export { scheduledMessagesDb } from './repositories/scheduled-messages.db.js';
 export type { ScheduledMessageRow, ScheduledMessageStatus } from './repositories/scheduled-messages.db.js';
+// scheduledJobsDb: used by the Scheduled Jobs module to persist recurring jobs and their run history.
+export { scheduledJobsDb } from './repositories/scheduled-jobs.db.js';
+export type {
+  ClaimedScheduledJob,
+  ScheduledJobRow,
+  ScheduledJobRunRow,
+  ScheduledJobRunStatus,
+  ScheduledJobRunTrigger,
+  ScheduledJobSessionMode,
+  ScheduledJobStatus,
+  ScheduledJobUpdate,
+} from './repositories/scheduled-jobs.db.js';

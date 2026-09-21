@@ -40,12 +40,14 @@ server/
     providers/             ★ 引擎接入层（registry + 6 家 provider + services），见 providers.md
     websocket/             ★ WS 网关（/ws 聊天、/shell 终端、通知、插件代理），见 chat.md
     auth/                  JWT 注册/登录/刷新 + authenticateToken 中间件
-    database/              better-sqlite3 连接、schema、migrations、repositories（16 张表）
+    database/              better-sqlite3 连接、schema、migrations、repositories（18 张表）
     assets/                聊天上传资产（~/.cloudcli/assets）的上传与读取
     agent/                 无头 Agent API（API key / 平台模式鉴权）
     notifications/         Web Push（VAPID）+ 桌面通知 WS
     plugins/               插件注册表、插件子进程、WS 代理
-    scheduled-messages/    定时消息（调度器 → 无附着 chat turn）
+    scheduled-messages/    定时消息（一次性：调度器 → 无附着 chat turn）
+    scheduled-jobs/        循环定时任务（cron + 运行历史；reuse/new 两种会话模式，永不打断在跑回合）
+                           含 agent 侧受管 MCP 桥 `cloudcli-scheduled-tasks`（Settings 全局开关 + 启动对账）
     browser-use/           浏览器自动化 service + 本地 MCP 桥接
     voice/  cli/  git/  file-tree/  worktrees/  projects/  settings/  system/  user/
                            其余领域模块（每个 = routes + services 的薄模块）
@@ -57,6 +59,7 @@ src/
     project-workspace/     工作区外壳（布局、标签页、项目/会话列表状态）
     sidebar/  settings/  auth/  provider-auth/  mcp/  skills/  git-panel/  file-tree/
     code-editor/  shell/  standalone-shell/  i18n/  plugins/  browser-use/
+    scheduled-jobs/        工作区 Scheduled 标签页 + composer 重复入口（见 chat.md / frontend.md）
     voice/  task-master/  command-palette/  onboarding/  quick-settings-panel/  …
   shared/                  api.ts（fetch 封装）、types.ts、context/（全局 Context）、ui/（通用组件 + 引擎 Logo）
   App.tsx                  路由：/ 与 /session/:sessionId 两个工作区路由
@@ -70,7 +73,7 @@ docs/
 
 | 数据 | 位置 | 说明 |
 | --- | --- | --- |
-| SQLite（账号/会话元数据/配置） | `~/.cloudcli/auth.db`（`DATABASE_PATH` 可改） | 16 张表：users、api_keys、user_credentials、projects、sessions、app_config、provider_models、user_preferences、session_drafts、scheduled_messages、notification 系列、vapid_keys、push_subscriptions、scan_state、superseded_provider_sessions。连接单例 `server/modules/database/connection.ts`，表定义 `schema.ts`，迁移 `migrations.ts` |
+| SQLite（账号/会话元数据/配置） | `~/.cloudcli/auth.db`（`DATABASE_PATH` 可改） | 18 张表：users、api_keys、user_credentials、projects、sessions、app_config、provider_models、user_preferences、session_drafts、scheduled_messages、scheduled_jobs、scheduled_job_runs、notification 系列、vapid_keys、push_subscriptions、scan_state、superseded_provider_sessions。连接单例 `server/modules/database/connection.ts`，表定义 `schema.ts`，迁移 `migrations.ts` |
 | 聊天上传资产 | `~/.cloudcli/assets` | `server/modules/assets`；聊天发送只信任该目录**直接子文件**（`chat-websocket.service.ts` 过滤） |
 | 插件本体与启用状态 | `~/.cloudcli/plugins` + `~/.cloudcli/plugins.json` | `server/modules/plugins`（注册表扫描 + 子进程管理）；首次访问时从旧 `~/.claude-code-ui` 一次性自动迁移（`migrateLegacyPluginPaths`） |
 | 各引擎会话原件 | `~/.claude` / `~/.codex` / `~/.cursor` / `~/.local/share/opencode` / `~/.zcode` / `~/.gemini/antigravity*` | 云 CLI 不复制、不改写；同步器只读解析后把元数据 upsert 进 SQLite（`sessions` 表含 `jsonl_path`） |

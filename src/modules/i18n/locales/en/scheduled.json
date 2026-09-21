@@ -1,0 +1,87 @@
+{
+  "panel": {
+    "title": "Scheduled tasks",
+    "description": "Recurring prompts this workspace runs on a cron schedule, with their run history.",
+    "newJob": "New task",
+    "loading": "Loading scheduled tasks…",
+    "empty": "No scheduled tasks in this workspace yet."
+  },
+  "form": {
+    "createTitle": "New scheduled task",
+    "editTitle": "Edit scheduled task",
+    "name": "Name",
+    "namePlaceholder": "Nightly checks",
+    "provider": "Engine",
+    "prompt": "Prompt",
+    "promptPlaceholder": "What should run each time?",
+    "permissionMode": "Permission mode",
+    "permissionHintUnattended": "Unattended runs cannot answer approval prompts; bypass is recommended.",
+    "schedule": "Schedule",
+    "preset": {
+      "daily": "Every day",
+      "weekdays": "Weekdays",
+      "weekly": "Every Monday",
+      "hourly": "Every hour",
+      "custom": "Custom cron"
+    },
+    "cronPlaceholder": "0 9 * * 1-5",
+    "cronHint": "Five fields: minute hour day month weekday.",
+    "timezone": "Timezone: {{timezone}}",
+    "sessionNewHint": "Each run creates a new session in {{projectPath}}.",
+    "sessionReuseHint": "Runs in the session this task was created from.",
+    "nativeSchedulingHint": "This engine also schedules work inside its own session. Runs here never interrupt a busy conversation; a conflicting occurrence is skipped.",
+    "required": "A name and a prompt are required.",
+    "invalidCron": "The schedule must be a five-field cron expression.",
+    "save": "Save",
+    "create": "Create",
+    "cancel": "Cancel"
+  },
+  "job": {
+    "nextRun": "Next run {{when}}",
+    "paused": "Paused",
+    "lastRun": "Last run {{when}} · {{status}}",
+    "neverRan": "Never ran",
+    "pause": "Pause",
+    "resume": "Resume",
+    "runNow": "Run now",
+    "edit": "Edit",
+    "delete": "Delete task",
+    "confirmDelete": "Click again to delete",
+    "history": "Run history",
+    "newSessionEachRun": "New session each run",
+    "boundSession": "Bound session"
+  },
+  "status": {
+    "running": "Running",
+    "succeeded": "Succeeded",
+    "failed": "Failed",
+    "skipped": "Skipped",
+    "missed": "Missed"
+  },
+  "runs": {
+    "title": "Run history",
+    "empty": "No runs yet.",
+    "loading": "Loading runs…",
+    "refresh": "Refresh",
+    "close": "Close",
+    "manual": "Manual",
+    "scheduled": "Scheduled",
+    "openSession": "Open session"
+  },
+  "presets": {
+    "daily": "Every day at {{time}}",
+    "weekdays": "Weekdays at {{time}}",
+    "weekly": "Every Monday at {{time}}",
+    "hourly": "Every hour at :{{minute}}",
+    "custom": "{{expression}}"
+  },
+  "composer": {
+    "once": "Once",
+    "recurring": "Repeat",
+    "recurringHeading": "Repeat schedule",
+    "recurringHint": "Creates a scheduled task bound to this session.",
+    "recurringCreate": "Create task",
+    "nativeSchedulingHint": "This engine also schedules work inside its own session; a run here starts a new turn and never interrupts one.",
+    "boundJob": "Repeats {{schedule}} · next {{when}}"
+  }
+}
