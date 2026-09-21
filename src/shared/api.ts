@@ -413,6 +413,12 @@ export const api = {
     remove: (id: string) => del(`/api/scheduled-jobs/${encodeURIComponent(id)}`),
     runNow: (id: string) => post(`/api/scheduled-jobs/${encodeURIComponent(id)}/run`),
     runs: (id: string) => get(`/api/scheduled-jobs/${encodeURIComponent(id)}/runs`),
+    // Global feature switch: enables the agent-facing MCP bridge, the
+    // workspace tab, and the dispatcher.
+    settings: () => get('/api/scheduled-jobs/settings'),
+    saveSettings: (settings: unknown) => put('/api/scheduled-jobs/settings', settings),
+    status: () => get('/api/scheduled-jobs/status'),
+    syncMcp: () => post('/api/scheduled-jobs/mcp/sync'),
   },
 
   // Workspace file tree

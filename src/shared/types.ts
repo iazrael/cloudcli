@@ -1342,7 +1342,7 @@ export type AgentContext = {
 };
 
 /** Identifier of a top-level section in the settings dialog; use it whenever a tab is stored, compared or requested so deep links, the sidebar and the command palette all agree on the same set of names. */
-export type SettingsMainTab = 'agents' | 'sessions' | 'appearance' | 'git' | 'api' | 'voice' | 'browser' | 'notifications' | 'plugins' | 'diagnostics' | 'about';
+export type SettingsMainTab = 'agents' | 'sessions' | 'appearance' | 'git' | 'api' | 'voice' | 'browser' | 'scheduled' | 'notifications' | 'plugins' | 'diagnostics' | 'about';
 
 /** The coding-agent CLI a settings screen is configuring, aliasing LLMProvider so agent-scoped settings read as being about an agent rather than a chat model. */
 export type AgentProvider = LLMProvider;
@@ -1744,6 +1744,8 @@ export type ChatInterfaceProps = {
   sendByCtrlEnter?: boolean;
   externalMessageUpdate?: number;
   newSessionTrigger?: number;
+  /** Whether the scheduled-tasks feature is on; gates the composer's repeat entry. */
+  scheduledJobsEnabled?: boolean;
 }
 
 export type Provider = LLMProvider;

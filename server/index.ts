@@ -60,7 +60,9 @@ import {
 import {
     closeScheduledJobDispatcher,
     initializeScheduledJobDispatcher,
+    scheduledJobsMcpRoutes,
     scheduledJobsRoutes,
+    scheduledJobsSettingsService,
 } from './modules/scheduled-jobs/index.js';
 import { assetsRoutes } from './modules/assets/index.js';
 import { mediaRoutes } from './modules/media/index.js';
@@ -290,6 +292,9 @@ app.use('/api/scheduled-messages', authenticateToken, scheduledMessagesRoutes);
 app.use('/api/tasks', taskContinuationsRouter);
 app.use('/api/scheduled-jobs', authenticateToken, scheduledJobsRoutes);
 
+// Scheduled Tasks MCP bridge API (local token protected)
+app.use('/api/scheduled-jobs-mcp', scheduledJobsMcpRoutes);
+
 // Agent API Routes (uses API key authentication)
 app.use('/api/agent', agentRoutes);
 
@@ -504,6 +509,12 @@ async function startServer() {
             });
 
             activeContinuationWorker = continuationWorker;
+
+            // Reconcile the scheduled-tasks MCP bridge when the feature is on,
+            // so engines installed after the toggle still get it.
+            await scheduledJobsSettingsService.syncAgentMcpIfNeeded().catch((err) => {
+                console.warn('[ScheduledJobs] Failed to sync MCP configuration during startup:', getErrorMessage(err));
+            });
         });
 
         let activeContinuationWorker: { stop: () => void } | null = null;

@@ -3,6 +3,7 @@ import type { Request, Response } from 'express';
 
 import { scheduledJobsService } from '@/modules/scheduled-jobs/services/scheduled-jobs.service.js';
 import { runScheduledJobNow } from '@/modules/scheduled-jobs/services/scheduled-job-dispatcher.service.js';
+import { scheduledJobsSettingsService } from '@/modules/scheduled-jobs/services/scheduled-jobs-settings.service.js';
 import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/utils.js';
 
 type AuthenticatedRequest = Request & { user?: { id?: number | string } };
@@ -29,6 +30,42 @@ function readString(value: unknown, field: string): string {
 }
 
 const router = express.Router();
+
+router.get(
+  '/settings',
+  asyncHandler(async (_req: Request, res: Response) => {
+    res.json(createApiSuccessResponse({ settings: scheduledJobsSettingsService.getSettings() }));
+  }),
+);
+
+router.put(
+  '/settings',
+  asyncHandler(async (req: Request, res: Response) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const settings = await scheduledJobsSettingsService.updateSettings({
+      enabled: body.enabled,
+      // Recorded so MCP tool calls — which carry no session identity — act as
+      // the account that turned the feature on.
+      ownerUserId: readUserId(req),
+    });
+    res.json(createApiSuccessResponse({ settings }));
+  }),
+);
+
+router.get(
+  '/status',
+  asyncHandler(async (_req: Request, res: Response) => {
+    res.json(createApiSuccessResponse(await scheduledJobsSettingsService.getStatus()));
+  }),
+);
+
+router.post(
+  '/mcp/sync',
+  asyncHandler(async (_req: Request, res: Response) => {
+    const registration = await scheduledJobsSettingsService.registerAgentMcp();
+    res.json(createApiSuccessResponse({ registration }));
+  }),
+);
 
 router.get(
   '/',

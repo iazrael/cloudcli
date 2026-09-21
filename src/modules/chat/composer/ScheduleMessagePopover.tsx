@@ -24,6 +24,8 @@ type ScheduleMessagePopoverProps = {
   onScheduleRecurring: (schedule: { cronExpression: string; timezone: string }) => void;
   /** Whether the engine also schedules inside its own session (drives the hint). */
   supportsNativeScheduling: boolean;
+  /** Whether the scheduled-tasks feature is on; when off the popover is one-off only. */
+  recurringEnabled: boolean;
 };
 
 /** Offsets people actually mean when they say "later". */
@@ -58,6 +60,7 @@ export function ScheduleMessagePopover({
   onSchedule,
   onScheduleRecurring,
   supportsNativeScheduling,
+  recurringEnabled,
 }: ScheduleMessagePopoverProps) {
   const { t } = useTranslation('chat');
   const { t: tScheduled } = useTranslation('scheduled');
@@ -95,6 +98,8 @@ export function ScheduleMessagePopover({
   const recurringValid = preset !== 'custom' || customCron.trim().split(/\s+/).length === 5;
 
   const ariaLabel = t('schedule.trigger');
+  // With the feature off, the popover keeps its original one-off behavior.
+  const showRecurring = recurringEnabled && mode === 'recurring';
 
   return (
     <>
@@ -121,25 +126,27 @@ export function ScheduleMessagePopover({
 
       {isOpen && anchor && createPortal(
         <ComposerMenuSurface anchor={anchor} menuRef={menuRef} ariaLabel={ariaLabel}>
-          <div className="flex gap-1 px-2.5 pb-1.5 pt-0.5">
-            {(['once', 'recurring'] as const).map((candidate) => (
-              <button
-                key={candidate}
-                type="button"
-                onClick={() => setMode(candidate)}
-                className={cn(
-                  'flex-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors',
-                  mode === candidate
-                    ? 'bg-muted text-foreground'
-                    : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground',
-                )}
-              >
-                {candidate === 'once' ? tScheduled('composer.once') : tScheduled('composer.recurring')}
-              </button>
-            ))}
-          </div>
+          {recurringEnabled && (
+            <div className="flex gap-1 px-2.5 pb-1.5 pt-0.5">
+              {(['once', 'recurring'] as const).map((candidate) => (
+                <button
+                  key={candidate}
+                  type="button"
+                  onClick={() => setMode(candidate)}
+                  className={cn(
+                    'flex-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors',
+                    mode === candidate
+                      ? 'bg-muted text-foreground'
+                      : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground',
+                  )}
+                >
+                  {candidate === 'once' ? tScheduled('composer.once') : tScheduled('composer.recurring')}
+                </button>
+              ))}
+            </div>
+          )}
 
-          {mode === 'once' ? (
+          {!showRecurring ? (
             <>
               <ComposerMenuHeading>{t('schedule.heading')}</ComposerMenuHeading>
               {QUICK_OFFSETS_MINUTES.map((minutes) => (

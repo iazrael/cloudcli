@@ -111,6 +111,8 @@ type ChatComposerProps = {
   scheduledMessages: ScheduledMessage[];
   /** Recurring jobs bound to this session, shown above the input. */
   scheduledJobs: ScheduledJob[];
+  /** Whether the scheduled-tasks feature is on; hides the repeat entry when off. */
+  scheduledJobsEnabled: boolean;
   onScheduleMessage: (scheduledFor: Date) => void;
   onScheduleRecurring: (schedule: { cronExpression: string; timezone: string }) => void;
   onCancelScheduledMessage: (id: string) => void;
@@ -212,6 +214,7 @@ function ChatComposer({
   onCancelEditMessage,
   scheduledMessages,
   scheduledJobs,
+  scheduledJobsEnabled,
   onScheduleMessage,
   onScheduleRecurring,
   onCancelScheduledMessage,
@@ -581,6 +584,7 @@ function ChatComposer({
               </div>
             )}
 
+<<<<<<< HEAD
             {SHOW_SCHEDULE_TRIGGER && (
               <ScheduleMessagePopover
                 disabled={!input.trim()}
@@ -589,6 +593,15 @@ function ChatComposer({
                 supportsNativeScheduling={supportsNativeScheduling}
               />
             )}
+=======
+            <ScheduleMessagePopover
+              disabled={!input.trim()}
+              onSchedule={onScheduleMessage}
+              onScheduleRecurring={onScheduleRecurring}
+              supportsNativeScheduling={supportsNativeScheduling}
+              recurringEnabled={scheduledJobsEnabled}
+            />
+>>>>>>> 06f080ae (feat(scheduled-jobs): expose scheduled tasks to agents over MCP)
 
             <ComposerModelMenu
               effort={effort}

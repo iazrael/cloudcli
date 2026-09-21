@@ -43,6 +43,7 @@ function ChatInterface({
   sendByCtrlEnter,
   externalMessageUpdate,
   newSessionTrigger,
+  scheduledJobsEnabled = false,
 }: ChatInterfaceProps) {
   const { subscribe, isConnected } = useWebSocket();
   const { t } = useTranslation('chat');
@@ -596,7 +597,8 @@ function ChatInterface({
           isEditingSentMessage={Boolean(editingAnchorId)}
           onCancelEditMessage={cancelEditMessage}
           scheduledMessages={scheduledMessages}
-          scheduledJobs={scheduledJobs}
+          scheduledJobs={scheduledJobsEnabled ? scheduledJobs : []}
+          scheduledJobsEnabled={scheduledJobsEnabled}
           onScheduleMessage={handleScheduleMessage}
           onScheduleRecurring={handleScheduleRecurring}
           onCancelScheduledMessage={cancelScheduledMessage}

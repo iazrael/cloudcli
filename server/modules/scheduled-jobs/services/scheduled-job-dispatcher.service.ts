@@ -8,6 +8,7 @@ import {
   scheduledJobsService,
   SCHEDULED_JOB_RUN_HISTORY_LIMIT,
 } from '@/modules/scheduled-jobs/services/scheduled-jobs.service.js';
+import { scheduledJobsSettingsService } from '@/modules/scheduled-jobs/services/scheduled-jobs-settings.service.js';
 
 /**
  * How often due occurrences are looked for.
@@ -163,6 +164,11 @@ export function initializeScheduledJobDispatcher(runtime: ProviderRuntimeGateway
   }
 
   const poll = () => {
+    // The feature switch is the whole feature: while it is off, tasks are kept
+    // but nothing fires, so "disabled" cannot mean "still running in the dark".
+    if (!scheduledJobsSettingsService.isEnabled()) {
+      return;
+    }
     // A pass that overruns the interval must not be started again underneath
     // itself; the claim is transactional but the runs are not.
     if (dispatchInFlight) {
