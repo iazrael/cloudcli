@@ -15,7 +15,22 @@ type ScheduledJobsPanelProps = {
 };
 
 /**
- * Rendered by the workspace's Scheduled tab: this project's recurring jobs,
+ * Whether an edit actually moves the schedule. Compared at the picker's minute
+ * precision, because a one-off's instant round-trips through a datetime-local
+ * input, and a name-only edit must neither re-arm a spent one-off (its instant
+ * is in the past) nor fail on it.
+ */
+function scheduleChanged(editingJob: ScheduledJob, input: { cronExpression?: string; runAt?: string }): boolean {
+  if (input.runAt) {
+    return !editingJob.runAt
+      || Math.floor(new Date(input.runAt).getTime() / 60_000)
+        !== Math.floor(new Date(editingJob.runAt).getTime() / 60_000);
+  }
+  return editingJob.runAt !== null || input.cronExpression !== editingJob.cronExpression;
+}
+
+/**
+ * Rendered by the workspace's Scheduled tab: this project's scheduled tasks,
  * with create/edit, pause/resume, run-now, delete and run history.
  */
 export default function ScheduledJobsPanel({ projectPath, onNavigateToSession }: ScheduledJobsPanelProps) {
@@ -46,18 +61,25 @@ export default function ScheduledJobsPanel({ projectPath, onNavigateToSession }:
     prompt: string;
     provider: LLMProvider;
     permissionMode: string;
-    cronExpression: string;
+    cronExpression?: string;
+    runAt?: string;
     timezone: string;
   }) => {
     setSaving(true);
     setFormError(null);
+    // Exactly one schedule form goes out — a one-off sends runAt, a recurring
+    // job sends the expression, and either one replaces the other server-side —
+    // and only when the edit really moved it.
+    const schedule = !editingJob || scheduleChanged(editingJob, input)
+      ? (input.runAt ? { runAt: input.runAt } : { cronExpression: input.cronExpression })
+      : {};
     try {
       if (editingJob) {
         await updateJob(editingJob.id, {
           name: input.name,
           prompt: input.prompt,
           options: { ...editingJob.options, permissionMode: input.permissionMode },
-          cronExpression: input.cronExpression,
+          ...schedule,
           timezone: input.timezone,
         });
       } else {
@@ -68,7 +90,7 @@ export default function ScheduledJobsPanel({ projectPath, onNavigateToSession }:
           provider: input.provider,
           projectPath,
           options: { permissionMode: input.permissionMode },
-          cronExpression: input.cronExpression,
+          ...schedule,
           timezone: input.timezone,
         });
       }

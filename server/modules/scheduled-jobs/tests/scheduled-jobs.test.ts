@@ -375,6 +375,93 @@ test('creating a job validates its schedule and binding', async () => {
   });
 });
 
+test('a one-off task fires once and is disabled instead of repeating', async () => {
+  await withIsolatedDatabase(async (userId) => {
+    // Fixed instant so the derived expression is deterministic: 09:30 Shanghai.
+    const runAt = new Date('2027-03-05T01:30:00.000Z');
+    const job = createReuseJob(userId, { cronExpression: undefined, runAt: runAt.toISOString() });
+
+    assert.equal(job.runAt, runAt.toISOString());
+    assert.equal(job.nextRunAt, runAt.toISOString());
+    assert.equal(job.cronExpression, '30 9 5 3 *');
+
+    const runs: RunCall[] = [];
+    await dispatchDueScheduledJobs(createRuntime(runs), new Date(runAt.getTime() + 10_000));
+
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0].command, 'run the nightly checks');
+    assert.equal(scheduledJobsService.listRuns(userId, job.id)[0].status, 'succeeded');
+
+    const row = scheduledJobsDb.getById(userId, job.id);
+    assert.equal(row?.enabled, 0);
+    assert.equal(row?.next_run_at, runAt.toISOString());
+
+    // A later pass must not fire it a second time.
+    assert.equal(
+      await dispatchDueScheduledJobs(createRuntime(runs), new Date(runAt.getTime() + 24 * 60 * 60_000)),
+      0,
+    );
+    assert.equal(runs.length, 1);
+  });
+});
+
+test('a one-off that came due while the server was down is missed, not replayed', async () => {
+  await withIsolatedDatabase(async (userId) => {
+    const runAt = new Date(Date.now() + 60_000);
+    const job = createReuseJob(userId, { cronExpression: undefined, runAt: runAt.toISOString() });
+
+    const runs: RunCall[] = [];
+    await dispatchDueScheduledJobs(createRuntime(runs), new Date(runAt.getTime() + 30 * 60_000));
+
+    assert.equal(runs.length, 0);
+    assert.equal(scheduledJobsService.listRuns(userId, job.id)[0].status, 'missed');
+    assert.equal(scheduledJobsDb.getById(userId, job.id)?.enabled, 0);
+  });
+});
+
+test('a one-off validates its instant, and a spent one can only be re-armed with a new time', async () => {
+  await withIsolatedDatabase(async (userId) => {
+    const runAt = new Date(Date.now() + 60_000);
+
+    assert.throws(
+      () => createReuseJob(userId, { cronExpression: undefined, runAt: new Date(Date.now() - 60_000).toISOString() }),
+      (error: Error & { code?: string }) => error.code === 'INVALID_SCHEDULED_JOB',
+    );
+    assert.throws(
+      () => createReuseJob(userId, { cronExpression: undefined, runAt: 'not-a-date' }),
+      (error: Error & { code?: string }) => error.code === 'INVALID_SCHEDULED_JOB',
+    );
+    assert.throws(
+      () => createReuseJob(userId, { runAt: runAt.toISOString() }),
+      (error: Error & { code?: string }) => error.code === 'INVALID_SCHEDULED_JOB',
+    );
+
+    const job = createReuseJob(userId, { cronExpression: undefined, runAt: runAt.toISOString() });
+    await dispatchDueScheduledJobs(createRuntime([]), new Date(runAt.getTime() + 10_000));
+    assert.equal(scheduledJobsDb.getById(userId, job.id)?.enabled, 0);
+
+    // The claim disabled the job, but its instant is still ahead of the wall
+    // clock the update path reads; move it into the past to stand in for a
+    // one-off that has truly been spent.
+    scheduledJobsDb.update(userId, job.id, { runAt: new Date(Date.now() - 60_000) });
+    assert.throws(
+      () => scheduledJobsService.update(userId, job.id, { enabled: true }),
+      (error: Error & { code?: string }) => error.code === 'INVALID_SCHEDULED_JOB',
+    );
+
+    const newRunAt = new Date(Date.now() + 120_000);
+    const rearmed = scheduledJobsService.update(userId, job.id, { runAt: newRunAt.toISOString() });
+    assert.equal(rearmed.enabled, true);
+    assert.equal(rearmed.runAt, newRunAt.toISOString());
+    assert.equal(rearmed.nextRunAt, newRunAt.toISOString());
+
+    // Clearing the instant returns the job to the cron it was created with.
+    const recurring = scheduledJobsService.update(userId, job.id, { runAt: null });
+    assert.equal(recurring.runAt, null);
+    assert.ok(new Date(recurring.nextRunAt).getTime() > Date.now());
+  });
+});
+
 test('editing the schedule recomputes the next run', async () => {
   await withIsolatedDatabase(async (userId) => {
     const job = createReuseJob(userId);

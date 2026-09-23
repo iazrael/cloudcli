@@ -43,6 +43,9 @@ export function ScheduledJobList({
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
 
   const describeJobSchedule = (job: ScheduledJob) => {
+    if (job.runAt) {
+      return t('job.onceAt', { when: new Date(job.runAt).toLocaleString() });
+    }
     const description = describeSchedule(job.cronExpression);
     return t(description.key, description.params);
   };
@@ -52,6 +55,9 @@ export function ScheduledJobList({
       {jobs.map((job) => {
         const isDeleting = confirmingDeleteId === job.id;
         const isHistoryOpen = openHistoryJobId === job.id;
+        // A one-off the claim disabled after its run: completed, not paused,
+        // and not resumable — re-arming it means picking a new time.
+        const isCompletedOnce = job.runAt !== null && !job.enabled && job.lastRunAt !== null;
 
         return (
           <li
@@ -71,7 +77,11 @@ export function ScheduledJobList({
                   <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
                     {job.sessionMode === 'new' ? t('job.newSessionEachRun') : t('job.boundSession')}
                   </span>
-                  {!job.enabled && (
+                  {isCompletedOnce ? (
+                    <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] text-emerald-600 dark:text-emerald-400">
+                      {t('job.completed')}
+                    </span>
+                  ) : !job.enabled && (
                     <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-600 dark:text-amber-400">
                       {t('job.paused')}
                     </span>
@@ -82,11 +92,13 @@ export function ScheduledJobList({
                 </p>
                 <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
                   <span className="font-mono text-foreground/80">{describeJobSchedule(job)}</span>
-                  <span>
-                    {job.enabled
-                      ? t('job.nextRun', { when: new Date(job.nextRunAt).toLocaleString() })
-                      : t('job.paused')}
-                  </span>
+                  {!job.runAt && (
+                    <span>
+                      {job.enabled
+                        ? t('job.nextRun', { when: new Date(job.nextRunAt).toLocaleString() })
+                        : t('job.paused')}
+                    </span>
+                  )}
                   <span className={cn(job.lastStatus ? STATUS_CLASS[job.lastStatus] : undefined)}>
                     {job.lastRunAt
                       ? t('job.lastRun', {
@@ -99,15 +111,17 @@ export function ScheduledJobList({
               </div>
 
               <div className="flex flex-shrink-0 items-center gap-1">
-                <button
-                  type="button"
-                  onClick={() => onToggleEnabled(job)}
-                  title={job.enabled ? t('job.pause') : t('job.resume')}
-                  aria-label={job.enabled ? t('job.pause') : t('job.resume')}
-                  className="rounded p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                >
-                  <Power className={cn('h-3.5 w-3.5', job.enabled && 'text-emerald-500')} />
-                </button>
+                {!isCompletedOnce && (
+                  <button
+                    type="button"
+                    onClick={() => onToggleEnabled(job)}
+                    title={job.enabled ? t('job.pause') : t('job.resume')}
+                    aria-label={job.enabled ? t('job.pause') : t('job.resume')}
+                    className="rounded p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  >
+                    <Power className={cn('h-3.5 w-3.5', job.enabled && 'text-emerald-500')} />
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => onRunNow(job)}

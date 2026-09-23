@@ -25,6 +25,8 @@ export type ScheduledJobRow = {
   options: string;
   cron_expression: string;
   timezone: string;
+  /** UTC instant of a one-off task; NULL for a recurring job. */
+  run_at: string | null;
   enabled: number;
   next_run_at: string;
   last_run_at: string | null;
@@ -58,6 +60,7 @@ export type ScheduledJobUpdate = {
   options?: unknown;
   cronExpression?: string;
   timezone?: string;
+  runAt?: Date | null;
   provider?: string;
   projectPath?: string;
   sessionMode?: ScheduledJobSessionMode;
@@ -68,7 +71,7 @@ export type ScheduledJobUpdate = {
 
 const JOB_COLUMNS =
   'id, user_id, name, provider, project_path, session_id, session_mode, prompt, options, '
-  + 'cron_expression, timezone, enabled, next_run_at, last_run_at, last_status, created_at, updated_at';
+  + 'cron_expression, timezone, run_at, enabled, next_run_at, last_run_at, last_status, created_at, updated_at';
 
 const RUN_COLUMNS = 'id, job_id, session_id, trigger, status, error, started_at, finished_at';
 
@@ -84,6 +87,8 @@ export const scheduledJobsDb = {
     options: unknown;
     cronExpression: string;
     timezone: string;
+    /** Set for a one-off task; the caller has already checked it is in the future. */
+    runAt: Date | null;
     nextRunAt: Date;
   }): ScheduledJobRow {
     const db = getConnection();
@@ -92,8 +97,8 @@ export const scheduledJobsDb = {
     db.prepare(
       `INSERT INTO scheduled_jobs
          (id, user_id, name, provider, project_path, session_id, session_mode, prompt, options,
-          cron_expression, timezone, enabled, next_run_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`
+          cron_expression, timezone, run_at, enabled, next_run_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`
     ).run(
       id,
       input.userId,
@@ -106,6 +111,7 @@ export const scheduledJobsDb = {
       JSON.stringify(input.options ?? {}),
       input.cronExpression,
       input.timezone,
+      input.runAt ? input.runAt.toISOString() : null,
       input.nextRunAt.toISOString(),
     );
 
@@ -158,6 +164,7 @@ export const scheduledJobsDb = {
     if (patch.options !== undefined) push('options', JSON.stringify(patch.options ?? {}));
     if (patch.cronExpression !== undefined) push('cron_expression', patch.cronExpression);
     if (patch.timezone !== undefined) push('timezone', patch.timezone);
+    if (patch.runAt !== undefined) push('run_at', patch.runAt ? patch.runAt.toISOString() : null);
     if (patch.provider !== undefined) push('provider', patch.provider);
     if (patch.projectPath !== undefined) push('project_path', patch.projectPath);
     if (patch.sessionMode !== undefined) push('session_mode', patch.sessionMode);
@@ -198,7 +205,8 @@ export const scheduledJobsDb = {
    *
    * `nextRunAtFor` computes the next occurrence from the current clock; it is
    * called inside the transaction so the persisted schedule and the claimed
-   * row can never disagree.
+   * row can never disagree. A one-off (`run_at` set) skips it entirely and is
+   * disabled in the same transaction: its claim is its whole lifecycle.
    */
   claimDue(
     now: Date,
@@ -222,13 +230,21 @@ export const scheduledJobsDb = {
       const claimed: ClaimedScheduledJob[] = [];
 
       for (const job of due) {
-        const nextRunAt = options.nextRunAtFor(job);
         const missed = now.getTime() - new Date(job.next_run_at).getTime() > options.graceMs;
+        // A one-off has no next occurrence: claiming it consumes the only one,
+        // so the job is disabled here whatever the run's outcome, and it can
+        // never be mistaken for a yearly repeat.
+        const once = job.run_at !== null;
+        const nextRunAt = once ? new Date(job.next_run_at) : options.nextRunAtFor(job);
 
         db.prepare(
-          `UPDATE scheduled_jobs
-           SET next_run_at = ?, updated_at = CURRENT_TIMESTAMP
-           WHERE id = ?`
+          once
+            ? `UPDATE scheduled_jobs
+               SET next_run_at = ?, enabled = 0, updated_at = CURRENT_TIMESTAMP
+               WHERE id = ?`
+            : `UPDATE scheduled_jobs
+               SET next_run_at = ?, updated_at = CURRENT_TIMESTAMP
+               WHERE id = ?`
         ).run(nextRunAt.toISOString(), job.id);
 
         const runId = randomUUID();

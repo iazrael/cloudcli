@@ -200,6 +200,44 @@ test('ambiguous active runs fall back to a fresh-session task', async () => {
   });
 });
 
+test('create_scheduled_task accepts a one-off runAt instead of a cron', async () => {
+  await withIsolatedDatabase(async (userId) => {
+    const restoreMcp = await enableScheduledTasks(userId);
+    try {
+      const runAt = new Date(Date.now() + 60_000).toISOString();
+      const result = await scheduledJobsAgentService.executeTool('create_scheduled_task', {
+        prompt: 'one-off check',
+        runAt,
+        sessionId: SESSION_ID,
+        context: { provider: 'claude', timezone: TIMEZONE },
+      }) as { task: { runAt: string | null; enabled: boolean; sessionMode: string } };
+
+      assert.equal(result.task.runAt, runAt);
+      assert.equal(result.task.enabled, true);
+      assert.equal(result.task.sessionMode, 'reuse');
+
+      await assert.rejects(
+        () => scheduledJobsAgentService.executeTool('create_scheduled_task', {
+          prompt: 'both',
+          cron: '0 9 * * *',
+          runAt,
+          context: { provider: 'claude', timezone: TIMEZONE },
+        }),
+        /not both/,
+      );
+      await assert.rejects(
+        () => scheduledJobsAgentService.executeTool('create_scheduled_task', {
+          prompt: 'neither',
+          context: { provider: 'claude', timezone: TIMEZONE },
+        }),
+        /cron or runAt/,
+      );
+    } finally {
+      restoreMcp();
+    }
+  });
+});
+
 test('list_scheduled_tasks scopes to the calling workspace', async () => {
   await withIsolatedDatabase(async (userId, projectPath) => {
     const restoreMcp = await enableScheduledTasks(userId);

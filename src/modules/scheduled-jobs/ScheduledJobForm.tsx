@@ -5,12 +5,13 @@ import { Loader2 } from 'lucide-react';
 import type { LLMProvider, ScheduledJob } from '@/shared/types';
 import { PROVIDER_FALLBACK_ORDER } from '@/shared/providerCatalogFallback';
 import { useProviderCapabilitiesMap } from '@/shared/hooks/useProviderCapabilities';
+import { readLocalDateTimeInputValue, toLocalDateTimeInputValue } from '@/shared/utils';
 import {
   buildCronExpression,
   presetForPattern,
   readLocalTimezone,
   readSchedulePattern,
-  type SchedulePresetId,
+  type ScheduleChoiceId,
 } from '@/modules/scheduled-jobs/utils/schedulePresets';
 
 type ScheduledJobFormProps = {
@@ -24,18 +25,20 @@ type ScheduledJobFormProps = {
     prompt: string;
     provider: LLMProvider;
     permissionMode: string;
-    cronExpression: string;
+    /** Set for a recurring job; `runAt` is set instead for a one-off. */
+    cronExpression?: string;
+    runAt?: string;
     timezone: string;
   }) => void;
   onCancel: () => void;
 };
 
-const PRESET_OPTIONS: SchedulePresetId[] = ['daily', 'weekdays', 'weekly', 'hourly', 'custom'];
+const PRESET_OPTIONS: ScheduleChoiceId[] = ['once', 'daily', 'weekdays', 'weekly', 'hourly', 'custom'];
 
 /**
  * Rendered by the Scheduled tab to create a job (always `new` mode: a fresh
  * session per run) or edit an existing one's name, prompt, permission mode and
- * schedule.
+ * schedule — recurring from a cron expression, or a one-off instant.
  */
 export function ScheduledJobForm({
   projectPath,
@@ -66,7 +69,9 @@ export function ScheduledJobForm({
     const stored = editingJob?.options.permissionMode;
     return typeof stored === 'string' && stored ? stored : 'bypassPermissions';
   });
-  const [preset, setPreset] = useState<SchedulePresetId>(presetForPattern(initialPattern));
+  const [preset, setPreset] = useState<ScheduleChoiceId>(
+    editingJob?.runAt ? 'once' : presetForPattern(initialPattern),
+  );
   // Hourly has no time input, so its minute is carried in the time field —
   // otherwise editing an existing "at :30" job would quietly reset it to :00.
   const [time, setTime] = useState(() => {
@@ -75,6 +80,13 @@ export function ScheduledJobForm({
     }
     return 'time' in initialPattern ? initialPattern.time : '09:00';
   });
+  // The one-off instant, in the browser's zone. Seeded an hour out, because a
+  // picker that opens on "now" is never what scheduling means.
+  const [onceValue, setOnceValue] = useState(() => (
+    editingJob?.runAt
+      ? toLocalDateTimeInputValue(new Date(editingJob.runAt))
+      : toLocalDateTimeInputValue(new Date(Date.now() + 3_600_000))
+  ));
   const [customCron, setCustomCron] = useState(
     initialPattern.kind === 'custom' ? editingJob?.cronExpression ?? '' : '',
   );
@@ -93,6 +105,24 @@ export function ScheduledJobForm({
     const trimmedPrompt = prompt.trim();
     if (!trimmedName || !trimmedPrompt) {
       setValidationError(t('form.required'));
+      return;
+    }
+
+    if (preset === 'once') {
+      const runAt = readLocalDateTimeInputValue(onceValue);
+      if (!runAt) {
+        setValidationError(t('form.invalidOnce'));
+        return;
+      }
+      setValidationError(null);
+      onSave({
+        name: trimmedName,
+        prompt: trimmedPrompt,
+        provider,
+        permissionMode,
+        runAt: runAt.toISOString(),
+        timezone,
+      });
       return;
     }
 
@@ -179,14 +209,14 @@ export function ScheduledJobForm({
           <div className="mt-1 flex gap-2">
             <select
               value={preset}
-              onChange={(event) => setPreset(event.target.value as SchedulePresetId)}
+              onChange={(event) => setPreset(event.target.value as ScheduleChoiceId)}
               className="w-full rounded-md border border-border/60 bg-background px-2 py-1.5 text-sm text-foreground"
             >
               {PRESET_OPTIONS.map((option) => (
                 <option key={option} value={option}>{t(`form.preset.${option}`)}</option>
               ))}
             </select>
-            {preset !== 'custom' && preset !== 'hourly' && (
+            {preset !== 'custom' && preset !== 'hourly' && preset !== 'once' && (
               <input
                 type="time"
                 value={time}
@@ -195,6 +225,19 @@ export function ScheduledJobForm({
               />
             )}
           </div>
+          {preset === 'once' && (
+            <>
+              <input
+                type="datetime-local"
+                value={onceValue}
+                onChange={(event) => setOnceValue(event.target.value)}
+                className="mt-1 w-full rounded-md border border-border/60 bg-background px-2 py-1.5 text-sm text-foreground"
+              />
+              <span className="mt-1 block text-[11px] leading-snug text-muted-foreground/70">
+                {t('form.onceHint')}
+              </span>
+            </>
+          )}
           {preset === 'custom' && (
             <>
               <input

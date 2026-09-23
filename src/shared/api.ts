@@ -384,8 +384,9 @@ export const api = {
     cancel: (id: string) => del(`/api/scheduled-messages/${encodeURIComponent(id)}`),
   },
 
-  // Scheduled jobs: recurring prompts the server fires on a cron schedule,
-  // into a bound session or a fresh one per run.
+  // Scheduled jobs: prompts the server fires on a schedule — recurring on a
+  // cron expression, or a one-off at runAt — into a bound session or a fresh
+  // one per run.
   scheduledJobs: {
     list: (filter: { projectPath?: string; sessionId?: string } = {}) =>
       get(`/api/scheduled-jobs${query({ projectPath: filter.projectPath, sessionId: filter.sessionId })}`),
@@ -397,7 +398,9 @@ export const api = {
       provider?: string;
       projectPath?: string;
       options?: unknown;
-      cronExpression: string;
+      cronExpression?: string;
+      /** ISO instant for a one-off task; mutually exclusive with cronExpression. */
+      runAt?: string;
       timezone: string;
     }) => post('/api/scheduled-jobs', body),
     update: (id: string, body: {
@@ -406,6 +409,8 @@ export const api = {
       options?: unknown;
       cronExpression?: string;
       timezone?: string;
+      /** ISO instant to re-arm as a one-off; null returns the job to its cron. */
+      runAt?: string | null;
       sessionMode?: 'reuse' | 'new';
       sessionId?: string;
       enabled?: boolean;

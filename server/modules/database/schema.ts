@@ -130,6 +130,9 @@ CREATE TABLE IF NOT EXISTS scheduled_messages (
  * deliberately carries no foreign key — deleting a conversation must not
  * silently delete the user's recurring task; the job records a failed run
  * instead and waits to be rebound or removed.
+ *
+ * A job with `run_at` set is a one-off: it fires once at that instant and the
+ * claim disables it, so it reads as completed rather than as a yearly repeat.
  */
 export const SCHEDULED_JOBS_TABLE_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS scheduled_jobs (
@@ -146,11 +149,15 @@ CREATE TABLE IF NOT EXISTS scheduled_jobs (
     -- Composer preferences (model, effort, permission mode) as they were when
     -- the job was created, so each occurrence runs the way the user set it up.
     options TEXT NOT NULL DEFAULT '{}',
-    -- Standard 5-field cron expression, evaluated in the job's timezone.
+    -- Standard 5-field cron expression, evaluated in the job's timezone. For a
+    -- one-off it is derived from run_at so the column stays a valid cron.
     cron_expression TEXT NOT NULL,
     -- IANA zone captured from the client that created the job, so "09:00"
     -- means 09:00 for the user rather than for the server's locale.
     timezone TEXT NOT NULL,
+    -- UTC instant of a one-off task; NULL for a recurring job. Claiming a
+    -- one-off disables it, so it can never fire a second time.
+    run_at DATETIME,
     enabled BOOLEAN NOT NULL DEFAULT 1,
     -- UTC instant of the next occurrence. Advanced inside the claim
     -- transaction, so a claimed job can never fire twice for one occurrence.

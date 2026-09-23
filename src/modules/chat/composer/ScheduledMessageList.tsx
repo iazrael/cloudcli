@@ -41,7 +41,16 @@ export function ScheduledMessageList({
   return (
     <div className="mx-auto mb-2 flex max-w-[54.25rem] flex-col gap-1.5">
       {visibleJobs.map((job) => {
+        // A one-off has no expression worth reading; its instant is the whole
+        // schedule. Either way the banner is only shown while it is enabled,
+        // so a completed one-off drops out on the next refresh.
         const description = describeSchedule(job.cronExpression);
+        const scheduleText = job.runAt
+          ? tScheduled('composer.boundOnce', { when: new Date(job.runAt).toLocaleString() })
+          : tScheduled('composer.boundJob', {
+            schedule: tScheduled(description.key, description.params),
+            when: new Date(job.nextRunAt).toLocaleString(),
+          });
 
         return (
           <div
@@ -50,12 +59,7 @@ export function ScheduledMessageList({
           >
             <Repeat className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
             <div className="min-w-0 flex-1">
-              <p className="text-[11px] text-muted-foreground">
-                {tScheduled('composer.boundJob', {
-                  schedule: tScheduled(description.key, description.params),
-                  when: new Date(job.nextRunAt).toLocaleString(),
-                })}
-              </p>
+              <p className="text-[11px] text-muted-foreground">{scheduleText}</p>
               <p className="mt-0.5 truncate text-foreground">{job.prompt}</p>
             </div>
             <button

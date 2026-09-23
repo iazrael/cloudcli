@@ -22,6 +22,7 @@ const JOB_A: ScheduledJob = {
   options: {},
   cronExpression: '30 9 * * *',
   timezone: 'Asia/Shanghai',
+  runAt: null,
   enabled: true,
   nextRunAt: '2026-09-22T01:30:00.000Z',
   lastRunAt: null,

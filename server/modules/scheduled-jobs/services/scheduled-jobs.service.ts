@@ -24,7 +24,7 @@ export const SCHEDULED_JOB_RUN_HISTORY_LIMIT = 50;
 const MAX_NAME_LENGTH = 120;
 const MAX_PROMPT_LENGTH = 100_000;
 
-/** A recurring job as the API serves it (camelCase, absolute timestamps). */
+/** A recurring or one-off job as the API serves it (camelCase, absolute timestamps). */
 export type ScheduledJob = {
   id: string;
   name: string;
@@ -36,6 +36,8 @@ export type ScheduledJob = {
   options: Record<string, unknown>;
   cronExpression: string;
   timezone: string;
+  /** Set for a one-off task; `null` for a recurring job. */
+  runAt: string | null;
   enabled: boolean;
   nextRunAt: string;
   lastRunAt: string | null;
@@ -108,6 +110,65 @@ function readSessionMode(value: unknown): ScheduledJobSessionMode {
 }
 
 /**
+ * Reads a one-off instant. `null` clears it (returning a job to its cron);
+ * anything else must be an ISO timestamp in the future, so a one-off cannot be
+ * created for a moment that has already passed and fire (or miss) instantly.
+ */
+function readRunAt(value: unknown): Date | null {
+  if (value === null) {
+    return null;
+  }
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new AppError('runAt must be an ISO timestamp.', {
+      code: 'INVALID_SCHEDULED_JOB',
+      statusCode: 400,
+    });
+  }
+  const parsed = new Date(value.trim());
+  if (Number.isNaN(parsed.getTime())) {
+    throw new AppError('runAt is not a valid timestamp.', {
+      code: 'INVALID_SCHEDULED_JOB',
+      statusCode: 400,
+    });
+  }
+  if (parsed.getTime() <= Date.now()) {
+    throw new AppError('runAt must be in the future.', {
+      code: 'INVALID_SCHEDULED_JOB',
+      statusCode: 400,
+    });
+  }
+  return parsed;
+}
+
+/**
+ * The five-field expression that names a one-off instant in its own zone.
+ *
+ * A one-off is driven by `run_at`, never by croner; the expression exists so
+ * the stored row still reads as a schedule and older clients keep rendering
+ * something true instead of an empty field.
+ */
+function cronExpressionForInstant(runAt: Date, timezone: string): string {
+  let parts: Intl.DateTimeFormatPart[];
+  try {
+    parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      hourCycle: 'h23',
+      minute: '2-digit',
+      hour: '2-digit',
+      day: '2-digit',
+      month: '2-digit',
+    }).formatToParts(runAt);
+  } catch {
+    throw new AppError(`Invalid schedule: unknown timezone "${timezone}".`, {
+      code: 'INVALID_CRON_EXPRESSION',
+      statusCode: 400,
+    });
+  }
+  const read = (type: string) => parts.find((part) => part.type === type)?.value ?? '0';
+  return `${Number(read('minute'))} ${Number(read('hour'))} ${Number(read('day'))} ${Number(read('month'))} *`;
+}
+
+/**
  * Validates a cron expression and timezone by asking croner for the next
  * occurrence: an invalid expression or zone throws there, so creation and
  * edits fail loudly instead of leaving a job that can never fire.
@@ -174,6 +235,7 @@ export function toScheduledJob(row: ScheduledJobRow): ScheduledJob {
     options: readOptions(row.options),
     cronExpression: row.cron_expression,
     timezone: row.timezone,
+    runAt: row.run_at,
     enabled: row.enabled === 1,
     nextRunAt: row.next_run_at,
     lastRunAt: row.last_run_at,
@@ -222,9 +284,11 @@ function resolveReuseSession(sessionId: string): { provider: LLMProvider; projec
 
 export const scheduledJobsService = {
   /**
-   * Creates a recurring job. A `reuse` job is bound to an existing session and
-   * inherits its provider and workspace; a `new` job runs each occurrence in a
-   * freshly created session and carries provider and workspace itself.
+   * Creates a scheduled job: recurring from a cron expression, or a one-off
+   * from `runAt` (exactly one of the two). A `reuse` job is bound to an
+   * existing session and inherits its provider and workspace; a `new` job runs
+   * each occurrence in a freshly created session and carries provider and
+   * workspace itself.
    */
   create(input: {
     userId: number;
@@ -237,13 +301,28 @@ export const scheduledJobsService = {
     prompt: unknown;
     options?: unknown;
     cronExpression: unknown;
+    /** ISO instant for a one-off task; omit for a recurring job. */
+    runAt?: unknown;
     timezone: unknown;
   }): ScheduledJob {
     const name = readRequiredText(input.name, 'name', MAX_NAME_LENGTH);
     const prompt = readRequiredText(input.prompt, 'prompt', MAX_PROMPT_LENGTH);
-    const cronExpression = readRequiredText(input.cronExpression, 'cronExpression', 200);
     const timezone = readRequiredText(input.timezone, 'timezone', 100);
-    assertValidSchedule(cronExpression, timezone);
+
+    const runAt = input.runAt === undefined ? null : readRunAt(input.runAt);
+    let cronExpression: string;
+    if (runAt) {
+      if (input.cronExpression !== undefined && input.cronExpression !== null) {
+        throw new AppError('Provide either cronExpression or runAt, not both.', {
+          code: 'INVALID_SCHEDULED_JOB',
+          statusCode: 400,
+        });
+      }
+      cronExpression = cronExpressionForInstant(runAt, timezone);
+    } else {
+      cronExpression = readRequiredText(input.cronExpression, 'cronExpression', 200);
+      assertValidSchedule(cronExpression, timezone);
+    }
 
     const sessionMode = readSessionMode(input.sessionMode);
     let provider: LLMProvider;
@@ -271,7 +350,8 @@ export const scheduledJobsService = {
       options: normalizeOptions(input.options),
       cronExpression,
       timezone,
-      nextRunAt: computeScheduledJobNextRun(cronExpression, timezone),
+      runAt,
+      nextRunAt: runAt ?? computeScheduledJobNextRun(cronExpression, timezone),
     }));
   },
 
@@ -279,13 +359,18 @@ export const scheduledJobsService = {
     return scheduledJobsDb.listForUser(userId, filter).map(toScheduledJob);
   },
 
-  /** Applies an edit; schedule changes always move `next_run_at` to the future. */
+  /**
+   * Applies an edit. A schedule change moves `next_run_at` to the future: a
+   * new cron recomputes the next occurrence, and a new `runAt` (or `null`,
+   * which returns a one-off to its cron) replaces the whole schedule.
+   */
   update(userId: number, id: string, patch: {
     name?: unknown;
     prompt?: unknown;
     options?: unknown;
     cronExpression?: unknown;
     timezone?: unknown;
+    runAt?: unknown;
     sessionMode?: unknown;
     sessionId?: unknown;
     enabled?: unknown;
@@ -312,15 +397,45 @@ export const scheduledJobsService = {
 
     const cronExpression = patch.cronExpression !== undefined
       ? readRequiredText(patch.cronExpression, 'cronExpression', 200)
-      : existing.cron_expression;
+      : undefined;
+    const runAt = patch.runAt === undefined ? undefined : readRunAt(patch.runAt);
+    if (cronExpression !== undefined && runAt !== undefined) {
+      throw new AppError('Provide either cronExpression or runAt, not both.', {
+        code: 'INVALID_SCHEDULED_JOB',
+        statusCode: 400,
+      });
+    }
     const timezone = patch.timezone !== undefined
       ? readRequiredText(patch.timezone, 'timezone', 100)
       : existing.timezone;
-    if (patch.cronExpression !== undefined || patch.timezone !== undefined) {
+
+    if (cronExpression !== undefined) {
       assertValidSchedule(cronExpression, timezone);
       update.cronExpression = cronExpression;
-      update.timezone = timezone;
+      update.runAt = null;
       update.nextRunAt = computeScheduledJobNextRun(cronExpression, timezone);
+    } else if (runAt instanceof Date) {
+      update.cronExpression = cronExpressionForInstant(runAt, timezone);
+      update.runAt = runAt;
+      update.nextRunAt = runAt;
+      // Picking a new instant re-arms the task; a completed one-off is
+      // disabled, so an edit is the only way back and must not stay inert.
+      update.enabled = true;
+    } else if (runAt === null) {
+      assertValidSchedule(existing.cron_expression, timezone);
+      update.runAt = null;
+      update.nextRunAt = computeScheduledJobNextRun(existing.cron_expression, timezone);
+    } else if (patch.timezone !== undefined) {
+      if (existing.run_at) {
+        // A one-off keeps its instant; only the derived expression follows the zone.
+        update.cronExpression = cronExpressionForInstant(new Date(existing.run_at), timezone);
+      } else {
+        assertValidSchedule(existing.cron_expression, timezone);
+        update.nextRunAt = computeScheduledJobNextRun(existing.cron_expression, timezone);
+      }
+    }
+    if (patch.timezone !== undefined) {
+      update.timezone = timezone;
     }
 
     // Provider and workspace follow a bound session, exactly like at creation.
@@ -361,9 +476,21 @@ export const scheduledJobsService = {
       }
       update.enabled = patch.enabled;
       // Re-enabling starts from now: a job paused for a month must not fire
-      // the occurrence that was next when it was paused.
-      if (patch.enabled && existing.enabled !== 1) {
-        update.nextRunAt = computeScheduledJobNextRun(cronExpression, timezone);
+      // the occurrence that was next when it was paused. An edit in the same
+      // patch has already decided the next occurrence, so it wins.
+      if (patch.enabled && existing.enabled !== 1 && update.nextRunAt === undefined) {
+        const onceAt = existing.run_at ? new Date(existing.run_at) : null;
+        if (onceAt) {
+          if (onceAt.getTime() <= Date.now()) {
+            throw new AppError('This one-off task has already run; set a new time to re-enable it.', {
+              code: 'INVALID_SCHEDULED_JOB',
+              statusCode: 400,
+            });
+          }
+          update.nextRunAt = onceAt;
+        } else {
+          update.nextRunAt = computeScheduledJobNextRun(existing.cron_expression, timezone);
+        }
       }
     }
 

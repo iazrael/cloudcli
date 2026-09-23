@@ -114,7 +114,7 @@ type ChatComposerProps = {
   /** Whether the scheduled-tasks feature is on; hides the repeat entry when off. */
   scheduledJobsEnabled: boolean;
   onScheduleMessage: (scheduledFor: Date) => void;
-  onScheduleRecurring: (schedule: { cronExpression: string; timezone: string }) => void;
+  onScheduleTask: (schedule: { cronExpression?: string; runAt?: string; timezone: string }) => void;
   onCancelScheduledMessage: (id: string) => void;
   onDeleteScheduledJob: (id: string) => void;
   /** Whether the current provider schedules inside its own session (hint only). */
@@ -216,7 +216,7 @@ function ChatComposer({
   scheduledJobs,
   scheduledJobsEnabled,
   onScheduleMessage,
-  onScheduleRecurring,
+  onScheduleTask,
   onCancelScheduledMessage,
   onDeleteScheduledJob,
   supportsNativeScheduling,
@@ -597,7 +597,7 @@ function ChatComposer({
             <ScheduleMessagePopover
               disabled={!input.trim()}
               onSchedule={onScheduleMessage}
-              onScheduleRecurring={onScheduleRecurring}
+              onScheduleTask={onScheduleTask}
               supportsNativeScheduling={supportsNativeScheduling}
               recurringEnabled={scheduledJobsEnabled}
             />

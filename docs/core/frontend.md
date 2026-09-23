@@ -35,6 +35,8 @@ React 18 + TypeScript + Vite 7（`vite.config.js`，别名 `@` → `src/`，`@sh
 前后端共用的 `NormalizedMessage` 是聊天时间线的 wire contract；provider 给出的跨路行身份和历史正文完整度必须由 WebSocket 与历史接口原样传入 `SessionTimelineStore`，不能在视图模型层重新生成。身份的分段与对账规则见 [chat.md](./chat.md)。本地图片的签名申请与字节加载分离，机制见下文“图片直连与缓存”。
 
 `WebSocketContext` 只分发当前 socket 的回调，已被替换连接的迟到正文、打开和错误回调不能改变新连接。连接建立后，聊天接收器主动订阅已有会话，先通过确认建立网关代次，再让带代次的事件进入时间线。`SessionTimelineStore` 的连续应用游标与确认水位分开；有界缺口缓存、逐事件状态和指令执行、历史恢复基线见 [chat.md](./chat.md)。接收器不另建去重账。历史恢复失败提示使用 `chat.replay.recoveryFailed` 文案，简体、繁体和英文登记在各语言的 `chat.json`，其他语言沿现有英文回退。提示复用错误卡，不增加持久化消息；恢复成功后移除。
+composer 的定时卡片同样不走 Context，也不是实时状态：`useScheduledJobs` / `useScheduledMessages` 都是普通拉取，只在创建、删除、切换会话，以及**所在会话的 run 结束时**（`isProcessing` 落沿）重新拉取——仅一次任务跑完已自停用、定时消息已发出，都要靠这次刷新才会从输入框上方消失。
+
 
 ## Provider 相关前端（零分支原则）
 

@@ -15,6 +15,7 @@ export {
   describeSchedule,
   readLocalTimezone,
   readSchedulePattern,
+  type ScheduleChoiceId,
   type ScheduleDescription,
   type SchedulePattern,
   type SchedulePresetId,

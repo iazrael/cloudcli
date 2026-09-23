@@ -6,6 +6,13 @@
 
 export type SchedulePresetId = 'daily' | 'weekdays' | 'weekly' | 'hourly' | 'custom';
 
+/**
+ * The schedule pickers' options: the cron presets plus `once` for a one-off
+ * instant. `once` has no expression of its own — the caller sends `runAt`
+ * instead of asking `buildCronExpression` to invent one.
+ */
+export type ScheduleChoiceId = SchedulePresetId | 'once';
+
 /** A cron expression parsed back into the shape the form edits. */
 export type SchedulePattern =
   | { kind: 'daily' | 'weekdays' | 'weekly'; time: string }

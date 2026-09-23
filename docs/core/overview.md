@@ -56,7 +56,7 @@ server/
     notifications/         Web Push（VAPID）+ 桌面通知 WS
     plugins/               插件注册表、插件子进程、WS 代理
     scheduled-messages/    定时消息与排队消息（调度器 → 无附着 chat turn）
-    scheduled-jobs/        循环定时任务（cron + 运行历史；reuse/new 两种会话模式，永不打断在跑回合）
+    scheduled-jobs/        定时任务（cron 循环或 run_at 仅一次 + 运行历史；reuse/new 两种会话模式，永不打断在跑回合）
                            含 agent 侧受管 MCP 桥 `cloudcli-scheduled-tasks`（Settings 全局开关 + 启动对账）
     browser-use/           浏览器自动化 service + 本地 MCP 桥接
     local-proxy/           把服务器本机端口上的服务转发给远程浏览器（票据 + 会话 cookie）
@@ -70,7 +70,7 @@ src/
     project-workspace/     工作区外壳（布局、标签页、项目/会话列表状态）
     sidebar/  settings/  auth/  provider-auth/  mcp/  skills/  git-panel/  file-tree/
     code-editor/  shell/  standalone-shell/  i18n/  plugins/  browser-use/
-    scheduled-jobs/        工作区 Scheduled 标签页 + composer 重复入口（见 chat.md / frontend.md）
+    scheduled-jobs/        工作区 Scheduled 标签页 + composer 任务入口（循环/仅一次，见 chat.md / frontend.md）
     voice/  command-palette/  onboarding/  quick-settings-panel/  …
   shared/                  api.ts（fetch 封装）、types.ts、context/（全局 Context）、ui/（通用组件 + 引擎 Logo）
   App.tsx                  路由：/ 与 /session/:sessionId 两个工作区路由

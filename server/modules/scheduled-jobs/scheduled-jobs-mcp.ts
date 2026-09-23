@@ -63,14 +63,21 @@ async function callScheduledJobsApi(toolName: string, input: Record<string, unkn
 }
 
 const cronDescription =
-  "Five-field cron expression (minute hour day month weekday), e.g. '0 9 * * 1-5' for weekdays at 09:00.";
+  "Five-field cron expression (minute hour day month weekday), e.g. '0 9 * * 1-5' for weekdays at 09:00. "
+  + 'Use this for a recurring task; use runAt instead for a one-off.';
+
+const runAtDescription =
+  'ISO 8601 instant for a one-off task, e.g. "2026-09-23T16:12:00+02:00". It fires once and then '
+  + 'completes; do not pass cron at the same time.';
 
 const tools: McpToolDefinition[] = [
   {
     name: 'create_scheduled_task',
     description:
-      'Create a recurring task that sends a prompt on a cron schedule. sessionMode decides where each '
-      + "occurrence goes: 'reuse' sends every run into one existing session, 'new' creates a fresh session "
+      'Create a scheduled task that sends a prompt: a recurring task on a cron schedule, or a one-off at '
+      + 'a specific instant (runAt) that fires once and then completes. Pass exactly one of cron or runAt. '
+      + 'sessionMode decides where each occurrence goes: '
+      + "'reuse' sends every run into one existing session, 'new' creates a fresh session "
       + 'per occurrence. Tasks default to reusing the session that called this tool; a conflicting occurrence '
       + 'is skipped while that session is busy, never interrupting a run in progress.',
     inputSchema: {
@@ -79,6 +86,7 @@ const tools: McpToolDefinition[] = [
         name: { type: 'string', description: 'Short task name; derived from the prompt when omitted.' },
         prompt: { type: 'string', description: 'The prompt to send on every run.' },
         cron: { type: 'string', description: cronDescription },
+        runAt: { type: 'string', description: runAtDescription },
         timezone: { type: 'string', description: 'IANA timezone; defaults to this machine\'s timezone.' },
         sessionId: { type: 'string', description: 'Bind runs to this existing session (forces sessionMode "reuse").' },
         sessionMode: {
@@ -94,7 +102,7 @@ const tools: McpToolDefinition[] = [
         provider: { type: 'string', description: 'Engine for new sessions; defaults to the calling engine.' },
         permissionMode: { type: 'string', description: 'Permission mode for runs; defaults to bypassPermissions.' },
       },
-      required: ['prompt', 'cron'],
+      required: ['prompt'],
     },
   },
   {
@@ -113,9 +121,10 @@ const tools: McpToolDefinition[] = [
   {
     name: 'update_scheduled_task',
     description:
-      'Update a scheduled task: name, prompt, cron schedule, timezone, permission mode, or enabled state '
-      + '(set enabled=false to pause it, true to resume). The session binding (reuse vs new, sessionId) '
-      + 'cannot be changed here; delete the task and create a new one to switch it.',
+      'Update a scheduled task: name, prompt, schedule (cron for recurring, or runAt for a one-off; pass '
+      + 'one at a time), timezone, permission mode, or enabled state (set enabled=false to pause it, true to '
+      + 'resume). The session binding (reuse vs new, sessionId) cannot be changed here; delete the task and '
+      + 'create a new one to switch it.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -123,6 +132,7 @@ const tools: McpToolDefinition[] = [
         name: { type: 'string' },
         prompt: { type: 'string' },
         cron: { type: 'string', description: cronDescription },
+        runAt: { type: 'string', description: runAtDescription },
         timezone: { type: 'string' },
         permissionMode: { type: 'string' },
         enabled: { type: 'boolean' },
@@ -172,7 +182,8 @@ async function callTool(name: string, args: Record<string, unknown>) {
       return mcpJson(await callScheduledJobsApi(name, {
         name: readMcpOptionalString(args.name),
         prompt: readMcpString(args.prompt, 'prompt'),
-        cron: readMcpString(args.cron, 'cron'),
+        cron: readMcpOptionalString(args.cron),
+        runAt: readMcpOptionalString(args.runAt),
         timezone: readMcpOptionalString(args.timezone),
         sessionId: readMcpOptionalString(args.sessionId),
         sessionMode: readMcpOptionalString(args.sessionMode),
@@ -191,6 +202,7 @@ async function callTool(name: string, args: Record<string, unknown>) {
         name: readMcpOptionalString(args.name),
         prompt: readMcpOptionalString(args.prompt),
         cron: readMcpOptionalString(args.cron),
+        runAt: readMcpOptionalString(args.runAt),
         timezone: readMcpOptionalString(args.timezone),
         permissionMode: readMcpOptionalString(args.permissionMode),
         enabled: typeof args.enabled === 'boolean' ? args.enabled : undefined,

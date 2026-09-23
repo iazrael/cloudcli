@@ -18,7 +18,9 @@ type ScheduledJobDraft = {
   provider?: string;
   projectPath?: string;
   options?: unknown;
-  cronExpression: string;
+  /** A cron expression, or `runAt` for a one-off — exactly one of the two. */
+  cronExpression?: string;
+  runAt?: string;
   timezone: string;
 };
 
@@ -28,6 +30,8 @@ type ScheduledJobPatch = {
   options?: unknown;
   cronExpression?: string;
   timezone?: string;
+  /** ISO instant to re-arm as a one-off; null returns the job to its cron. */
+  runAt?: string | null;
   sessionMode?: 'reuse' | 'new';
   sessionId?: string;
   enabled?: boolean;

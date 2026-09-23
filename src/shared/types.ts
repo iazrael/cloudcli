@@ -202,11 +202,13 @@ export type ScheduledMessage = {
 export type ScheduledJobStatus = 'succeeded' | 'failed' | 'skipped' | 'missed';
 
 /**
- * A recurring prompt the server fires on a cron schedule.
+ * A prompt the server fires on a schedule: recurring on a cron expression, or
+ * a one-off at `runAt`.
  *
  * `sessionMode` decides where each occurrence runs: `reuse` sends it into the
  * bound conversation, `new` creates a fresh session per run so a daily job's
- * context never accumulates.
+ * context never accumulates. A one-off disables itself once it has fired, so
+ * it drops out of the composer banner and reads as completed.
  */
 export type ScheduledJob = {
   id: string;
@@ -221,6 +223,8 @@ export type ScheduledJob = {
   cronExpression: string;
   /** IANA zone the expression is read in, captured from the creating client. */
   timezone: string;
+  /** ISO instant of a one-off task; `null` for a recurring job. */
+  runAt: string | null;
   enabled: boolean;
   nextRunAt: string;
   lastRunAt: string | null;

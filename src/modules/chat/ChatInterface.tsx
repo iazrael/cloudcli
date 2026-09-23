@@ -361,11 +361,31 @@ function ChatInterface({
   // overlapping the last message.
   const hasActivityIndicator = Boolean(sessionActivity && pendingPermissionRequests.length === 0);
 
-  const { scheduledMessages, schedule: scheduleMessage, cancel: cancelScheduledMessage } =
-    useScheduledMessages(currentSessionId || selectedSession?.id || null);
+  const {
+    scheduledMessages,
+    schedule: scheduleMessage,
+    cancel: cancelScheduledMessage,
+    refresh: refreshScheduledMessages,
+  } = useScheduledMessages(currentSessionId || selectedSession?.id || null);
 
-  const { jobs: scheduledJobs, createJob: createScheduledJob, removeJob: removeScheduledJob } =
-    useScheduledJobs({ sessionId: currentSessionId || selectedSession?.id || null });
+  const {
+    jobs: scheduledJobs,
+    createJob: createScheduledJob,
+    removeJob: removeScheduledJob,
+    refresh: refreshScheduledJobs,
+  } = useScheduledJobs({ sessionId: currentSessionId || selectedSession?.id || null });
+
+  // Both banners are plain fetches, so a run ending is when they can be stale:
+  // a one-off task disables itself after firing and a sent message stops being
+  // pending, and neither would leave the composer until the next scope change.
+  const wasProcessingRef = useRef(isProcessing);
+  useEffect(() => {
+    if (wasProcessingRef.current && !isProcessing) {
+      void refreshScheduledJobs();
+      void refreshScheduledMessages();
+    }
+    wasProcessingRef.current = isProcessing;
+  }, [isProcessing, refreshScheduledJobs, refreshScheduledMessages]);
 
   const { capabilities: providerCapabilities } = useProviderCapabilitiesMap();
   // Informational only: engines that schedule inside their own session get a
@@ -386,7 +406,11 @@ function ChatInterface({
     }
   }, [currentProviderEffort, currentProviderModel, input, permissionMode, scheduleMessage, setInput]);
 
-  const handleScheduleRecurring = useCallback(async (schedule: { cronExpression: string; timezone: string }) => {
+  const handleScheduleTask = useCallback(async (schedule: {
+    cronExpression?: string;
+    runAt?: string;
+    timezone: string;
+  }) => {
     const content = input.trim();
     const sessionId = currentSessionId || selectedSession?.id;
     if (!content || !sessionId) return;
@@ -399,6 +423,7 @@ function ChatInterface({
         sessionId,
         options: { model: currentProviderModel, effort: currentProviderEffort, permissionMode },
         cronExpression: schedule.cronExpression,
+        runAt: schedule.runAt,
         timezone: schedule.timezone,
       });
       setInput('');
@@ -600,7 +625,7 @@ function ChatInterface({
           scheduledJobs={scheduledJobsEnabled ? scheduledJobs : []}
           scheduledJobsEnabled={scheduledJobsEnabled}
           onScheduleMessage={handleScheduleMessage}
-          onScheduleRecurring={handleScheduleRecurring}
+          onScheduleTask={handleScheduleTask}
           onCancelScheduledMessage={cancelScheduledMessage}
           onDeleteScheduledJob={handleDeleteScheduledJob}
           supportsNativeScheduling={supportsNativeScheduling}

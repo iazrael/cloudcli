@@ -93,6 +93,7 @@ router.post(
       prompt: body.prompt,
       options: body.options,
       cronExpression: body.cronExpression,
+      runAt: body.runAt,
       timezone: body.timezone,
     });
     res.status(201).json(createApiSuccessResponse(result));
@@ -112,6 +113,7 @@ router.patch(
         options: body.options,
         cronExpression: body.cronExpression,
         timezone: body.timezone,
+        runAt: body.runAt,
         sessionMode: body.sessionMode,
         sessionId: body.sessionId,
         enabled: body.enabled,

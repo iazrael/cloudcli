@@ -142,10 +142,20 @@ export const scheduledJobsAgentService = {
    * Creates a task. Defaults to the calling session (`reuse`); pass
    * `sessionMode: 'new'` (or call outside a run) to get a fresh session per
    * occurrence in `projectPath`.
+   *
+   * `cron` makes it recurring; `runAt` makes it a one-off that disables itself
+   * once it has fired. Exactly one of the two is required.
    */
   createTask(userId: number, input: AgentToolInput, context: AgentCallContext) {
     const prompt = readRequiredText(input.prompt, 'prompt');
-    const cronExpression = readRequiredText(input.cron, 'cron');
+    const cronExpression = readOptionalText(input.cron);
+    const runAt = readOptionalText(input.runAt);
+    if (cronExpression && runAt) {
+      throw new Error('Provide either cron or runAt, not both.');
+    }
+    if (!cronExpression && !runAt) {
+      throw new Error('Either cron or runAt is required.');
+    }
     const name = readOptionalText(input.name) ?? deriveName(prompt);
     const timezone = readOptionalText(input.timezone) ?? context.timezone ?? 'UTC';
     // Agent-created tasks run unattended, so they cannot answer approval
@@ -191,15 +201,18 @@ export const scheduledJobsAgentService = {
       sessionMode: sessionId ? 'reuse' : 'new',
       prompt,
       options: { permissionMode },
-      cronExpression,
+      cronExpression: cronExpression ?? undefined,
+      runAt: runAt ?? undefined,
       timezone,
     });
 
     return {
       task,
-      note: sessionId
-        ? 'Runs in the calling session; a conflicting occurrence is skipped, never interrupting a run in progress.'
-        : 'Each run creates a new session in the workspace.',
+      note: runAt
+        ? 'A one-off task: it fires once at the given time, then completes.'
+        : sessionId
+          ? 'Runs in the calling session; a conflicting occurrence is skipped, never interrupting a run in progress.'
+          : 'Each run creates a new session in the workspace.',
     };
   },
 
@@ -233,12 +246,14 @@ export const scheduledJobsAgentService = {
       options?: unknown;
       cronExpression?: unknown;
       timezone?: unknown;
+      runAt?: unknown;
       enabled?: unknown;
     } = {};
 
     if (input.name !== undefined) patch.name = input.name;
     if (input.prompt !== undefined) patch.prompt = input.prompt;
     if (input.cron !== undefined) patch.cronExpression = input.cron;
+    if (input.runAt !== undefined) patch.runAt = input.runAt;
     if (input.timezone !== undefined) patch.timezone = input.timezone;
     if (input.enabled !== undefined) patch.enabled = input.enabled;
     if (input.permissionMode !== undefined) {
