@@ -77,6 +77,7 @@ export type {
   MemoryCitation,
   MessageKind,
   ServerEventKind,
+  ScheduledJobsChangedEvent,
   SessionRemovedEvent,
   SessionUpsertedEvent,
   SessionUpsertedProject,

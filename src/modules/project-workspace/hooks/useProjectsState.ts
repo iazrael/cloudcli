@@ -702,6 +702,11 @@ export function useProjectsState({
         return;
       }
 
+      // A job-list signal for useScheduledJobs; it belongs to no session.
+      if (event.kind === 'scheduled_jobs_changed') {
+        return;
+      }
+
       const eventSessionId = typeof event.sessionId === 'string' && event.sessionId
         ? event.sessionId
         : null;

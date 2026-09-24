@@ -18,7 +18,7 @@ import {
 } from '@/modules/scheduled-jobs/services/scheduled-job-dispatcher.service.js';
 import { scheduledJobsSettingsService } from '@/modules/scheduled-jobs/services/scheduled-jobs-settings.service.js';
 import { scheduledJobsService } from '@/modules/scheduled-jobs/services/scheduled-jobs.service.js';
-import { chatRunRegistry } from '@/modules/websocket/index.js';
+import { chatRunRegistry, connectedClients } from '@/modules/websocket/index.js';
 
 const SESSION_ID = 'agent-caller-session';
 const SECOND_SESSION_ID = 'agent-other-session';
@@ -332,6 +332,32 @@ test('update, run-now, history and delete work through the tools', async () => {
         /not found/,
       );
     } finally {
+      restoreMcp();
+    }
+  });
+});
+
+test('an agent deleting a task announces it, so the bound session drops its banner', async () => {
+  await withIsolatedDatabase(async (userId) => {
+    const restoreMcp = await enableScheduledTasks(userId);
+    const frames: Array<{ kind: string }> = [];
+    const observer = { readyState: 1, send: (data: string) => frames.push(JSON.parse(data)) };
+    connectedClients.add(observer as never);
+    try {
+      // Bound to the first session, deleted by an agent with no run in it.
+      const created = await scheduledJobsAgentService.executeTool('create_scheduled_task', {
+        prompt: 'check the deploy',
+        cron: '0 9 * * *',
+        context: { provider: 'claude', timezone: TIMEZONE },
+        sessionId: SESSION_ID,
+      }) as { task: { id: string } };
+      assert.deepEqual(frames.map((frame) => frame.kind), ['scheduled_jobs_changed']);
+
+      await scheduledJobsAgentService.executeTool('delete_scheduled_task', { id: created.task.id });
+
+      assert.deepEqual(frames.map((frame) => frame.kind), ['scheduled_jobs_changed', 'scheduled_jobs_changed']);
+    } finally {
+      connectedClients.delete(observer as never);
       restoreMcp();
     }
   });

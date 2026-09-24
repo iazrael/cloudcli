@@ -2,7 +2,7 @@ import { scheduledJobsDb, sessionsDb } from '@/modules/database/index.js';
 import type { ScheduledJobRow } from '@/modules/database/index.js';
 import { sessionsService } from '@/modules/providers/index.js';
 import type { LLMProvider } from '@/shared/types.js';
-import { chatRunRegistry, runDetachedChatTurn } from '@/modules/websocket/index.js';
+import { broadcastScheduledJobsChanged, chatRunRegistry, runDetachedChatTurn } from '@/modules/websocket/index.js';
 import type { ProviderRuntimeGateway } from '@/modules/websocket/index.js';
 import {
   scheduledJobsService,
@@ -132,6 +132,8 @@ export async function dispatchDueScheduledJobs(
   if (claimed.length === 0) {
     return 0;
   }
+  // Claiming advanced each job's next run (and disabled fired one-offs).
+  broadcastScheduledJobsChanged();
 
   // Concurrently: a long-running job must not push every later job past its
   // missed-grace window. Two jobs landing on the same session still cannot
@@ -141,6 +143,8 @@ export async function dispatchDueScheduledJobs(
       ? Promise.resolve()
       : executeScheduledJobRun(entry.job, entry.runId, runtime)
   )));
+  // The runs recorded their outcomes (last status) on the jobs.
+  broadcastScheduledJobsChanged();
 
   return claimed.length;
 }

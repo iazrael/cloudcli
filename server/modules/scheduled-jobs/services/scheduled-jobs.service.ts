@@ -12,6 +12,7 @@ import type {
   ScheduledJobUpdate,
 } from '@/modules/database/index.js';
 import { providerRuntimeService } from '@/modules/providers/index.js';
+import { broadcastScheduledJobsChanged } from '@/modules/websocket/index.js';
 import type { LLMProvider } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
 
@@ -339,7 +340,7 @@ export const scheduledJobsService = {
       projectPath = readRequiredText(input.projectPath, 'projectPath', 2000);
     }
 
-    return toScheduledJob(scheduledJobsDb.create({
+    const created = toScheduledJob(scheduledJobsDb.create({
       userId: input.userId,
       name,
       provider,
@@ -353,6 +354,8 @@ export const scheduledJobsService = {
       runAt,
       nextRunAt: runAt ?? computeScheduledJobNextRun(cronExpression, timezone),
     }));
+    broadcastScheduledJobsChanged();
+    return created;
   },
 
   list(userId: number, filter: { projectPath?: string; sessionId?: string } = {}): ScheduledJob[] {
@@ -501,6 +504,7 @@ export const scheduledJobsService = {
         statusCode: 404,
       });
     }
+    broadcastScheduledJobsChanged();
     return toScheduledJob(updated);
   },
 
@@ -511,6 +515,9 @@ export const scheduledJobsService = {
         statusCode: 404,
       });
     }
+    // An agent deleting a job from another session is the case the composer
+    // banner of the bound session could not otherwise notice.
+    broadcastScheduledJobsChanged();
   },
 
   listRuns(userId: number, id: string, limit = SCHEDULED_JOB_RUN_HISTORY_LIMIT): ScheduledJobRun[] {

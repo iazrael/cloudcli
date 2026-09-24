@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { api, readApiJson } from '@/shared/api';
+import { useWebSocket } from '@/shared/context/WebSocketContext';
 import type { ScheduledJob } from '@/shared/types';
 
 type ScheduledJobFilter = {
@@ -41,9 +42,10 @@ type ScheduledJobPatch = {
  * The scheduled jobs for one scope, plus the mutations the composer and the
  * Scheduled tab share.
  *
- * The server owns the schedule, so this is a plain fetch rather than anything
- * realtime: the list changes when this client creates, edits or removes a job,
- * and it is refetched when the scope changes.
+ * The server owns the schedule and announces every change with a
+ * `scheduled_jobs_changed` frame (including jobs an agent created or deleted
+ * over MCP, from any session); the list refetches on that frame, after a
+ * reconnect, and when the scope changes.
  *
  * Used by the chat composer (session scope) and the Scheduled workspace tab
  * (project scope).
@@ -64,6 +66,7 @@ export function useScheduledJobs(filter: ScheduledJobFilter) {
   // Which scope the jobs on screen belong to; a fetch that resolves after the
   // user moved on must not paint the old scope's jobs over the new one.
   const activeScopeRef = useRef(scopeKey);
+  const { subscribe } = useWebSocket();
 
   const refresh = useCallback(async () => {
     if (!hasScope) {
@@ -106,6 +109,15 @@ export function useScheduledJobs(filter: ScheduledJobFilter) {
     setLoading(true);
     void refresh();
   }, [refresh, scopeKey, hasScope]);
+
+  // The frame carries no job data, so every scope just refetches its own list.
+  // A reconnect refetches too: changes made while the socket was down were
+  // announced to nobody.
+  useEffect(() => subscribe((event) => {
+    if (event.kind === 'scheduled_jobs_changed' || event.kind === 'websocket_reconnected') {
+      void refresh();
+    }
+  }), [subscribe, refresh]);
 
   const createJob = useCallback(async (draft: ScheduledJobDraft) => {
     const response = await api.scheduledJobs.create(draft);

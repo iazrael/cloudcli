@@ -5,7 +5,29 @@ import { afterEach, test, vi } from 'vitest';
 
 import { api } from '@/shared/api';
 import { useScheduledJobs } from '@/modules/scheduled-jobs/hooks/useScheduledJobs';
-import type { ScheduledJob } from '@/shared/types';
+import type { ScheduledJob, ServerEvent } from '@/shared/types';
+
+// A stand-in socket: tests push frames through `emitFrame`.
+const socket = vi.hoisted(() => {
+  const listeners = new Set<(event: unknown) => void>();
+  const subscribe = (listener: (event: unknown) => void) => {
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+    };
+  };
+  return { listeners, subscribe };
+});
+
+vi.mock('@/shared/context/WebSocketContext', () => ({
+  useWebSocket: () => ({ subscribe: socket.subscribe }),
+}));
+
+function emitFrame(event: ServerEvent) {
+  act(() => {
+    for (const listener of socket.listeners) listener(event);
+  });
+}
 
 function okResponse(data: unknown): Response {
   return { ok: true, json: async () => ({ success: true, data }) } as unknown as Response;
@@ -92,4 +114,40 @@ test('creating a job posts the draft and refreshes the list', async () => {
   assert.equal(create.mock.calls[0][0].cronExpression, '30 9 * * *');
   // Once on mount, once after the create.
   assert.equal(list.mock.calls.length, 2);
+});
+
+test('a scheduled_jobs_changed frame refetches, so a job an agent deleted elsewhere disappears', async () => {
+  const list = vi.spyOn(api.scheduledJobs, 'list')
+    .mockImplementationOnce(async () => okResponse([JOB_A]))
+    .mockImplementation(async () => okResponse([]));
+
+  const { result } = renderHook(() => useScheduledJobs({ sessionId: 'session-a' }));
+  await waitFor(() => assert.equal(result.current.jobs.length, 1));
+
+  emitFrame({ kind: 'scheduled_jobs_changed', timestamp: '2026-09-24T12:00:00Z' });
+
+  await waitFor(() => assert.equal(result.current.jobs.length, 0));
+  assert.equal(list.mock.calls.length, 2);
+});
+
+test('a reconnect refetches, covering changes announced while the socket was down', async () => {
+  const list = vi.spyOn(api.scheduledJobs, 'list').mockImplementation(async () => okResponse([JOB_A]));
+
+  renderHook(() => useScheduledJobs({ sessionId: 'session-a' }));
+  await waitFor(() => assert.equal(list.mock.calls.length, 1));
+
+  emitFrame({ kind: 'websocket_reconnected' } as ServerEvent);
+
+  await waitFor(() => assert.equal(list.mock.calls.length, 2));
+});
+
+test('unrelated frames do not refetch', async () => {
+  const list = vi.spyOn(api.scheduledJobs, 'list').mockImplementation(async () => okResponse([JOB_A]));
+
+  renderHook(() => useScheduledJobs({ sessionId: 'session-a' }));
+  await waitFor(() => assert.equal(list.mock.calls.length, 1));
+
+  emitFrame({ kind: 'session_removed', sessionIds: ['x'], timestamp: '2026-09-24T12:00:00Z' });
+
+  assert.equal(list.mock.calls.length, 1);
 });

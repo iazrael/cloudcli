@@ -22,6 +22,9 @@ export {
 // sees why the turn ended.
 export { emitRuntimeFailureFallback, runDetachedChatTurn } from './services/chat-websocket.service.js';
 export { broadcastSessionRemoved, broadcastSessionUpserted, broadcastSessionUpsertedBatch } from './services/session-upsert-broadcast.service.js';
+// broadcastScheduledJobsChanged: used by the scheduled-jobs module so every
+// open composer banner and Scheduled tab refetches after any job change.
+export { broadcastScheduledJobsChanged } from './services/session-upsert-broadcast.service.js';
 // runDetachedChatTurn: used by the scheduled-messages and scheduled-jobs
 // modules to run a turn from a timer, with no socket to stream to or report
 // errors on.

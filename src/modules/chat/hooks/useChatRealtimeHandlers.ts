@@ -134,6 +134,7 @@ export function useChatRealtimeHandlers({
       if (
         msg.kind === 'session_upserted'
         || msg.kind === 'session_removed'
+        || msg.kind === 'scheduled_jobs_changed'
         || msg.kind === 'loading_progress'
         || msg.kind === 'queued_message_dispatched'
       ) {
