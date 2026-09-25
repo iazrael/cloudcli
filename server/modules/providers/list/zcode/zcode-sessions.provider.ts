@@ -26,6 +26,7 @@ import {
 } from '@/shared/utils.js';
 import { getGlobalImageAssetsDir } from '@/shared/image-attachments.js';
 
+import { readZCodeContextUsage } from './zcode-context-usage.js';
 import { getZCodeDatabasePath, getZCodeStorageDir } from './zcode-data-root.js';
 import { buildZCodeTextRowKey, isZCodeCancelledEngineError, readZCodeTokenUsedCount, ZCodeLiveEventNormalizer, ZCODE_CANCELLED_NOTICE, ZCODE_CANCELLED_NOTICE_KEY } from './zcode-live-event-normalizer.js';
 
@@ -59,64 +60,6 @@ type ZCodeHistoryRow = {
   part_time_created: number | null;
   part_data: string | null;
 };
-
-/**
- * Token usage totals in ZCode's internal vocabulary.
- */
-type ZCodeTokenTotals = {
-  input: number;
-  output: number;
-  reasoning: number;
-  cache: number;
-};
-
-/**
- * Reads token usage from either the streaming shape
- * (`{inputTokens, outputTokens, reasoningTokens, cacheReadTokens, cacheWriteTokens}`)
- * or the SQLite `message.data.tokens` shape
- * (`{input, output, reasoning, cache: {read, write}}`).
- * Returns null when no positive count is present in either shape.
- */
-function readTokenTotals(value: unknown): ZCodeTokenTotals | null {
-  const record = readObjectRecord(value);
-  if (!record) {
-    return null;
-  }
-
-  const cacheRecord = readObjectRecord(record.cache);
-  const totals: ZCodeTokenTotals = {
-    input: Number(record.inputTokens ?? record.input ?? 0),
-    output: Number(record.outputTokens ?? record.output ?? 0),
-    reasoning: Number(record.reasoningTokens ?? record.reasoning ?? 0),
-    cache: cacheRecord
-      ? Number(cacheRecord.read ?? 0) + Number(cacheRecord.write ?? 0)
-      : Number(record.cacheReadTokens ?? 0) + Number(record.cacheWriteTokens ?? 0),
-  };
-
-  const used = totals.input + totals.output + totals.reasoning + totals.cache;
-  return used > 0 ? totals : null;
-}
-
-/**
- * Builds the shared token usage summary from ZCode token totals.
- * Shape matches the `token_budget` summaries other providers report
- * (`used` plus input/output breakdown).
- */
-function buildTokenUsage(totals: ZCodeTokenTotals | null): ProviderTokenUsageResult | undefined {
-  if (!totals) {
-    return undefined;
-  }
-
-  return {
-    used: totals.input + totals.output + totals.reasoning + totals.cache,
-    inputTokens: totals.input,
-    outputTokens: totals.output,
-    breakdown: {
-      input: totals.input,
-      output: totals.output,
-    },
-  };
-}
 
 /**
  * Extract and format tool call content for display.
@@ -259,35 +202,6 @@ function isEngineHiddenUserMessage(messageInfo: Record<string, unknown> | null):
 }
 
 /**
- * Aggregate token usage from all messages in a session.
- */
-function aggregateZCodeSessionTokenUsage(
-  db: Database.Database,
-  sessionId: string,
-): ProviderTokenUsageResult | undefined {
-  const rows = db.prepare('SELECT data FROM message WHERE session_id = ?').all(sessionId) as { data: string }[];
-
-  const totals: ZCodeTokenTotals = { input: 0, output: 0, reasoning: 0, cache: 0 };
-  let hasAnyUsage = false;
-
-  for (const row of rows) {
-    const info = readJsonRecord(row.data);
-    const messageTotals = readTokenTotals(info?.tokens);
-    if (!messageTotals) {
-      continue;
-    }
-
-    hasAnyUsage = true;
-    totals.input += messageTotals.input;
-    totals.output += messageTotals.output;
-    totals.reasoning += messageTotals.reasoning;
-    totals.cache += messageTotals.cache;
-  }
-
-  return hasAnyUsage ? buildTokenUsage(totals) : undefined;
-}
-
-/**
  * Session history provider for ZCode's SQLite-backed session store.
  *
  * Implements the IProviderSessions interface to normalize ZCode-specific
@@ -368,7 +282,9 @@ export class ZCodeSessionsProvider implements IProviderSessions {
       `).all(providerSessionId) as ZCodeHistoryRow[];
 
       const normalized = this.normalizeHistoryRows(rows, sessionId);
-      const tokenUsage = aggregateZCodeSessionTokenUsage(db, providerSessionId);
+      // Current context occupancy (not the lifetime spend): the page's badge
+      // and the live mid-turn frame must agree.
+      const tokenUsage = readZCodeContextUsage(db, providerSessionId);
 
       const normalizedOffset = Math.max(0, offset);
       const normalizedLimit = limit === null ? null : Math.max(0, limit);
@@ -617,12 +533,12 @@ export class ZCodeSessionsProvider implements IProviderSessions {
   }
 
   /**
-   * Reads the aggregated token usage for one ZCode session.
+   * Reads the context usage for one ZCode session.
    *
-   * Consumer: the provider token-usage service. Sums `message.data.tokens`
-   * rows for the provider-native session id (the same aggregation fetchHistory
-   * uses). A missing database or a session unknown to ZCode is a 404; a known
-   * session without recorded usage reports zeros.
+   * Consumer: the provider token-usage service. Reports the newest step's
+   * occupancy plus the model's window (the same reading `fetchHistory` returns
+   * and the runtime pushes mid-turn). A missing database or a session unknown
+   * to ZCode is a 404; a known session without recorded usage reports zeros.
    */
   async getTokenUsage(input: ProviderSessionUsageInput): Promise<ProviderTokenUsageResult> {
     const db = openZCodeDatabase();
@@ -634,7 +550,7 @@ export class ZCodeSessionsProvider implements IProviderSessions {
     }
 
     try {
-      const usage = aggregateZCodeSessionTokenUsage(db, input.nativeSessionId);
+      const usage = readZCodeContextUsage(db, input.nativeSessionId);
       if (usage) {
         return usage;
       }

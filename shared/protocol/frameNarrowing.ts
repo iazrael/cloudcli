@@ -52,6 +52,7 @@ const GATEWAY_KINDS: ReadonlySet<string> = new Set([
   'chat_subscribed',
   'session_upserted',
   'session_removed',
+  'scheduled_jobs_changed',
   'loading_progress',
   'protocol_error',
   'websocket_reconnected',

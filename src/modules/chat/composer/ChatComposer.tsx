@@ -10,12 +10,14 @@ import type {
   RefObject,
   TouchEvent,
 } from 'react';
-import { PaperclipIcon, MessageSquareIcon, XIcon, Loader2, ArrowUpIcon, PencilIcon } from 'lucide-react';
+import { PaperclipIcon, MessageSquareIcon, XIcon, Loader2, ArrowUpIcon, PencilIcon, CircleHelpIcon } from 'lucide-react';
+
+import { Tooltip } from '@/shared/ui/Tooltip';
 
 import { useVoiceInput } from '@/modules/chat/hooks/useVoiceInput';
 import { useVoiceAvailable } from '@/modules/chat/hooks/useVoiceAvailable';
 import type { QueuedDraft } from '@/modules/chat/hooks/useChatComposerState';
-import type { SessionActivity, ScheduledMessage } from '@/shared/types';
+import type { SessionActivity, ScheduledJob, ScheduledMessage } from '@/shared/types';
 import type { PendingPermissionRequest, PermissionMode } from '@/shared/types';
 import type { ProviderModelOption } from '@/shared/types';
 import {
@@ -35,6 +37,7 @@ import ComposerAttachment from '@/modules/chat/composer/ComposerAttachment';
 import VoiceInputButton from '@/modules/chat/composer/VoiceInputButton';
 import PermissionRequestsBanner from '@/modules/chat/composer/PermissionRequestsBanner';
 import TokenUsageSummary from '@/modules/chat/composer/TokenUsageSummary';
+import { ContextUsageBar } from '@/modules/chat/composer/ContextUsageBar';
 import QueuedMessageCard from '@/modules/chat/composer/QueuedMessageCard';
 import { ScheduleMessagePopover } from '@/modules/chat/composer/ScheduleMessagePopover';
 import { ScheduledMessageList } from '@/modules/chat/composer/ScheduledMessageList';
@@ -98,10 +101,20 @@ type ChatComposerProps = {
   onEditQueuedDraft: () => void;
   /** True while the composer is editing an already-sent message (edit & resend). */
   isEditingSentMessage: boolean;
+  /** Whether editing also reverts the files the agent changed, so the banner can say which. */
+  editRevertsFiles: boolean;
   onCancelEditMessage: () => void;
   scheduledMessages: ScheduledMessage[];
+  /** Recurring jobs bound to this session, shown above the input. */
+  scheduledJobs: ScheduledJob[];
+  /** Whether the scheduled-tasks feature is on; hides the repeat entry when off. */
+  scheduledJobsEnabled: boolean;
   onScheduleMessage: (scheduledFor: Date) => void;
+  onScheduleTask: (schedule: { cronExpression?: string; runAt?: string; timezone: string }) => void;
   onCancelScheduledMessage: (id: string) => void;
+  onDeleteScheduledJob: (id: string) => void;
+  /** Whether the current provider schedules inside its own session (hint only). */
+  supportsNativeScheduling: boolean;
   onDeleteQueuedDraft: () => void;
   attachedFiles: File[];
   onRemoveAttachment: (index: number) => void;
@@ -170,10 +183,16 @@ function ChatComposer({
   queuedDraft,
   onEditQueuedDraft,
   isEditingSentMessage,
+  editRevertsFiles,
   onCancelEditMessage,
   scheduledMessages,
+  scheduledJobs,
+  scheduledJobsEnabled,
   onScheduleMessage,
+  onScheduleTask,
   onCancelScheduledMessage,
+  onDeleteScheduledJob,
+  supportsNativeScheduling,
   onDeleteQueuedDraft,
   attachedFiles,
   onRemoveAttachment,
@@ -312,7 +331,9 @@ function ChatComposer({
 
       <ScheduledMessageList
         scheduledMessages={scheduledMessages}
+        scheduledJobs={scheduledJobs}
         onCancel={onCancelScheduledMessage}
+        onDeleteJob={onDeleteScheduledJob}
       />
 
       {isEditingSentMessage && (
@@ -321,7 +342,9 @@ function ChatComposer({
           <span className="min-w-0 flex-1">
             {t('composer.editing.title')}
             {' — '}
-            <span className="text-muted-foreground">{t('composer.editing.filesNotReverted')}</span>
+            <span className="text-muted-foreground">
+              {t(editRevertsFiles ? 'composer.editing.filesReverted' : 'composer.editing.filesNotReverted')}
+            </span>
           </span>
           <button
             type="button"
@@ -395,6 +418,8 @@ function ChatComposer({
           ].filter(Boolean).join(' ')}
           {...getRootProps()}
         >
+          <ContextUsageBar usage={tokenBudget} onClick={onShowTokenUsage} />
+
           {isDragActive && (
             <div className="absolute inset-0 z-50 flex items-center justify-center rounded-2xl border-2 border-dashed border-primary/50 bg-primary/15">
               <div className="rounded-xl border border-border/30 bg-card p-4 shadow-lg">
@@ -468,6 +493,8 @@ function ChatComposer({
               <VoiceInputButton state={voiceState} onToggle={voiceToggle} errorMsg={voiceError} />
             )}
 
+            {/* Phones get the bare token count (no icon/percentage) so this row
+                stays inside ~320px; ContextUsageBar shows the window fill. */}
             <TokenUsageSummary usage={tokenBudget} onClick={onShowTokenUsage} />
 
             <PromptInputButton
@@ -498,17 +525,29 @@ function ChatComposer({
           </PromptInputTools>
 
           <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
-            <div
-              className={`hidden text-xs text-muted-foreground/50 transition-opacity duration-200 lg:block ${
-                input.trim() && !canQueueDraft ? 'opacity-0' : 'opacity-100'
-              }`}
+            <Tooltip
+              content={
+                <div className="flex flex-col gap-0.5">
+                  {submitHint.split(' • ').map((line) => (
+                    <span key={line}>{line}</span>
+                  ))}
+                </div>
+              }
             >
-              {submitHint}
-            </div>
+              <span
+                aria-label={submitHint}
+                className="flex h-6 w-6 cursor-help items-center justify-center text-muted-foreground/50 transition-colors hover:text-muted-foreground"
+              >
+                <CircleHelpIcon className="h-3.5 w-3.5" />
+              </span>
+            </Tooltip>
 
             <ScheduleMessagePopover
               disabled={!input.trim()}
               onSchedule={onScheduleMessage}
+              onScheduleTask={onScheduleTask}
+              supportsNativeScheduling={supportsNativeScheduling}
+              recurringEnabled={scheduledJobsEnabled}
             />
 
             <ComposerModelMenu

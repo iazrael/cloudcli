@@ -117,7 +117,11 @@
   },
   "version": {
     "updateAvailable": "有可用更新",
-    "restartRequired": "已安裝更新 — 請重新啟動伺服器以套用"
+    "restartRequired": "已安裝更新 — 請重新啟動伺服器以套用",
+    "commitsBehind": "{{count}} 個新提交",
+    "rebuildAvailable": "本機程式碼待建置",
+    "updating": "正在更新…",
+    "viewProgress": "查看進度"
   },
   "search": {
     "modeProjects": "專案",

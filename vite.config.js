@@ -33,9 +33,15 @@ export default defineConfig(({ mode }) => {
   // repeating the package version next to it.
   let buildCommit = 'unknown'
   let buildDescribe = buildCommit
+  // Full hash and dirty flag for dist/build-info.json, which the server reads at
+  // startup to tell whether the checkout's HEAD moved past the running build.
+  let buildFullCommit = null
+  let buildDirty = false
   try {
+    buildFullCommit = execSync('git rev-parse HEAD', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim()
     const gitHash = execSync('git rev-parse --short HEAD', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim()
     const isDirty = execSync('git status --porcelain', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim().length > 0 ? '-dirty' : ''
+    buildDirty = isDirty !== ''
     buildCommit = `${gitHash}${isDirty}`
     buildDescribe = `v${pkg.version}-${gitHash}${isDirty}`
   } catch {
@@ -46,7 +52,20 @@ export default defineConfig(({ mode }) => {
   const buildTime = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`
 
   return {
-    plugins: [react()],
+    plugins: [
+      react(),
+      {
+        name: 'cloudcli-build-info',
+        apply: 'build',
+        generateBundle() {
+          this.emitFile({
+            type: 'asset',
+            fileName: 'build-info.json',
+            source: JSON.stringify({ commit: buildFullCommit, dirty: buildDirty, version: pkg.version, buildTime }),
+          })
+        },
+      },
+    ],
     define: {
       __APP_VERSION__: JSON.stringify(pkg.version),
       __BUILD_INFO__: JSON.stringify({ commit: buildCommit, buildTime, describe: buildDescribe })

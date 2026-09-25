@@ -27,6 +27,7 @@ function createSessionRow(overrides: Record<string, unknown> = {}) {
     custom_name: null,
     model: null,
     effort: null,
+    context_window: null,
     forked_from_session_id: null,
     isArchived: 0,
     created_at: '2026-01-01T00:00:00.000Z',
@@ -240,7 +241,7 @@ test('the Claude summarizer reads the newest assistant turn, not the whole conve
     { type: 'assistant', message: { usage: { input_tokens: 3, cache_read_input_tokens: 4000, cache_creation_input_tokens: 100, output_tokens: 80 } } },
   ];
 
-  assert.deepEqual(summarizeClaudeTokenUsage(entries, '200000'), {
+  assert.deepEqual(summarizeClaudeTokenUsage(entries, { configured: '200000' }), {
     used: 4183,
     total: 200_000,
     inputTokens: 4103,
@@ -272,7 +273,7 @@ test('the Claude summarizer skips synthetic rows that carry an all-zero usage bl
     },
   ];
 
-  assert.equal(summarizeClaudeTokenUsage(entries, '200000').used, 4083);
+  assert.equal(summarizeClaudeTokenUsage(entries, { configured: '200000' }).used, 4083);
 });
 
 test('the Claude summarizer skips a subagent sidechain turn', () => {
@@ -287,12 +288,61 @@ test('the Claude summarizer skips a subagent sidechain turn', () => {
     },
   ];
 
-  assert.equal(summarizeClaudeTokenUsage(entries, '200000').used, 4083);
+  assert.equal(summarizeClaudeTokenUsage(entries, { configured: '200000' }).used, 4083);
 });
 
 test('the Claude summarizer reports zero for a transcript with no assistant turn yet', () => {
-  const usage = summarizeClaudeTokenUsage([{ type: 'user', message: { role: 'user', content: 'hi' } }], '200000');
+  const usage = summarizeClaudeTokenUsage([{ type: 'user', message: { role: 'user', content: 'hi' } }], { configured: '200000' });
 
   assert.equal(usage.used, 0);
   assert.equal(usage.total, 200_000);
+});
+
+test('the recorded context window beats CONTEXT_WINDOW and the model heuristic', () => {
+  // A 1M-context run writes the resolved model id into the transcript, never
+  // the `[1m]` variant, so the heuristic can never tell it apart from a 200k
+  // session. Only the window the SDK reported for the session can, which is
+  // why it outranks even an explicit deployment override — otherwise the
+  // reload path would contradict the realtime frames, which never read it.
+  const entries = [
+    { type: 'assistant', message: { model: 'claude-opus-5', usage: { input_tokens: 10, output_tokens: 5 } } },
+  ];
+
+  assert.equal(
+    summarizeClaudeTokenUsage(entries, { recorded: 1_000_000, configured: '200000' }).total,
+    1_000_000,
+  );
+  assert.equal(summarizeClaudeTokenUsage(entries, { configured: '180000' }).total, 180_000);
+  assert.equal(summarizeClaudeTokenUsage(entries, {}).total, 200_000);
+
+  // The model the app recorded for the session is the user's own selection, so
+  // it keeps the `[1m]` tag and reads as 1M before the session has ever run
+  // here — but it is still a heuristic, so an explicit CONTEXT_WINDOW wins.
+  assert.equal(summarizeClaudeTokenUsage(entries, { selectedModel: 'opus[1m]' }).total, 1_000_000);
+  assert.equal(summarizeClaudeTokenUsage(entries, { selectedModel: 'claude-opus-5' }).total, 200_000);
+  assert.equal(
+    summarizeClaudeTokenUsage(entries, { selectedModel: 'opus[1m]', configured: '180000' }).total,
+    180_000,
+  );
+});
+
+test('an unusable recorded window falls through instead of pinning a bogus total', () => {
+  const entries = [
+    { type: 'assistant', message: { model: 'claude-opus-5[1m]', usage: { input_tokens: 10, output_tokens: 5 } } },
+  ];
+
+  for (const recorded of [0, -1, Number.NaN, null]) {
+    assert.equal(summarizeClaudeTokenUsage(entries, { recorded }).total, 1_000_000);
+  }
+});
+
+test('the Claude summarizer never falls back to the legacy 160k window', () => {
+  // `/token-usage` used to hardcode 160000 while the history page resolved
+  // 200000, so one session reported two different windows depending on which
+  // request the composer had made last.
+  const entries = [
+    { type: 'assistant', message: { usage: { input_tokens: 10, output_tokens: 5 } } },
+  ];
+
+  assert.notEqual(summarizeClaudeTokenUsage(entries, {}).total, 160_000);
 });

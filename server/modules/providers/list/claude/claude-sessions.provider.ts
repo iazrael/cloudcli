@@ -23,13 +23,13 @@ import {
   generateMessageId,
   normalizeProjectPath,
   readObjectRecord,
-  readUsageNumber,
   removePathIfExists,
   sanitizeLeafDirectoryName,
   sliceTailPage,
   truncateSubagentActivity,
 } from '@/shared/utils.js';
 import { sessionsDb } from '@/modules/database/index.js';
+import { readClaudeSessionWindowSources } from '@/modules/providers/services/claude-context-window.js';
 import { summarizeClaudeTokenUsage } from '@/modules/providers/services/claude-usage.js';
 import { liftMemoryCitations } from '@/modules/providers/shared/memory-citations.js';
 
@@ -656,61 +656,25 @@ function stripAnsiFormatting(text: string): string {
 }
 
 /**
- * Reads the latest assistant-message usage snapshot from a Claude JSONL.
+ * Parses a Claude JSONL transcript into the rows the usage summarizer reads.
  *
- * Claude appends cumulative per-assistant usage over time, so the scan walks
- * from the end and stops at the first readable assistant entry. Cache reads
- * and writes count toward the input total, matching how the CLI bills them.
+ * Malformed lines are dropped rather than aborting the scan: a transcript
+ * whose tail is being appended to while it is read is normal, and the rows
+ * before it still carry the session's usage.
  */
-function readClaudeTokenUsage(
-  fileContent: string,
-  configuredContextWindow: string | undefined,
-): ProviderTokenUsageResult {
-  let inputTokens = 0;
-  let outputTokens = 0;
-  let cacheReadTokens = 0;
-  let cacheCreationTokens = 0;
-  const lines = fileContent.trim().split('\n');
-
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
+function parseClaudeTranscriptEntries(fileContent: string): AnyRecord[] {
+  const entries: AnyRecord[] = [];
+  for (const line of fileContent.split('\n')) {
+    if (!line.trim()) {
+      continue;
+    }
     try {
-      const entry = JSON.parse(lines[index]) as AnyRecord;
-      const usage = entry.type === 'assistant' ? entry.message?.usage : null;
-      if (!usage) {
-        continue;
-      }
-
-      const directInputTokens = readUsageNumber(usage.input_tokens ?? usage.inputTokens);
-      cacheReadTokens = readUsageNumber(
-        usage.cache_read_input_tokens ?? usage.cacheReadInputTokens ?? usage.cacheReadTokens,
-      );
-      cacheCreationTokens = readUsageNumber(
-        usage.cache_creation_input_tokens
-          ?? usage.cacheCreationInputTokens
-          ?? usage.cacheCreationTokens,
-      );
-      inputTokens = directInputTokens + cacheReadTokens + cacheCreationTokens;
-      outputTokens = readUsageNumber(usage.output_tokens ?? usage.outputTokens);
-      break;
+      entries.push(JSON.parse(line) as AnyRecord);
     } catch {
       // Skip malformed lines without discarding usage from earlier messages.
     }
   }
-
-  const parsedContextWindow = Number.parseInt(configuredContextWindow ?? '', 10);
-  const contextWindow = Number.isFinite(parsedContextWindow) ? parsedContextWindow : 160_000;
-  const cacheTokens = cacheReadTokens + cacheCreationTokens;
-
-  return {
-    used: inputTokens + outputTokens,
-    total: contextWindow,
-    inputTokens,
-    outputTokens,
-    cacheReadTokens,
-    cacheCreationTokens,
-    cacheTokens,
-    breakdown: { input: inputTokens, output: outputTokens },
-  };
+  return entries;
 }
 
 /**
@@ -1242,7 +1206,10 @@ export class ClaudeSessionsProvider implements IProviderSessions {
       // Carried on every page, like the Codex and OpenCode readers do, so the
       // composer's counter tracks the conversation instead of being frozen at
       // whatever it was when the session was opened.
-      tokenUsage: summarizeClaudeTokenUsage(rawMessages),
+      tokenUsage: summarizeClaudeTokenUsage(rawMessages, {
+        ...readClaudeSessionWindowSources(sessionId),
+        configured: process.env.CONTEXT_WINDOW,
+      }),
     };
   }
 
@@ -1289,7 +1256,12 @@ export class ClaudeSessionsProvider implements IProviderSessions {
     }
 
     const fileContent = await fsp.readFile(sessionFilePath, 'utf8');
-    return readClaudeTokenUsage(fileContent, process.env.CONTEXT_WINDOW);
+    // Same summarizer the history page uses, so the endpoint and the page can
+    // never report a different occupancy or a different window for one session.
+    return summarizeClaudeTokenUsage(parseClaudeTranscriptEntries(fileContent), {
+      ...readClaudeSessionWindowSources(input.appSessionId),
+      configured: process.env.CONTEXT_WINDOW,
+    });
   }
 
   /**

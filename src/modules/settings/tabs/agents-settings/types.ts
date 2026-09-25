@@ -7,6 +7,7 @@ import type {
   CodexPermissionMode,
   AntigravityPermissionMode,
   ZcodePermissionMode,
+  OpenCodePermissionMode,
   SettingsProject,
 } from '@/shared/types';
 
@@ -31,6 +32,8 @@ export type AgentsSettingsTabProps = {
   onAntigravityPermissionModeChange: (value: AntigravityPermissionMode) => void;
   zcodePermissionMode: ZcodePermissionMode;
   onZcodePermissionModeChange: (value: ZcodePermissionMode) => void;
+  opencodePermissionMode: OpenCodePermissionMode;
+  onOpenCodePermissionModeChange: (value: OpenCodePermissionMode) => void;
   projects: SettingsProject[];
 };
 
@@ -62,5 +65,7 @@ export type AgentCategoryContentSectionProps = {
   onAntigravityPermissionModeChange: (value: AntigravityPermissionMode) => void;
   zcodePermissionMode: ZcodePermissionMode;
   onZcodePermissionModeChange: (value: ZcodePermissionMode) => void;
+  opencodePermissionMode: OpenCodePermissionMode;
+  onOpenCodePermissionModeChange: (value: OpenCodePermissionMode) => void;
   projects: SettingsProject[];
 };

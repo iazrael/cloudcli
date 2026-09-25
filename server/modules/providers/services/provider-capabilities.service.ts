@@ -10,6 +10,9 @@ import { PROVIDER_CATALOG } from './provider-capabilities.catalog.js';
  * abort button, ...) purely from this shape, which is what keeps the frontend
  * free of per-provider conditionals. New provider features should be exposed
  * here instead of branching on the provider id in React components.
+ *
+ * The shape itself lives in the shared protocol module so the two sides cannot
+ * drift; this module only derives the values.
  */
 export type { ProviderCapabilities } from '@/shared/types.js';
 
@@ -24,6 +27,7 @@ export type { ProviderCapabilities } from '@/shared/types.js';
  * - message editing rides `sessions.resolveEditAnchor` (the anchor lookup the
  *   edit flow needs; both integrations that have it also provide the rest).
  * - the token-usage endpoint rides `sessions.getTokenUsage`.
+ * - on-demand compaction rides the runtime's optional `compact` primitive.
  * - account quota rides `auth.getQuota`, which is already how
  *   `provider-token-usage.service.ts` dispatches the request; spending a
  *   reset card rides `auth.consumeQuotaReset` the same way.
@@ -33,7 +37,7 @@ export type { ProviderCapabilities } from '@/shared/types.js';
  */
 function deriveCapabilities(providerId: LLMProvider, provider: {
   fork?: unknown;
-  runtime?: { permissions?: unknown };
+  runtime?: { permissions?: unknown; compact?: unknown };
   auth?: { getQuota?: unknown; consumeQuotaReset?: unknown };
   sessions?: { resolveEditAnchor?: unknown; getTokenUsage?: unknown };
   mcp: { capabilities: ProviderMcpCapabilities };
@@ -53,6 +57,9 @@ function deriveCapabilities(providerId: LLMProvider, provider: {
     supportsEffort: catalog.supportsEffort,
     supportsMessageEditing: typeof provider.sessions?.resolveEditAnchor === 'function',
     supportsSessionForking: provider.fork !== undefined,
+    supportsCompaction: typeof provider.runtime?.compact === 'function',
+    supportsNativeScheduling: catalog.supportsNativeScheduling,
+    editRevertsFiles: catalog.editRevertsFiles,
     mcp: provider.mcp.capabilities,
   };
 }

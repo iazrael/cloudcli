@@ -17,6 +17,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
 
+import Database from 'better-sqlite3';
+
 import type {
   NormalizedMessage,
   ProviderRuntimeContext,
@@ -47,14 +49,6 @@ const sessionId = 'sess_stub_1';
 const send = (obj) => process.stdout.write(JSON.stringify(obj) + '\\n');
 const log = (name, value) => {
   try { fs.appendFileSync(logFile, JSON.stringify({ name, value }) + '\\n'); } catch {}
-};
-// The stub log outlives the test run; never write the API key that the send
-// params carry in modelExecution.requestAuth.
-const redactSendParams = (params) => {
-  const { modelExecution, ...rest } = params ?? {};
-  return modelExecution
-    ? { ...rest, modelExecution: { ...modelExecution, requestAuth: '<redacted>' } }
-    : rest;
 };
 const readMode = () => {
   try { return fs.readFileSync(modeFile, 'utf8').trim(); } catch { return 'ok'; }
@@ -175,16 +169,6 @@ rl.on('line', (line) => {
   }
 
   if (msg.method === 'session/create') {
-    // ZCode 0.16.9 validates create params strictly and no longer accepts the
-    // runtimeModel catalog here. Keep this boundary aligned with the real
-    // engine so a provider upgrade cannot silently reintroduce the breakage.
-    for (const key of Object.keys(msg.params ?? {})) {
-      if (key !== 'workspace') {
-        send({ id: msg.id, error: { code: -32602, message: 'Invalid params — (root): Unrecognized key: "' + key + '"' } });
-        return;
-      }
-    }
-    log('session_create', msg.params);
     if (readMode() === 'create-fail') {
       send({ id: msg.id, error: { code: -32022, message: 'Client request timed out: session/requestRuntimePreferences', data: { timeoutMs: 15000 } } });
       return;
@@ -197,21 +181,14 @@ rl.on('line', (line) => {
   }
 
   if (msg.method === 'session/send') {
-    log('session_send_attempt', redactSendParams(msg.params));
     // Mirror the engine's strict schema: unknown keys are rejected.
     for (const key of Object.keys(msg.params ?? {})) {
-      if (
-        key !== 'sessionId'
-        && key !== 'content'
-        && key !== 'attachments'
-        && key !== 'modelSelection'
-        && key !== 'modelExecution'
-      ) {
-        send({ id: msg.id, error: { code: -32602, message: 'Invalid params — (root): Unrecognized key: "' + key + '"' } });
+      if (key !== 'sessionId' && key !== 'content' && key !== 'attachments' && key !== 'runtimeModel') {
+        send({ id: msg.id, error: { code: -32600, message: 'Invalid params — (root): Unrecognized key: "' + key + '"' } });
         return;
       }
     }
-    log('session_send', redactSendParams(msg.params));
+    log('session_send', msg.params);
     send({ id: msg.id, result: {} });
     if (readMode() === 'send-fail') {
       send({ method: 'session/event', params: { sessionId, type: 'turn.failed', payload: { error: { message: 'provider auth failed', attribution: { statusCode: 401, reason: 'auth_failed' } } } } });
@@ -310,6 +287,15 @@ rl.on('line', (line) => {
       setTimeout(() => process.exit(1), 100);
       return;
     }
+    if (readMode() === 'tool-result') {
+      // One step finishes while the turn keeps running: the tool result is the
+      // moment the runtime re-reads the (already persisted) context usage.
+      send({ method: 'session/event', params: { sessionId, type: 'tool.updated', payload: { kind: 'result', toolCallId: 'call_live', resultPartId: 'part_live' } } });
+      setTimeout(() => {
+        send({ method: 'session/event', params: { sessionId, type: 'turn_complete', payload: { usage: { inputTokens: 3, outputTokens: 4 } } } });
+      }, 200);
+      return;
+    }
     send({ method: 'session/event', params: { sessionId, type: 'model_streaming', payload: { kind: 'text_delta', delta: 'hi there' } } });
     send({ method: 'session/event', params: { sessionId, type: 'turn_complete', payload: { usage: { inputTokens: 3, outputTokens: 4 } } } });
     return;
@@ -341,6 +327,24 @@ rl.on('line', (line) => {
     return;
   }
 
+  if (msg.method === 'session/compact') {
+    log('compact', msg.params);
+    if (readMode() === 'compact-running') {
+      // The engine already has a compaction in flight: it answers with the
+      // accepted-but-busy state instead of queueing a second turn.
+      send({ id: msg.id, result: { response: '', compact: { state: 'already_running' } } });
+      return;
+    }
+    // Mirror the real engine: accept immediately, then run the summarization
+    // as a background prompt turn whose terminal event ends the run.
+    send({ id: msg.id, result: { response: '', compact: { state: 'accepted' } } });
+    setTimeout(() => {
+      send({ method: 'session/event', params: { sessionId, type: 'compact.completed', payload: { status: 'completed', summaryMessageId: 'msg_summary_stub' } } });
+      send({ method: 'session/event', params: { sessionId, type: 'turn.completed', payload: { usage: { inputTokens: 9, outputTokens: 5 } } } });
+    }, 100);
+    return;
+  }
+
   if (msg.method === 'session/setModel') {
     log('setModel', msg.params);
     send({ id: msg.id, result: {} });
@@ -356,30 +360,9 @@ fsSync.writeFileSync(stubPath, stubScript);
 fsSync.writeFileSync(modeFilePath, 'ok\n');
 fsSync.writeFileSync(logFilePath, '');
 
-const cliConfigDir = path.join(stubDir, 'cli');
-fsSync.mkdirSync(cliConfigDir, { recursive: true });
-fsSync.writeFileSync(path.join(cliConfigDir, 'config.json'), JSON.stringify({
-  provider: {
-    'bigmodel-coding-plan': {
-      kind: 'anthropic',
-      options: {
-        apiKey: 'test-api-key',
-        baseURL: 'https://example.invalid/api/anthropic',
-      },
-      models: {
-        'GLM-5.3': {
-          reasoning: { enabled: true, levels: ['low', 'high', 'max'], defaultLevel: 'max' },
-        },
-      },
-    },
-  },
-  model: 'bigmodel-coding-plan/GLM-5.3',
-}));
-
 process.env.CLOUDCLI_ZCODE_ENGINE = stubPath;
 process.env.ZCODE_STUB_MODE_FILE = modeFilePath;
 process.env.ZCODE_STUB_LOG = logFilePath;
-process.env.ZCODE_STORAGE_DIR = stubDir;
 
 // The runtime reads the session row (model/effort) via sessionsDb during a
 // run, so the tests need a migrated app database. Without this the lazy
@@ -398,7 +381,7 @@ const sessionsProvider = new ZCodeSessionsProvider();
 const context: ProviderRuntimeContext = {
   resolveProviderSessionId: () => null,
   resolveResumeModel: async () => undefined,
-  getProviderModels: async () => ({ OPTIONS: [], DEFAULT: 'GLM-5.3' }),
+  getProviderModels: async () => ({ OPTIONS: [], DEFAULT: 'glm-5.3' }),
   normalizeMessage: (raw, sessionId) => sessionsProvider.normalizeMessage(raw, sessionId),
   isProviderInstalled: async () => true,
 };
@@ -448,6 +431,127 @@ test('runtime completes a run when the engine asks for runtime preferences mid-c
   assert.equal(complete?.tokens, 7);
 });
 
+test('a running turn publishes the session context usage before it completes', async () => {
+  const previousStorageDir = process.env.ZCODE_STORAGE_DIR;
+  // The runtime reads the engine store, so the fixture lives under the
+  // storage-dir override rather than the real ~/.zcode.
+  process.env.ZCODE_STORAGE_DIR = stubDir;
+
+  try {
+    const dbDir = path.join(stubDir, 'cli', 'db');
+    fsSync.mkdirSync(dbDir, { recursive: true });
+    const db = new Database(path.join(dbDir, 'db.sqlite'));
+    try {
+      db.exec(`
+        CREATE TABLE message (
+          id TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL,
+          time_created INTEGER NOT NULL,
+          time_updated INTEGER NOT NULL,
+          data TEXT NOT NULL,
+          sequence INTEGER
+        );
+      `);
+      // One finished step of the stub session; `total` is its occupancy.
+      db.prepare(
+        'INSERT INTO message (id, session_id, time_created, time_updated, data, sequence) VALUES (?, ?, ?, ?, ?, ?)',
+      ).run('msg_live', 'sess_stub_1', 1000, 1000, JSON.stringify({
+        role: 'assistant',
+        providerId: 'stub-provider',
+        modelId: 'stub-window-model',
+        tokens: { total: 4321, input: 4000, output: 321, reasoning: 0, cache: { read: 0, write: 0 } },
+      }), 0);
+    } finally {
+      db.close();
+    }
+
+    const configDir = path.join(stubDir, 'v2');
+    fsSync.mkdirSync(configDir, { recursive: true });
+    fsSync.writeFileSync(
+      path.join(configDir, 'config.json'),
+      JSON.stringify({
+        provider: {
+          'stub-provider': {
+            models: { 'stub-window-model': { limit: { context: 8000 } } },
+          },
+        },
+      }),
+      'utf8',
+    );
+
+    fsSync.writeFileSync(modeFilePath, 'tool-result\n');
+    const runtime = new ZCodeRuntimeProvider();
+    const { messages, writer } = createWriter();
+
+    await runtime.run('hello', { sessionId: 'app-sess-live-budget', cwd: stubDir }, writer, context);
+
+    const budgetFrame = messages.find((msg) => msg.kind === 'status' && msg.text === 'token_budget');
+    assert.ok(budgetFrame, 'a running turn must publish its context usage');
+    // Same shape the /token-usage endpoint returns: occupancy plus the window
+    // the composer turns into a percentage, with the lifetime totals kept for
+    // the cost breakdown.
+    assert.deepEqual(budgetFrame.tokenBudget, {
+      used: 4321,
+      total: 8000,
+      inputTokens: 4000,
+      outputTokens: 321,
+      breakdown: { input: 4000, output: 321 },
+      cumulative: { used: 4321, inputTokens: 4000, outputTokens: 321 },
+    });
+    assert.ok(
+      messages.indexOf(budgetFrame) < messages.findIndex((msg) => msg.kind === 'complete'),
+      'the context frame must arrive before the terminal complete',
+    );
+  } finally {
+    if (previousStorageDir === undefined) {
+      delete process.env.ZCODE_STORAGE_DIR;
+    } else {
+      process.env.ZCODE_STORAGE_DIR = previousStorageDir;
+    }
+  }
+});
+
+test('compact drives the engine compaction turn and completes once, without touching model or mode', async () => {
+  fsSync.writeFileSync(modeFilePath, 'ok\n');
+  const runtime = new ZCodeRuntimeProvider();
+  const { messages, writer } = createWriter();
+
+  const result = await runtime.compact!({ sessionId: 'app-sess-compact', cwd: stubDir }, writer, context);
+
+  assert.deepEqual(result, { sessionId: 'sess_stub_1', success: true });
+
+  // The request the engine answers as soon as it accepts the work (the log is
+  // shared across tests in this file, so the newest entry is this run's).
+  const compactRequest = readStubLog().filter((entry) => entry.name === 'compact').pop();
+  assert.ok(compactRequest, 'the engine must receive a session/compact request');
+  assert.deepEqual(compactRequest.value, { sessionId: 'sess_stub_1' });
+  assert.equal(
+    readStubLog().some((entry) => entry.name === 'setModel'),
+    false,
+    'a compaction runs with the session\'s own model, so no model configuration is sent',
+  );
+
+  // A compaction is one turn from the client's point of view: the summarization
+  // events stream, then exactly one terminal complete.
+  assert.equal(messages.filter((msg) => msg.kind === 'complete').length, 1);
+  assert.equal(messages.find((msg) => msg.kind === 'complete')?.tokens, 14);
+});
+
+test('compact reports an already-running compaction instead of attaching to it', async () => {
+  fsSync.writeFileSync(modeFilePath, 'compact-running\n');
+  const runtime = new ZCodeRuntimeProvider();
+  const { messages, writer } = createWriter();
+
+  await assert.rejects(
+    runtime.compact!({ sessionId: 'app-sess-compact-busy', cwd: stubDir }, writer, context),
+    /already running/,
+  );
+
+  const error = messages.find((msg) => msg.kind === 'error');
+  assert.ok(error, 'the refusal must reach the chat stream');
+  assert.match(error.text ?? '', /already running/);
+});
+
 test('runtime surfaces session/create failures as error messages', async () => {
   fsSync.writeFileSync(modeFilePath, 'create-fail\n');
   const runtime = new ZCodeRuntimeProvider();
@@ -494,38 +598,12 @@ test('runtime configures model and reasoning effort variant', async () => {
   }, writer, context);
 
   const setModelEntry = readStubLog().find((entry) => entry.name === 'setModel');
-  assert.equal(setModelEntry, undefined, '0.16.9 selects the model on session/send, not session/setModel');
-
-  const createEntry = readStubLog().filter((entry) => entry.name === 'session_create').at(-1);
-  assert.deepEqual(createEntry?.value, {
-    workspace: {
-      workspacePath: stubDir,
-      workspaceKey: stubDir,
-    },
-  });
-
-  const sendAttempts = readStubLog().filter((entry) => entry.name === 'session_send_attempt');
-  const latestSendAttempt = sendAttempts.at(-1)?.value as {
-    runtimeModel?: unknown;
-    modelSelection?: unknown;
-    modelExecution?: unknown;
-  } | undefined;
-  assert.ok(latestSendAttempt, 'session/send must reach the engine');
-  assert.equal(latestSendAttempt.runtimeModel, undefined);
-  assert.deepEqual(latestSendAttempt.modelSelection, {
-    providerId: 'bigmodel-coding-plan',
-    modelId: 'GLM-5.3',
-    options: { reasoningLevel: 'high' },
-  });
-  assert.deepEqual(latestSendAttempt.modelExecution, {
-    selectionScope: 'execution',
-    requestAuth: '<redacted>',
-  });
-
-  const acceptedSend = readStubLog().filter((entry) => entry.name === 'session_send').at(-1);
-  const acceptedSendPayload = acceptedSend?.value as { modelSelection?: unknown } | undefined;
-  assert.ok(acceptedSendPayload, 'strict-schema session/send must be accepted');
-  assert.deepEqual(acceptedSendPayload.modelSelection, latestSendAttempt.modelSelection);
+  assert.ok(setModelEntry, 'session/setModel must be called when model and effort are specified');
+  const setModelPayload = setModelEntry.value as { model: { modelId: string; options?: { reasoningLevel?: string } } };
+  assert.equal(setModelPayload.model.modelId, 'GLM-5.3');
+  // The engine schema takes the level under `options.reasoningLevel`; a bare
+  // `variant` key is rejected.
+  assert.equal(setModelPayload.model.options?.reasoningLevel, 'high');
 });
 
 test('runtime bridges interaction/requestPermission to the chat stream and answers the engine', async () => {

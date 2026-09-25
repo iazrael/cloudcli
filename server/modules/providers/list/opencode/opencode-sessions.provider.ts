@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import Database from 'better-sqlite3';
 
+import { sessionsDb } from '@/modules/database/index.js';
 import { parseFilesInputTag, parseImagesInputTag } from '@/shared/image-attachments.js';
 import type { IProviderSessions } from '@/shared/interfaces.js';
 import type {
@@ -22,13 +23,18 @@ import {
   readObjectRecord,
   readJsonRecord,
   readOptionalString,
-  readUsageNumber,
   removePathIfExists,
   sliceTailPage,
   unwrapJsonStringLiteral,
 } from '@/shared/utils.js';
 
+import { readOpenCodeContextUsage } from './opencode-context-usage.js';
 import { getOpenCodeDatabasePath } from './opencode-data-root.js';
+import {
+  acquireOpenCodeServer,
+  releaseOpenCodeServer,
+  revertOpenCodeSession,
+} from './opencode-server.client.js';
 
 const PROVIDER = 'opencode';
 
@@ -41,14 +47,6 @@ type OpenCodeHistoryRow = {
   part_data: string | null;
 };
 
-type OpenCodeTokenTotals = {
-  inputTokens: number;
-  outputTokens: number;
-  reasoningTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-};
-
 const openOpenCodeDatabase = (): Database.Database | null => {
   const dbPath = getOpenCodeDatabasePath();
   if (!fsSync.existsSync(dbPath)) {
@@ -56,6 +54,20 @@ const openOpenCodeDatabase = (): Database.Database | null => {
   }
 
   return new Database(dbPath, { readonly: true, fileMustExist: true });
+};
+
+/**
+ * Provider message ids of one session, oldest first. Used by the edit flow to
+ * turn an anchor into the message OpenCode must revert to.
+ */
+const readOpenCodeMessageIds = (db: Database.Database, providerSessionId: string): string[] => {
+  const rows = db.prepare(`
+    SELECT id
+    FROM message
+    WHERE session_id = ?
+    ORDER BY COALESCE(time_created, 0), id
+  `).all(providerSessionId) as Array<{ id: string }>;
+  return rows.map((row) => row.id);
 };
 
 const formatToolContent = (value: unknown): string => {
@@ -91,129 +103,62 @@ const hasUserRole = (value: unknown): boolean => {
   return readOptionalString(record?.role) === 'user';
 };
 
+/**
+ * Reads the human-readable text out of one live OpenCode error event.
+ *
+ * `opencode run --format json` serializes provider failures as
+ * `{ type: 'error', error: { name, data: { message, ref } } }`, so the message
+ * is nested two levels down; the older flat `{ error: '...' }` /
+ * `{ message: '...' }` shapes still occur. Without the nested lookup every
+ * failure degraded to the generic fallback, hiding causes like "Model not
+ * found".
+ */
+const extractErrorMessage = (raw: AnyRecord): string => {
+  const errorRecord = readObjectRecord(raw.error);
+  return readOptionalString(errorRecord?.message)
+    ?? readOptionalString(readObjectRecord(errorRecord?.data)?.message)
+    ?? readOptionalString(errorRecord?.name)
+    ?? readOptionalString(raw.error)
+    ?? readOptionalString(raw.message)
+    ?? 'Unknown OpenCode error';
+};
+
 const isUserTextEcho = (raw: AnyRecord): boolean => {
   return readOptionalString(raw.role) === 'user'
     || hasUserRole(raw.message)
     || hasUserRole(raw.part);
 };
 
-const buildTokenUsage = (totals: OpenCodeTokenTotals | undefined): AnyRecord | undefined => {
-  if (!totals) {
-    return undefined;
-  }
-
-  const inputTokens = totals.inputTokens;
-  const displayInputTokens = inputTokens + totals.cacheReadTokens;
-  const outputTokens = totals.outputTokens;
-  const used = inputTokens
-    + outputTokens
-    + totals.reasoningTokens
-    + totals.cacheReadTokens
-    + totals.cacheWriteTokens;
-
-  if (used <= 0) {
-    return undefined;
-  }
-
-  return {
-    used,
-    inputTokens: displayInputTokens,
-    outputTokens,
-    breakdown: {
-      input: displayInputTokens,
-      output: outputTokens,
-    },
-  };
-};
-
-const readOpenCodeSessionColumnTokenUsage = (
-  db: Database.Database,
-  sessionId: string,
-): AnyRecord | undefined => {
-  const columns = db.prepare('PRAGMA table_info(session)').all() as { name: string }[];
-  const columnNames = new Set(columns.map((column) => column.name));
-  const requiredColumns = ['tokens_input', 'tokens_output', 'tokens_reasoning', 'tokens_cache_read', 'tokens_cache_write'];
-  if (!requiredColumns.every((column) => columnNames.has(column))) {
-    return undefined;
-  }
-
-  const row = db.prepare(`
-    SELECT
-      tokens_input AS inputTokens,
-      tokens_output AS outputTokens,
-      tokens_reasoning AS reasoningTokens,
-      tokens_cache_read AS cacheReadTokens,
-      tokens_cache_write AS cacheWriteTokens
-    FROM session
-    WHERE id = ?
-  `).get(sessionId) as OpenCodeTokenTotals | undefined;
-
-  if (!row) {
-    return undefined;
-  }
-
-  return buildTokenUsage({
-    inputTokens: Number(row.inputTokens ?? 0),
-    outputTokens: Number(row.outputTokens ?? 0),
-    reasoningTokens: Number(row.reasoningTokens ?? 0),
-    cacheReadTokens: Number(row.cacheReadTokens ?? 0),
-    cacheWriteTokens: Number(row.cacheWriteTokens ?? 0),
-  });
-};
-
 /**
- * OpenCode stores per-message token counts on assistant `message.data` objects
- * (see MessageV2.Assistant). Older DBs also had session-level counters; this
- * matches current `opencode.db` layouts that only persist message JSON.
+ * The cross-transport identity of one OpenCode assistant text row.
+ *
+ * A persisted row is named `(message_id, part_id)`, but the live stream never
+ * names a row: assistant text arrives as `message.part.delta` fragments the
+ * client accumulates into a bubble of its own, so the two paths cannot be
+ * joined on `id`. The part id is what both sides do carry — one text part is
+ * one transcript row on both — so it becomes the row key and the client
+ * reconciles the streamed body against the persisted one through it.
+ *
+ * Keying per part rather than per message matters: a turn that writes text,
+ * calls a tool, then writes more text persists two text rows, and one shared
+ * key for both would be ambiguous and reconcile neither.
+ *
+ * Consumers: `normalizeMessage` (live deltas, keyed off the envelope's
+ * `partID`) and `normalizeHistoryRows` (persisted rows). Both must derive the
+ * key the same way or the streamed reply renders beside its persisted copy.
  */
-const aggregateOpenCodeSessionTokenUsage = (
-  db: Database.Database,
-  sessionId: string,
-): AnyRecord | undefined => {
-  const sessionColumnUsage = readOpenCodeSessionColumnTokenUsage(db, sessionId);
-  if (sessionColumnUsage) {
-    return sessionColumnUsage;
-  }
-
-  const rows = db.prepare('SELECT data FROM message WHERE session_id = ?').all(sessionId) as { data: string }[];
-
-  let inputTokens = 0;
-  let outputTokens = 0;
-  let reasoningTokens = 0;
-  let cacheReadTokens = 0;
-  let cacheWriteTokens = 0;
-
-  for (const row of rows) {
-    const info = readJsonRecord(row.data);
-    if (readOptionalString(info?.role) !== 'assistant') {
-      continue;
-    }
-
-    const tokens = readObjectRecord(info?.tokens);
-    if (!tokens) {
-      continue;
-    }
-
-    inputTokens += Number(tokens.input ?? 0);
-    outputTokens += Number(tokens.output ?? 0);
-    reasoningTokens += Number(tokens.reasoning ?? 0);
-    const cache = readObjectRecord(tokens.cache);
-    cacheReadTokens += Number(cache?.read ?? 0);
-    cacheWriteTokens += Number(cache?.write ?? 0);
-  }
-
-  return buildTokenUsage({
-    inputTokens,
-    outputTokens,
-    reasoningTokens,
-    cacheReadTokens,
-    cacheWriteTokens,
-  });
-};
+function buildOpenCodeTextRowKey(partId: string): string {
+  return `opencode-part:${partId}`;
+}
 
 export class OpenCodeSessionsProvider implements IProviderSessions {
   /**
-   * Normalizes live `opencode run --format json` events into frontend messages.
+   * Normalizes live OpenCode events into frontend messages.
+   *
+   * The runtime now drives the server's event stream instead of
+   * `opencode run --format json`, but it translates each server event back onto
+   * these same envelopes (`text` / `reasoning` / `tool_use` / `step_finish` /
+   * `error`) so history and live output keep sharing one normalizer.
    */
   normalizeMessage(rawMessage: unknown, sessionId: string | null): NormalizedMessage[] {
     const raw = readObjectRecord(rawMessage);
@@ -240,6 +185,11 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
         return [];
       }
 
+      // The runtime names the streaming part on the envelope. An emitter
+      // that does not (the older `opencode run --format json` lines) leaves
+      // the row unkeyed rather than invent a key nothing could match.
+      const partId = readOptionalString(raw.partID);
+
       return [createNormalizedMessage({
         id: baseId,
         sessionId: eventSessionId,
@@ -247,6 +197,8 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
         provider: PROVIDER,
         kind: 'stream_delta',
         content,
+        transcriptAnchorId: readOptionalString(raw.messageID) ?? undefined,
+        ...(partId ? { providerRowKey: buildOpenCodeTextRowKey(partId) } : {}),
       })];
     }
 
@@ -267,8 +219,19 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
     }
 
     if (type === 'tool_use') {
-      const toolName = readOptionalString(raw.tool) ?? readOptionalString(raw.name) ?? 'Tool';
-      const toolId = readOptionalString(raw.callID) ?? readOptionalString(raw.toolCallId) ?? baseId;
+      // `opencode run --format json` envelopes the line as
+      // `{ type, timestamp, sessionID, part }`: the tool name and call id sit
+      // on the part, the arguments and outcome under `part.state`. Reading
+      // them off the line itself labeled every live call "Tool" with empty
+      // parameters, no result and no call id — the transcript then stacked
+      // unlabeled "Running" cards. Flat emitters put the fields on the line,
+      // so the line stays the fallback.
+      const part = readObjectRecord(raw.part) ?? raw;
+      const state = readObjectRecord(part.state) ?? {};
+      const toolName = readOptionalString(part.tool) ?? readOptionalString(part.name) ?? 'Tool';
+      const toolId = readOptionalString(part.callID)
+        ?? readOptionalString(part.toolCallId)
+        ?? baseId;
       const toolMessage = createNormalizedMessage({
         id: baseId,
         sessionId: eventSessionId,
@@ -276,14 +239,17 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
         provider: PROVIDER,
         kind: 'tool_use',
         toolName,
-        toolInput: raw.input ?? raw.arguments ?? {},
+        toolInput: state.input ?? part.input ?? raw.arguments ?? {},
         toolId,
       });
 
-      if (raw.output !== undefined || raw.error !== undefined) {
+      const status = readOptionalString(state.status);
+      const output = state.output ?? part.output;
+      const error = state.error ?? part.error;
+      if (status === 'completed' || status === 'error' || output !== undefined || error !== undefined) {
         toolMessage.toolResult = {
-          content: formatToolContent(raw.output ?? raw.error),
-          isError: raw.error !== undefined,
+          content: formatToolContent(output ?? error),
+          isError: status === 'error' || error !== undefined,
         };
       }
 
@@ -297,7 +263,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
         timestamp,
         provider: PROVIDER,
         kind: 'error',
-        content: readOptionalString(raw.error) ?? readOptionalString(raw.message) ?? 'Unknown OpenCode error',
+        content: extractErrorMessage(raw),
       })];
     }
 
@@ -352,7 +318,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
       `).all(providerSessionId) as OpenCodeHistoryRow[];
 
       const normalized = this.normalizeHistoryRows(rows, sessionId);
-      const tokenUsage = aggregateOpenCodeSessionTokenUsage(db, providerSessionId);
+      const tokenUsage = readOpenCodeContextUsage(db, providerSessionId);
 
       const normalizedOffset = Math.max(0, offset);
       const normalizedLimit = limit === null ? null : Math.max(0, limit);
@@ -438,6 +404,12 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
             content: parsedFiles.text,
             images: parsedImages.attachments.length > 0 ? parsedImages.attachments : undefined,
             files: parsedFiles.attachments.length > 0 ? parsedFiles.attachments : undefined,
+            transcriptAnchorId: row.message_id,
+            // The live stream never names this row — it sends deltas under the
+            // part id — so the part id is the only identity the two paths
+            // share. Without it the streamed reply and this row are two rows
+            // nothing but their text could relate.
+            ...(messageRole === 'user' ? {} : { providerRowKey: buildOpenCodeTextRowKey(row.part_id) }),
           }));
         }
         continue;
@@ -512,11 +484,12 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
   }
 
   /**
-   * Reads the token usage recorded on the session row's token columns.
+   * Reads the session's context usage (newest message occupancy + model
+   * context window) for the provider token-usage service.
    *
-   * Consumer: the provider token-usage service. Databases predating the token
-   * columns answer with an explicit unsupported result; a database or session
-   * row that cannot be found is a 404.
+   * Databases whose messages and columns both predate token tracking answer
+   * with an explicit unsupported result; a database or session row that cannot
+   * be found is a 404.
    */
   async getTokenUsage(input: ProviderSessionUsageInput): Promise<ProviderTokenUsageResult> {
     const databasePath = getOpenCodeDatabasePath();
@@ -529,61 +502,112 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
 
     const database = new Database(databasePath, { readonly: true, fileMustExist: true });
     try {
-      const columns = database.prepare('PRAGMA table_info(session)').all() as Array<{ name: string }>;
-      const columnNames = new Set(columns.map((column) => column.name));
-      const requiredColumns = [
-        'tokens_input',
-        'tokens_output',
-        'tokens_reasoning',
-        'tokens_cache_read',
-        'tokens_cache_write',
-      ];
+      const sessionRow = database
+        .prepare('SELECT id FROM session WHERE id = ?')
+        .get(input.nativeSessionId) as { id: string } | undefined;
 
-      if (!requiredColumns.every((column) => columnNames.has(column))) {
-        return {
-          used: 0,
-          inputTokens: 0,
-          outputTokens: 0,
-          breakdown: { input: 0, output: 0 },
-          unsupported: true,
-          message: 'Token usage tracking is not available in this OpenCode database schema',
-        };
-      }
-
-      const row = database.prepare(`
-        SELECT
-          tokens_input AS inputTokens,
-          tokens_output AS outputTokens,
-          tokens_reasoning AS reasoningTokens,
-          tokens_cache_read AS cacheReadTokens,
-          tokens_cache_write AS cacheWriteTokens
-        FROM session
-        WHERE id = ?
-      `).get(input.nativeSessionId) as OpenCodeTokenTotals | undefined;
-
-      if (!row) {
+      if (!sessionRow) {
         throw new AppError('OpenCode session was not found.', {
           code: 'OPENCODE_SESSION_NOT_FOUND',
           statusCode: 404,
         });
       }
 
-      const inputTokens = readUsageNumber(row.inputTokens) + readUsageNumber(row.cacheReadTokens);
-      const outputTokens = readUsageNumber(row.outputTokens);
-      const used = readUsageNumber(row.inputTokens)
-        + outputTokens
-        + readUsageNumber(row.reasoningTokens)
-        + readUsageNumber(row.cacheReadTokens)
-        + readUsageNumber(row.cacheWriteTokens);
-
-      return {
-        used,
-        inputTokens,
-        outputTokens,
-        breakdown: { input: inputTokens, output: outputTokens },
+      return readOpenCodeContextUsage(database, input.nativeSessionId) ?? {
+        used: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        breakdown: { input: 0, output: 0 },
+        unsupported: true,
+        message: 'Token usage tracking is not available in this OpenCode database schema',
       };
     } finally {
       database.close();
+    }
+  }
+
+  /**
+   * Resolves the last message to keep when the message `anchorId` names is
+   * replaced.
+   *
+   * `anchorId` is the provider message id (`msg_…`) carried as each normalized
+   * message's transcript anchor. OpenCode's `revert` drops the named message
+   * and everything after it, so the predecessor of the edited message — or
+   * `null` when it is the first — is what survives.
+   */
+  async resolveEditAnchor(
+    sessionId: string,
+    anchorId: string,
+  ): Promise<{ found: boolean; resumeThroughId: string | null }> {
+    const session = sessionsDb.getSessionById(sessionId);
+    const providerSessionId = session?.provider_session_id;
+    if (!providerSessionId) {
+      return { found: false, resumeThroughId: null };
+    }
+
+    const db = openOpenCodeDatabase();
+    if (!db) {
+      return { found: false, resumeThroughId: null };
+    }
+
+    try {
+      const messageIds = readOpenCodeMessageIds(db, providerSessionId);
+      const index = messageIds.indexOf(anchorId);
+      if (index < 0) {
+        return { found: false, resumeThroughId: null };
+      }
+
+      return { found: true, resumeThroughId: index === 0 ? null : messageIds[index - 1] };
+    } finally {
+      db.close();
+    }
+  }
+
+  /**
+   * Rewinds an OpenCode session so `keepThroughId` is its last message.
+   *
+   * OpenCode has no resume-at-a-message, but the server keeps a revert marker:
+   * naming the first message to drop (`keepThroughId`'s successor, or the
+   * session's first message when nothing is kept) makes the engine discard that
+   * message and everything after it when the replacement prompt arrives.
+   */
+  async rewindSession(sessionId: string, keepThroughId: string | null): Promise<void> {
+    const session = sessionsDb.getSessionById(sessionId);
+    const providerSessionId = session?.provider_session_id;
+    if (!session || !providerSessionId) {
+      throw new AppError('This session has not produced a transcript yet.', {
+        code: 'EDIT_SOURCE_NOT_READY',
+        statusCode: 409,
+      });
+    }
+
+    const db = openOpenCodeDatabase();
+    if (!db) {
+      throw new AppError('OpenCode database was not found.', {
+        code: 'OPENCODE_DATABASE_NOT_FOUND',
+        statusCode: 409,
+      });
+    }
+
+    let dropMessageId: string | null;
+    try {
+      const messageIds = readOpenCodeMessageIds(db, providerSessionId);
+      const keepIndex = keepThroughId === null ? -1 : messageIds.indexOf(keepThroughId);
+      dropMessageId = messageIds[keepIndex + 1] ?? null;
+    } finally {
+      db.close();
+    }
+
+    // Nothing follows what is being kept, so there is nothing to replace.
+    if (!dropMessageId) {
+      return;
+    }
+
+    const handle = await acquireOpenCodeServer();
+    try {
+      await revertOpenCodeSession(handle, session.project_path ?? '', providerSessionId, dropMessageId);
+    } finally {
+      releaseOpenCodeServer();
     }
   }
 

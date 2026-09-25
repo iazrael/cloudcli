@@ -40,12 +40,14 @@ server/
     providers/             ★ 引擎接入层（registry + 6 家 provider + services），见 providers.md
     websocket/             ★ WS 网关（/ws 聊天、/shell 终端、通知、插件代理），见 chat.md
     auth/                  JWT 注册/登录/刷新 + authenticateToken 中间件
-    database/              better-sqlite3 连接、schema、migrations、repositories（16 张表）
+    database/              better-sqlite3 连接、schema、migrations、repositories（18 张表）
     assets/                聊天上传资产（~/.cloudcli/assets）的上传与读取
     agent/                 无头 Agent API（API key / 平台模式鉴权）
     notifications/         Web Push（VAPID）+ 桌面通知 WS
     plugins/               插件注册表、插件子进程、WS 代理
-    scheduled-messages/    定时消息（调度器 → 无附着 chat turn）
+    scheduled-messages/    定时消息（一次性：调度器 → 无附着 chat turn）
+    scheduled-jobs/        定时任务（cron 循环或 run_at 仅一次 + 运行历史；reuse/new 两种会话模式，永不打断在跑回合）
+                           含 agent 侧受管 MCP 桥 `cloudcli-scheduled-tasks`（Settings 全局开关 + 启动对账）
     browser-use/           浏览器自动化 service + 本地 MCP 桥接
     local-proxy/           把服务器本机端口上的服务转发给远程浏览器（票据 + 会话 cookie）
     voice/  cli/  git/  file-tree/  worktrees/  projects/  settings/  system/  user/
@@ -58,6 +60,7 @@ src/
     project-workspace/     工作区外壳（布局、标签页、项目/会话列表状态）
     sidebar/  settings/  auth/  provider-auth/  mcp/  skills/  git-panel/  file-tree/
     code-editor/  shell/  standalone-shell/  i18n/  plugins/  browser-use/
+    scheduled-jobs/        工作区 Scheduled 标签页 + composer 任务入口（循环/仅一次，见 chat.md / frontend.md）
     voice/  task-master/  command-palette/  onboarding/  quick-settings-panel/  …
   shared/                  api.ts（fetch 封装）、types.ts、context/（全局 Context）、ui/（通用组件 + 引擎 Logo）
   App.tsx                  路由：/ 与 /session/:sessionId 两个工作区路由
@@ -71,10 +74,10 @@ docs/
 
 | 数据 | 位置 | 说明 |
 | --- | --- | --- |
-| SQLite（账号/会话元数据/配置） | `~/.cloudcli/auth.db`（`DATABASE_PATH` 可改） | 16 张表：users、api_keys、user_credentials、projects、sessions、app_config、provider_models、user_preferences、session_drafts、scheduled_messages、notification 系列、vapid_keys、push_subscriptions、scan_state、superseded_provider_sessions。连接单例 `server/modules/database/connection.ts`，表定义 `schema.ts`，迁移 `migrations.ts` |
+| SQLite（账号/会话元数据/配置） | `~/.cloudcli/auth.db`（`DATABASE_PATH` 可改） | 18 张表：users、api_keys、user_credentials、projects、sessions、app_config、provider_models、user_preferences、session_drafts、scheduled_messages、scheduled_jobs、scheduled_job_runs、notification 系列、vapid_keys、push_subscriptions、scan_state、superseded_provider_sessions。连接单例 `server/modules/database/connection.ts`，表定义 `schema.ts`，迁移 `migrations.ts` |
 | 聊天上传资产 | `~/.cloudcli/assets` | `server/modules/assets`；聊天发送只信任该目录**直接子文件**（`chat-websocket.service.ts` 过滤） |
 | 插件本体与启用状态 | `~/.cloudcli/plugins` + `~/.cloudcli/plugins.json` | `server/modules/plugins`（注册表扫描 + 子进程管理）；首次访问时从旧 `~/.claude-code-ui` 一次性自动迁移（`migrateLegacyPluginPaths`） |
-| 各引擎会话原件 | `~/.claude` / `~/.codex` / `~/.cursor` / `~/.local/share/opencode` / `~/.zcode` / `~/.gemini/antigravity*` | 云 CLI 不复制、不改写；同步器只读解析后把元数据 upsert 进 SQLite（`sessions` 表含 `jsonl_path`） |
+| 各引擎会话原件 | `~/.claude` / `~/.codex` / `~/.cursor` / `~/.local/share/opencode` / `~/.zcode` / `~/.gemini/antigravity*` | 云 CLI 不复制、不改写；同步器只读解析后把元数据 upsert 进 SQLite（`sessions` 表含 `jsonl_path`）。`sessions` 还记会话的运行时事实：`model`、`effort`、`context_window`（引擎自报的真实上下文窗口，转录里推不出来；未跑过的会话为 NULL） |
 | 运行结束记录 | 服务进程内存（有界，约百条） | `server/modules/diagnostics`：每个 run 为什么结束（见 [chat.md](./chat.md)）。刻意不入库——它服务于"刚刚出了什么事"，重启即弃；`GET /api/diagnostics/runs` 读出，前端诊断报告把它和浏览器侧证据合成一份文件 |
 | 前端构建产物 | `dist/`（vite build） | Express 静态托管 + SPA fallback |
 | 服务端构建产物 | `dist-server/` | `tsc + tsc-alias` 先产出 `dist-server.next`，`scripts/promote-dist-server.mjs` 原子晋升（保留 `dist-server.old`；`preserver` 钩子启动前自愈） |
@@ -103,6 +106,7 @@ npm run typecheck    # 前后端双 tsconfig --noEmit
 ```
 
 - 本仓库生产实例用 **PM2** 托管，应用名为 `cloudcli`。`pnpm run deploy` 用部署锁串行执行，先构建 tarball，在独立的 `~/.cloudcli/runtime-next-<pid>` 完成生产依赖安装和原生依赖检查，再受控切换为 `~/.cloudcli/runtime`；服务入口固定为 `~/.cloudcli/runtime/node_modules/cloudcli/dist-server/server/index.js`，上一版保留在 `~/.cloudcli/runtime-previous`，启动或健康检查失败时自动恢复。首次从其他入口迁移时会重建 PM2 进程条目，固定入口生效后的部署只做原地重启。全局 `cloudcli` 命令稳定指向该运行目录。部署脚本启动时会把自己重新拉起成 detached 后台进程（日志 `~/.cloudcli/deploy.log`），调用方只跟读日志——终端关闭或 pm2 切换重启了托管调用方的服务，都不会让部署停在半路；中断时 exit 钩子清理暂存目录并明确告知线上未变更。PM2 配置在宿主机，不在仓库内；重启会切断在线 WebSocket（详见根目录 `AGENTS.md`）。
+- **UI 自更新**（仅"仓库目录安装 + PM2 托管"）：`server/modules/system` 定时 `git fetch` 当前分支的上游，与本地 HEAD、运行中构建（`dist/build-info.json`，vite 构建时写入完整 commit）比较——落后上游给「更新并重启」，HEAD 超前于运行构建（本机提交后没构建）给「构建并重启」。点击后服务端只写 `~/.cloudcli/update-state.json` 并拉起 `scripts/self-update.mjs`：它先二次 detach 脱离服务进程树（否则 PM2 的 tree-kill 会连带杀掉它），再 ff-only 拉取 → 依赖变了才停服务装依赖 → 前端构建到 `dist.next`、服务端照常原子晋升 → 替换 `dist` → `pm2 restart`，日志 `~/.cloudcli/update.log`。任一步失败则 `git reset --keep` 回原提交、丢弃暂存产物、拉起服务。脚本的最后一步是重启自己所在的服务，看不到结果，所以由新启动的服务按"启动的构建是否等于目标 commit"判定成功或失败。工作区有未提交改动、与上游分叉、非 git 安装或不在 PM2 下时拒绝执行，并在 UI 上说明原因。仓库链接与 star 角标统一指向 `src/shared/constants.ts` 的 `GITHUB_REPO_*`，不再查询任何 GitHub release。
 - 提交钩子：husky + lint-staged（oxlint）+ commitlint（Conventional Commits）+ 核心文档同步守卫（`scripts/hooks/check-doc-sync.mjs`）。
 
 ## 扩展检查单

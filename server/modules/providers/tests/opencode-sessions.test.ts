@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -379,6 +379,97 @@ test('OpenCode sessions provider normalizes quoted live text and skips user echo
   assert.deepEqual(userEcho, []);
 });
 
+test('OpenCode sessions provider surfaces the nested live error message', () => {
+  const provider = new OpenCodeSessionsProvider();
+  // `opencode run --format json` serializes failures as
+  // `{ type: 'error', error: { name, data: { message } } }`.
+  const normalized = provider.normalizeMessage({
+    type: 'error',
+    sessionID: 'open-session-live',
+    error: {
+      name: 'UnknownError',
+      data: { message: 'Model not found: deepseek-v4.1-flash/.', ref: 'err_1234' },
+    },
+  }, null);
+
+  assert.equal(normalized.length, 1);
+  assert.equal(normalized[0]?.kind, 'error');
+  assert.equal(normalized[0]?.content, 'Model not found: deepseek-v4.1-flash/.');
+
+  const flat = provider.normalizeMessage({
+    type: 'error',
+    sessionID: 'open-session-live',
+    error: 'plain failure',
+  }, null);
+  assert.equal(flat[0]?.content, 'plain failure');
+
+  const opaque = provider.normalizeMessage({
+    type: 'error',
+    sessionID: 'open-session-live',
+  }, null);
+  assert.equal(opaque[0]?.content, 'Unknown OpenCode error');
+});
+
+test('OpenCode sessions provider reads live tool calls from the event envelope', () => {
+  const provider = new OpenCodeSessionsProvider();
+  // `opencode run --format json` emits `{ type, timestamp, sessionID, part }`
+  // for tool calls, with the arguments and outcome under `part.state`.
+  const completed = provider.normalizeMessage({
+    type: 'tool_use',
+    timestamp: 1_700_000_000_000,
+    sessionID: 'open-session-live',
+    part: {
+      id: 'part-tool-1',
+      type: 'tool',
+      tool: 'bash',
+      callID: 'call-1',
+      state: {
+        status: 'completed',
+        input: { command: 'ls -la' },
+        output: 'total 0',
+      },
+    },
+  }, null);
+
+  assert.equal(completed.length, 1);
+  assert.equal(completed[0]?.toolName, 'bash');
+  assert.equal(completed[0]?.toolId, 'call-1');
+  assert.deepEqual(completed[0]?.toolInput, { command: 'ls -la' });
+  assert.deepEqual(completed[0]?.toolResult, { content: 'total 0', isError: false });
+
+  const failed = provider.normalizeMessage({
+    type: 'tool_use',
+    timestamp: 1_700_000_000_001,
+    sessionID: 'open-session-live',
+    part: {
+      id: 'part-tool-2',
+      type: 'tool',
+      tool: 'edit',
+      callID: 'call-2',
+      state: {
+        status: 'error',
+        input: { file_path: 'a.ts' },
+        error: 'permission denied',
+      },
+    },
+  }, null);
+
+  assert.equal(failed[0]?.toolName, 'edit');
+  assert.deepEqual(failed[0]?.toolResult, { content: 'permission denied', isError: true });
+
+  // A flat, part-less line still normalizes.
+  const flat = provider.normalizeMessage({
+    type: 'tool_use',
+    tool: 'read',
+    callID: 'call-3',
+    input: { file_path: '/a.ts' },
+    output: 'ok',
+  }, null);
+  assert.equal(flat[0]?.toolName, 'read');
+  assert.equal(flat[0]?.toolId, 'call-3');
+  assert.deepEqual(flat[0]?.toolResult, { content: 'ok', isError: false });
+});
+
 test('OpenCode sessions provider reads sqlite history and token usage', { concurrency: false }, async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-session-history-'));
   const workspacePath = path.join(tempRoot, 'workspace');
@@ -412,6 +503,59 @@ test('OpenCode sessions provider reads sqlite history and token usage', { concur
     assert.equal(paged.messages.length, 2);
     assert.equal(paged.hasMore, true);
     assert.equal(paged.messages[0]?.content, 'The provider is wired.');
+  } finally {
+    restoreHomeDir();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+/**
+ * OpenCode never names a transcript row on the live stream: assistant text
+ * arrives as `message.part.delta` fragments under the part id and the
+ * finished row is never sent, so `id` cannot join the streamed reply to its
+ * persisted copy. The part id is what both paths carry, and both publish it as
+ * the row key so the client reconciles the two by identity instead of by
+ * comparing the text of one against the other.
+ */
+test('OpenCode publishes one row key for a reply on both paths', { concurrency: false }, async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-row-key-'));
+  const workspacePath = path.join(tempRoot, 'workspace');
+  await mkdir(workspacePath, { recursive: true });
+  const restoreHomeDir = patchHomeDir(tempRoot);
+
+  try {
+    await createOpenCodeDatabase(tempRoot, workspacePath);
+    const provider = new OpenCodeSessionsProvider();
+    const history = await provider.fetchHistory('open-session-1');
+
+    const persistedReply = history.messages.find((message) => message.content === 'The provider is wired.');
+    assert.equal(persistedReply?.providerRowKey, 'opencode-part:part-assistant-text');
+
+    const live = provider.normalizeMessage({
+      type: 'text',
+      id: 'part-assistant-text',
+      partID: 'part-assistant-text',
+      sessionID: 'open-session-1',
+      text: 'The provider is wired.',
+    }, null);
+
+    assert.equal(live.length, 1);
+    assert.equal(live[0]?.kind, 'stream_delta');
+    assert.equal(live[0]?.providerRowKey, persistedReply?.providerRowKey);
+
+    // The prompt is rendered from the optimistic row, never reconciled through
+    // a key, so a user turn carries none.
+    const persistedPrompt = history.messages.find((message) => message.role === 'user');
+    assert.equal(persistedPrompt?.providerRowKey, undefined);
+
+    // An emitter that does not name the part leaves the row unkeyed rather
+    // than inventing a key that could only ever match nothing.
+    const unkeyed = provider.normalizeMessage({
+      type: 'text',
+      sessionID: 'open-session-1',
+      text: 'The provider is wired.',
+    }, null);
+    assert.equal(unkeyed[0]?.providerRowKey, undefined);
   } finally {
     restoreHomeDir();
     await rm(tempRoot, { recursive: true, force: true });
@@ -541,6 +685,257 @@ test('getTokenUsage reads the token columns for the provider-native session', as
       }),
       { used: 42, inputTokens: 13, outputTokens: 20, breakdown: { input: 13, output: 20 } },
     );
+  } finally {
+    restoreHomeDir();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+/**
+ * Rewrites the seeded assistant message into the current OpenCode shape
+ * (`tokens.total`, provider/model ids) and seeds OpenCode's model cache with a
+ * context limit for it.
+ */
+const seedCurrentOpenCodeUsage = async (
+  homeDir: string,
+  options: { messageTokens?: Record<string, unknown>; contextLimit?: number } = {},
+): Promise<void> => {
+  const db = new Database(path.join(homeDir, '.local', 'share', 'opencode', 'opencode.db'));
+  try {
+    const row = db.prepare('SELECT data FROM message WHERE id = ?').get('message-assistant') as { data: string };
+    const info = JSON.parse(row.data);
+    info.providerID = 'opencode-go';
+    info.modelID = 'deepseek-v4.1-flash';
+    info.tokens = options.messageTokens ?? {
+      total: 52_027,
+      input: 13_510,
+      output: 366,
+      reasoning: 0,
+      cache: { read: 38_151, write: 0 },
+    };
+    db.prepare('UPDATE message SET data = ? WHERE id = ?').run(JSON.stringify(info), 'message-assistant');
+  } finally {
+    db.close();
+  }
+
+  if (options.contextLimit !== undefined) {
+    const cacheDir = path.join(homeDir, '.cache', 'opencode');
+    await mkdir(cacheDir, { recursive: true });
+    await writeFile(
+      path.join(cacheDir, 'models.json'),
+      JSON.stringify({
+        'opencode-go': {
+          models: {
+            'deepseek-v4.1-flash': { limit: { context: options.contextLimit, output: 384_000 } },
+          },
+        },
+      }),
+    );
+  }
+};
+
+test('token usage reports the newest assistant message context plus the model window', { concurrency: false }, async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-context-usage-'));
+  const workspacePath = path.join(tempRoot, 'workspace');
+  await mkdir(workspacePath, { recursive: true });
+  const restoreHomeDir = patchHomeDir(tempRoot);
+
+  try {
+    await createOpenCodeDatabase(tempRoot, workspacePath);
+    await seedCurrentOpenCodeUsage(tempRoot, { contextLimit: 1_000_000 });
+
+    const provider = new OpenCodeSessionsProvider();
+    const history = await provider.fetchHistory('open-session-1');
+
+    assert.deepEqual(history.tokenUsage, {
+      // Newest message: total 52027 = input 13510 + output 366 + cache read
+      // 38151; inputTokens is that whole prompt (input + cache), the same
+      // convention Claude's reader uses. The seeded session columns (used 42)
+      // stay as cumulative.
+      used: 52_027,
+      total: 1_000_000,
+      inputTokens: 51_661,
+      outputTokens: 366,
+      breakdown: { input: 51_661, output: 366 },
+      cumulative: { used: 42, inputTokens: 13, outputTokens: 20 },
+    });
+
+    assert.deepEqual(
+      await provider.getTokenUsage({
+        appSessionId: 'app-1',
+        nativeSessionId: 'open-session-1',
+        jsonlPath: null,
+        projectPath: null,
+      }),
+      history.tokenUsage,
+    );
+  } finally {
+    restoreHomeDir();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('token usage reports a compaction reset instead of the pre-compaction context', { concurrency: false }, async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-compacted-usage-'));
+  const workspacePath = path.join(tempRoot, 'workspace');
+  await mkdir(workspacePath, { recursive: true });
+  const restoreHomeDir = patchHomeDir(tempRoot);
+
+  try {
+    await createOpenCodeDatabase(tempRoot, workspacePath);
+    await seedCurrentOpenCodeUsage(tempRoot, { contextLimit: 1_000_000 });
+
+    const databasePath = path.join(tempRoot, '.local', 'share', 'opencode', 'opencode.db');
+    const insertAssistantMessage = (id: string, timeCreated: number, info: Record<string, unknown>) => {
+      const db = new Database(databasePath);
+      try {
+        db.prepare(
+          'INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)',
+        ).run(id, 'open-session-1', timeCreated, timeCreated, JSON.stringify(info));
+      } finally {
+        db.close();
+      }
+    };
+    const insertSummaryPart = (id: string, messageId: string, info: Record<string, unknown>) => {
+      const db = new Database(databasePath);
+      try {
+        db.prepare(
+          'INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?)',
+        ).run(id, messageId, 'open-session-1', 1_700_000_010_000, 1_700_000_010_000, JSON.stringify(info));
+      } finally {
+        db.close();
+      }
+    };
+
+    // A compaction summary carries the whole pre-compaction conversation as its
+    // request usage; reporting it as current occupancy is exactly backwards.
+    insertAssistantMessage('message-summary', 1_700_000_010_000, {
+      role: 'assistant',
+      summary: true,
+      modelID: 'deepseek-v4.1-flash',
+      providerID: 'opencode-go',
+      tokens: {
+        total: 319_336,
+        input: 312_690,
+        output: 6_646,
+        reasoning: 0,
+        cache: { read: 0, write: 0 },
+      },
+    });
+
+    // The summary text is the conversation the next turn will be given, so its
+    // size is the one occupancy reading available while `compacted`; reasoning
+    // parts are not context and must not count toward it.
+    insertSummaryPart('part-summary-text', 'message-summary', { type: 'text', text: 'compacted' });
+    insertSummaryPart('part-summary-reasoning', 'message-summary', { type: 'reasoning', text: 'x'.repeat(500) });
+
+    const provider = new OpenCodeSessionsProvider();
+    const usageInput = {
+      appSessionId: 'app-1',
+      nativeSessionId: 'open-session-1',
+      jsonlPath: null,
+      projectPath: null,
+    };
+
+    assert.deepEqual(await provider.getTokenUsage(usageInput), {
+      used: 0,
+      total: 1_000_000,
+      inputTokens: 0,
+      outputTokens: 0,
+      breakdown: { input: 0, output: 0 },
+      compacted: true,
+      summaryBytes: 9,
+      cumulative: { used: 42, inputTokens: 13, outputTokens: 20 },
+    });
+
+    // The next real turn is the first record that knows the compacted context,
+    // so it becomes the reported occupancy and clears the reset flag.
+    insertAssistantMessage('message-after-compaction', 1_700_000_020_000, {
+      role: 'assistant',
+      modelID: 'deepseek-v4.1-flash',
+      providerID: 'opencode-go',
+      tokens: {
+        total: 900,
+        input: 600,
+        output: 100,
+        reasoning: 0,
+        cache: { read: 200, write: 0 },
+      },
+    });
+
+    const afterCompaction = await provider.getTokenUsage(usageInput);
+    assert.equal(afterCompaction?.used, 900);
+    assert.equal(afterCompaction?.total, 1_000_000);
+    assert.equal(afterCompaction?.compacted, undefined);
+    assert.equal(afterCompaction?.inputTokens, 800);
+    assert.equal(afterCompaction?.outputTokens, 100);
+  } finally {
+    restoreHomeDir();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('token usage falls back to the cumulative columns when the model cache has no window', { concurrency: false }, async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-context-window-missing-'));
+  const workspacePath = path.join(tempRoot, 'workspace');
+  await mkdir(workspacePath, { recursive: true });
+  const restoreHomeDir = patchHomeDir(tempRoot);
+
+  try {
+    await createOpenCodeDatabase(tempRoot, workspacePath);
+    await seedCurrentOpenCodeUsage(tempRoot);
+
+    const provider = new OpenCodeSessionsProvider();
+    const usage = await provider.getTokenUsage({
+      appSessionId: 'app-1',
+      nativeSessionId: 'open-session-1',
+      jsonlPath: null,
+      projectPath: null,
+    });
+
+    assert.equal(usage?.used, 52_027);
+    assert.equal(usage?.total, undefined);
+    assert.deepEqual(usage?.cumulative, { used: 42, inputTokens: 13, outputTokens: 20 });
+  } finally {
+    restoreHomeDir();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('OpenCode edit anchors expose provider message ids and resolve to the predecessor', { concurrency: false }, async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-edit-anchor-'));
+  const workspacePath = path.join(tempRoot, 'workspace');
+  await mkdir(workspacePath, { recursive: true });
+  const restoreHomeDir = patchHomeDir(tempRoot);
+
+  try {
+    await createOpenCodeDatabase(tempRoot, workspacePath);
+    await withIsolatedDatabase(async () => {
+      const appSessionId = sessionsDb.createSession('open-session-1', 'opencode', workspacePath, 'Edit anchor');
+      const provider = new OpenCodeSessionsProvider();
+
+      const history = await provider.fetchHistory(appSessionId, { providerSessionId: 'open-session-1' });
+      const userMessage = history.messages.find((message) => message.role === 'user');
+      const assistantMessage = history.messages.find((message) => message.role === 'assistant');
+      assert.equal(userMessage?.transcriptAnchorId, 'message-user');
+      assert.equal(assistantMessage?.transcriptAnchorId, 'message-assistant');
+
+      // Editing the assistant message keeps the user prompt before it.
+      assert.deepEqual(
+        await provider.resolveEditAnchor(appSessionId, 'message-assistant'),
+        { found: true, resumeThroughId: 'message-user' },
+      );
+      // Editing the first prompt keeps nothing.
+      assert.deepEqual(
+        await provider.resolveEditAnchor(appSessionId, 'message-user'),
+        { found: true, resumeThroughId: null },
+      );
+      // An unknown anchor is reported, never guessed at.
+      assert.deepEqual(
+        await provider.resolveEditAnchor(appSessionId, 'missing-message'),
+        { found: false, resumeThroughId: null },
+      );
+    });
   } finally {
     restoreHomeDir();
     await rm(tempRoot, { recursive: true, force: true });

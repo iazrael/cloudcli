@@ -679,3 +679,76 @@ test('claude: getTokenUsage reads the latest assistant usage snapshot', async ()
     await rm(tempDirectory, { recursive: true, force: true });
   }
 });
+
+test('claude: the recorded context window drives both usage paths identically', async () => {
+  // A 1M-context session records `claude-opus-5` in its transcript, never the
+  // `[1m]` variant, so the only way to know its window is the one the SDK
+  // reported while the session ran. Both readers must use it, and must agree:
+  // `/token-usage` used to answer 160000 for a session whose history page
+  // answered 200000.
+  const tempDirectory = await mkdtemp(path.join(os.tmpdir(), 'claude-context-window-'));
+  const sessionId = 'claude-1m-session';
+  const transcriptPath = path.join(tempDirectory, `${sessionId}.jsonl`);
+  const previousContextWindow = process.env.CONTEXT_WINDOW;
+  process.env.CONTEXT_WINDOW = '180000';
+
+  try {
+    await writeFile(transcriptPath, [
+      JSON.stringify({
+        type: 'user',
+        sessionId,
+        uuid: 'u1',
+        message: { role: 'user', content: 'hi' },
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        sessionId,
+        uuid: 'a1',
+        parentUuid: 'u1',
+        message: {
+          role: 'assistant',
+          model: 'claude-opus-5',
+          content: [{ type: 'text', text: 'hello' }],
+          usage: { input_tokens: 200, cache_read_input_tokens: 130_000, output_tokens: 26 },
+        },
+      }),
+    ].join('\n'), 'utf8');
+
+    await withIsolatedDatabase(async () => {
+      const now = new Date().toISOString();
+      sessionsDb.createSession(sessionId, 'claude', tempDirectory, 'Opus 1M', now, now, transcriptPath);
+
+      const provider = new ClaudeSessionsProvider();
+      const usageInput = {
+        appSessionId: sessionId,
+        nativeSessionId: sessionId,
+        jsonlPath: transcriptPath,
+        projectPath: tempDirectory,
+      };
+
+      // Nothing recorded yet: CONTEXT_WINDOW is the only thing left to go on.
+      assert.equal((await provider.getTokenUsage(usageInput)).total, 180_000);
+
+      // The model the user picked for the session keeps the `[1m]` tag the
+      // transcript drops — but it is a heuristic, so CONTEXT_WINDOW still wins.
+      sessionsDb.setSessionModel(sessionId, 'opus[1m]');
+      assert.equal((await provider.getTokenUsage(usageInput)).total, 180_000);
+
+      sessionsDb.setSessionContextWindow(sessionId, 1_000_000);
+
+      const endpointUsage = await provider.getTokenUsage(usageInput);
+      assert.equal(endpointUsage.total, 1_000_000);
+      assert.equal(endpointUsage.used, 130_226);
+
+      const page = await provider.fetchHistory(sessionId, { limit: 10, offset: 0 });
+      assert.deepEqual(page.tokenUsage, endpointUsage);
+    });
+  } finally {
+    if (previousContextWindow === undefined) {
+      delete process.env.CONTEXT_WINDOW;
+    } else {
+      process.env.CONTEXT_WINDOW = previousContextWindow;
+    }
+    await rm(tempDirectory, { recursive: true, force: true });
+  }
+});

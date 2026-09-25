@@ -25,6 +25,10 @@ export {
 // the shared ZCode app-server subprocess during the shutdown flow.
 export { shutdownZCodeRuntime } from './list/zcode/index.js';
 
+// shutdownOpenCodeServer: used by the server entrypoint (server/index.ts) to stop
+// the shared `opencode serve` subprocess during the shutdown flow.
+export { shutdownOpenCodeServer } from './list/opencode/opencode-server.client.js';
+
 // getAntigravityBrainRoots: used by the File Tree composition root as the
 // read-only allowlist for workspace-external Antigravity plan documents.
 export { getAntigravityBrainRoots } from './list/antigravity/index.js';

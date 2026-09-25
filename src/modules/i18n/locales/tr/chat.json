@@ -214,8 +214,17 @@
     "editing": {
       "title": "Önceki bir mesaj değiştiriliyor",
       "filesNotReverted": "zaten değiştirilen dosyalar geri alınmaz",
+      "filesReverted": "zaten değiştirilen dosyalar da geri alınır",
       "cancel": "İptal"
     }
+  },
+  "misc": {
+    "needsInput": "Asistan yanıtınızı bekliyor",
+    "selectAllThatApply": "Geçerli olanların tümünü seçin",
+    "other": "Diğer...",
+    "back": "Geri",
+    "next": "İleri",
+    "submit": "Gönder"
   },
   "export": {
     "trigger": "Sohbeti dışa aktar",

@@ -238,6 +238,7 @@ test('getTokenUsage reads the latest token_count snapshot from the indexed rollo
         payload: {
           type: 'token_count',
           info: {
+            last_token_usage: { input_tokens: 8, output_tokens: 2, total_tokens: 10 },
             total_token_usage: { input_tokens: 10, output_tokens: 4, total_tokens: 14 },
             model_context_window: 100_000,
           },
@@ -248,6 +249,7 @@ test('getTokenUsage reads the latest token_count snapshot from the indexed rollo
         payload: {
           type: 'token_count',
           info: {
+            last_token_usage: { input_tokens: 36, output_tokens: 6, total_tokens: 42 },
             total_token_usage: { input_tokens: 40, output_tokens: 9, total_tokens: 49 },
             model_context_window: 250_000,
           },
@@ -263,7 +265,16 @@ test('getTokenUsage reads the latest token_count snapshot from the indexed rollo
         jsonlPath: sessionFilePath,
         projectPath: null,
       }),
-      { used: 49, total: 250_000, inputTokens: 40, outputTokens: 9, breakdown: { input: 40, output: 9 } },
+      {
+        // `used` is the latest turn's prompt (what the context window holds);
+        // the session's cumulative spend stays available next to it.
+        used: 42,
+        total: 250_000,
+        inputTokens: 36,
+        outputTokens: 6,
+        breakdown: { input: 36, output: 6 },
+        cumulative: { used: 49, inputTokens: 40, outputTokens: 9 },
+      },
     );
   } finally {
     await rm(tempDirectory, { recursive: true, force: true });

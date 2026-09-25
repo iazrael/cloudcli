@@ -104,6 +104,7 @@ const createTestService = (options: {
   sessions?: ReturnType<typeof createSessionStore>;
   activeModel?: (provider: LLMProvider, sessionId?: string) => string;
   onCatalogRead?: (provider: LLMProvider) => void;
+  models?: Partial<Record<LLMProvider, ProviderModelsDefinition>>;
 } = {}) => {
   const catalog = options.catalog ?? createCatalogStore();
   const sessions = options.sessions ?? createSessionStore();
@@ -114,7 +115,7 @@ const createTestService = (options: {
       models: {
         getSupportedModels: async () => {
           options.onCatalogRead?.(provider);
-          return createModels(`${provider}-default`);
+          return options.models?.[provider] ?? createModels(`${provider}-default`);
         },
         getCurrentActiveModel: async (sessionId) => createCurrentActiveModel(
           options.activeModel?.(provider, sessionId) ?? `${provider}-default`,
@@ -334,6 +335,57 @@ test('resolveResumeModel prefers the recorded session model over the requested o
 
   const model = await service.resolveResumeModel('cursor', 'session-456', 'composer-2-fast');
   assert.equal(model, 'composer-2');
+});
+
+test('resolveSessionModel restores the provider prefix a bare recorded model lost', async () => {
+  const { service } = createTestService({
+    sessions: createSessionStore({ 'session-1': 'deepseek-v4.1-flash' }),
+    models: {
+      opencode: {
+        OPTIONS: [{ value: 'opencode-go/deepseek-v4.1-flash', label: 'DeepSeek V4.1 Flash' }],
+        DEFAULT: 'opencode-go/deepseek-v4.1-flash',
+      },
+    },
+  });
+
+  const resolved = await service.resolveSessionModel('opencode', { sessionId: 'session-1' });
+
+  assert.equal(resolved.model, 'opencode-go/deepseek-v4.1-flash');
+  assert.equal(resolved.source, 'session');
+});
+
+test('resolveResumeModel qualifies a bare recorded model against the catalog', async () => {
+  const { service } = createTestService({
+    sessions: createSessionStore({ 'session-1': 'deepseek-v4.1-flash' }),
+    models: {
+      opencode: {
+        OPTIONS: [{ value: 'opencode-go/deepseek-v4.1-flash', label: 'DeepSeek V4.1 Flash' }],
+        DEFAULT: 'opencode-go/deepseek-v4.1-flash',
+      },
+    },
+  });
+
+  assert.equal(
+    await service.resolveResumeModel('opencode', 'session-1'),
+    'opencode-go/deepseek-v4.1-flash',
+  );
+});
+
+test('resolveResumeModel leaves a bare model that matches several catalog entries untouched', async () => {
+  const { service } = createTestService({
+    sessions: createSessionStore({ 'session-1': 'gpt-5.6' }),
+    models: {
+      opencode: {
+        OPTIONS: [
+          { value: 'opencode/gpt-5.6', label: 'Zen' },
+          { value: 'opencode-go/gpt-5.6', label: 'Go' },
+        ],
+        DEFAULT: 'opencode/gpt-5.6',
+      },
+    },
+  });
+
+  assert.equal(await service.resolveResumeModel('opencode', 'session-1'), 'gpt-5.6');
 });
 
 test('resolveResumeModel never consults provider-global state', async () => {

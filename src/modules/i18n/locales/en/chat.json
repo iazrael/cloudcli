@@ -156,6 +156,7 @@
     "editing": {
       "title": "Replacing an earlier message",
       "filesNotReverted": "files the agent already changed are not reverted",
+      "filesReverted": "files the agent changed are also reverted",
       "cancel": "Cancel"
     }
   },
@@ -304,6 +305,10 @@
     "inputTokens": "Input tokens",
     "outputTokens": "Output tokens",
     "contextWindow": "Context window",
+    "contextUsage": "Context usage",
+    "usedPercent": "{{percent}}% used",
+    "cumulativeTokens": "Cumulative tokens",
+    "compactedSummary": "Compaction summary",
     "quotaTitle": "Account Quota & Rate Limits",
     "updatedAt": "Updated at {{time}}",
     "refresh": "Refresh",
@@ -319,6 +324,7 @@
     "expand": "Expand",
     "fiveHourWindow": "5-Hour Sliding Window",
     "weeklyWindow": "Weekly Quota",
+    "monthlyWindow": "Monthly Quota",
     "cycleWindow": "Cycle Request Limit",
     "cycleCallsDesc": "{{remaining}} of {{total}} calls remaining",
     "cycleGeneralDesc": "Cycle model & tool request quota",
@@ -362,6 +368,12 @@
     "copyCommand": "Copy command",
     "runningTask": "Running task",
     "userAskedRevise": "User asked to revise the plan",
+    "needsInput": "The assistant needs your input",
+    "selectAllThatApply": "Select all that apply",
+    "other": "Other...",
+    "back": "Back",
+    "next": "Next",
+    "submit": "Submit",
     "typeAnswer": "Type your answer...",
     "skipOne": "Skip",
     "skipAll": "Skip all",
@@ -380,6 +392,12 @@
     "cancelEditing": "Cancel editing",
     "userDeniedTool": "User denied tool use",
     "showTokenUsage": "Show token usage",
+    "contextUsedPercent": "{{percent}}% of the context window used",
+    "compactedSummarySize": "Compaction summary · {{size}}",
+    "compactNoSession": "Start a conversation before compacting its context.",
+    "commandDescriptions": {
+      "compact": "Summarize the conversation to free up context."
+    },
     "fallbackCommands": {
       "models": "Browse available models for the active provider.",
       "cost": "Review token usage for the active session.",

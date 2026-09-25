@@ -294,6 +294,40 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
   };
 
   /**
+   * Restores the provider prefix on a session model that lost it.
+   *
+   * A session row can carry a bare model id (`deepseek-v4.1-flash`) instead of
+   * the catalog's `<providerID>/<modelID>` value — the OpenCode active-model
+   * lookup used to drop the prefix. Sending that to `opencode run --model` makes
+   * the CLI read the model id as a provider id and fail with
+   * `Model not found: <id>/.`, so a bare value is matched against the provider
+   * catalog by its model-id suffix. Providers whose catalog already uses bare
+   * values (Claude, Codex) resolve to themselves; prefixed values, custom ids,
+   * and suffixes that match more than one entry pass through unchanged.
+   */
+  const canonicalizeProviderModel = async (
+    provider: LLMProvider,
+    model: string,
+  ): Promise<string> => {
+    const normalized = model.trim();
+    if (!normalized || normalized.includes('/')) {
+      return normalized;
+    }
+
+    try {
+      const catalog = await getProviderModels(provider);
+      const matches = catalog.OPTIONS.filter(
+        (option) => option.value.split('/').pop() === normalized,
+      );
+      return matches.length === 1 ? matches[0].value : normalized;
+    } catch {
+      // An unreadable catalog must not block the run; the bare value is sent
+      // through as before.
+      return normalized;
+    }
+  };
+
+  /**
    * Answers "which model is this session using?" for every display surface.
    *
    * Precedence, highest first:
@@ -317,7 +351,7 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
         return {
           provider,
           sessionId: normalizedSessionId,
-          model: recordedSelection.model,
+          model: await canonicalizeProviderModel(provider, recordedSelection.model),
           effort: recordedSelection.effort,
           source: 'session',
         };
@@ -325,7 +359,9 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
 
       const providerCatalog = await getProviderModels(provider);
       const providerModel = await getCurrentActiveModel(provider, normalizedSessionId);
-      const resolvedProviderModel = providerModel.model?.trim();
+      const resolvedProviderModel = providerModel.model
+        ? await canonicalizeProviderModel(provider, providerModel.model)
+        : undefined;
       if (resolvedProviderModel && resolvedProviderModel !== providerCatalog.DEFAULT) {
         return {
           provider,
@@ -376,15 +412,17 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
     sessionId: string | undefined,
     requestedModel?: string | null,
   ): Promise<string | undefined> => {
-    void provider;
     const normalizedRequestedModel = typeof requestedModel === 'string' ? requestedModel.trim() : '';
     const normalizedSessionId = sessionId?.trim();
     if (!normalizedSessionId) {
-      return normalizedRequestedModel || undefined;
+      return normalizedRequestedModel
+        ? await canonicalizeProviderModel(provider, normalizedRequestedModel)
+        : undefined;
     }
 
     const recordedModel = readRecordedSessionSelection(normalizedSessionId)?.model;
-    return recordedModel || normalizedRequestedModel || undefined;
+    const candidate = recordedModel || normalizedRequestedModel;
+    return candidate ? await canonicalizeProviderModel(provider, candidate) : undefined;
   };
 
   return {

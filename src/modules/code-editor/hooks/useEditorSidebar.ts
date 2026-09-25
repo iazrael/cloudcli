@@ -27,9 +27,16 @@ export const useEditorSidebar = ({
       const fileName = normalizedPath.split('/').pop() || filePath;
       // Absolute paths outside the project root are workspace-external
       // documents (e.g. Antigravity plan files); they load read-only.
+      // Windows drive paths (`C:/...`) are absolute too and compare case-insensitively.
       const projectPath = selectedProject?.path || selectedProject?.fullPath;
-      const isReadOnlyExternal = normalizedPath.startsWith('/')
-        && (!projectPath || !normalizedPath.startsWith(projectPath.replace(/\\/g, '/') + '/'));
+      const isWindowsPath = /^[a-zA-Z]:\//.test(normalizedPath);
+      const comparablePath = isWindowsPath ? normalizedPath.toLowerCase() : normalizedPath;
+      const projectPrefix = projectPath
+        ? `${projectPath.replace(/\\/g, '/').replace(/\/+$/, '')}/`
+        : null;
+      const comparablePrefix = projectPrefix && isWindowsPath ? projectPrefix.toLowerCase() : projectPrefix;
+      const isReadOnlyExternal = (normalizedPath.startsWith('/') || isWindowsPath)
+        && (!comparablePrefix || !comparablePath.startsWith(comparablePrefix));
 
       setEditingFile({
         name: fileName,
@@ -41,7 +48,7 @@ export const useEditorSidebar = ({
         diffInfo,
       });
     },
-    [selectedProject?.projectId, selectedProject?.path],
+    [selectedProject?.projectId, selectedProject?.path, selectedProject?.fullPath],
   );
 
   const handleCloseEditor = useCallback(() => {

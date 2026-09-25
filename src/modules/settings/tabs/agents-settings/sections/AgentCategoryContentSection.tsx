@@ -1,4 +1,4 @@
-import type { AgentCategory, AgentContextByProvider, AgentProvider, AgentSettingsProject, ClaudePermissionsState, CodexPermissionMode, CursorPermissionsState, McpProject, SkillsProject, AntigravityPermissionMode, ZcodePermissionMode } from '@/shared/types';
+import type { AgentCategory, AgentContextByProvider, AgentProvider, AgentSettingsProject, ClaudePermissionsState, CodexPermissionMode, CursorPermissionsState, McpProject, SkillsProject, AntigravityPermissionMode, OpenCodePermissionMode, ZcodePermissionMode } from '@/shared/types';
 import { McpServers } from '@/modules/mcp';
 import { ProviderSkills } from '@/modules/skills';
 import AccountContent from '@/modules/settings/tabs/agents-settings/sections/content/AccountContent';
@@ -18,6 +18,8 @@ type AgentCategoryContentSectionProps = {
   onAntigravityPermissionModeChange?: (value: AntigravityPermissionMode) => void;
   zcodePermissionMode?: ZcodePermissionMode;
   onZcodePermissionModeChange?: (value: ZcodePermissionMode) => void;
+  opencodePermissionMode: OpenCodePermissionMode;
+  onOpenCodePermissionModeChange: (value: OpenCodePermissionMode) => void;
   projects: AgentSettingsProject[];
 };
 
@@ -36,6 +38,8 @@ export default function AgentCategoryContentSection({
   onAntigravityPermissionModeChange,
   zcodePermissionMode,
   onZcodePermissionModeChange,
+  opencodePermissionMode,
+  onOpenCodePermissionModeChange,
   projects,
 }: AgentCategoryContentSectionProps) {
   return (
@@ -108,6 +112,14 @@ export default function AgentCategoryContentSection({
         />
       )}
 
+      {selectedCategory === 'permissions' && selectedAgent === 'opencode' && (
+        <PermissionsContent
+          agent="opencode"
+          permissionMode={opencodePermissionMode}
+          onPermissionModeChange={onOpenCodePermissionModeChange}
+        />
+      )}
+
       {selectedCategory === 'mcp' && (
         // AgentSettingsProject.name is populated from the DB projectId by
         // normalizeProjectForSettings, so we can map it straight through.
@@ -122,7 +134,7 @@ export default function AgentCategoryContentSection({
         />
       )}
 
-      {selectedCategory === 'skills' && selectedAgent !== 'opencode' && (
+      {selectedCategory === 'skills' && (
         <ProviderSkills
           selectedProvider={selectedAgent}
           currentProjects={projects.map<SkillsProject>((project) => ({

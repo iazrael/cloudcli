@@ -3,7 +3,7 @@ import { Activity, Archive, ChevronDown, ChevronRight, Folder, MessageSquare, Ro
 import type { TFunction } from 'i18next';
 
 import { LLMProviderLogo, ScrollArea } from '@/shared/ui';
-import type { ArchivedProjectListItem, ArchivedSessionListItem, ConversationSearchResults, Project, RecentConversationListItem, ReleaseInfo, SearchProgress, SessionWithProvider, SidebarProjectListProps, SidebarSearchMode } from '@/shared/types';
+import type { ArchivedProjectListItem, ArchivedSessionListItem, ConversationSearchResults, Project, RecentConversationListItem, SearchProgress, SessionWithProvider, SidebarProjectListProps, SidebarSearchMode, SystemUpdateStatus } from '@/shared/types';
 import { formatCompactAge, getAllSessions } from '@/modules/sidebar/utils/sidebarProjectFormatting';
 import SidebarFooter from '@/modules/sidebar/SidebarFooter';
 import SidebarHeader from '@/modules/sidebar/SidebarHeader';
@@ -152,10 +152,9 @@ type SidebarContentProps = {
   onCreateProject: () => void;
   onCollapseSidebar: () => void;
   updateAvailable: boolean;
+  isUpdating: boolean;
   restartRequired: boolean;
-  releaseInfo: ReleaseInfo | null;
-  latestVersion: string | null;
-  currentVersion: string;
+  updateStatus: SystemUpdateStatus | null;
   onShowVersionModal: () => void;
   onShowSettings: () => void;
   projectListProps: SidebarProjectListProps;
@@ -200,10 +199,9 @@ export default function SidebarContent({
   onCreateProject,
   onCollapseSidebar,
   updateAvailable,
+  isUpdating,
   restartRequired,
-  releaseInfo,
-  latestVersion,
-  currentVersion,
+  updateStatus,
   onShowVersionModal,
   onShowSettings,
   projectListProps,
@@ -781,10 +779,9 @@ export default function SidebarContent({
       {!isRenamingOnMobile && (
         <SidebarFooter
           updateAvailable={updateAvailable}
+          isUpdating={isUpdating}
           restartRequired={restartRequired}
-          releaseInfo={releaseInfo}
-          latestVersion={latestVersion}
-          currentVersion={currentVersion}
+          updateStatus={updateStatus}
           onShowVersionModal={onShowVersionModal}
           onShowSettings={onShowSettings}
           t={t}

@@ -51,6 +51,7 @@ export type {
   MemoryCitation,
   MessageKind,
   ServerEventKind,
+  ScheduledJobsChangedEvent,
   SessionRemovedEvent,
   SessionUpsertedEvent,
   SessionUpsertedProject,
@@ -132,7 +133,7 @@ export type ProviderModelActions = {
 //----------------- PROJECTS AND SESSIONS ------------
 
 /** Identifies the workspace pane the user is looking at; plugin panes are namespaced by plugin id. */
-export type AppTab = 'chat' | 'files' | 'shell' | 'git' | 'tasks' | 'browser' | `plugin:${string}`;
+export type AppTab = 'chat' | 'files' | 'shell' | 'git' | 'tasks' | 'browser' | 'scheduled' | `plugin:${string}`;
 
 /** A message queued to be sent to a session at a future time. */
 export type ScheduledMessage = {
@@ -146,6 +147,53 @@ export type ScheduledMessage = {
   /** Why it did not go, when `status` is `failed`. */
   failureReason: string | null;
   createdAt: string;
+};
+
+/** How a scheduled job's last finished run ended. */
+export type ScheduledJobStatus = 'succeeded' | 'failed' | 'skipped' | 'missed';
+
+/**
+ * A prompt the server fires on a schedule: recurring on a cron expression, or
+ * a one-off at `runAt`.
+ *
+ * `sessionMode` decides where each occurrence runs: `reuse` sends it into the
+ * bound conversation, `new` creates a fresh session per run so a daily job's
+ * context never accumulates. A one-off disables itself once it has fired, so
+ * it drops out of the composer banner and reads as completed.
+ */
+export type ScheduledJob = {
+  id: string;
+  name: string;
+  provider: LLMProvider;
+  projectPath: string;
+  sessionId: string | null;
+  sessionMode: 'reuse' | 'new';
+  prompt: string;
+  options: Record<string, unknown>;
+  /** Standard five-field cron expression, evaluated in `timezone`. */
+  cronExpression: string;
+  /** IANA zone the expression is read in, captured from the creating client. */
+  timezone: string;
+  /** ISO instant of a one-off task; `null` for a recurring job. */
+  runAt: string | null;
+  enabled: boolean;
+  nextRunAt: string;
+  lastRunAt: string | null;
+  lastStatus: ScheduledJobStatus | null;
+  createdAt: string;
+};
+
+/** One attempt of a scheduled job, shown in the job's run history. */
+export type ScheduledJobRun = {
+  id: string;
+  jobId: string;
+  /** The session the occurrence ran in; for `new` jobs, the one it created. */
+  sessionId: string | null;
+  trigger: 'schedule' | 'manual';
+  status: 'running' | ScheduledJobStatus;
+  error: string | null;
+  startedAt: string;
+  finishedAt: string | null;
 };
 
 /** A single conversation inside a project, as returned by the sessions API and rendered in the sidebar and chat. */
@@ -208,18 +256,20 @@ export type Project = {
 
 // ---------------------------
 
-//----------------- RELEASES ------------
+//----------------- SELF-UPDATE ------------
 
-/** The latest GitHub release for the app, rendered by the update prompt and the About tab. */
-export type ReleaseInfo = {
-  title: string;
-  body: string;
-  htmlUrl: string;
-  publishedAt: string;
-};
-
-/** How this CloudCLI install was obtained; decides whether the UI offers a self-update action. */
-export type InstallMode = 'git' | 'npm';
+/**
+ * Self-update status and job shapes served by `/api/system/update*`, rendered by
+ * the sidebar update banner, the version modal and the About tab. Defined once in
+ * `shared/protocol/system-update.ts` for both sides.
+ */
+export type {
+  SystemUpdateCommit,
+  SystemUpdateJob,
+  SystemUpdateMode,
+  SystemUpdateRefusal,
+  SystemUpdateStatus,
+} from '@shared/protocol/system-update';
 
 // ---------------------------
 
@@ -468,6 +518,14 @@ export type CostCommandData = {
   tokenBreakdown?: {
     input?: number;
     output?: number;
+  };
+  /** Engine-reported context-window percentage (Claude); when absent the modal derives it from used/total. */
+  percentage?: number;
+  /** Session-lifetime totals for providers whose `tokenUsage.used` is the current context occupancy (codex, opencode). */
+  cumulative?: {
+    used?: number;
+    inputTokens?: number;
+    outputTokens?: number;
   };
   provider?: string;
   model?: string;
@@ -1058,7 +1116,7 @@ export type AgentContext = {
 };
 
 /** Identifier of a top-level section in the settings dialog; use it whenever a tab is stored, compared or requested so deep links, the sidebar and the command palette all agree on the same set of names. */
-export type SettingsMainTab = 'agents' | 'sessions' | 'appearance' | 'git' | 'api' | 'voice' | 'tasks' | 'browser' | 'notifications' | 'plugins' | 'diagnostics' | 'about';
+export type SettingsMainTab = 'agents' | 'sessions' | 'appearance' | 'git' | 'api' | 'voice' | 'tasks' | 'browser' | 'scheduled' | 'notifications' | 'plugins' | 'diagnostics' | 'about';
 
 /** The coding-agent CLI a settings screen is configuring, aliasing LLMProvider so agent-scoped settings read as being about an agent rather than a chat model. */
 export type AgentProvider = LLMProvider;
@@ -1499,6 +1557,8 @@ export type AntigravityPermissionMode = 'default' | 'acceptEdits' | 'plan' | 'by
 
 export type ZcodePermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions';
 
+export type OpenCodePermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions';
+
 export type AuthStatus = ProviderAuthStatus;
 
 export type ChatInterfaceProps = {
@@ -1522,6 +1582,8 @@ export type ChatInterfaceProps = {
   newSessionTrigger?: number;
   onTaskClick?: (...args: unknown[]) => void;
   onShowAllTasks?: (() => void) | null;
+  /** Whether the scheduled-tasks feature is on; gates the composer's repeat entry. */
+  scheduledJobsEnabled?: boolean;
 }
 
 export type Provider = LLMProvider;
@@ -1543,6 +1605,7 @@ export type SettingsStoragePayload = {
   codex: { permissionMode: CodexPermissionMode; lastUpdated: string };
   antigravity: { permissionMode: AntigravityPermissionMode; lastUpdated: string };
   zcode: { permissionMode: ZcodePermissionMode; lastUpdated: string };
+  opencode: { permissionMode: OpenCodePermissionMode; lastUpdated: string };
 };
 
 export type SubagentChildTool = {

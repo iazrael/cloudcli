@@ -111,6 +111,7 @@
     "voice": "Voice",
     "tasks": "Tasks",
     "browser": "Browser",
+    "scheduled": "Scheduled tasks",
     "notifications": "Notifications",
     "plugins": "Plugins",
     "diagnostics": "Diagnostics",
@@ -365,10 +366,7 @@
       "description": "Learn how to use the external API to trigger Claude/Cursor sessions from your applications.",
       "viewLink": "View API Documentation →"
     },
-    "loading": "Loading...",
-    "version": {
-      "updateAvailable": "Update available: v{{version}}"
-    }
+    "loading": "Loading..."
   },
   "tasks": {
     "checking": "Checking TaskMaster installation...",
@@ -551,6 +549,36 @@
         "acceptEdits": "Maps to the engine's edit mode: file edits are auto-accepted.",
         "plan": "Maps to the engine's plan mode: read-only planning without modifications.",
         "bypassPermissions": "Maps to the engine's yolo mode: everything runs without approval prompts.",
+        "overrideNote": "The per-session permission selector in the chat composer overrides this default for the current turn."
+      }
+    },
+    "opencode": {
+      "permissionMode": "Permission Mode",
+      "description": "Controls how OpenCode handles file edits, plan generation, and command execution",
+      "modes": {
+        "default": {
+          "title": "Default",
+          "description": "Follows your own opencode.json permission rules. In non-interactive runs, anything not explicitly allowed is denied."
+        },
+        "acceptEdits": {
+          "title": "Accept Edits",
+          "description": "File edits are auto-approved through the OPENCODE_PERMISSION env var; every other rule stays under your own config."
+        },
+        "plan": {
+          "title": "Plan Mode",
+          "description": "Read-only analysis and planning through the built-in plan agent (--agent plan). Generates structured plans without editing files."
+        },
+        "bypassPermissions": {
+          "title": "Bypass Permissions",
+          "description": "Auto-approves every permission that is not explicitly denied in your config (--auto). Use with caution."
+        }
+      },
+      "technicalDetails": "Technical details",
+      "technicalInfo": {
+        "default": "No flags passed: the run is non-interactive, so any `ask` rule in your opencode.json is denied.",
+        "acceptEdits": "Maps to OPENCODE_PERMISSION={\"edit\":\"allow\"}, which the CLI merges into its permission config.",
+        "plan": "Maps to `opencode run --agent plan`: read-only planning without modifications.",
+        "bypassPermissions": "Maps to `opencode run --auto`: auto-approves everything not explicitly denied.",
         "overrideNote": "The per-session permission selector in the chat composer overrides this default for the current turn."
       }
     },
@@ -876,6 +904,26 @@
     "saveFailed": "Failed to save Browser settings",
     "installFailed": "Failed to install browser runtime"
   },
+  "scheduledJobsSettings": {
+    "sectionTitle": "Scheduled tasks",
+    "sectionDescription": "Recurring prompts that run on a cron schedule, in a bound session or a fresh one per run.",
+    "enableLabel": "Enable scheduled tasks",
+    "enableDescription": "Registers the scheduled-tasks MCP server for agents and shows the workspace's Scheduled tab. Turning this off unregisters the bridge, hides the tab and the composer's repeat entry, and stops tasks from firing.",
+    "enableAriaLabel": "Enable scheduled tasks",
+    "statusPrefix": "Status",
+    "checking": "checking...",
+    "enabled": "enabled",
+    "disabled": "disabled",
+    "mcpLabel": "MCP server",
+    "mcpDescription": "Agents manage tasks with the scheduled-task tools. Re-sync after installing a new engine.",
+    "providerRegistered": "registered",
+    "providerFailed": "failed",
+    "syncMcp": "Re-sync MCP",
+    "syncing": "Syncing...",
+    "loadFailed": "Failed to load scheduled-task settings",
+    "saveFailed": "Failed to save scheduled-task settings",
+    "syncFailed": "Failed to sync the scheduled-tasks MCP server"
+  },
   "mcpServersAdd": {
     "menuLabel": "Add MCP Server",
     "globalButtonLabel": "Add Global MCP Server",
@@ -931,6 +979,22 @@
     "teamManagementTitle": "Team Management",
     "teamManagementDescription": "Multiple users, role-based access, and shared projects for your team.",
     "licensed": "Licensed under AGPL-3.0",
-    "proCta": "Available with CloudCLI Pro"
+    "proCta": "Available with CloudCLI Pro",
+    "update": {
+      "checkNow": "Check for updates",
+      "checking": "Checking…",
+      "upToDate": "Up to date",
+      "checkFailed": "Could not reach the remote",
+      "commitsBehind_one": "{{count}} new commit",
+      "commitsBehind_other": "{{count}} new commits",
+      "rebuildAvailable": "Local code needs a rebuild",
+      "updating": "Updating…",
+      "unsupported": {
+        "not-git": "Self-update needs a git checkout",
+        "not-pm2": "Self-update needs PM2 supervision",
+        "no-upstream": "The branch tracks no remote",
+        "platform": "Updated by the platform"
+      }
+    }
   }
 }

@@ -30,6 +30,7 @@ The **production instance** runs from the fixed runtime directory `~/.cloudcli/r
 - Publish a new build: `pnpm run deploy` (build → pack → isolated staging install → fixed-runtime cutover → PM2 restart → health check → `pm2 save`); the script auto-increments the patch version and commits it. **Only the user may run this command**, because it restarts PM2. Deployments are serialized by `~/.cloudcli/deploy.lock`, retain the previous runtime for automatic rollback, and update the global `cloudcli` command to point at the fixed runtime. Release-pipeline deploys pass `--no-bump` to keep the tagged release version instead. The script re-launches itself as a detached background process logging to `~/.cloudcli/deploy.log`, so closing the terminal — or the cutover restarting the server that hosts the calling session — no longer aborts the deploy; the caller only tails that log. Inside a cloudcli-hosted session the cutover still drops your own connection, so watch `~/.cloudcli/deploy.log` for the rest.
 - Service port: `3030` (`http://localhost:3030`)
 - Restart command: `pm2 restart cloudcli` (**must be run by the user**)
+- UI self-update: the version modal's "update & restart" (`POST /api/system/update`, runner `scripts/self-update.mjs`) pulls, rebuilds and restarts PM2 on a git checkout. It is a restart mechanism: **only the user clicks it**; the agent must never call that endpoint.
 - Logs command: `pm2 logs cloudcli`
 - Status command: `pm2 status`
 - Local dev keeps the defaults (`3001` server + `5173` vite), so dev and production coexist; after config changes run `pm2 save` so `pm2 resurrect` doesn't restore a stale snapshot.
@@ -48,7 +49,7 @@ Saying "发布/发版本" (release a version) means running this whole pipeline 
 3. `git commit --no-verify -m "chore(release): bump version to X.Y.Z"`, scoped to exactly those three files.
 4. `git tag -a vX.Y.Z -m "CloudCLI X.Y.Z"` (annotated, before any build).
 5. Build and deploy **from a clean worktree of the tag** — the main tree is routinely dirtied by parallel sessions, which bakes `-dirty` into the build fingerprint: `git worktree add --detach /tmp/rel-vX.Y.Z vX.Y.Z`, `cp -Rc node_modules /tmp/rel-vX.Y.Z/` (the repo has no pnpm-lock, so `pnpm install` there fails), then build in the worktree and verify the fingerprint is `vX.Y.Z-<hash>` without `-dirty`.
-6. `git push origin main --follow-tags`, then `gh release create vX.Y.Z -R iazrael/cloudcli --title "CloudCLI X.Y.Z" --notes-file ...` — always pass `-R`; gh defaults to the upstream repo.
+6. `git push origin main --follow-tags`, then `gh release create vX.Y.Z -R flufy3d/cloudcli --title "CloudCLI X.Y.Z" --notes-file ...` — always pass `-R`; `origin` is flufy3d/cloudcli, `upstream` is the read-only iazrael/cloudcli.
 7. Stop before the restart-producing deploy step. Tell the user to run `node scripts/deploy.mjs --no-bump` from the worktree themselves; non-interactive shells need `PATH="$HOME/Library/pnpm:$PATH" PNPM_HOME="$HOME/Library/pnpm"` so pnpm and the stable global CLI entry are available. Resume verification only after the user confirms it completed.
 8. Verify four things: pm2 online with the new version, `curl http://localhost:3030/` returns 200, the fixed runtime's `dist/assets/*.js` fingerprint has no `-dirty`, and `gh release view` confirms the release.
 

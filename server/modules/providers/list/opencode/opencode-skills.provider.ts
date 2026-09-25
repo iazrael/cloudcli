@@ -25,6 +25,21 @@ export class OpenCodeSkillsProvider extends SkillsProvider {
     super('opencode');
   }
 
+  /**
+   * Returns the global user skill source for write operations.
+   *
+   * OpenCode's native global skill directory is `~/.config/opencode/skills`
+   * (scanned by the engine alongside the Claude/Agents compatibility folders),
+   * so managed uploads land where the engine itself reads them.
+   */
+  protected async getGlobalSkillSource(): Promise<ProviderSkillSource> {
+    return {
+      scope: 'user',
+      rootDir: path.join(os.homedir(), '.config', 'opencode', 'skills'),
+      commandPrefix: '/',
+    };
+  }
+
   protected async getSkillSources(workspacePath: string): Promise<ProviderSkillSource[]> {
     const sources: ProviderSkillSource[] = [];
     const seenRootDirs = new Set<string>();

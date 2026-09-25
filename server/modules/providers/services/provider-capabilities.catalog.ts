@@ -46,6 +46,21 @@ export type ProviderCatalogEntry = {
   supportsAbort: boolean;
   /** Whether the provider runtime can accept model-level reasoning effort. */
   supportsEffort: boolean;
+  /**
+   * Whether the engine schedules deferred work inside a session on its own
+   * (Claude's CronCreate/ScheduleWakeup). Informational: CloudCLI's scheduled
+   * jobs are offered for every provider, and this only decides whether the
+   * job form warns that the engine already has a session-scoped scheduler
+   * whose wake-ups a job's run would supersede.
+   */
+  supportsNativeScheduling: boolean;
+  /**
+   * Whether replacing an already-sent message also reverts the files the
+   * agent changed. Claude resumes a transcript partway and Codex forks one,
+   * so neither touches files; OpenCode's `rewindSession` marks a server-side
+   * revert that restores the snapshot files along with the conversation.
+   */
+  editRevertsFiles: boolean;
 };
 
 export const PROVIDER_CATALOG = {
@@ -57,6 +72,10 @@ export const PROVIDER_CATALOG = {
     supportsFiles: true,
     supportsAbort: true,
     supportsEffort: true,
+    // Claude's CronCreate/ScheduleWakeup schedule work inside the running CLI
+    // process; CloudCLI holds that process open so the wake-ups can fire.
+    supportsNativeScheduling: true,
+    editRevertsFiles: false,
   },
   cursor: {
     permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
@@ -66,6 +85,8 @@ export const PROVIDER_CATALOG = {
     supportsFiles: true,
     supportsAbort: true,
     supportsEffort: false,
+    supportsNativeScheduling: false,
+    editRevertsFiles: false,
   },
   codex: {
     permissionModes: ['default', 'acceptEdits', 'bypassPermissions'],
@@ -75,11 +96,14 @@ export const PROVIDER_CATALOG = {
     supportsFiles: true,
     supportsAbort: true,
     supportsEffort: true,
+    supportsNativeScheduling: false,
+    editRevertsFiles: false,
   },
   opencode: {
-    // Mapped by the runtime onto OpenCode's controls: `--agent plan` (plan),
-    // `--auto` (bypassPermissions) and the OPENCODE_PERMISSION env var
-    // (acceptEdits). See resolveOpenCodePermissionOptions in the OpenCode runtime adapter.
+    // Mapped by the runtime onto OpenCode's controls: the `plan` agent for plan,
+    // silent `once` approvals for bypassPermissions, and the user's own
+    // opencode config for default/acceptEdits. See the OpenCode runtime adapter
+    // (resolveOpenCodeAgent / shouldAutoApproveOpenCodePermission).
     permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
     defaultPermissionMode: 'default',
     defaultModel: 'opencode/gpt-5.6-terra',
@@ -87,6 +111,8 @@ export const PROVIDER_CATALOG = {
     supportsFiles: true,
     supportsAbort: true,
     supportsEffort: true,
+    supportsNativeScheduling: false,
+    editRevertsFiles: true,
   },
   zcode: {
     // Mapped by the runtime onto ZCode's session/setMode modes: build
@@ -103,6 +129,8 @@ export const PROVIDER_CATALOG = {
     supportsFiles: true,
     supportsAbort: true,
     supportsEffort: true,
+    supportsNativeScheduling: false,
+    editRevertsFiles: false,
   },
   antigravity: {
     permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
@@ -112,5 +140,7 @@ export const PROVIDER_CATALOG = {
     supportsFiles: true,
     supportsAbort: true,
     supportsEffort: true,
+    supportsNativeScheduling: false,
+    editRevertsFiles: false,
   },
 } as const satisfies Readonly<Record<LLMProvider, ProviderCatalogEntry>>;

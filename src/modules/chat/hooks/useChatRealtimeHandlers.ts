@@ -8,6 +8,7 @@ import type { MarkSessionIdle, MarkSessionProcessing } from '@/shared/types';
 import type { PendingPermissionRequest } from '@/shared/types';
 import type { ProjectSession, LLMProvider } from '@/shared/types';
 import type { ServerEventDirective } from '@/modules/chat/utils/sessionTimelineStore';
+import { toTokenBudget } from '@/modules/chat/utils/contextUsage';
 import type { SessionStore } from '@/modules/chat/hooks/useSessionStore';
 
 const isActionablePermissionRequest = (request: { toolName?: unknown } | null | undefined): boolean => {
@@ -95,8 +96,16 @@ export function useChatRealtimeHandlers({
         return;
       }
 
-      // Sidebar/global events — owned by useProjectsState.
-      if (msg.kind === 'session_upserted' || msg.kind === 'loading_progress') {
+      // Sidebar/global events — owned by useProjectsState. `session_removed`
+      // carries a batch of `sessionIds` and no sessionId of its own, so the
+      // store must never see it: the unknown-kind fallback would attach it to
+      // whichever session is being viewed.
+      if (
+        msg.kind === 'session_upserted'
+        || msg.kind === 'session_removed'
+        || msg.kind === 'scheduled_jobs_changed'
+        || msg.kind === 'loading_progress'
+      ) {
         return;
       }
 
@@ -199,8 +208,19 @@ export function useChatRealtimeHandlers({
         }
 
         case 'status': {
-          if (directive.text === 'token_budget' && directive.tokenBudget) {
-            setTokenBudget(directive.tokenBudget as Record<string, unknown>);
+          if (directive.text === 'token_budget') {
+            // The badge measures the conversation on screen, and every
+            // session's frames arrive on the same socket, so a budget frame
+            // is only the viewed session's business: without this check two
+            // live runs traded the badge back and forth, and a brand-new
+            // session inherited an occupancy it had never spent.
+            const viewedSessionId = activeViewSessionIdRef.current;
+            if (directive.tokenBudget && viewedSessionId && directive.sessionId === viewedSessionId) {
+              // A just-compacted session reports `compacted: true` with `used: 0`;
+              // those numbers describe the context the user discarded, so the
+              // badge falls back to the summary's size (see `toTokenBudget`).
+              setTokenBudget(toTokenBudget(directive.tokenBudget));
+            }
           } else if (directive.text && directive.sessionId) {
             onSessionProcessing?.(directive.sessionId, {
               statusText: directive.text,

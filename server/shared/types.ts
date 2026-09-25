@@ -78,6 +78,7 @@ import type {
   MessageKind,
   NormalizedMessage,
   ServerEventKind,
+  ScheduledJobsChangedEvent,
   SessionRemovedEvent,
   SessionUpsertedEvent,
   SessionUpsertedProject,
@@ -92,6 +93,7 @@ export type {
   MessageKind,
   NormalizedMessage,
   ServerEventKind,
+  ScheduledJobsChangedEvent,
   SessionRemovedEvent,
   SessionUpsertedEvent,
   SessionUpsertedProject,
@@ -146,6 +148,38 @@ export type ProviderTokenUsageResult = {
     input: number;
     output: number;
   };
+  /**
+   * Session-lifetime token totals. `used` above reports the CURRENT context
+   * occupancy for providers whose engines can tell the two apart (codex,
+   * opencode); this field preserves the cumulative spend those endpoints used
+   * to report, for the `/cost` breakdown.
+   */
+  cumulative?: {
+    used: number;
+    inputTokens: number;
+    outputTokens: number;
+  };
+  /**
+   * Context-window usage percent as reported by the engine itself (Claude's
+   * SDK context-usage twin). When present, consumers use it directly instead
+   * of computing `used / total`.
+   */
+  percentage?: number;
+  /**
+   * The session was compacted and the engine has not reported the resulting
+   * occupancy yet (OpenCode only learns it when the next turn runs, so its
+   * newest record still describes the PRE-compaction conversation). `used` is
+   * zero and carries no meaning; consumers show "unknown until the next turn"
+   * instead of the stale number.
+   */
+  compacted?: boolean;
+  /**
+   * UTF-8 size of the compaction summary text that now stands in for the
+   * conversation. Only present alongside `compacted` and only when the summary
+   * could be read; it is the one concrete "how big is the context now" reading
+   * available before the next turn reports real occupancy.
+   */
+  summaryBytes?: number;
   unsupported?: boolean;
   message?: string;
 };
@@ -1025,7 +1059,10 @@ export type FileTreeProjectGateway = {
  */
 export type FileTreeWorkspaceGateway = {
   rootPath: string;
-  validatePath(candidatePath: string): Promise<WorkspacePathValidationResult>;
+  validatePath(
+    candidatePath: string,
+    options?: { allowDriveRoot?: boolean },
+  ): Promise<WorkspacePathValidationResult>;
 };
 
 /**
@@ -1073,6 +1110,10 @@ export type FileTreeServiceDependencies = {
    * every path outside these roots is rejected with `PATH_NOT_ALLOWED`.
    */
   externalReadOnlyRoots: string[];
+  /**
+   * Optional provider for available system drive roots (e.g. on Windows).
+   */
+  getAvailableDrives?: () => Promise<string[]>;
 };
 
 /**
@@ -1086,6 +1127,7 @@ export type FileTreeServices = {
   browseWorkspace(inputPath: string | null): Promise<{
     path: string;
     suggestions: Array<{ path: string; name: string; type: 'directory' }>;
+    drives?: string[];
   }>;
   createWorkspaceFolder(folderPath: string): Promise<{ success: true; path: string }>;
   readTextFile(projectId: string, filePath: string): Promise<{ content: string; path: string }>;
@@ -1336,3 +1378,20 @@ export type RunOutcome = {
   /** The session's sequence watermark when the run ended. */
   lastSeq: number;
 };
+
+// ---------------------------
+//----------------- SYSTEM SELF-UPDATE ------------
+/**
+ * The self-update contract lives in `shared/protocol/system-update.ts` so the
+ * status route and the version UI read one definition. Used by the system
+ * module's service, module wiring, and routes.
+ */
+export type {
+  SystemUpdateCommit,
+  SystemUpdateJob,
+  SystemUpdateJobState,
+  SystemUpdateMode,
+  SystemUpdateRefusal,
+  SystemUpdateStatus,
+  SystemUpdateUnsupportedReason,
+} from '../../shared/protocol/system-update.js';

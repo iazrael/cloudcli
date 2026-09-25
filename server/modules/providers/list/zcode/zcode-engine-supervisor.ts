@@ -27,9 +27,10 @@ import { setTimeout as setTimeoutFn, clearTimeout as clearTimeoutFn } from 'node
 
 import { getZCodeStorageDir } from './zcode-data-root.js';
 import {
-  resolveZCodeProviderConfigEnv,
+  ZCODE_BUILTIN_PROVIDER_BUNDLED_CONFIG_ENV,
   ZCODE_BUILTIN_PROVIDER_CONFIG_ENV,
   ZCODE_PERSONAL_PROVIDER_CONFIG_ENV,
+  resolveZCodeProviderConfigEnv,
 } from './zcode-provider-config.js';
 import { tryResolveEnginePath } from './zcode-engine-path.js';
 
@@ -112,15 +113,18 @@ export class EngineSupervisor {
           // Ambient ZCODE_* provider-config values inherited from a parent
           // ZCode App session point at the App's runtime files, not at this
           // engine's config; strip them so the engine runs only on the config
-          // resolved below (see zcode-provider-config).
+          // resolved below (see zcode-provider-config). The desktop app
+          // normally injects these, and without a resolution a bare spawn
+          // cannot locate its provider catalog at all — `session/create`
+          // hangs until the client times out.
           [ZCODE_BUILTIN_PROVIDER_CONFIG_ENV]: undefined,
+          [ZCODE_BUILTIN_PROVIDER_BUNDLED_CONFIG_ENV]: undefined,
           [ZCODE_PERSONAL_PROVIDER_CONFIG_ENV]: undefined,
-          // The packaged engine cannot locate its own built-in provider config
-          // (see zcode-provider-config); hand it the resolved paths instead.
           ...resolveZCodeProviderConfigEnv(enginePath),
         },
         stdio: ['pipe', 'pipe', 'pipe'],
         detached: false,
+        windowsHide: true,
       })),
       now: dependencies.now ?? Date.now,
     };

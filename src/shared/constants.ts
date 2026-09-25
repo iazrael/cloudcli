@@ -54,12 +54,11 @@ export const BUILD_INFO: { commit: string; buildTime: string; describe: string }
     : { commit: '', buildTime: '', describe: '' };
 
 /**
- * GitHub repository this app is published to. Update checks
- * (`useVersionCheck`), release links and repo links must point here — this
- * fork is versioned and released independently of the upstream project, so
- * checking upstream's releases would report stale versions and fake updates.
+ * GitHub repository this fork lives in. Every repo link and the sidebar star
+ * badge point here; updates themselves come from the checkout's git upstream
+ * (`/api/system/update/status`), not from GitHub releases.
  */
-export const GITHUB_REPO_OWNER = 'iazrael';
+export const GITHUB_REPO_OWNER = 'flufy3d';
 export const GITHUB_REPO_NAME = 'cloudcli';
 
 /** Web URL of the repository above, for links that want the whole repo. */

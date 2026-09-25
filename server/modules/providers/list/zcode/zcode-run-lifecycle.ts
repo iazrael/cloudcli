@@ -92,6 +92,14 @@ type RunState = {
   failedMessage?: string;
   tokenUsage?: number;
   lastActivityAt: number;
+  /**
+   * Occupancy carried by the last mid-turn `token_budget` frame this run
+   * published. The live refresh speaks only when the reading moved, so a
+   * tool-heavy turn costs one frame per step instead of one per tool result.
+   */
+  publishedContextUsed?: number;
+  /** When that frame was sent; bounds how often the engine store is re-read. */
+  contextPublishedAt?: number;
 };
 
 export type RunStart = {

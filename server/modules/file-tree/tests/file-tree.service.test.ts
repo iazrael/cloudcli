@@ -495,3 +495,44 @@ test('openExternalFile streams a file inside an allowlisted external root', asyn
   assert.ok(result.stream);
 });
 
+test('browseWorkspace returns available drives when requested on Windows', async () => {
+  const fileSystem = createFakeFileSystem();
+  const dependencies: FileTreeServiceDependencies = {
+    ...createDependencies(fileSystem, path.resolve('file-tree-test-project')),
+    getAvailableDrives: async () => ['C:\\', 'E:\\'],
+  };
+  const service = createFileTreeService(dependencies);
+
+  if (process.platform === 'win32') {
+    const result = await service.browseWorkspace('drives');
+    assert.equal(result.path, 'drives');
+    assert.deepEqual(result.drives, ['C:\\', 'E:\\']);
+    assert.equal(result.suggestions.length, 2);
+    assert.equal(result.suggestions[0]?.name, 'Local Disk (C:)');
+    assert.equal(result.suggestions[1]?.name, 'Local Disk (E:)');
+  }
+});
+
+test('browseWorkspace passes allowDriveRoot when validating candidate browse paths', async () => {
+  let capturedOptions: { allowDriveRoot?: boolean } | undefined;
+  const projectRoot = path.resolve('file-tree-test-project');
+  const fileSystem = createFakeFileSystem({
+    access: async () => {},
+    stat: async () => ({ isDirectory: () => true } as any),
+    openDirectory: async function* () {},
+  });
+  const dependencies: FileTreeServiceDependencies = {
+    ...createDependencies(fileSystem, projectRoot),
+    workspace: {
+      rootPath: projectRoot,
+      validatePath: async (candidatePath, options) => {
+        capturedOptions = options;
+        return { valid: true, resolvedPath: candidatePath };
+      },
+    },
+  };
+  const service = createFileTreeService(dependencies);
+  await service.browseWorkspace(projectRoot);
+  assert.equal(capturedOptions?.allowDriveRoot, true);
+});
+

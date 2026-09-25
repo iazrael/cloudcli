@@ -128,6 +128,7 @@ export function createCliEnginePathResolver(
       const result = spawnSync(whichCommand, [config.whichBinary], {
         encoding: 'utf8',
         timeout: 5000,
+        windowsHide: true,
       });
       if (result.status !== 0) {
         return null;
@@ -160,7 +161,7 @@ export function createCliEnginePathResolver(
     for (const buildInvocation of probe.invocations) {
       try {
         const { command, args } = buildInvocation(enginePath);
-        const result = spawnSync(command, args, { encoding: 'utf8', timeout: probe.timeoutMs });
+        const result = spawnSync(command, args, { encoding: 'utf8', timeout: probe.timeoutMs, windowsHide: true });
         if (result.status !== 0) {
           continue;
         }

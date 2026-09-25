@@ -13,6 +13,11 @@ type SessionRow = {
   model: string | null;
   /** Reasoning effort this session runs with; NULL until the app records one. */
   effort: string | null;
+  /**
+   * Context window in tokens the provider engine reported for this session;
+   * NULL until an engine reports one.
+   */
+  context_window: number | null;
   /** The app session this one was branched from; NULL unless it is a fork. */
   forked_from_session_id: string | null;
   isArchived: number;
@@ -26,7 +31,7 @@ type RecentSessionsPage = {
 };
 
 const SESSION_ROW_COLUMNS =
-  'session_id, provider, provider_session_id, project_path, jsonl_path, custom_name, model, effort, forked_from_session_id, isArchived, created_at, updated_at';
+  'session_id, provider, provider_session_id, project_path, jsonl_path, custom_name, model, effort, context_window, forked_from_session_id, isArchived, created_at, updated_at';
 
 const SQLITE_UTC_TIMESTAMP_REGEX = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 
@@ -214,7 +219,7 @@ export const sessionsDb = {
     projectPath: string;
     customName: string | null;
     providerSessionId: string;
-    jsonlPath: string;
+    jsonlPath: string | null;
     forkedFromSessionId: string;
     model: string | null;
     effort: string | null;
@@ -440,6 +445,23 @@ export const sessionsDb = {
        SET model = ?
        WHERE session_id = ?`
     ).run(model, sessionId);
+  },
+
+  /**
+   * Records the context window one session actually runs against, in tokens.
+   *
+   * Written by a provider runtime once its engine reports the real window for
+   * the session (Claude does at the end of every turn). Readers prefer this
+   * over any heuristic, because a transcript records the resolved model id and
+   * never the context-window variant the run was started with.
+   */
+  setSessionContextWindow(sessionId: string, contextWindow: number): void {
+    const db = getConnection();
+    db.prepare(
+      `UPDATE sessions
+       SET context_window = ?
+       WHERE session_id = ?`
+    ).run(contextWindow, sessionId);
   },
 
   /**

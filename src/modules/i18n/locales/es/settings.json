@@ -306,10 +306,7 @@
       "description": "Aprende a usar la API externa para lanzar sesiones de Claude/Cursor desde tus aplicaciones.",
       "viewLink": "Ver documentación de la API →"
     },
-    "loading": "Cargando...",
-    "version": {
-      "updateAvailable": "Actualización disponible: v{{version}}"
-    }
+    "loading": "Cargando..."
   },
   "tasks": {
     "checking": "Comprobando la instalación de TaskMaster...",

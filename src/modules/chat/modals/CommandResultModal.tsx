@@ -10,6 +10,7 @@ import {
   Coins,
   Cpu,
   Gauge,
+  Layers,
   Package,
   Plus,
   RotateCw,
@@ -55,6 +56,7 @@ import {
 import { getProviderDisplayName, PROVIDER_DISPLAY_NAMES } from '@/shared/providerDisplay';
 
 import ModelLibraryPanel from '@/modules/chat/modals/ModelLibraryPanel';
+import { formatByteSize } from '@/modules/chat/utils/contextUsage';
 
 type CommandResultModalProps = {
   payload: CommandModalPayload | null;
@@ -493,6 +495,11 @@ function resolveBucketTitle(bucket: QuotaBucket, t: TFunction): string {
   const isWeekly = bucket.window === 'weekly' || bucket.id.includes('weekly');
   if (isWeekly) {
     return t('cost.weeklyWindow', { defaultValue: '周配额' });
+  }
+
+  const isMonthly = bucket.window === 'monthly' || bucket.id.includes('monthly');
+  if (isMonthly) {
+    return t('cost.monthlyWindow', { defaultValue: '月度配额' });
   }
 
   const isCycle = bucket.window === 'cycle' || bucket.id.includes('calls');
@@ -982,7 +989,12 @@ function ResetCreditsCard({
 
 function CostContent({ data }: { data: CostCommandData }) {
   const { t } = useTranslation('chat');
-  const used = Number(data.tokenUsage?.used ?? 0);
+  // A just-compacted session reports no occupancy: the numbers that exist
+  // describe the context the user just discarded, so they are suppressed in
+  // favor of an explicit "updates after the next turn" note.
+  const compacted = data.compacted === true;
+  const summaryBytes = Number(data.summaryBytes ?? 0) || 0;
+  const used = compacted ? 0 : Number(data.tokenUsage?.used ?? 0);
   const total = Number(data.tokenUsage?.total ?? 0);
   const model = data.model || 'Unknown';
   const provider = getProviderLabel(data.provider, data.provider || 'Unknown');
@@ -1066,8 +1078,23 @@ function CostContent({ data }: { data: CostCommandData }) {
   const hasBreakdown =
     typeof data.tokenBreakdown?.input === 'number' ||
     typeof data.tokenBreakdown?.output === 'number';
+  // The engine's own percentage (Claude) wins; otherwise derive it from the
+  // reported occupancy and window (codex, antigravity, opencode).
+  const contextPercent = typeof data.percentage === 'number' && data.percentage > 0
+    ? Math.min(100, Math.round(data.percentage))
+    : total > 0 && used > 0
+      ? Math.min(100, Math.round((used / total) * 100))
+      : null;
   const usageRows = [
-    { label: t('cost.totalTokensUsed', { defaultValue: 'Total tokens used' }), value: formatNumber(used), icon: Activity },
+    ...(compacted
+      ? summaryBytes > 0
+        ? [{
+            label: t('cost.compactedSummary', { defaultValue: 'Compaction summary' }),
+            value: formatByteSize(summaryBytes),
+            icon: Gauge,
+          }]
+        : []
+      : [{ label: t('cost.totalTokensUsed', { defaultValue: 'Total tokens used' }), value: formatNumber(used), icon: Activity }]),
     ...(hasBreakdown
       ? [
           {
@@ -1084,6 +1111,13 @@ function CostContent({ data }: { data: CostCommandData }) {
       : []),
     ...(total > 0
       ? [{ label: t('cost.contextWindow', { defaultValue: 'Context window' }), value: formatNumber(total), icon: Gauge }]
+      : []),
+    ...(data.cumulative
+      ? [{
+          label: t('cost.cumulativeTokens', { defaultValue: 'Cumulative tokens' }),
+          value: formatNumber(Number(data.cumulative.used ?? 0)),
+          icon: Layers,
+        }]
       : []),
   ];
 
@@ -1115,6 +1149,27 @@ function CostContent({ data }: { data: CostCommandData }) {
             </div>
           );
         })}
+
+        {contextPercent !== null && (
+          <div className="border-b border-border/60 px-4 py-3 last:border-b-0">
+            <div className="mb-2 flex items-center justify-between gap-4">
+              <span className="text-sm font-medium text-foreground">
+                {t('cost.contextUsage', { defaultValue: 'Context usage' })}
+              </span>
+              <span className="shrink-0 font-mono text-sm font-semibold text-foreground">
+                {t('cost.usedPercent', { percent: contextPercent, defaultValue: '已用 {{percent}}%' })}
+              </span>
+            </div>
+            <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+              <div
+                className={`h-full rounded-full transition-all duration-500 ${
+                  contextPercent >= 90 ? 'bg-red-500' : contextPercent >= 70 ? 'bg-amber-500' : 'bg-primary'
+                }`}
+                style={{ width: `${contextPercent}%` }}
+              />
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Provider Quota & Rate Limits Section (5-hour & Weekly) */}

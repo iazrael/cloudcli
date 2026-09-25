@@ -242,8 +242,17 @@
     "editing": {
       "title": "正在替换先前的消息",
       "filesNotReverted": "已修改的文件不会被还原",
+      "filesReverted": "已修改的文件也会一并还原",
       "cancel": "取消"
     }
+  },
+  "misc": {
+    "needsInput": "需要你的输入",
+    "selectAllThatApply": "可多选",
+    "other": "其他…",
+    "back": "上一步",
+    "next": "下一步",
+    "submit": "提交"
   },
   "export": {
     "trigger": "导出对话",
@@ -283,6 +292,9 @@
     "inputTokens": "输入用量",
     "outputTokens": "输出用量",
     "contextWindow": "上下文窗口",
+    "contextUsage": "上下文占用",
+    "usedPercent": "已用 {{percent}}%",
+    "cumulativeTokens": "累计用量",
     "quotaTitle": "账号配额与速率限额",
     "updatedAt": "更新于 {{time}}",
     "refresh": "刷新",
@@ -298,6 +310,7 @@
     "expand": "展开查看",
     "fiveHourWindow": "5 小时滑动窗口限额",
     "weeklyWindow": "周配额",
+    "monthlyWindow": "月度配额",
     "cycleWindow": "周期调用限额",
     "cycleCallsDesc": "总计 {{total}} 次，剩余 {{remaining}} 次",
     "cycleGeneralDesc": "周期内模型与工具调用配额",

@@ -1,16 +1,15 @@
 import { Settings, ArrowUpCircle, AlertTriangle } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
-import { BUILD_INFO, GITHUB_REPO_URL } from '@/shared/constants';
+import { APP_VERSION, BUILD_INFO, GITHUB_REPO_URL } from '@/shared/constants';
 import { IS_PLATFORM } from '@/shared/utils';
-import type { ReleaseInfo } from '@/shared/types';
+import type { SystemUpdateStatus } from '@/shared/types';
 
 type SidebarFooterProps = {
   updateAvailable: boolean;
+  isUpdating: boolean;
   restartRequired: boolean;
-  releaseInfo: ReleaseInfo | null;
-  latestVersion: string | null;
-  currentVersion: string;
+  updateStatus: SystemUpdateStatus | null;
   onShowVersionModal: () => void;
   onShowSettings: () => void;
   t: TFunction;
@@ -19,14 +18,21 @@ type SidebarFooterProps = {
 /** Rendered by SidebarContent at the bottom of the panel for settings and update status. */
 export default function SidebarFooter({
   updateAvailable,
+  isUpdating,
   restartRequired,
-  releaseInfo,
-  latestVersion,
-  currentVersion,
+  updateStatus,
   onShowVersionModal,
   onShowSettings,
   t,
 }: SidebarFooterProps) {
+  // One line for both layouts: a running job wins, then pull, then rebuild.
+  const updateTitle = isUpdating
+    ? t('version.updating')
+    : updateStatus?.availableMode === 'pull'
+      ? t('version.commitsBehind', { count: updateStatus.behind })
+      : t('version.rebuildAvailable');
+  const showUpdateBanner = updateAvailable || isUpdating;
+
   return (
     <div className="flex-shrink-0" style={{ paddingBottom: 'env(safe-area-inset-bottom, 0)' }}>
       {/* Restart-required banner: the running server version differs from the
@@ -46,7 +52,7 @@ export default function SidebarFooter({
       )}
 
       {/* Update banner */}
-      {updateAvailable && (
+      {showUpdateBanner && (
         <>
           <div className="nav-divider" />
           {/* Desktop update */}
@@ -61,10 +67,10 @@ export default function SidebarFooter({
               </div>
               <div className="min-w-0 flex-1">
                 <span className="block truncate text-sm font-normal text-blue-600 dark:text-blue-300">
-                  {releaseInfo?.title || `v${latestVersion}`}
+                  {updateTitle}
                 </span>
                 <span className="text-[10px] text-blue-500/70 dark:text-blue-400/60">
-                  {t('version.updateAvailable')}
+                  {isUpdating ? t('version.viewProgress') : t('version.updateAvailable')}
                 </span>
               </div>
             </button>
@@ -82,10 +88,10 @@ export default function SidebarFooter({
               </div>
               <div className="min-w-0 flex-1 text-left">
                 <span className="block truncate text-sm font-normal text-blue-600 dark:text-blue-300">
-                  {releaseInfo?.title || `v${latestVersion}`}
+                  {updateTitle}
                 </span>
                 <span className="text-xs text-blue-500/70 dark:text-blue-400/60">
-                  {t('version.updateAvailable')}
+                  {isUpdating ? t('version.viewProgress') : t('version.updateAvailable')}
                 </span>
               </div>
             </button>
@@ -124,8 +130,8 @@ export default function SidebarFooter({
           the full `git describe` identity (v2.0.0-14-g273e294), which already
           carries the tag/version, so no separate version number next to it.
           It intentionally does not open the version modal — that is reserved
-          for the update banner, which only appears when the update check
-          actually finds a newer release. */}
+          for the update banner, which only appears when the checkout can pull
+          or rebuild. */}
       {!IS_PLATFORM && (
         <div className="px-3 pb-3 pt-1 text-center md:py-2">
           <a
@@ -136,7 +142,7 @@ export default function SidebarFooter({
           >
             {BUILD_INFO.describe && BUILD_INFO.describe !== 'unknown'
               ? BUILD_INFO.describe
-              : `v${currentVersion}`}
+              : `v${APP_VERSION}`}
           </a>
         </div>
       )}

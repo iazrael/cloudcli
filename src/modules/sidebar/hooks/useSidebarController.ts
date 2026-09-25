@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { TFunction } from 'i18next';
 
 import { api } from '@/shared/api';
+import { useSessionFork } from '@/shared/hooks/useSessionFork';
 import { subscribeToUserPreferences } from '@/shared/userSettings';
 import { usePaletteOps } from '@/modules/command-palette';
 import type { ArchivedProjectListItem, ArchivedSessionListItem, ConversationProjectResult, ConversationSearchResults, LLMProvider, Project, ProjectSession, ProjectSortOrder, RecentConversationListItem, SearchProgress, ActiveSidebarRename, PendingSidebarDeletion, SessionTitleSearchResult, SessionWithProvider, SidebarSearchMode } from '@/shared/types';
@@ -1020,19 +1021,21 @@ export function useSidebarController({
    * The new row arrives over the websocket as a `session_upserted`, so nothing
    * is refetched here — the sidebar already has it by the time this navigates.
    */
+  const { forkSession: forkSessionRequest } = useSessionFork();
+
   const forkSession = useCallback(
     async (session: SessionWithProvider) => {
       try {
-        const response = await api.forkSession(session.id);
-        const payload = await response.json();
-        const forkedSessionId = payload?.data?.sessionId;
-        if (!response.ok || typeof forkedSessionId !== 'string') {
-          throw new Error(payload?.message || `HTTP ${response.status}`);
+        // Deduplicated by the shared hook: a second click while the engine is
+        // still copying is ignored instead of creating another fork.
+        const forked = await forkSessionRequest(session.id);
+        if (!forked) {
+          return;
         }
 
         onSessionSelect({
-          id: forkedSessionId,
-          summary: payload.data.sessionName,
+          id: forked.sessionId,
+          summary: forked.sessionName || `${session.summary ?? ''} (fork)`,
           __provider: session.__provider,
           __projectId: session.__projectId,
         } as ProjectSession);
@@ -1041,7 +1044,7 @@ export function useSidebarController({
         alert(t('messages.forkSessionError'));
       }
     },
-    [onSessionSelect, t],
+    [forkSessionRequest, onSessionSelect, t],
   );
 
   const collapseSidebar = useCallback(() => {

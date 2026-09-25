@@ -72,5 +72,26 @@ export type ProviderCapabilities = {
   supportsMessageEditing: boolean;
   /** Whether a session's transcript can be branched into an independent one. */
   supportsSessionForking: boolean;
+  /**
+   * Whether the conversation can be compacted on demand (`/compact`), which
+   * requires an engine primitive that replaces the carried history with a
+   * summary.
+   */
+  supportsCompaction: boolean;
+  /**
+   * Whether the engine has its own session-scoped scheduling layer (Claude's
+   * CronCreate/ScheduleWakeup, which CloudCLI keeps alive by holding the CLI
+   * process open). CloudCLI's scheduled jobs work for every provider; this
+   * flag only drives the hint shown when a job is bound to a session whose
+   * engine already schedules inside itself.
+   */
+  supportsNativeScheduling: boolean;
+  /**
+   * Whether replacing an already-sent message also reverts the files the
+   * agent changed, so the composer warns about it. Static per provider: a
+   * transcript either has file side effects to undo (OpenCode's revert) or
+   * does not (Claude's resume, Codex's fork).
+   */
+  editRevertsFiles: boolean;
   mcp: ProviderMcpCapabilities;
 };

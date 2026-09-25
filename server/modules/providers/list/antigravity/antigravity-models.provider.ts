@@ -85,6 +85,7 @@ async function fetchModelsFromCli(): Promise<ProviderModelsDefinition | null> {
     const { stdout } = await execFileAsync(enginePath, ['models'], {
       encoding: 'utf8',
       timeout: 8000,
+      windowsHide: true,
     });
 
     const entries: AntigravityRawModelEntry[] = [];

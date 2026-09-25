@@ -235,8 +235,17 @@
     "editing": {
       "title": "이전 메시지를 교체하는 중",
       "filesNotReverted": "이미 변경된 파일은 되돌리지 않습니다",
+      "filesReverted": "이미 변경된 파일도 함께 되돌립니다",
       "cancel": "취소"
     }
+  },
+  "misc": {
+    "needsInput": "어시스턴트가 입력을 기다리고 있습니다",
+    "selectAllThatApply": "해당하는 항목을 모두 선택하세요",
+    "other": "기타...",
+    "back": "뒤로",
+    "next": "다음",
+    "submit": "제출"
   },
   "export": {
     "trigger": "대화 내보내기",

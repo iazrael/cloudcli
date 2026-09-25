@@ -1,280 +1,181 @@
 /**
- * ZCode Provider Config Location
+ * ZCode Provider Config Resolution
  *
- * The embedded CLI locates its built-in provider config by walking five levels
- * up from its own entry file. That assumption holds for ZCode's source layout
- * but not for the packaged app, where `Resources/glm/zcode.cjs` walks up to the
- * filesystem root and the lookup dies with "无法定位 CLI ZCode Built-in Provider
- * Config" before the app-server ever starts.
+ * The ZCode desktop app points its embedded CLI engine at three provider
+ * configuration files through environment variables. A bare `app-server`
+ * spawn (as CloudCLI does) does not inherit them, so the engine cannot locate
+ * its builtin provider catalog and `session/create` hangs until the client
+ * times out — no model can be selected at all.
  *
- * The engine short-circuits that whole derivation when both
- * `ZCODE_BUILTIN_PROVIDER_CONFIG_FILE` and `ZCODE_PERSONAL_PROVIDER_CONFIG_FILE`
- * are set, so we resolve the packaged locations ourselves and hand them over.
+ * This module reconstructs those variables from the resolved engine path and
+ * the ZCode storage directory:
+ * - `ZCODE_BUILTIN_PROVIDER_CONFIG_FILE`: the active builtin catalog. The
+ *   engine refreshes a copy under `<storage>/v2/runtime/provider/...` and
+ *   falls back to the catalog bundled with the install
+ *   (`<resources>/config/provider/zcode-builtin.json`).
+ * - `ZCODE_BUILTIN_PROVIDER_BUNDLED_CONFIG_FILE`: the install-bundled copy.
+ * - `ZCODE_PERSONAL_PROVIDER_CONFIG_FILE`: the user's provider overrides
+ *   (`<storage>/v2/provider_config.json`), which hold every provider and model
+ *   the user added in the ZCode app.
+ *
+ * Every path is set only when it exists, so an older ZCode install keeps the
+ * engine's own resolution behavior.
  *
  * @module zcode-provider-config
  */
 
-import * as fs from 'node:fs';
-import * as path from 'node:path';
-
-import { readObjectRecord, readOptionalString, readTrimmedStringRecord } from '@/shared/utils.js';
-import type { AnyRecord } from '@/shared/types.js';
+import fs from 'node:fs';
+import path from 'node:path';
 
 import { getZCodeStorageDir } from './zcode-data-root.js';
 
 /**
  * Engine env override names, exported so the supervisor can strip ambient
- * values inherited from a parent ZCode App session before merging its own
- * resolution (see {@link resolveZCodeProviderConfigEnv}).
+ * values inherited from a parent ZCode App session before merging CloudCLI's
+ * own resolution (see {@link resolveZCodeProviderConfigEnv}).
  *
  * Consumers: zcode-engine-supervisor.ts and the provider-config tests.
  */
 export const ZCODE_BUILTIN_PROVIDER_CONFIG_ENV = 'ZCODE_BUILTIN_PROVIDER_CONFIG_FILE';
+export const ZCODE_BUILTIN_PROVIDER_BUNDLED_CONFIG_ENV = 'ZCODE_BUILTIN_PROVIDER_BUNDLED_CONFIG_FILE';
 export const ZCODE_PERSONAL_PROVIDER_CONFIG_ENV = 'ZCODE_PERSONAL_PROVIDER_CONFIG_FILE';
 
-const BUILTIN_CONFIG_ENV = ZCODE_BUILTIN_PROVIDER_CONFIG_ENV;
-const PERSONAL_CONFIG_ENV = ZCODE_PERSONAL_PROVIDER_CONFIG_ENV;
-
-const BUILTIN_CONFIG_FILE = 'zcode-builtin.json';
-const CLOUDCLI_PERSONAL_CONFIG_FILE = 'cloudcli-provider-config.json';
-
 /**
- * Maps the provider kinds stored in `cli/config.json` onto the API protocol
- * names accepted by ZCode 0.16.9's registry. The registry materializer and
- * send-model builder share it so an unsupported provider cannot be registered
- * under one protocol and executed under another.
+ * Path to a provider config file, when it exists on disk.
  */
-export function resolveZCodeProviderApiType(
-  kind: unknown,
-): 'anthropic-messages' | 'openai-chat-completions' | 'openai-responses' | null {
-  const normalized = readOptionalString(kind)?.toLowerCase();
-  if (normalized === 'anthropic' || normalized === 'anthropic-messages') return 'anthropic-messages';
-  if (normalized === 'openai-responses') return 'openai-responses';
-  if (normalized?.startsWith('openai')) return 'openai-chat-completions';
-  return null;
-}
-
-function splitModelRef(value: string): { providerId?: string; modelId: string } {
-  const slashIndex = value.indexOf('/');
-  if (slashIndex < 0) return { modelId: value };
-  return {
-    providerId: value.slice(0, slashIndex).trim(),
-    modelId: value.slice(slashIndex + 1).trim(),
-  };
-}
+type ProviderConfigPaths = {
+  /** Install-bundled builtin catalog, or null when absent. */
+  bundled: string | null;
+  /** Storage-refreshed builtin catalog, or null when absent. */
+  runtime: string | null;
+  /** User provider overrides, or null when absent. */
+  personal: string | null;
+};
 
 /**
- * Converts ZCode's user-facing `cli/config.json` provider definitions into
- * the strict personal-provider registry consumed by app-server 0.16.9.
+ * Finds the install-bundled builtin catalog from the engine entry path.
  *
- * The generated file is CloudCLI-owned and separate from ZCode's own
- * `v2/provider_config.json`; consumers are the engine supervisor through
- * {@link resolveZCodeProviderConfigEnv}. Returns null when there is no usable
- * legacy provider, allowing native ZCode configuration to remain authoritative.
+ * The engine lives at `<app>/resources/glm/zcode.cjs` (or
+ * `<app>/Contents/Resources/glm/zcode.cjs` on macOS), so the catalog sits one
+ * directory up under `config/provider`. Exported for the engine-path tests.
+ *
+ * Consumers: `resolveZCodeProviderConfigEnv` (spawn env) and the models
+ * provider (catalog fallback source).
  */
-function materializeCloudCliProviderConfig(storageDir: string): string | null {
-  const sourcePath = path.join(storageDir, 'cli', 'config.json');
-  let source: AnyRecord;
+export function findZCodeBundledProviderConfig(enginePath: string): string | null {
+  const candidate = path.join(path.dirname(enginePath), '..', 'config', 'provider', 'zcode-builtin.json');
   try {
-    source = readObjectRecord(JSON.parse(fs.readFileSync(sourcePath, 'utf8'))) ?? {};
+    return fs.statSync(candidate).isFile() ? candidate : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Finds the newest storage-refreshed builtin catalog.
+ *
+ * The engine lays them out as
+ * `<storage>/v2/runtime/provider/<platform>/<version>/endpoint-<hash>/zcode-builtin.json`;
+ * the layout is globbed rather than reconstructed so platform/version naming
+ * changes cannot silently break resolution. Exported for the engine-path
+ * tests.
+ *
+ * Consumers: `resolveZCodeProviderConfigEnv` (spawn env) and the models
+ * provider (primary catalog source).
+ */
+export function findZCodeRuntimeProviderConfig(): string | null {
+  const runtimeRoot = path.join(getZCodeStorageDir(), 'v2', 'runtime', 'provider');
+  let platforms: fs.Dirent[];
+  try {
+    platforms = fs.readdirSync(runtimeRoot, { withFileTypes: true });
   } catch {
     return null;
   }
 
-  const providers = readObjectRecord(source.provider);
-  if (!providers) return null;
+  let newest: { filePath: string; mtimeMs: number } | null = null;
 
-  const providerRules: AnyRecord[] = [];
-  const providerModelRules: AnyRecord[] = [];
-  const providerOrder: string[] = [];
-  const modelDefaults = new Map<string, string>();
-
-  for (const [providerId, rawProvider] of Object.entries(providers)) {
-    // `builtin:` and `account:` rows are migration aliases owned by ZCode's
-    // built-in registry. Re-registering them as personal providers can collide
-    // with the built-in config; their matching non-reserved provider is used.
-    if (providerId.startsWith('builtin:') || providerId.startsWith('account:')) continue;
-    const provider = readObjectRecord(rawProvider);
-    const models = readObjectRecord(provider?.models);
-    const providerOptions = readObjectRecord(provider?.options);
-    const baseUrl = readOptionalString(providerOptions?.baseURL) ?? readOptionalString(providerOptions?.baseUrl);
-    const apiKey = readOptionalString(providerOptions?.apiKey);
-    const headers = readTrimmedStringRecord(providerOptions?.headers);
-    const apiType = resolveZCodeProviderApiType(provider?.kind);
-    const modelIds = models ? Object.keys(models).filter((modelId) => modelId.trim()) : [];
-    if (!provider || !baseUrl || !apiType || (!apiKey && !headers) || modelIds.length === 0) continue;
-
-    providerOrder.push(providerId);
-    providerRules.push({
-      providerId,
-      providerName: readOptionalString(provider.name) ?? providerId,
-      enabled: provider.enabled !== false,
-      config: {
-        group: 'standard-personal',
-        access: { type: 'api-key', ...(apiKey ? { apiKey } : {}) },
-        api: {
-          type: apiType,
-          baseUrl,
-          ...(headers ? { headers } : {}),
-        },
-        personalModelIds: modelIds,
-        modelOrder: modelIds,
-      },
-    });
-
-    for (const modelId of modelIds) {
-      const model = readObjectRecord(models?.[modelId]);
-      const reasoning = readObjectRecord(model?.reasoning);
-      const defaultLevel = readOptionalString(reasoning?.defaultLevel);
-      if (defaultLevel) modelDefaults.set(`${providerId}/${modelId}`, defaultLevel);
-      providerModelRules.push({ providerId, modelId, config: { enabled: true } });
-    }
-  }
-
-  if (providerRules.length === 0) return null;
-
-  const configuredModel = readOptionalString(source.model);
-  let defaultSelection: AnyRecord | undefined;
-  if (configuredModel) {
-    const parsed = splitModelRef(configuredModel);
-    const configuredProviderIsRegistered = parsed.providerId
-      && providerOrder.includes(parsed.providerId);
-    const providerId = configuredProviderIsRegistered
-      ? parsed.providerId
-      : providerOrder.find((candidate) => (
-          providerModelRules.some((rule) => rule.providerId === candidate && rule.modelId === parsed.modelId)
-        ));
-    if (providerId && providerModelRules.some((rule) => (
-      rule.providerId === providerId && rule.modelId === parsed.modelId
-    ))) {
-      const reasoningLevel = modelDefaults.get(`${providerId}/${parsed.modelId}`);
-      defaultSelection = {
-        providerId,
-        modelId: parsed.modelId,
-        ...(reasoningLevel ? { options: { reasoningLevel } } : {}),
-      };
-    }
-  }
-
-  const nativePersonalPath = path.join(storageDir, 'v2', 'provider_config.json');
-  let nativeConfig: AnyRecord | null = null;
-  try {
-    nativeConfig = readObjectRecord(JSON.parse(fs.readFileSync(nativePersonalPath, 'utf8')));
-  } catch {
-    // Native personal config is optional.
-  }
-  const nativeBody = readObjectRecord(nativeConfig?.config);
-  const nativeProviderRules = Array.isArray(readObjectRecord(nativeBody?.providerConfigRules)?.providerRules)
-    ? readObjectRecord(nativeBody?.providerConfigRules)?.providerRules as unknown[]
-    : [];
-  const nativeModelConfig = readObjectRecord(nativeBody?.modelConfigRules);
-  const nativeProviderModelRules = Array.isArray(nativeModelConfig?.providerModelRules)
-    ? nativeModelConfig.providerModelRules as unknown[]
-    : [];
-  const nativeManualModelRules = Array.isArray(nativeModelConfig?.manualProviderModelRules)
-    ? nativeModelConfig.manualProviderModelRules as unknown[]
-    : [];
-  const generatedProviderIds = new Set(providerOrder);
-  const mergedNativeProviderRules = nativeProviderRules.filter((rule) => {
-    const providerId = readOptionalString(readObjectRecord(rule)?.providerId);
-    return !providerId || !generatedProviderIds.has(providerId);
-  });
-  const mergedNativeModelRules = nativeProviderModelRules.filter((rule) => {
-    const record = readObjectRecord(rule);
-    const providerId = readOptionalString(record?.providerId);
-    const modelId = readOptionalString(record?.modelId);
-    return !providerId || !modelId || !providerModelRules.some((generatedRule) => (
-      generatedRule.providerId === providerId && generatedRule.modelId === modelId
-    ));
-  });
-  const nativeProviderOrder = Array.isArray(nativeBody?.providerOrder)
-    ? nativeBody.providerOrder.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
-    : [];
-
-  const generatedPath = path.join(storageDir, 'cli', CLOUDCLI_PERSONAL_CONFIG_FILE);
-  const temporaryPath = `${generatedPath}.${process.pid}.tmp`;
-  const generated = {
-    schemaVersion: 1,
-    config: {
-      providerConfigRules: { providerRules: [...providerRules, ...mergedNativeProviderRules] },
-      modelConfigRules: {
-        providerModelRules: [...providerModelRules, ...mergedNativeModelRules],
-        manualProviderModelRules: nativeManualModelRules,
-      },
-      providerOrder: [...new Set([...providerOrder, ...nativeProviderOrder])],
-      ...(defaultSelection
-        ? { defaultModelSelection: defaultSelection }
-        : readObjectRecord(nativeBody?.defaultModelSelection)
-          ? { defaultModelSelection: nativeBody?.defaultModelSelection }
-          : {}),
-    },
-  };
-
-  fs.mkdirSync(path.dirname(generatedPath), { recursive: true });
-  try {
-    fs.writeFileSync(temporaryPath, JSON.stringify(generated), { encoding: 'utf8', mode: 0o600 });
-    fs.renameSync(temporaryPath, generatedPath);
-    fs.chmodSync(generatedPath, 0o600);
-  } finally {
+  for (const platform of platforms) {
+    if (!platform.isDirectory()) continue;
+    const platformDir = path.join(runtimeRoot, platform.name);
+    let versions: fs.Dirent[];
     try {
-      if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath);
+      versions = fs.readdirSync(platformDir, { withFileTypes: true });
     } catch {
-      // A failed cleanup must not hide the original materialization error.
+      continue;
+    }
+
+    for (const version of versions) {
+      if (!version.isDirectory()) continue;
+      const versionDir = path.join(platformDir, version.name);
+      let endpoints: fs.Dirent[];
+      try {
+        endpoints = fs.readdirSync(versionDir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+
+      for (const endpoint of endpoints) {
+        if (!endpoint.isDirectory()) continue;
+        const filePath = path.join(versionDir, endpoint.name, 'zcode-builtin.json');
+        try {
+          const stat = fs.statSync(filePath);
+          if (stat.isFile() && (!newest || stat.mtimeMs > newest.mtimeMs)) {
+            newest = { filePath, mtimeMs: stat.mtimeMs };
+          }
+        } catch {
+          // Missing catalog under this endpoint; keep scanning.
+        }
+      }
     }
   }
-  return generatedPath;
+
+  return newest?.filePath ?? null;
 }
 
 /**
- * Built-in config locations relative to the engine's own directory, in the
- * engine's own preference order: its co-located `provider/` directory first,
- * then the packaged `Resources/config/` sibling, then the source-layout path
- * the engine itself attempts.
+ * Resolves every provider-config path for one engine install.
+ *
+ * Consumers: `resolveZCodeProviderConfigEnv` and the models provider.
  */
-const BUILTIN_RELATIVE_CANDIDATES = [
-  path.join('provider', BUILTIN_CONFIG_FILE),
-  path.join('..', 'config', 'provider', BUILTIN_CONFIG_FILE),
-  path.join('..', '..', '..', '..', '..', 'config', 'provider', BUILTIN_CONFIG_FILE),
-];
-
-function findBuiltinConfig(enginePath: string): string | null {
-  const engineDir = path.dirname(path.resolve(enginePath));
-  for (const relative of BUILTIN_RELATIVE_CANDIDATES) {
-    const candidate = path.resolve(engineDir, relative);
-    try {
-      if (fs.statSync(candidate).isFile()) return candidate;
-    } catch {
-      // Candidate absent; try the next layout.
-    }
+export function resolveZCodeProviderConfigPaths(enginePath: string): ProviderConfigPaths {
+  const personalCandidate = path.join(getZCodeStorageDir(), 'v2', 'provider_config.json');
+  let personal: string | null = null;
+  try {
+    personal = fs.statSync(personalCandidate).isFile() ? personalCandidate : null;
+  } catch {
+    personal = null;
   }
-  return null;
+
+  return {
+    bundled: findZCodeBundledProviderConfig(enginePath),
+    runtime: findZCodeRuntimeProviderConfig(),
+    personal,
+  };
 }
 
 /**
- * Resolves the provider-config environment overrides for an engine spawn.
+ * Builds the provider-config environment variables for an engine spawn.
  *
- * The result is authoritative for this CloudCLI-spawned engine: ambient
- * `ZCODE_*_PROVIDER_CONFIG_FILE` values inherited from a parent ZCode App
- * session are deliberately not honored (they point at the App's own runtime
- * files; forwarding them leaves the engine without CloudCLI's materialized
- * provider registry and every send fails with `provider_not_found`). The
- * supervisor strips them from the spawn environment entirely.
+ * `ZCODE_BUILTIN_PROVIDER_CONFIG_FILE` prefers the refreshed runtime catalog
+ * (what the engine would itself refresh) and falls back to the bundled copy,
+ * which is what makes a bare spawn resolve providers at all.
  *
- * Returns an empty record only when no built-in config can be found — in that
- * case the engine keeps its own resolution and its own error message, rather
- * than being handed a path that does not exist.
- *
- * Consumer: zcode-engine-supervisor.ts (spawn env).
+ * Consumers: `zcode-engine-supervisor.ts` (the default spawn wrapper).
  */
 export function resolveZCodeProviderConfigEnv(enginePath: string): Record<string, string> {
-  const builtinConfig = findBuiltinConfig(enginePath);
-  if (!builtinConfig) return {};
+  const { bundled, runtime, personal } = resolveZCodeProviderConfigPaths(enginePath);
+  const env: Record<string, string> = {};
 
-  const storageDir = getZCodeStorageDir();
-  return {
-    [BUILTIN_CONFIG_ENV]: builtinConfig,
-    [PERSONAL_CONFIG_ENV]:
-      materializeCloudCliProviderConfig(storageDir)
-      || path.join(storageDir, 'v2', 'provider_config.json'),
-  };
+  const activeCatalog = runtime ?? bundled;
+  if (activeCatalog) {
+    env[ZCODE_BUILTIN_PROVIDER_CONFIG_ENV] = activeCatalog;
+  }
+  if (bundled) {
+    env[ZCODE_BUILTIN_PROVIDER_BUNDLED_CONFIG_ENV] = bundled;
+  }
+  if (personal) {
+    env[ZCODE_PERSONAL_PROVIDER_CONFIG_ENV] = personal;
+  }
+
+  return env;
 }

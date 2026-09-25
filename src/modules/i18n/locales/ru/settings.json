@@ -280,10 +280,7 @@
       "description": "Узнайте, как использовать внешний API для запуска сеансов Claude/Cursor из ваших приложений.",
       "viewLink": "Просмотр документации API →"
     },
-    "loading": "Загрузка...",
-    "version": {
-      "updateAvailable": "Доступно обновление: v{{version}}"
-    }
+    "loading": "Загрузка..."
   },
   "tasks": {
     "checking": "Проверка установки TaskMaster...",

@@ -280,10 +280,7 @@
       "description": "Erfahre, wie du die externe API nutzen kannst, um Claude/Cursor-Sitzungen aus deinen Anwendungen heraus zu starten.",
       "viewLink": "API-Dokumentation anzeigen →"
     },
-    "loading": "Lädt...",
-    "version": {
-      "updateAvailable": "Update verfügbar: v{{version}}"
-    }
+    "loading": "Lädt..."
   },
   "tasks": {
     "checking": "TaskMaster-Installation wird überprüft...",

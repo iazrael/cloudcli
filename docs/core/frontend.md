@@ -24,14 +24,18 @@ React 18 + TypeScript + Vite 7（`vite.config.js`，别名 `@` → `src/`，`@sh
 
 聊天消息**不走 Context**：走 `SessionTimelineStore`（框架无关）+ `useSessionStore` 适配器，见 [chat.md](./chat.md) 的四层结构。
 
+composer 的定时卡片同样不走 Context，也不是实时状态：`useScheduledJobs` / `useScheduledMessages` 都是普通拉取，只在创建、删除、切换会话，以及**所在会话的 run 结束时**（`isProcessing` 落沿）重新拉取——仅一次任务跑完已自停用、定时消息已发出，都要靠这次刷新才会从输入框上方消失。
+
 前后端共用的 `NormalizedMessage` 是聊天时间线的 wire contract；provider 给出的跨路行身份和历史正文完整度必须由 WebSocket 与历史接口原样传入 `SessionTimelineStore`，不能在视图模型层重新生成。身份的分段与对账规则见 [chat.md](./chat.md)。本地 Markdown 图片经授权端点转换为 Blob URL 后，组件换图或卸载必须中止请求并恰好释放一次 URL。
 
 ## Provider 相关前端（零分支原则）
 
-- **能力/目录的唯一来源是后端**：`useProviderCapabilities`（`GET /api/providers/capabilities`）+ `useChatProviderState`（`GET /api/providers/<p>/models` 拉统一模型目录，合成 `providerModelCatalog`）。
+- **能力/目录的唯一来源是后端**：`useProviderCapabilities`（`GET /api/providers/capabilities`，模块级缓存 + 失败按 2s/8s 退避重试后仍失败才回退，因为 `/compact` 这类能力项只靠这一次请求）+ `useChatProviderState`（`GET /api/providers/<p>/models` 拉统一模型目录，合成 `providerModelCatalog`）。
 - **回退镜像**：`src/shared/providerCatalogFallback.ts` 只用于首屏与请求失败兜底，由 parity 测试钉住与后端一致；**其 key 顺序是全应用引擎规范顺序**（一处改动不要在别处另排顺序）。
 - 本地选择持久化为 `<provider>-model` / `<provider>-effort`（`useChatProviderState` 直接读写 localStorage，设备本地，不经 preference store）。
 - 引擎外观：`src/shared/providerDisplay.ts`（显示名）、`src/shared/ui/LLMProviderLogo.tsx`（Logo）。
+- 新增引擎的前端步骤见 [providers.md](./providers.md) 第六步——composer 不写 provider 分支，一切按能力矩阵渲染（slash 菜单同理：`/compact` 仅在 `supportsCompaction` 为真时出现，能力为真时前端发 `chat.compact` 帧并**不**落乐观用户气泡；编辑横幅的「文件会不会一并还原」也按 `editRevertsFiles` 切换文案，见 [providers.md](./providers.md) 的编辑段）。
+- **上下文占用展示**：`tokenBudget`（WS `token_budget` 指令 / 历史页 `tokenUsage`）喂 composer 的两个控件与 `/cost` 弹窗，二者读同一份 `readContextUsage`（`src/modules/chat/utils/contextUsage.ts`；引擎自报 `percentage` 优先，否则 `used/total`）：顶沿细进度条 `ContextUsageBar`（`<60%` 绿 / `60–84%` 黄 / `≥85%` 红）表示窗口占用，工具行里的 `TokenUsageSummary` 显示当前 K 数——手机上只留 K 数（隐藏图标与 `xx%`）以免工具行（附件/语音/命令 + 定时/模型/权限/发送）在 ~320px 溢出、和定时图标重叠，`sm` 以上再加图标和百分比。两者点击都开 `/cost`。没有窗口时细条不画；徽章在整份读数缺失时才不画（快照全 0，或刚压缩且没有摘要大小），因为只显示 K 数、百分比是 `sm` 以上的附加项。刚压缩时引擎还没有 token 数，徽章改用 `summaryBytes`（压缩摘要的 UTF-8 字节数）显示 "9.4KB"，占用条不画。字段语义与来源见 [providers.md](./providers.md)，前端不按引擎分支；`cumulative` 只在 `/cost` 里单列。
 
 ### 会话标签只有一个字段
 
@@ -77,7 +81,6 @@ WebSocket 进来的帧类型 `ServerEvent` 定义在 `shared/protocol/frames.ts`
 MCP 服务器表单按 `useProviderMcpCapabilities()` 渲染。首屏与请求失败回退到
 `src/shared/mcpCapabilitiesFallback.ts`——该文件**零 import**，因为跨树 parity 测试要从服务端目录读它；
 改后端声明而忘了改它会直接让测试红。
-- 新增引擎的前端步骤见 [providers.md](./providers.md) 第六步——composer 不写 provider 分支，一切按能力矩阵渲染。
 
 ## 诊断报告（统一入口）
 
@@ -132,7 +135,7 @@ MCP 服务器表单按 `useProviderMcpCapabilities()` 渲染。首屏与请求�
 
 ## i18n
 
-- 目录 `src/modules/i18n/`：11 种语言 × 7 个命名空间（auth/chat/codeEditor/common/settings/sidebar/tasks）= 77 个 JSON。
+- 目录 `src/modules/i18n/`：11 种语言 × 8 个命名空间（auth/chat/codeEditor/common/scheduled/settings/sidebar/tasks）；`scheduled` 目前只有 en / zh-CN / zh-TW 三份，其余语言整包回退英文（i18next fallback 按命名空间生效）。
 - 新增用户可见文案必须走 i18n key；**en / zh-CN / zh-TW 三份必须给全**，其余语言可暂缺（回退英文）——这是当前维护约定，翻译覆盖面以 `src/modules/i18n/locales/` 现状为准。
 
 ## PWA 与版本
@@ -147,6 +150,6 @@ MCP 服务器表单按 `useProviderMcpCapabilities()` 渲染。首屏与请求�
 | --- | --- |
 | 新增聊天 UI 块 | 遵守行身份/两种更新形态；数据进 `SessionTimelineStore`，不建平行 state；`MessageComponent` / `ToolRenderer` 已 memo，别破坏输入身份。`ChatMessage.type` 是 `user\|assistant\|error` 三值联合（无索引签名），新 assistant 子形态走 `is*` 旗标 + convertRow + MessageComponent 分支 |
 | 新增全局 Context | 挂到 `App.tsx` 并更新本文表格；能进 store 的别开新 Context |
-| 新增设置分区 | `src/modules/settings/`（各分区独立组件），文案走 i18n 三语言 |
+| 新增设置分区 | `src/modules/settings/`（各分区独立组件），文案走 i18n 三语言。全局功能开关（Browser、定时任务）都在这里：保存后广播一个 `*SettingsChanged` window 事件，工作区 Tab 与 composer 入口用对应 hook 监听，不轮询 |
 | 新增面板/标签页 | `src/modules/project-workspace/`（Shell 布局 + 标签页） |
 | 引入新依赖 | 先确认不破坏性能守则（全量 Prism、per-frame setState、CV:auto 都是禁区） |

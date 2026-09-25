@@ -14,6 +14,7 @@ import { createCachedDiffCalculator } from '@/modules/chat/utils/messageTransfor
 import { normalizedToChatMessages } from '@/modules/chat/hooks/useChatMessages';
 import { useTranscriptViewport } from '@/modules/chat/hooks/useTranscriptViewport';
 import { groupConsecutiveTools } from '@/modules/chat/utils/toolGrouping';
+import { toTokenBudget } from '@/modules/chat/utils/contextUsage';
 import { findSearchTargetIndex } from '@/modules/chat/utils/searchTargetLocator';
 
 /** How long a search hit stays flashed after the jump lands. */
@@ -227,7 +228,7 @@ export function useChatSessionState({
     setHasMoreMessages(slot.hasMore);
     setTotalMessages(slot.total);
     if (slot.tokenUsage && typeof slot.tokenUsage === 'object') {
-      setTokenBudget(slot.tokenUsage as Record<string, unknown>);
+      setTokenBudget(toTokenBudget(slot.tokenUsage));
     }
   }, []);
 
@@ -653,6 +654,12 @@ export function useChatSessionState({
         const payload = await response.json();
         if (payload.data && typeof payload.data === 'object' && activeSessionIdRef.current === sid) {
           const nextData = payload.data as Record<string, unknown>;
+          const nextBudget = toTokenBudget(nextData);
+          if (nextData.compacted === true) {
+            // No occupancy until the next turn; only the summary size is known.
+            setTokenBudget(nextBudget);
+            return;
+          }
           const nextUsed = Number(nextData.used ?? 0)
             || (Number(nextData.inputTokens ?? 0) + Number(nextData.outputTokens ?? 0));
           setTokenBudget((prev) => {
@@ -660,7 +667,7 @@ export function useChatSessionState({
             if (nextUsed === 0 && currentUsed > 0) {
               return prev;
             }
-            return nextData;
+            return nextBudget;
           });
         }
       }

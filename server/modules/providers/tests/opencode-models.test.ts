@@ -51,6 +51,16 @@ const writeOpenCodeAuth = async (homeDir: string, auth: Record<string, unknown>)
   await writeFile(path.join(authDir, 'auth.json'), JSON.stringify(auth), 'utf8');
 };
 
+/** Writes the OpenCode CLI's own model-catalog cache for one fixture home. */
+const writeOpenCodeCatalogCache = async (
+  homeDir: string,
+  catalog: Record<string, unknown>,
+): Promise<void> => {
+  const cacheDir = path.join(homeDir, '.cache', 'opencode');
+  await mkdir(cacheDir, { recursive: true });
+  await writeFile(path.join(cacheDir, 'models.json'), JSON.stringify(catalog), 'utf8');
+};
+
 test('OpenCode exposes only the curated predefined catalog', async () => {
   await withOpenCodeHome(async () => {}, async (adapter) => {
     // Nothing readable about this install, so the picker keeps every option
@@ -91,7 +101,7 @@ test('OpenCode exposes only the curated predefined catalog', async () => {
   const opencodeGoOptions = OPENCODE_PREDEFINED_MODELS.OPTIONS.filter(
     (option) => option.value.startsWith('opencode-go/'),
   );
-  assert.equal(opencodeGoOptions.length, 27);
+  assert.equal(opencodeGoOptions.length, 28);
   assert.ok(opencodeGoOptions.every((option) => option.description === 'OpenCode Go'));
   const glmFlash = opencodeGoOptions.find(
     (option) => option.value === 'opencode-go/glm-5.3-flash',
@@ -109,7 +119,7 @@ test('OpenCode exposes only the curated predefined catalog', async () => {
       .filter((option) => !option.effort)
       .every((option) =>
         ['glm-5.1', 'kimi-k2.6', 'kimi-k2.7-code', 'mimo-v2.5', 'mimo-v2.5-pro',
-          'minimax-m2.7', 'qwen3.6-plus', 'qwen3.7-max', 'qwen3.7-plus']
+          'minimax-m2.7', 'qwen3.6-plus', 'qwen3.7-max', 'qwen3.7-plus', 'union-alpha']
           .includes(option.value.slice('opencode-go/'.length)),
       ),
   );
@@ -143,7 +153,7 @@ test('OpenCode offers only models the install can route to', async () => {
       const providerIds = new Set(catalog.OPTIONS.map((option) => option.value.split('/')[0]));
 
       assert.deepEqual([...providerIds], ['opencode-go']);
-      assert.equal(catalog.OPTIONS.length, 27);
+      assert.equal(catalog.OPTIONS.length, 28);
       assert.equal(catalog.DEFAULT, 'opencode-go/grok-4.6');
       assert.ok(catalog.OPTIONS.some((option) => option.value === catalog.DEFAULT));
       assert.equal((await adapter.getCurrentActiveModel()).model, catalog.DEFAULT);
@@ -194,6 +204,85 @@ test('OpenCode offers only models the install can route to', async () => {
       const providerIds = new Set(catalog.OPTIONS.map((option) => option.value.split('/')[0]));
 
       assert.deepEqual([...providerIds], ['openai']);
+    },
+  );
+});
+
+test('OpenCode overlays its own catalog cache onto the curated models', async () => {
+  await withOpenCodeHome(
+    (homeDir) => writeOpenCodeCatalogCache(homeDir, {
+      'opencode-go': {
+        models: {
+          'deepseek-v4.1-flash': {
+            name: 'DeepSeek V4.1 Flash',
+            status: 'active',
+            reasoning_options: [{ type: 'effort', values: ['low', 'high', 'max'] }],
+          },
+          'glm-5.1': { name: 'GLM-5.1', status: 'deprecated' },
+        },
+      },
+    }),
+    async (adapter) => {
+      const catalog = await adapter.getSupportedModels();
+      const goValues = catalog.OPTIONS
+        .filter((option) => option.value.startsWith('opencode-go/'))
+        .map((option) => option.value);
+
+      // The cache is authoritative for the gateway it covers: active entries it
+      // gained are added with live labels and effort tiers, entries it marks
+      // deprecated or no longer carries are dropped.
+      assert.deepEqual(goValues, ['opencode-go/deepseek-v4.1-flash']);
+      const added = catalog.OPTIONS.find(
+        (option) => option.value === 'opencode-go/deepseek-v4.1-flash',
+      );
+      assert.equal(added?.label, 'DeepSeek V4.1 Flash');
+      assert.equal(added?.description, 'OpenCode Go');
+      assert.deepEqual(
+        added?.effort?.values.map((effort) => effort.value),
+        ['low', 'high', 'max'],
+      );
+
+      // Gateways the cache does not cover keep the curated entries and default.
+      assert.ok(catalog.OPTIONS.some((option) => option.value === 'opencode/gpt-6-astra'));
+      assert.equal(catalog.DEFAULT, 'opencode/gpt-5.6-terra');
+    },
+  );
+});
+
+test('OpenCode keeps the curated catalog when the cache is unreadable', async () => {
+  await withOpenCodeHome(
+    async (homeDir) => {
+      const cacheDir = path.join(homeDir, '.cache', 'opencode');
+      await mkdir(cacheDir, { recursive: true });
+      await writeFile(path.join(cacheDir, 'models.json'), '{not json', 'utf8');
+    },
+    async (adapter) => {
+      assert.deepEqual(await adapter.getSupportedModels(), OPENCODE_PREDEFINED_MODELS);
+    },
+  );
+});
+
+test('OpenCode filters merged cache models by connected provider', async () => {
+  await withOpenCodeHome(
+    async (homeDir) => {
+      await writeOpenCodeCatalogCache(homeDir, {
+        opencode: {
+          models: { 'gpt-6-astra': { name: 'GPT-6 Astra', status: 'active' } },
+        },
+        'opencode-go': {
+          models: {
+            'deepseek-v4.1-flash': { name: 'DeepSeek V4.1 Flash', status: 'active' },
+          },
+        },
+      });
+      await writeOpenCodeAuth(homeDir, { 'opencode-go': { type: 'api', key: 'test' } });
+    },
+    async (adapter) => {
+      const catalog = await adapter.getSupportedModels();
+      const providerIds = new Set(catalog.OPTIONS.map((option) => option.value.split('/')[0]));
+
+      assert.deepEqual([...providerIds], ['opencode-go']);
+      assert.equal(catalog.DEFAULT, 'opencode-go/deepseek-v4.1-flash');
     },
   );
 });

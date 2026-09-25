@@ -118,7 +118,17 @@
   },
   "version": {
     "updateAvailable": "Update available",
-    "restartRequired": "Update installed — restart the server to apply"
+    "restartRequired": "Update installed — restart the server to apply",
+    "commitsBehind_one": "{{count}} new commit",
+    "commitsBehind_other": "{{count}} new commits",
+    "rebuildAvailable": "Local code needs a rebuild",
+    "updating": "Updating…",
+    "viewProgress": "View progress",
+    "commitsBehind_one": "{{count}} new commit",
+    "commitsBehind_other": "{{count}} new commits",
+    "rebuildAvailable": "Local code needs a rebuild",
+    "updating": "Updating…",
+    "viewProgress": "View progress"
   },
   "search": {
     "modeProjects": "Projects",

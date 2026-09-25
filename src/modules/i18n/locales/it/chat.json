@@ -214,8 +214,17 @@
     "editing": {
       "title": "Sostituzione di un messaggio precedente",
       "filesNotReverted": "i file già modificati non vengono ripristinati",
+      "filesReverted": "anche i file già modificati vengono ripristinati",
       "cancel": "Annulla"
     }
+  },
+  "misc": {
+    "needsInput": "L'assistente attende una risposta",
+    "selectAllThatApply": "Seleziona tutte le opzioni applicabili",
+    "other": "Altro...",
+    "back": "Indietro",
+    "next": "Avanti",
+    "submit": "Invia"
   },
   "export": {
     "trigger": "Esporta conversazione",

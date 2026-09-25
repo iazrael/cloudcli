@@ -720,8 +720,38 @@ function abortCodexSession(sessionId: string) {
 }
 
 /**
- * Used by the providers module's CodexProvider to run and abort turns, and to
- * answer the approvals a run is blocked on.
+ * Compacts a Codex thread's carried conversation into a summary.
+ *
+ * `thread/compact/start` is the app-server primitive the Codex IDE clients
+ * use. Only a stored thread has something to compact; the run's synthetic
+ * terminal `complete` is what makes the UI refresh the transcript and show
+ * the summary.
+ */
+async function compactCodexSession(
+  options: AnyRecord,
+  writer: ProviderRuntimeWriter,
+  context: ProviderRuntimeContext,
+): Promise<unknown> {
+  const appSessionId = typeof options.sessionId === 'string' ? options.sessionId : null;
+  const providerSessionId = context.resolveProviderSessionId(appSessionId);
+  if (!providerSessionId) {
+    throw new Error('This Codex session has no stored conversation to compact yet.');
+  }
+
+  sendMessage(writer, createNormalizedMessage({
+    kind: 'status',
+    text: 'Compacting context…',
+    sessionId: appSessionId,
+    provider: 'codex',
+  }));
+
+  await codexAppServer.compactThread({ threadId: providerSessionId });
+  return undefined;
+}
+
+/**
+ * Used by the providers module's CodexProvider to run, abort, and compact
+ * turns, and to answer the approvals a run is blocked on.
  *
  * Declaring `permissions` is also what turns `supportsPermissionRequests` on
  * for Codex in the capability catalog.
@@ -729,6 +759,7 @@ function abortCodexSession(sessionId: string) {
 export const codexRuntime = {
   run: queryCodex,
   abort: abortCodexSession,
+  compact: compactCodexSession,
   permissions: {
     /**
      * Answers one approval. The gateway fans a decision out to every

@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { Clock } from 'lucide-react';
 
-import { cn } from '@/shared/utils';
+import { cn, readLocalDateTimeInputValue, toLocalDateTimeInputValue } from '@/shared/utils';
 import { useComposerMenuAnchor } from '@/modules/chat/hooks/useComposerMenuAnchor';
 import {
   ComposerMenuHeading,
@@ -11,38 +11,43 @@ import {
   ComposerMenuSeparator,
   ComposerMenuSurface,
 } from '@/modules/chat/composer/ComposerMenuPrimitives';
+import {
+  buildCronExpression,
+  readLocalTimezone,
+  type ScheduleChoiceId,
+} from '@/modules/scheduled-jobs';
 
 type ScheduleMessagePopoverProps = {
   disabled: boolean;
   onSchedule: (scheduledFor: Date) => void;
+  /** Creates a task bound to the current session instead of a one-off message. */
+  onScheduleTask: (schedule: { cronExpression?: string; runAt?: string; timezone: string }) => void;
+  /** Whether the engine also schedules inside its own session (drives the hint). */
+  supportsNativeScheduling: boolean;
+  /** Whether the scheduled-tasks feature is on; when off the popover is one-off only. */
+  recurringEnabled: boolean;
 };
 
 /** Offsets people actually mean when they say "later". */
 const QUICK_OFFSETS_MINUTES = [15, 60, 8 * 60, 24 * 60];
 
-/**
- * Turns the picker's `datetime-local` value into an absolute instant.
- *
- * That input carries no zone, and `new Date(value)` reads it in the browser's
- * — which is what the user meant, since they picked it off their own clock.
- * Converting here means the server stores one unambiguous instant, so the
- * schedule does not move if they are on another device when it fires.
- */
-function readLocalDateTime(value: string): Date | null {
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
-}
-
-function toLocalInputValue(date: Date): string {
-  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
-}
+/** The task half's options: the cron presets, plus a single one-off instant. */
+const TASK_CHOICES: ScheduleChoiceId[] = ['once', 'daily', 'weekdays', 'weekly', 'hourly', 'custom'];
 
 /**
  * Rendered by chat's ChatComposer beside the send button so the message in the
- * box can be sent later instead of now.
+ * box can be sent later — once, or as a scheduled task bound to this session,
+ * recurring on a cron schedule or as a one-off.
  */
-export function ScheduleMessagePopover({ disabled, onSchedule }: ScheduleMessagePopoverProps) {
+export function ScheduleMessagePopover({
+  disabled,
+  onSchedule,
+  onScheduleTask,
+  supportsNativeScheduling,
+  recurringEnabled,
+}: ScheduleMessagePopoverProps) {
   const { t } = useTranslation('chat');
+  const { t: tScheduled } = useTranslation('scheduled');
   const [isOpen, setIsOpen] = useState(false);
   const close = useCallback(() => setIsOpen(false), []);
   // Portalled and anchored like the model and permission menus: the composer
@@ -51,14 +56,47 @@ export function ScheduleMessagePopover({ disabled, onSchedule }: ScheduleMessage
   const { triggerRef, menuRef, anchor, updateAnchor } = useComposerMenuAnchor(isOpen, close);
   // Seeded an hour out, because a picker that opens on "now" is never what
   // scheduling means.
-  const [customValue, setCustomValue] = useState(() => toLocalInputValue(new Date(Date.now() + 3_600_000)));
+  const [customValue, setCustomValue] = useState(() => toLocalDateTimeInputValue(new Date(Date.now() + 3_600_000)));
+  // Which half of the popover is showing: a one-off send or a scheduled task.
+  const [mode, setMode] = useState<'once' | 'recurring'>('once');
+  const [choice, setChoice] = useState<ScheduleChoiceId>('daily');
+  const [time, setTime] = useState('09:00');
+  const [customCron, setCustomCron] = useState('');
+  // The task half's one-off instant, in the browser's zone.
+  const [onceValue, setOnceValue] = useState(() => toLocalDateTimeInputValue(new Date(Date.now() + 3_600_000)));
 
   const commit = (scheduledFor: Date) => {
     onSchedule(scheduledFor);
     setIsOpen(false);
   };
 
+  const commitTask = () => {
+    if (choice === 'once') {
+      const runAt = readLocalDateTimeInputValue(onceValue);
+      if (!runAt) {
+        return;
+      }
+      onScheduleTask({ runAt: runAt.toISOString(), timezone: readLocalTimezone() });
+      setIsOpen(false);
+      return;
+    }
+    const cronExpression = buildCronExpression(choice, { time, customExpression: customCron });
+    if (cronExpression.split(/\s+/).length !== 5) {
+      return;
+    }
+    onScheduleTask({ cronExpression, timezone: readLocalTimezone() });
+    setIsOpen(false);
+  };
+
+  // A hand-written expression must look like cron before the button enables;
+  // the presets always build a valid five-field one, and `once` needs a date.
+  const taskValid = choice === 'once'
+    ? Boolean(readLocalDateTimeInputValue(onceValue))
+    : choice !== 'custom' || customCron.trim().split(/\s+/).length === 5;
+
   const ariaLabel = t('schedule.trigger');
+  // With the feature off, the popover keeps its original one-off behavior.
+  const showRecurring = recurringEnabled && mode === 'recurring';
 
   return (
     <>
@@ -85,43 +123,129 @@ export function ScheduleMessagePopover({ disabled, onSchedule }: ScheduleMessage
 
       {isOpen && anchor && createPortal(
         <ComposerMenuSurface anchor={anchor} menuRef={menuRef} ariaLabel={ariaLabel}>
-          <ComposerMenuHeading>{t('schedule.heading')}</ComposerMenuHeading>
-          {QUICK_OFFSETS_MINUTES.map((minutes) => (
-            <ComposerMenuItem
-              key={minutes}
-              label={t(`schedule.in.${minutes}`)}
-              description={new Date(Date.now() + minutes * 60_000).toLocaleTimeString([], {
-                hour: '2-digit',
-                minute: '2-digit',
-              })}
-              isSelected={false}
-              onSelect={() => commit(new Date(Date.now() + minutes * 60_000))}
-            />
-          ))}
+          {recurringEnabled && (
+            <div className="flex gap-1 px-2.5 pb-1.5 pt-0.5">
+              {(['once', 'recurring'] as const).map((candidate) => (
+                <button
+                  key={candidate}
+                  type="button"
+                  onClick={() => setMode(candidate)}
+                  className={cn(
+                    'flex-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors',
+                    mode === candidate
+                      ? 'bg-muted text-foreground'
+                      : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground',
+                  )}
+                >
+                  {candidate === 'once' ? tScheduled('composer.once') : tScheduled('composer.recurring')}
+                </button>
+              ))}
+            </div>
+          )}
 
-          <ComposerMenuSeparator />
-          <div className="px-2.5 pb-1.5">
-            <label className="block text-[11px] font-medium text-muted-foreground" htmlFor="schedule-at">
-              {t('schedule.customLabel')}
-            </label>
-            <input
-              id="schedule-at"
-              type="datetime-local"
-              value={customValue}
-              onChange={(event) => setCustomValue(event.target.value)}
-              className="mt-1 w-full rounded-md border border-border/60 bg-background px-2 py-1 text-xs text-foreground"
-            />
-            <button
-              type="button"
-              onClick={() => {
-                const parsed = readLocalDateTime(customValue);
-                if (parsed) commit(parsed);
-              }}
-              className="mt-2 w-full rounded-md bg-primary px-2 py-1.5 text-xs font-medium text-primary-foreground transition-opacity hover:opacity-90"
-            >
-              {t('schedule.confirm')}
-            </button>
-          </div>
+          {!showRecurring ? (
+            <>
+              <ComposerMenuHeading>{t('schedule.heading')}</ComposerMenuHeading>
+              {QUICK_OFFSETS_MINUTES.map((minutes) => (
+                <ComposerMenuItem
+                  key={minutes}
+                  label={t(`schedule.in.${minutes}`)}
+                  description={new Date(Date.now() + minutes * 60_000).toLocaleTimeString([], {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  })}
+                  isSelected={false}
+                  onSelect={() => commit(new Date(Date.now() + minutes * 60_000))}
+                />
+              ))}
+
+              <ComposerMenuSeparator />
+              <div className="px-2.5 pb-1.5">
+                <label className="block text-[11px] font-medium text-muted-foreground" htmlFor="schedule-at">
+                  {t('schedule.customLabel')}
+                </label>
+                <input
+                  id="schedule-at"
+                  type="datetime-local"
+                  value={customValue}
+                  onChange={(event) => setCustomValue(event.target.value)}
+                  className="mt-1 w-full rounded-md border border-border/60 bg-background px-2 py-1 text-xs text-foreground"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    const parsed = readLocalDateTimeInputValue(customValue);
+                    if (parsed) commit(parsed);
+                  }}
+                  className="mt-2 w-full rounded-md bg-primary px-2 py-1.5 text-xs font-medium text-primary-foreground transition-opacity hover:opacity-90"
+                >
+                  {t('schedule.confirm')}
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <ComposerMenuHeading>{tScheduled('composer.recurringHeading')}</ComposerMenuHeading>
+              <div className="space-y-2 px-2.5 pb-2">
+                <select
+                  value={choice}
+                  onChange={(event) => setChoice(event.target.value as ScheduleChoiceId)}
+                  className="w-full rounded-md border border-border/60 bg-background px-2 py-1.5 text-xs text-foreground"
+                >
+                  {TASK_CHOICES.map((option) => (
+                    <option key={option} value={option}>{tScheduled(`form.preset.${option}`)}</option>
+                  ))}
+                </select>
+
+                {choice !== 'custom' && choice !== 'hourly' && choice !== 'once' && (
+                  <input
+                    type="time"
+                    value={time}
+                    onChange={(event) => setTime(event.target.value)}
+                    className="w-full rounded-md border border-border/60 bg-background px-2 py-1 text-xs text-foreground"
+                  />
+                )}
+
+                {choice === 'once' && (
+                  <input
+                    type="datetime-local"
+                    value={onceValue}
+                    onChange={(event) => setOnceValue(event.target.value)}
+                    className="w-full rounded-md border border-border/60 bg-background px-2 py-1 text-xs text-foreground"
+                  />
+                )}
+
+                {choice === 'custom' && (
+                  <input
+                    type="text"
+                    value={customCron}
+                    onChange={(event) => setCustomCron(event.target.value)}
+                    placeholder={tScheduled('form.cronPlaceholder')}
+                    className="w-full rounded-md border border-border/60 bg-background px-2 py-1 font-mono text-xs text-foreground"
+                  />
+                )}
+
+                <p className="text-[11px] leading-snug text-muted-foreground/70">
+                  {choice === 'once' ? tScheduled('form.onceHint') : tScheduled('composer.recurringHint')}
+                </p>
+
+                {supportsNativeScheduling && (
+                  <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1.5 text-[11px] leading-snug text-amber-700 dark:text-amber-400">
+                    {tScheduled('composer.nativeSchedulingHint')}
+                  </p>
+                )}
+
+                <button
+                  type="button"
+                  onClick={commitTask}
+                  disabled={!taskValid}
+                  className="w-full rounded-md bg-primary px-2 py-1.5 text-xs font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
+                >
+                  {tScheduled('composer.recurringCreate')}
+                </button>
+              </div>
+            </>
+          )}
         </ComposerMenuSurface>,
         document.body,
       )}

@@ -23,6 +23,7 @@ type CliServiceDependencies = {
   updateGlobalPackage(): void;
   startServer(): Promise<void>;
   startBrowserUseMcp(): Promise<void>;
+  startScheduledJobsMcp(): Promise<void>;
 };
 
 type ParsedCliArguments = {
@@ -105,7 +106,7 @@ function showStatus(dependencies: CliServiceDependencies): void {
   output.log(`       SERVER_PORT: ${terminalTextStyles.bright(environment.SERVER_PORT || environment.PORT || '3001')} ${terminalTextStyles.dim(environment.SERVER_PORT || environment.PORT ? '' : '(default)')}`);
   output.log(`       DATABASE_PATH: ${terminalTextStyles.dim(environment.DATABASE_PATH || '(using default location)')}`);
   output.log(`       CLAUDE_CLI_PATH: ${terminalTextStyles.dim(environment.CLAUDE_CLI_PATH || 'claude (default)')}`);
-  output.log(`       CONTEXT_WINDOW: ${terminalTextStyles.dim(environment.CONTEXT_WINDOW || '160000 (default)')}`);
+  output.log(`       CONTEXT_WINDOW: ${terminalTextStyles.dim(environment.CONTEXT_WINDOW || '(unset: engine-reported, else 200000)')}`);
   output.log(`\n${terminalTextStyles.info('[INFO]')} Claude Projects Folder:`);
   output.log(`       ${terminalTextStyles.dim(claudeProjectsPath)}`);
   output.log(`       Status: ${fileSystem.pathExists(claudeProjectsPath)
@@ -138,6 +139,7 @@ Commands:
   start            Start the CloudCLI server (default)
   sandbox          Manage Docker sandbox environments
   browser-use-mcp  Run Browser MCP stdio server
+  scheduled-jobs-mcp  Run Scheduled Tasks MCP stdio server
   status           Show configuration and data locations
   update           Update to the latest version
   help             Show this help information
@@ -160,7 +162,8 @@ Environment Variables:
   PORT                Set server port (default: 3001) (LEGACY)
   DATABASE_PATH       Set custom database location
   CLAUDE_CLI_PATH     Set custom Claude CLI path
-  CONTEXT_WINDOW      Set context window size (default: 160000)
+  CONTEXT_WINDOW      Fallback context window for sessions this app has
+                      never run; the engine's own value wins when known
 
 Documentation:
   ${dependencies.packageMetadata.homepage || 'https://github.com/siteboon/claudecodeui'}
@@ -237,6 +240,9 @@ export function createCliService(dependencies: CliServiceDependencies): CliAppli
           return dependencies.sandboxService.execute(parsedArguments.remainingArguments);
         case 'browser-use-mcp':
           await dependencies.startBrowserUseMcp();
+          return 0;
+        case 'scheduled-jobs-mcp':
+          await dependencies.startScheduledJobsMcp();
           return 0;
         case 'status':
         case 'info':

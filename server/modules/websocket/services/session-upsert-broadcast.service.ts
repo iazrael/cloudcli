@@ -3,7 +3,7 @@ import path from 'node:path';
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { generateDisplayName } from '@/modules/projects/index.js';
 import { connectedClients, WS_OPEN_STATE } from '@/modules/websocket/services/websocket-state.service.js';
-import type { SessionRemovedEvent, SessionUpsertedEvent } from '@/shared/types.js';
+import type { ScheduledJobsChangedEvent, SessionRemovedEvent, SessionUpsertedEvent } from '@/shared/types.js';
 
 /**
  * The single producer of the `session_upserted` delta.
@@ -99,6 +99,19 @@ export function broadcastSessionRemoved(sessionIds: string[]): void {
   const event: SessionRemovedEvent = {
     kind: 'session_removed',
     sessionIds,
+    timestamp: new Date().toISOString(),
+  };
+  sendToConnectedClients([JSON.stringify(event)]);
+}
+
+/**
+ * Announces that the scheduled-job list changed. Used by the scheduled-jobs
+ * module on create/update/delete (REST and agent MCP alike) and after the
+ * dispatcher fires jobs, since firing moves `nextRunAt` and disables one-offs.
+ */
+export function broadcastScheduledJobsChanged(): void {
+  const event: ScheduledJobsChangedEvent = {
+    kind: 'scheduled_jobs_changed',
     timestamp: new Date().toISOString(),
   };
   sendToConnectedClients([JSON.stringify(event)]);

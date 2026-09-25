@@ -6,7 +6,7 @@ import type { TFunction } from 'i18next';
 import { Button } from '@/shared/ui';
 import { Settings } from '@/modules/settings';
 import { VersionUpgradeModal } from '@/modules/version-upgrade';
-import type { InstallMode, PendingSidebarDeletion, Project, ReleaseInfo, SettingsProject } from '@/shared/types';
+import type { PendingSidebarDeletion, Project, SettingsProject, SystemUpdateStatus } from '@/shared/types';
 import { normalizeProjectForSettings } from '@/modules/sidebar/utils/sidebarProjectFormatting';
 import { ProjectCreationWizard } from '@/modules/project-creation-wizard';
 
@@ -24,11 +24,10 @@ type SidebarModalsProps = {
   onConfirmDeleteSession: (hardDelete?: boolean) => void;
   showVersionModal: boolean;
   onCloseVersionModal: () => void;
-  releaseInfo: ReleaseInfo | null;
-  currentVersion: string;
-  latestVersion: string | null;
-  installMode: InstallMode;
-  updateAvailable: boolean;
+  updateStatus: SystemUpdateStatus | null;
+  reloadUpdateStatus: (refresh?: boolean) => Promise<SystemUpdateStatus | null>;
+  checkForUpdates: () => Promise<SystemUpdateStatus | null>;
+  isCheckingForUpdates: boolean;
   t: TFunction;
 };
 
@@ -60,11 +59,10 @@ export default function SidebarModals({
   onConfirmDeleteSession,
   showVersionModal,
   onCloseVersionModal,
-  releaseInfo,
-  currentVersion,
-  latestVersion,
-  installMode,
-  updateAvailable,
+  updateStatus,
+  reloadUpdateStatus,
+  checkForUpdates,
+  isCheckingForUpdates,
   t,
 }: SidebarModalsProps) {
   // Settings expects project identity/path fields to be present for dropdown labels and local-scope MCP config.
@@ -217,11 +215,10 @@ export default function SidebarModals({
       <VersionUpgradeModal
         isOpen={showVersionModal}
         onClose={onCloseVersionModal}
-        releaseInfo={releaseInfo}
-        currentVersion={currentVersion}
-        latestVersion={latestVersion}
-        installMode={installMode}
-        updateAvailable={updateAvailable}
+        status={updateStatus}
+        reload={reloadUpdateStatus}
+        checkNow={checkForUpdates}
+        isChecking={isCheckingForUpdates}
       />
     </>
   );

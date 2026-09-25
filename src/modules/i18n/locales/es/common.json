@@ -240,24 +240,9 @@
   },
   "versionUpdate": {
     "title": "Actualización disponible",
-    "newVersionReady": "Hay una versión nueva lista",
-    "currentVersion": "Versión actual",
-    "latestVersion": "Última versión",
-    "whatsNew": "Novedades:",
-    "viewFullRelease": "Ver la publicación completa",
-    "updateProgress": "Progreso de la actualización:",
-    "manualUpgrade": "Actualización manual:",
-    "npmUpgradeCommand": "npm install -g @cloudcli-ai/cloudcli@latest",
-    "manualUpgradeHint": "O haz clic en \"Actualizar ahora\" para ejecutar la actualización automáticamente.",
-    "updateCompleted": "¡Actualización completada correctamente!",
-    "restartServer": "Reinicia el servidor para aplicar los cambios.",
-    "updateFailed": "La actualización falló",
     "buttons": {
       "close": "Cerrar",
-      "later": "Más tarde",
-      "copyCommand": "Copiar comando",
-      "updateNow": "Actualizar ahora",
-      "updating": "Actualizando..."
+      "later": "Más tarde"
     },
     "ariaLabels": {
       "closeModal": "Cerrar el modal de actualización de versión",

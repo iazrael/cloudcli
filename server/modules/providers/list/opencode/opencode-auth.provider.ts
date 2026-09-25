@@ -1,11 +1,12 @@
 import { readFile } from 'node:fs/promises';
-import os from 'node:os';
-import path from 'node:path';
 
 import { createCliInstallationProbe } from '@/modules/providers/shared/installation/cli-installation-probe.js';
 import type { IProviderAuth } from '@/shared/interfaces.js';
-import type { ProviderAuthStatus } from '@/shared/types.js';
+import type { ProviderAuthStatus, ProviderQuotaData } from '@/shared/types.js';
 import { readObjectRecord, readOptionalString } from '@/shared/utils.js';
+
+import { getOpenCodeAuthPath } from './opencode-data-root.js';
+import { fetchOpenCodeQuota } from './opencode-quota.provider.js';
 
 type OpenCodeCredentialsStatus = {
   authenticated: boolean;
@@ -54,8 +55,7 @@ export class OpenCodeProviderAuth implements IProviderAuth {
    */
   private async checkCredentials(): Promise<OpenCodeCredentialsStatus> {
     try {
-      const authPath = path.join(os.homedir(), '.local', 'share', 'opencode', 'auth.json');
-      const content = await readFile(authPath, 'utf8');
+      const content = await readFile(getOpenCodeAuthPath(), 'utf8');
       const auth = readObjectRecord(JSON.parse(content)) ?? {};
 
       for (const [providerId, providerAuth] of Object.entries(auth)) {
@@ -102,5 +102,16 @@ export class OpenCodeProviderAuth implements IProviderAuth {
       method: null,
       error: 'OpenCode not configured',
     };
+  }
+
+  /**
+   * Retrieves OpenCode Go subscription usage (5-hour, weekly and monthly
+   * limits). Resolves to null for Zen-only installs, which have no usage
+   * endpoint.
+   *
+   * Consumer: the provider token-usage service (GET /providers/quota).
+   */
+  async getQuota(options?: { forceRefresh?: boolean }): Promise<ProviderQuotaData | null> {
+    return fetchOpenCodeQuota(options);
   }
 }

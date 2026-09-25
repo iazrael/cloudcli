@@ -77,18 +77,29 @@ test('createSession preserves archived state of existing rows', async () => {
 
 test('archiveSessionsOlderThanCutoff returns the ids it archived and only those', async () => {
   await withIsolatedDatabase(() => {
-    const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+    // One clock read for every instant, and a cutoff a full day in the past,
+    // so nothing here depends on how long the test itself takes. Reading the
+    // clock afresh for each cutoff instead put `session-fresh` — written with
+    // SQLite's second-resolution CURRENT_TIMESTAMP — exactly on the boundary:
+    // the test only passed while its whole body ran inside one second, and
+    // under full-suite load the second call archived it and the run went red.
+    const now = Date.now();
+    const twoDaysAgo = new Date(now - 2 * 24 * 60 * 60 * 1000).toISOString();
+    const oneDayAgo = new Date(now - 24 * 60 * 60 * 1000).toISOString();
+
     sessionsDb.createSession('session-stale-1', 'claude', '/workspace/demo-project', 'Stale 1', twoDaysAgo, twoDaysAgo);
     sessionsDb.createSession('session-stale-2', 'claude', '/workspace/demo-project', 'Stale 2', twoDaysAgo, twoDaysAgo);
+    // Left on CURRENT_TIMESTAMP on purpose — that default is what a rescan
+    // writes, and it must still read as newer than the cutoff.
     sessionsDb.createSession('session-fresh', 'claude', '/workspace/demo-project', 'Fresh');
     sessionsDb.createSession('session-already-archived', 'claude', '/workspace/demo-project', 'Archived', twoDaysAgo, twoDaysAgo);
     sessionsDb.updateSessionIsArchived('session-already-archived', true);
 
-    const archivedIds = sessionsDb.archiveSessionsOlderThanCutoff(new Date().toISOString());
+    const archivedIds = sessionsDb.archiveSessionsOlderThanCutoff(oneDayAgo);
 
     assert.deepEqual(archivedIds.sort(), ['session-stale-1', 'session-stale-2']);
     // A second run finds nothing left to archive.
-    assert.deepEqual(sessionsDb.archiveSessionsOlderThanCutoff(new Date().toISOString()), []);
+    assert.deepEqual(sessionsDb.archiveSessionsOlderThanCutoff(oneDayAgo), []);
   });
 });
 

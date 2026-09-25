@@ -24,6 +24,7 @@
     "git": "Source Control",
     "tasks": "Tasks",
     "browser": "Browser",
+    "scheduled": "Scheduled",
     "computer": "Computer"
   },
   "status": {
@@ -240,26 +241,65 @@
     }
   },
   "versionUpdate": {
-    "title": "Update Available",
-    "newVersionReady": "A new version is ready",
-    "currentVersion": "Current Version",
-    "latestVersion": "Latest Version",
-    "upToDate": "You’re up to date",
-    "whatsNew": "What's New:",
-    "viewFullRelease": "View full release",
-    "updateProgress": "Update Progress:",
-    "manualUpgrade": "Manual upgrade:",
-    "npmUpgradeCommand": "npm install -g @cloudcli-ai/cloudcli@latest",
-    "manualUpgradeHint": "Or click \"Update Now\" to run the update automatically.",
-    "updateCompleted": "Update completed successfully!",
-    "restartServer": "Please restart the server to apply changes.",
-    "updateFailed": "Update failed",
+    "title": "Update available",
+    "rebuildTitle": "Local code changed",
+    "upToDate": "You're up to date",
+    "updatingTitle": "Updating",
+    "succeededTitle": "Update complete",
+    "failedTitle": "Update failed",
+    "commitsBehind_one": "{{count}} new commit on {{upstream}}",
+    "commitsBehind_other": "{{count}} new commits on {{upstream}}",
+    "rebuildHint": "This checkout has commits the running build doesn't include yet.",
+    "runningBuild": "Running build",
+    "localHead": "Local HEAD",
+    "remote": "Remote",
+    "lastChecked": "Last checked: {{time}}",
+    "fetchFailed": "Could not reach the remote: {{error}}",
+    "incomingCommits": "Commits to pull",
+    "blocked": {
+      "dirty": "The checkout has uncommitted changes. Commit or stash them before updating:",
+      "diverged": "Local commits and {{upstream}} have diverged, so a fast-forward is impossible. Resolve it by hand.",
+      "not-pm2": "This server isn't supervised by PM2, so nothing could restart it. Update by hand:",
+      "no-upstream": "The current branch doesn't track a remote branch, so there is nothing to update from.",
+      "not-git": "This install isn't a git checkout; self-update isn't supported yet.",
+      "platform": "Hosted installs are updated by the platform."
+    },
+    "runningSessionsWarning_one": "{{count}} session is running; restarting will interrupt it.",
+    "runningSessionsWarning_other": "{{count}} sessions are running; restarting will interrupt them.",
+    "restartWarning": "The server restarts when the build is ready. This page disconnects briefly and reloads itself.",
+    "steps": {
+      "queued": "Preparing…",
+      "start": "Starting…",
+      "fetch": "Fetching the remote…",
+      "merge": "Fast-forwarding…",
+      "stop": "Stopping the server to install dependencies…",
+      "install": "Installing dependencies…",
+      "build-client": "Building the frontend…",
+      "build-server": "Building the server…",
+      "promote-client": "Swapping in the new build…",
+      "restart": "Restarting…"
+    },
+    "waitingForServer": "Waiting for the server to come back…",
+    "updateSucceeded": "Updated. Reloading the page…",
+    "failedWith": "Update failed: {{error}}",
+    "refusal": {
+      "dirty": "The checkout has uncommitted changes.",
+      "diverged": "Local and remote history have diverged.",
+      "up-to-date": "Already up to date.",
+      "already-running": "An update is already running.",
+      "not-pm2": "This server isn't supervised by PM2.",
+      "no-upstream": "The current branch doesn't track a remote branch.",
+      "not-git": "This install isn't a git checkout.",
+      "platform": "Hosted installs are updated by the platform.",
+      "unknown": "The update could not start (HTTP {{status}})."
+    },
     "buttons": {
       "close": "Close",
       "later": "Later",
-      "copyCommand": "Copy Command",
-      "updateNow": "Update Now",
-      "updating": "Updating..."
+      "checkNow": "Check now",
+      "checking": "Checking…",
+      "pullAndRestart": "Update & restart",
+      "rebuildAndRestart": "Rebuild & restart"
     },
     "ariaLabels": {
       "closeModal": "Close version upgrade modal",
@@ -267,15 +307,7 @@
       "settings": "Settings",
       "updateAvailable": "Update available",
       "closeSidebar": "Close sidebar"
-    },
-    "startingUpdate": "Starting update...",
-    "updateStartedRestarting": "Update started. The server appears to be restarting to apply it.",
-    "unexpectedResponse": "The update endpoint returned an unexpected response (HTTP {{status}}). Update manually with the command below.",
-    "connectionInterrupted": "Connection to the server was interrupted — it is likely restarting to apply the update.",
-    "unknownError": "Unknown error",
-    "refreshNow": "Refreshing the window now...",
-    "refreshIn_one": "This will refresh the window in {{count}} second. If the update doesn't apply, RESTART the environment.",
-    "refreshIn_other": "This will refresh the window in {{count}} seconds. If the update doesn't apply, RESTART the environment."
+    }
   },
   "commandPalette": {
     "title": "Command palette",
@@ -330,7 +362,9 @@
     "noSubfolders": "No subfolders found",
     "select": "Select",
     "pathLabel": "Path:",
-    "useThisFolder": "Use this folder"
+    "useThisFolder": "Use this folder",
+    "drives": "Drives",
+    "go": "Go"
   },
   "misc": {
     "errorTitle": "Something went wrong",

@@ -1,5 +1,5 @@
 import { memo, useMemo, useRef } from 'react';
-import { ChevronDownIcon, GitBranchIcon, PencilIcon } from 'lucide-react';
+import { ChevronDownIcon, GitBranchIcon, LoaderCircleIcon, PencilIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import LLMProviderLogo from '@/shared/ui/LLMProviderLogo';
@@ -53,6 +53,8 @@ type MessageComponentProps = {
   provider: Provider | string;
   onEditMessage?: (message: ChatMessage) => void;
   onForkFromMessage?: (message: ChatMessage) => void;
+  /** True while a fork of this session is being created; disables the action. */
+  isForking?: boolean;
 };
 
 type InteractiveOption = {
@@ -63,7 +65,7 @@ type InteractiveOption = {
 
 const COPY_HIDDEN_TOOL_NAMES = new Set(['Bash', 'Edit', 'Write', 'ApplyPatch']);
 
-const MessageComponent = memo(({ message, prevMessage, turnAnchorMessage, isTurnFinalAssistant = true, createDiff, onFileOpen, showRawParameters, showThinking, isThinkingStreaming, selectedProject, provider, onEditMessage, onForkFromMessage }: MessageComponentProps) => {
+const MessageComponent = memo(({ message, prevMessage, turnAnchorMessage, isTurnFinalAssistant = true, createDiff, onFileOpen, showRawParameters, showThinking, isThinkingStreaming, selectedProject, provider, onEditMessage, onForkFromMessage, isForking = false }: MessageComponentProps) => {
   const { t } = useTranslation('chat');
   // Folds (thinking, compaction summary) render as native <details> here so
   // they stay expandable in the statically rendered exported document.
@@ -147,11 +149,15 @@ const MessageComponent = memo(({ message, prevMessage, turnAnchorMessage, isTurn
                     <button
                       type="button"
                       onClick={() => onForkFromMessage(message)}
-                      title={t('message.forkFromHere', { defaultValue: 'Fork from here' })}
+                      disabled={isForking}
+                      title={isForking ? t('message.forking', { defaultValue: 'Forking…' }) : t('message.forkFromHere', { defaultValue: 'Fork from here' })}
                       aria-label={t('message.forkFromHere', { defaultValue: 'Fork from here' })}
-                      className="rounded p-1 opacity-70 transition-opacity hover:bg-muted hover:opacity-100 focus-visible:opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
+                      aria-busy={isForking}
+                      className={`rounded p-1 transition-opacity hover:bg-muted disabled:cursor-not-allowed ${isForking ? 'opacity-100' : 'opacity-70 hover:opacity-100 focus-visible:opacity-100 sm:opacity-0 sm:group-hover:opacity-100'}`}
                     >
-                      <GitBranchIcon className="h-3.5 w-3.5" />
+                      {isForking
+                        ? <LoaderCircleIcon className="h-3.5 w-3.5 animate-spin" />
+                        : <GitBranchIcon className="h-3.5 w-3.5" />}
                     </button>
                   )}
                   {shouldShowUserCopyControl && (
@@ -473,12 +479,16 @@ const MessageComponent = memo(({ message, prevMessage, turnAnchorMessage, isTurn
                   <button
                     type="button"
                     onClick={() => onForkFromMessage(turnAnchorMessage)}
-                    title={t('message.forkFromHere', { defaultValue: 'Fork from here' })}
+                    disabled={isForking}
+                    title={isForking ? t('message.forking', { defaultValue: 'Forking…' }) : t('message.forkFromHere', { defaultValue: 'Fork from here' })}
                     aria-label={t('message.forkFromHere', { defaultValue: 'Fork from here' })}
-                    className="flex items-center gap-1 rounded px-1.5 py-1 text-xs opacity-70 transition-opacity hover:bg-muted hover:opacity-100 focus-visible:opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
+                    aria-busy={isForking}
+                    className={`flex items-center gap-1 rounded px-1.5 py-1 text-xs transition-opacity hover:bg-muted disabled:cursor-not-allowed ${isForking ? 'opacity-100' : 'opacity-70 hover:opacity-100 focus-visible:opacity-100 sm:opacity-0 sm:group-hover:opacity-100'}`}
                   >
-                    <GitBranchIcon className="h-3.5 w-3.5" />
-                    <span>{t('message.fork', { defaultValue: 'Fork' })}</span>
+                    {isForking
+                      ? <LoaderCircleIcon className="h-3.5 w-3.5 animate-spin" />
+                      : <GitBranchIcon className="h-3.5 w-3.5" />}
+                    <span>{isForking ? t('message.forking', { defaultValue: 'Forking…' }) : t('message.fork', { defaultValue: 'Fork' })}</span>
                   </button>
                 )}
                 {(!isGrouped || isTurnFinalAssistant) && <span>{formattedTime}</span>}

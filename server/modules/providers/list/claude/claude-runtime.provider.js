@@ -25,9 +25,23 @@ import {
   normalizeImageDescriptors
 } from '@/shared/image-attachments.js';
 import {
+  buildClaudeProcessFingerprint,
+  canReuseClaudeLiveProcess,
+  claudeResultFinishesTurn,
+  createClaudeBackgroundWorkTracker,
+  createClaudeHeldPromptStream,
+  readClaudeClaimedUserMessageUuids,
+  readClaudeInitUuidStampingSupport
+} from '@/modules/providers/list/claude/claude-live-session.js';
+import {
   CLAUDE_PREDEFINED_MODELS,
   CLAUDE_ULTRACODE_EFFORT
 } from '@/modules/providers/list/claude/claude-models.provider.js';
+import {
+  readClaudeSessionWindowSources,
+  recordClaudeSessionContextWindow
+} from '@/modules/providers/services/claude-context-window.js';
+import { resolveClaudeContextWindow } from '@/modules/providers/services/claude-usage.js';
 import { resolveClaudeCodeExecutablePath } from '@/shared/claude-cli-path.js';
 import {
   createNotificationEvent,
@@ -302,8 +316,12 @@ function mapCliOptionsToSDK(options = {}) {
  * @param {Object} queryInstance - SDK query instance
  * @param {Object} writer - WebSocket writer for reconnect support
  * @param {Function} releaseInput - Closes the held stdin stream so the CLI can exit
+ * @param {Object} [extras] - Session-process state owned by the run loop:
+ *   `fingerprint` (spawn options the process may be reused with),
+ *   `backgroundWork` (the CLI's live background-task tracker) and
+ *   `turn`/`submitTurn` (the slot a later turn is injected through).
  */
-function addSession(sessionId, queryInstance, writer = null, releaseInput = null) {
+function addSession(sessionId, queryInstance, writer = null, releaseInput = null, extras = {}) {
   const existing = activeSessions.get(sessionId);
   // A different live instance under the same key means an earlier run was
   // superseded without being stopped (e.g. an abort that raced run setup and
@@ -331,7 +349,15 @@ function addSession(sessionId, queryInstance, writer = null, releaseInput = null
     status: 'active',
     writer,
     // Re-registered mid-run once the provider session id lands; keep the closer.
-    releaseInput: releaseInput || carried?.releaseInput || null
+    releaseInput: releaseInput || carried?.releaseInput || null,
+    // Reuse state: the options this process was spawned with, the live
+    // background-task set, and the slot the run loop exposes for injecting a
+    // later turn into this very process (see `canReuseClaudeLiveProcess`).
+    fingerprint: extras.fingerprint || carried?.fingerprint || null,
+    backgroundWork: extras.backgroundWork || carried?.backgroundWork || null,
+    turn: extras.turn || carried?.turn || null,
+    submitTurn: extras.submitTurn || carried?.submitTurn || null,
+    released: extras.released ?? carried?.released ?? false
   });
 }
 
@@ -413,16 +439,22 @@ function readNumber(value) {
  * `input_tokens + cache_read + cache_creation` is one request's whole prompt,
  * which is exactly what the context window holds at that moment.
  * @param {Object} messageUsage - Anthropic usage payload
+ * @param {string} [model] - The request's model id, for the window size
+ * @param {{recorded: number|null, selectedModel: string|null}} [windowSources]
+ *   What the session row knows about its window; both outrank the model id
  * @returns {TokenBudget} Token budget object
  */
-function buildTokenBudget(messageUsage) {
+function buildTokenBudget(messageUsage, model, windowSources = undefined) {
   const directInputTokens = readNumber(messageUsage.input_tokens ?? messageUsage.inputTokens);
   const cacheCreationTokens = readNumber(messageUsage.cache_creation_input_tokens ?? messageUsage.cacheCreationInputTokens ?? messageUsage.cacheCreationTokens);
   const cacheReadTokens = readNumber(messageUsage.cache_read_input_tokens ?? messageUsage.cacheReadInputTokens ?? messageUsage.cacheReadTokens);
   const cacheTokens = cacheCreationTokens + cacheReadTokens;
   const inputTokens = directInputTokens + cacheTokens;
   const outputTokens = readNumber(messageUsage.output_tokens ?? messageUsage.outputTokens);
-  const contextWindow = parseInt(process.env.CONTEXT_WINDOW, 10) || 160000;
+  const contextWindow = resolveClaudeContextWindow(
+    { ...windowSources, configured: process.env.CONTEXT_WINDOW },
+    model ?? null
+  );
 
   return {
     used: inputTokens + outputTokens,
@@ -446,9 +478,11 @@ function buildTokenBudget(messageUsage) {
  * prompt its own request carried. The turn-ending `result` is deliberately not
  * a source here — see `extractCumulativeTokenBudget`.
  * @param {Object} sdkMessage - SDK stream message
+ * @param {{recorded: number|null, selectedModel: string|null}} [windowSources]
+ *   What the session row knows about its window
  * @returns {TokenBudget|null} Token budget object or null
  */
-function extractTokenBudget(sdkMessage) {
+function extractTokenBudget(sdkMessage, windowSources = undefined) {
   if (!sdkMessage || typeof sdkMessage !== 'object') {
     return null;
   }
@@ -473,7 +507,7 @@ function extractTokenBudget(sdkMessage) {
     return null;
   }
 
-  return buildTokenBudget(messageUsage);
+  return buildTokenBudget(messageUsage, sdkMessage.message?.model, windowSources);
 }
 
 /**
@@ -490,15 +524,20 @@ function extractTokenBudget(sdkMessage) {
  * message ever emits, so it stays available for the caller to use when a turn
  * produced no assistant budget at all.
  * @param {Object} sdkMessage - SDK stream message
+ * @param {{recorded: number|null, selectedModel: string|null}} [windowSources]
+ *   What the session row knows about its window
  * @returns {TokenBudget|null} Token budget object or null
  */
-function extractCumulativeTokenBudget(sdkMessage) {
+function extractCumulativeTokenBudget(sdkMessage, windowSources = undefined) {
   if (!sdkMessage || typeof sdkMessage !== 'object' || sdkMessage.type !== 'result') {
     return null;
   }
 
   if (sdkMessage.usage && typeof sdkMessage.usage === 'object') {
-    return buildTokenBudget(sdkMessage.usage);
+    const usageModelKey = sdkMessage.modelUsage && typeof sdkMessage.modelUsage === 'object'
+      ? Object.keys(sdkMessage.modelUsage)[0]
+      : undefined;
+    return buildTokenBudget(sdkMessage.usage, usageModelKey, windowSources);
   }
 
   if (!sdkMessage.modelUsage || typeof sdkMessage.modelUsage !== 'object') {
@@ -516,7 +555,10 @@ function extractCumulativeTokenBudget(sdkMessage) {
   const inputTokens = readNumber(modelData.cumulativeInputTokens ?? modelData.inputTokens);
   const outputTokens = readNumber(modelData.cumulativeOutputTokens ?? modelData.outputTokens);
   const totalUsed = inputTokens + outputTokens;
-  const contextWindow = parseInt(process.env.CONTEXT_WINDOW, 10) || 160000;
+  const contextWindow = resolveClaudeContextWindow(
+    { ...windowSources, configured: process.env.CONTEXT_WINDOW },
+    modelKey ?? null
+  );
 
   return {
     used: totalUsed,
@@ -642,6 +684,10 @@ function startsBackgroundWork(sdkMessage) {
  * prompt text plus one base64 `image` block per attachment (read from the
  * global `~/.cloudcli/assets` folder).
  *
+ * Every message carries a client `uuid`: the CLI echoes it on the turn's reply
+ * frames and result, which is how the run loop binds a result to the turn that
+ * submitted it (see `resultFinishesCurrentTurn`).
+ *
  * @param {string} command - User prompt
  * @param {Array} images - Image descriptors ({ path, name?, mimeType? })
  * @param {Array} files - Non-image attachment descriptors
@@ -661,34 +707,9 @@ async function buildPromptMessages(command, images, files, cwd) {
       content
     },
     parent_tool_use_id: null,
+    uuid: createRequestId(),
     timestamp: new Date().toISOString()
   }];
-}
-
-/**
- * Wraps prompt messages in an async iterable that yields them and then parks.
- *
- * The SDK closes the CLI's stdin as soon as its input iterable is exhausted (and
- * immediately on `result` for string prompts). The CLI reads that EOF as the end
- * of the run and kills anything still going in the background, so the iterable
- * has to stay pending until we actually want the process gone.
- *
- * @param {Array<Object>} messages - SDKUserMessage records to send
- * @returns {{ stream: AsyncIterable, release: () => void }} Stream plus its closer
- */
-function createHeldPromptStream(messages) {
-  let release;
-  const held = new Promise((resolve) => { release = resolve; });
-
-  const stream = (async function* () {
-    for (const message of messages) {
-      yield message;
-    }
-    // Keeps stdin open — the CLI stays alive until release() is called.
-    await held;
-  })();
-
-  return { stream, release };
 }
 
 /**
@@ -768,46 +789,195 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
   // Process-map key: the app session id when the caller supplied one, else
   // the provider-native id once captured (legacy/direct API callers).
   const sessionKey = () => sessionId || capturedSessionId || null;
+  // What the session row already knows about its window. Read up front so a
+  // resumed 1M session's very first frame reports 1M instead of the 200k the
+  // transcript's resolved model id implies; the recorded half is refreshed at
+  // the end of every turn from the SDK's own accounting.
+  const windowSources = readClaudeSessionWindowSources(sessionKey());
 
   const emitNotification = (event) => {
     notifyUserIfEnabled({
-      userId: ws?.userId || null,
-      writer: ws,
+      userId: currentTurn.writer?.userId ?? ws?.userId ?? null,
+      writer: currentTurn.writer || ws,
       event
     });
   };
 
-  // Closes the held stdin stream so the CLI can wind down. Replaced once the
-  // stream exists; the finally block calls it no matter how the run ends.
-  let releasePromptStream = () => {};
-  let idleReleaseTimer = null;
-  // The client is told the turn is over as soon as `result` lands, even though
-  // the process lingers, so the UI never waits out the idle hold.
-  let turnCompleteSent = false;
-  // Set when a turn starts background work, cleared when the next `result`
-  // arrives — only turns with work still outstanding hold their process open.
-  let backgroundWorkPending = false;
-  // True while the process is being held open for background work, so a later
+  // ---------------------------------------------------------------------------
+  // Turn state
+  //
+  // One CLI process can carry several turns: a turn that leaves background
+  // work running holds the process open, and the next user message is fed
+  // into that same process instead of restarting it (the reuse path below).
+  // Everything that used to be a per-run `let` therefore lives on a turn
+  // object, and the event loop swaps in a fresh turn whenever one ends.
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Creates the per-turn bookkeeping for one turn of this process.
+   *
+   * `explicit` turns are the ones a caller submitted (the first turn and every
+   * turn injected through `submitTurn`): they own the client-facing `complete`
+   * and the promise a submitter awaits. A CLI-pushed follow-up turn (background
+   * work reporting back) is not explicit — its result must not end the run.
+   * @param {{ writer: Object, hasPrompt: boolean, adopted: boolean,
+   *           explicit?: boolean, uuid?: string | null }} input
+   */
+  const createTurn = ({ writer, hasPrompt, adopted, explicit = true, uuid = null }) => {
+    const turn = {
+      writer,
+      hasPrompt,
+      adopted,
+      explicit,
+      // Client uuid stamped on this turn's prompt. The CLI echoes it on the
+      // turn's first reply frame and on its result, which is how a result is
+      // attributed to the right turn when a follow-up turn overlapped a send.
+      uuid,
+      // Only an explicit turn blocks a new submission; a CLI-pushed follow-up
+      // leaves the slot open, and the CLI queues whatever we inject behind it.
+      active: explicit,
+      // The client is told the turn is over as soon as `result` lands, even
+      // though the process lingers, so the UI never waits out the idle hold.
+      completeSent: false,
+      // Set when a turn starts background work, cleared when the next `result`
+      // arrives — only turns with work still outstanding hold their process open.
+      backgroundWorkPending: false,
+      // Set once a turn publishes a budget read from an assistant message, so
+      // the turn-ending `result` is only mined for usage when nothing better arrived.
+      assistantBudgetSent: false,
+      // Idle-turn detection: a resumed turn that only acknowledges an injected
+      // task-notification ("No response requested.") leaves the user's prompt
+      // unacted upon. Signals are collected across the stream and evaluated
+      // once at the turn's `result`; when they all line up, the prompt is
+      // re-sent on a fresh CLI process after this generator winds down.
+      sawTaskNotification: false,
+      assistantText: '',
+      toolUseCount: 0,
+      pendingIdleResend: false,
+      // Resolved when the turn's `result` arrives (or the process dies), so an
+      // adopted turn's submitter knows its turn ended without owning the process.
+      resolveDone: () => {},
+      done: null
+    };
+    turn.done = new Promise((resolve) => { turn.resolveDone = resolve; });
+    return turn;
+  };
+
+  // The turn currently streaming through this process. A later user message
+  // swaps in a fresh turn through `submitTurn` (see `publishTurnSlot`).
+  let currentTurn = createTurn({
+    writer: ws,
+    hasPrompt: typeof command === 'string' && command.trim().length > 0,
+    adopted: false
+  });
+  // This run's own turn, kept reachable after `currentTurn` moves on to adopted
+  // or follow-up turns: the post-loop wind-down reports the terminal state of
+  // the run this function was called for, not of whatever ran last.
+  const firstTurn = currentTurn;
+  // Idle-turn resend flag, kept process-scoped because the resend runs after
+  // the generator winds down and the loop exists only once.
+  let pendingIdleResend = false;
+  // True while the process is held open for background work, so a follow-up
   // `result` can be recognised as that work reporting back.
   let heldForBackgroundWork = false;
-  // Set once a turn publishes a budget read from an assistant message, so the
-  // turn-ending `result` is only mined for usage when nothing better arrived.
-  let assistantBudgetSent = false;
-  // Idle-turn detection: a resumed turn that only acknowledges an injected
-  // task-notification ("No response requested.") leaves the user's prompt
-  // unacted upon. Signals are collected across the stream and evaluated once
-  // at the turn's `result`; when they all line up, the prompt is re-sent on a
-  // fresh CLI process after this generator winds down.
-  let turnSawTaskNotification = false;
-  let turnAssistantText = '';
-  let turnToolUseCount = 0;
-  let pendingIdleResend = false;
+  // Whether this CLI echoes the client uuid on reply frames / results. The
+  // process's first result settles it: that result is always this run's own
+  // prompt, so a missing uuid there means the CLI predates the field.
+  let uuidStampingSupported = null;
+  let resultCount = 0;
+  let idleReleaseTimer = null;
+  // The pushable input stream, created with the query below. Held in a `let`
+  // because the hooks-retry path replaces it.
+  let heldPrompt = null;
 
-  // A new turn supersedes any earlier one still holding this session's process
-  // open, so held runs cannot stack up across a conversation.
-  if (sessionKey()) {
-    getSession(sessionKey())?.releaseInput?.();
-  }
+  // The CLI's own live background-task set for this process. Session-scoped on
+  // purpose: work started two turns ago still holds the process open at the
+  // current turn's `result`.
+  const backgroundWork = createClaudeBackgroundWorkTracker();
+
+  // True once nothing is left running. Without task observations (older CLIs)
+  // the per-turn tool-use flag is all the runtime has, so the caller keeps its
+  // historical "a follow-up result means the work reported back" reading.
+  const backgroundWorkSettled = () =>
+    !backgroundWork.hasObservations() || !backgroundWork.hasOutstanding();
+
+  // Hoisted above the try so the catch's cleanup can tell whether this run
+  // still owns the activeSessions entry (or was superseded by a newer run).
+  let queryInstance = null;
+
+  // Closes stdin for this process and marks the session entry unreusable, so a
+  // message arriving during wind-down starts a fresh process instead of
+  // pushing a turn into a stream that no longer reads.
+  const closePromptStream = () => {
+    const key = sessionKey();
+    if (key) {
+      const entry = getSession(key);
+      if (entry && entry.instance === queryInstance) {
+        entry.released = true;
+      }
+    }
+    heldPrompt?.release();
+  };
+
+  // Hands the run loop's slot to the active session entry: `submitTurn` is how
+  // a later run injects its prompt into this very process. Returns null when
+  // the process cannot take another turn, which makes the caller spawn one.
+  const publishTurnSlot = () => {
+    const key = sessionKey();
+    if (!key) {
+      return;
+    }
+    const entry = getSession(key);
+    if (!entry || entry.instance !== queryInstance) {
+      return;
+    }
+    entry.turn = currentTurn;
+    entry.submitTurn = (writer, messages, hasPrompt) => {
+      // Re-read the entry: capturing the provider session id re-registers it,
+      // and the slot must always drive whichever entry owns this process.
+      const live = getSession(key);
+      if (!live || live.instance !== queryInstance) {
+        return null;
+      }
+      if (live.released || currentTurn.active || !heldPrompt || heldPrompt.isReleased()) {
+        return null;
+      }
+      // Push first: a failed push must not leave a turn installed that nothing
+      // will ever run. The SDK consumes the stream asynchronously, so the
+      // turn can be swapped in before it starts reading.
+      for (const message of messages) {
+        if (!heldPrompt.push(message)) {
+          return null;
+        }
+      }
+      const next = createTurn({
+        writer,
+        hasPrompt,
+        adopted: true,
+        uuid: typeof messages[0]?.uuid === 'string' ? messages[0].uuid : null
+      });
+      currentTurn = next;
+      live.turn = next;
+      live.writer = writer;
+      // A user turn supersedes any un-acted resend of a swallowed prompt from
+      // the previous turn.
+      pendingIdleResend = false;
+      return next.done;
+    };
+  };
+
+  /**
+   * Decides whether a result finishes the turn currently streaming, using the
+   * client-uuid binding the CLI echoes on reply frames and results.
+   * @param {Array<string>} claimed - Uuids the result attributed itself to
+   * @returns {boolean}
+   */
+  const resultFinishesCurrentTurn = (claimed) => claudeResultFinishesTurn({
+    turnUuid: currentTurn.uuid,
+    turnExplicit: currentTurn.explicit,
+    claimedUuids: claimed,
+    uuidStampingSupported
+  });
 
   // Arms (or re-arms) the idle countdown that eventually closes stdin.
   const scheduleRelease = () => {
@@ -817,15 +987,26 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
     }
     idleReleaseTimer = setTimeout(() => {
       idleReleaseTimer = null;
-      releasePromptStream();
+      closePromptStream();
     }, BG_WAIT_CEILING_MS);
     // Never let the hold keep the server process alive on its own.
     idleReleaseTimer.unref?.();
   };
 
-  // Hoisted above the try so the catch's cleanup can tell whether this run
-  // still owns the activeSessions entry (or was superseded by a newer run).
-  let queryInstance = null;
+  // Reads the window this run is measured against off the live query and
+  // persists it, so a run that never reaches its `result` still leaves the
+  // session row knowing how large its context window is.
+  const captureContextWindow = createContextWindowCapture(
+    () => fetchSdkContextBudget(queryInstance),
+    (total) => {
+      windowSources.recorded = total;
+      recordClaudeSessionContextWindow(sessionKey(), total);
+    }
+  );
+  // The head of the stream is the first place worth probing; after that only
+  // assistant replies are, so a brand-new session does not spend both
+  // attempts before it has produced anything to measure.
+  let streamHeadSeen = false;
 
   try {
     const resolvedModel = await context.resolveResumeModel(sessionId, options.model);
@@ -852,6 +1033,41 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
     // `result`. The message list is reusable, but each query attempt needs its
     // own stream because an async generator cannot be replayed once consumed.
     const promptMessages = await buildPromptMessages(command, options.images, options.files, options.cwd);
+
+    // Reuse path: when this session still has a live process held open for
+    // background work and every spawn option still matches, the turn is fed
+    // into that process. Restarting it here is exactly what killed the
+    // background tasks the hold exists to protect.
+    const liveEntry = sessionKey() ? getSession(sessionKey()) : null;
+    if (typeof liveEntry?.submitTurn === 'function' && canReuseClaudeLiveProcess({
+      liveFingerprint: liveEntry.fingerprint ?? null,
+      turnFingerprint: buildClaudeProcessFingerprint(sdkOptions),
+      released: Boolean(liveEntry.released),
+      turnActive: Boolean(liveEntry.turn?.active),
+      rewritesHistory: Boolean(options.resumeAnchorId || options.resumeFromScratch)
+    })) {
+      const adopted = liveEntry.submitTurn(
+        ws,
+        promptMessages,
+        typeof command === 'string' && command.trim().length > 0
+      );
+      if (adopted) {
+        console.log(`[Claude SDK] Feeding the turn into the live process for session ${sessionKey()}`);
+        return adopted;
+      }
+    }
+
+    // No live process to reuse: a fresh process supersedes any earlier one
+    // still holding this session's process open, so held runs cannot stack up
+    // across a conversation.
+    if (sessionKey()) {
+      getSession(sessionKey())?.releaseInput?.();
+    }
+
+    // The prompt's client uuid is what the CLI echoes back to bind a result to
+    // this turn; the loop uses it to tell this turn's result apart from a
+    // background follow-up turn that happened to overlap it.
+    currentTurn.uuid = typeof promptMessages[0]?.uuid === 'string' ? promptMessages[0].uuid : null;
 
     sdkOptions.hooks = {
       Notification: [{
@@ -904,7 +1120,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       }
 
       const requestId = createRequestId();
-      ws.send(createNormalizedMessage({ kind: 'permission_request', requestId, toolName, input, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
+      currentTurn.writer.send(createNormalizedMessage({ kind: 'permission_request', requestId, toolName, input, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
       emitNotification(createNotificationEvent({
         provider: 'claude',
         sessionId: sessionId || capturedSessionId || null,
@@ -928,7 +1144,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
           _receivedAt: new Date(),
         },
         onCancel: (reason) => {
-          ws.send(createNormalizedMessage({ kind: 'permission_cancelled', requestId, reason, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
+          currentTurn.writer.send(createNormalizedMessage({ kind: 'permission_cancelled', requestId, reason, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
         }
       });
       if (!decision) {
@@ -944,7 +1160,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       // the inbound socket only, so without this a mid-run page refresh
       // replays the `permission_request` with nothing to retract it and the
       // already-answered prompt resurrects.
-      ws.send(createNormalizedMessage({ kind: 'permission_resolved', requestId, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
+      currentTurn.writer.send(createNormalizedMessage({ kind: 'permission_resolved', requestId, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
 
       if (decision.allow) {
         if (decision.rememberEntry && typeof decision.rememberEntry === 'string') {
@@ -961,8 +1177,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       return { behavior: 'deny', message: decision.message ?? 'User denied tool use' };
     };
 
-    let heldPrompt = createHeldPromptStream(promptMessages);
-    releasePromptStream = heldPrompt.release;
+    heldPrompt = createClaudeHeldPromptStream(promptMessages);
     try {
       queryInstance = query({
         prompt: heldPrompt.stream,
@@ -975,17 +1190,22 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       delete sdkOptions.hooks;
       // Discard the abandoned stream and build a fresh one for the retry.
       heldPrompt.release();
-      heldPrompt = createHeldPromptStream(promptMessages);
-      releasePromptStream = heldPrompt.release;
+      heldPrompt = createClaudeHeldPromptStream(promptMessages);
       queryInstance = query({
         prompt: heldPrompt.stream,
         options: sdkOptions
       });
     }
 
-    // Track the query instance for abort capability
+    // Track the query instance for abort capability, and publish the slot a
+    // later user turn is injected through while this process is held open.
     if (sessionKey()) {
-      addSession(sessionKey(), queryInstance, ws, releasePromptStream);
+      addSession(sessionKey(), queryInstance, ws, closePromptStream, {
+        fingerprint: buildClaudeProcessFingerprint(sdkOptions),
+        backgroundWork,
+        turn: currentTurn
+      });
+      publishTurnSlot();
     }
 
     // Process streaming messages
@@ -995,7 +1215,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       if (message.session_id && !capturedSessionId) {
 
         capturedSessionId = message.session_id;
-        addSession(sessionKey(), queryInstance, ws, releasePromptStream);
+        addSession(sessionKey(), queryInstance, ws, closePromptStream);
 
         // Set session ID on writer
         if (ws.setSessionId && typeof ws.setSessionId === 'function') {
@@ -1005,7 +1225,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         // Send session-created event only once for sessions with nothing to resume
         if (!providerSessionId && !sessionCreatedSent) {
           sessionCreatedSent = true;
-          ws.send(createNormalizedMessage({ kind: 'session_created', newSessionId: capturedSessionId, sessionId: capturedSessionId, provider: 'claude' }));
+          currentTurn.writer.send(createNormalizedMessage({ kind: 'session_created', newSessionId: capturedSessionId, sessionId: capturedSessionId, provider: 'claude' }));
         }
       } else {
         // session_id already captured
@@ -1025,23 +1245,47 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         if (isSubagentPromptEcho(msg)) {
           continue;
         }
-        ws.send(msg);
+        currentTurn.writer.send(msg);
       }
 
       // Extract and send token budget updates from assistant usage payloads,
       // falling back to the turn's cumulative bill only for SDK builds that
       // report no per-assistant usage at all.
-      const tokenBudgetData = extractTokenBudget(message)
-        || (assistantBudgetSent ? null : extractCumulativeTokenBudget(message));
+      const tokenBudgetData = extractTokenBudget(message, windowSources)
+        || (currentTurn.assistantBudgetSent ? null : extractCumulativeTokenBudget(message, windowSources));
       if (tokenBudgetData) {
         if (message.type === 'assistant') {
-          assistantBudgetSent = true;
+          currentTurn.assistantBudgetSent = true;
         }
-        ws.send(createNormalizedMessage({ kind: 'status', text: 'token_budget', tokenBudget: tokenBudgetData, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
+        currentTurn.writer.send(createNormalizedMessage({ kind: 'status', text: 'token_budget', tokenBudget: tokenBudgetData, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
       }
 
+      // The CLI's task lifecycle frames are the authoritative background-work
+      // signal: the per-turn tool-use flag below only sees work this turn
+      // started, while the tracker's set survives turn boundaries.
+      backgroundWork.observe(message);
+
+      // A reply frame claiming a client uuid proves this CLI echoes the field
+      // that binds a turn's output to the message that submitted it.
+      const claimedUuids = readClaudeClaimedUserMessageUuids(message);
+      // The init frame's CLI version settles it before any result can: a
+      // resumed session may open with an unstamped CLI-pushed turn whose
+      // result must not be mistaken for this run's.
+      if (claimedUuids.length > 0 || readClaudeInitUuidStampingSupport(message) === true) {
+        uuidStampingSupported = true;
+      }
+
+      // A resumed session's prompt is already assembled at the head of the
+      // stream, so the window is readable before a single token comes back; a
+      // brand-new one has nothing to measure until its first assistant reply.
+      // Skipped once the row already knows its window.
+      if (!windowSources.recorded && (!streamHeadSeen || message.type === 'assistant')) {
+        void captureContextWindow();
+      }
+      streamHeadSeen = true;
+
       if (isTaskNotificationUserMessage(message)) {
-        turnSawTaskNotification = true;
+        currentTurn.sawTaskNotification = true;
       }
 
       // Main-thread assistant blocks only: subagent traffic (parent_tool_use_id
@@ -1052,61 +1296,121 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         if (Array.isArray(content)) {
           for (const block of content) {
             if (block?.type === 'text') {
-              turnAssistantText += (turnAssistantText ? '\n' : '') + (block.text || '');
+              currentTurn.assistantText += (currentTurn.assistantText ? '\n' : '') + (block.text || '');
             } else if (block?.type === 'tool_use') {
-              turnToolUseCount += 1;
+              currentTurn.toolUseCount += 1;
             }
           }
         }
       }
 
       if (startsBackgroundWork(message)) {
-        backgroundWorkPending = true;
+        currentTurn.backgroundWorkPending = true;
       }
 
       if (message.type === 'result') {
-        // The turn is done as far as the client is concerned.
-        const abortPending = sessionKey() ? abortedSessionIds.has(sessionKey()) : false;
-        if (!turnCompleteSent && !abortPending) {
-          pendingIdleResend = shouldResendPromptForIdleTurn({
-            hasPrompt: typeof command === 'string' && command.trim().length > 0,
-            sawTaskNotification: turnSawTaskNotification,
-            assistantText: turnAssistantText,
-            toolUseCount: turnToolUseCount
-          });
-          turnCompleteSent = true;
-          ws.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: 0 }));
-          if (!pendingIdleResend) {
-            notifyRunStopped({
-              userId: ws?.userId || null,
+        resultCount += 1;
+        if (uuidStampingSupported === null && claimedUuids.length === 0 && resultCount === 1) {
+          // Fallback for CLIs whose init version did not settle it: read the
+          // process's first result as this run's own prompt, so a missing uuid
+          // means the CLI predates the binding field. Unsafe when a resume
+          // opens with a CLI-pushed turn, hence the init check above.
+          uuidStampingSupported = false;
+        }
+
+        if (!resultFinishesCurrentTurn(claimedUuids)) {
+          // A CLI-pushed follow-up turn (or a queued turn) finished while this
+          // turn is still waiting to run. Its work reporting back is all this
+          // result means; the current turn keeps the process state.
+          if (heldForBackgroundWork && backgroundWorkSettled() && !(sessionKey() && abortedSessionIds.has(sessionKey()))) {
+            notifyBackgroundWorkCompleted({
+              userId: currentTurn.writer?.userId ?? ws?.userId ?? null,
               provider: 'claude',
               sessionId: sessionId || capturedSessionId || null,
-              sessionName: sessionSummary,
-              stopReason: 'completed'
+              sessionName: sessionSummary
             });
           }
-        } else if (heldForBackgroundWork && !abortPending) {
-          // A result after the turn already reported complete means the work we
-          // held the process open for has finished and pushed a follow-up turn.
-          notifyBackgroundWorkCompleted({
-            userId: ws?.userId || null,
-            provider: 'claude',
-            sessionId: sessionId || capturedSessionId || null,
-            sessionName: sessionSummary
-          });
-        }
-        if (backgroundWorkPending) {
-          // Work started during this turn is still running. Hold the process
-          // open so it can finish and report back in a follow-up turn; the
-          // ceiling is only a backstop for work that never reports.
-          backgroundWorkPending = false;
-          heldForBackgroundWork = true;
-          scheduleRelease();
         } else {
-          // Either nothing was backgrounded, or the background work just
-          // reported in — let the CLI exit now, as it always has.
-          heldForBackgroundWork = false;
-          releasePromptStream();
+          const turn = currentTurn;
+          const abortPending = sessionKey() ? abortedSessionIds.has(sessionKey()) : false;
+          if (turn.explicit && !turn.completeSent && !abortPending) {
+            turn.pendingIdleResend = !turn.adopted && shouldResendPromptForIdleTurn({
+              hasPrompt: turn.hasPrompt,
+              sawTaskNotification: turn.sawTaskNotification,
+              assistantText: turn.assistantText,
+              toolUseCount: turn.toolUseCount
+            });
+            if (turn.pendingIdleResend) {
+              pendingIdleResend = true;
+            }
+            turn.completeSent = true;
+            turn.writer.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: 0 }));
+
+            // Refine the composer badge with the SDK's own context accounting
+            // (percentage + the real autocompact window). Fire-and-forget: the
+            // per-assistant estimate above already streamed, so a slow or
+            // unavailable control request only leaves that estimate in place.
+            void fetchSdkContextBudget(queryInstance).then((sdkBudget) => {
+              if (!sdkBudget) {
+                return;
+              }
+              const currentKey = sessionKey();
+              // The only place the session's real window is ever observable.
+              // Persist it before the abort check: a user who interrupts still
+              // ran on that window, and every later reader needs it.
+              windowSources.recorded = sdkBudget.total;
+              recordClaudeSessionContextWindow(currentKey, sdkBudget.total);
+              if (currentKey && abortedSessionIds.has(currentKey)) {
+                return;
+              }
+              try {
+                turn.writer.send(createNormalizedMessage({ kind: 'status', text: 'token_budget', tokenBudget: sdkBudget, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
+              } catch {
+                // Socket already gone; the next turn refreshes the badge.
+              }
+            });
+            if (!turn.pendingIdleResend) {
+              notifyRunStopped({
+                userId: turn.writer?.userId ?? ws?.userId ?? null,
+                provider: 'claude',
+                sessionId: sessionId || capturedSessionId || null,
+                sessionName: sessionSummary,
+                stopReason: 'completed'
+              });
+            }
+          } else if (heldForBackgroundWork && backgroundWorkSettled() && !abortPending) {
+            // A result after the turn already reported complete means the work we
+            // held the process open for has finished and pushed a follow-up turn.
+            notifyBackgroundWorkCompleted({
+              userId: turn.writer?.userId ?? ws?.userId ?? null,
+              provider: 'claude',
+              sessionId: sessionId || capturedSessionId || null,
+              sessionName: sessionSummary
+            });
+          }
+
+          turn.active = false;
+          turn.resolveDone();
+
+          if (backgroundWork.hasOutstanding() || turn.backgroundWorkPending) {
+            // Work is still running — either the CLI's own task set says so, or
+            // this turn started work the tracker has not reported yet. Hold the
+            // process open so it can finish and report back in a follow-up
+            // turn; the ceiling is only a backstop for work that never reports.
+            heldForBackgroundWork = true;
+            scheduleRelease();
+          } else {
+            // Either nothing was backgrounded, or the background work just
+            // reported in — let the CLI exit now, as it always has.
+            heldForBackgroundWork = false;
+            closePromptStream();
+          }
+
+          // Between turns the process may push a follow-up turn of its own; the
+          // slot below accumulates it until its result arrives.
+          if (!heldPrompt?.isReleased()) {
+            currentTurn = createTurn({ writer: turn.writer, hasPrompt: false, adopted: false, explicit: false });
+          }
         }
       } else if (idleReleaseTimer) {
         // Background activity after the turn — push the countdown back out.
@@ -1153,13 +1457,13 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       );
     }
 
-    if (!turnCompleteSent && !superseded) {
-      turnCompleteSent = true;
+    if (!firstTurn.completeSent && !superseded) {
+      firstTurn.completeSent = true;
       if (!wasAborted) {
-        ws.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: 0 }));
+        firstTurn.writer.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: 0 }));
       }
       notifyRunStopped({
-        userId: ws?.userId || null,
+        userId: firstTurn.writer?.userId ?? ws?.userId ?? null,
         provider: 'claude',
         sessionId: sessionId || capturedSessionId || null,
         sessionName: sessionSummary,
@@ -1199,12 +1503,16 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
     // Send error to WebSocket, then the terminal complete. A run that already
     // reported completion and then failed during its post-turn hold still
     // surfaces the error, but must not emit a second terminal complete.
-    ws.send(createNormalizedMessage({ kind: 'error', content: errorContent, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
-    if (!turnCompleteSent) {
-      ws.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: 1 }));
+    currentTurn.writer.send(createNormalizedMessage({ kind: 'error', content: errorContent, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
+    if (!currentTurn.completeSent) {
+      currentTurn.completeSent = true;
+      currentTurn.writer.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: 1 }));
     }
+    // The process is gone, so a submitter waiting on this turn must not hang.
+    currentTurn.active = false;
+    currentTurn.resolveDone();
     notifyRunFailed({
-      userId: ws?.userId || null,
+      userId: currentTurn.writer?.userId ?? ws?.userId ?? null,
       provider: 'claude',
       sessionId: sessionId || capturedSessionId || null,
       sessionName: sessionSummary,
@@ -1217,7 +1525,11 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       clearTimeout(idleReleaseTimer);
       idleReleaseTimer = null;
     }
-    releasePromptStream();
+    closePromptStream();
+    // A turn submitted into this process must settle even when the process
+    // died before producing its result.
+    currentTurn.active = false;
+    currentTurn.resolveDone();
   }
 }
 
@@ -1318,9 +1630,117 @@ function reconnectSessionWriter(sessionId, newRawWs) {
   return true;
 }
 
+/**
+ * Wraps `/compact` as a real runtime invocation.
+ *
+ * The CLI treats a leading-slash user turn as a local slash command (verified
+ * against the Agent SDK: `/compact` drives its `compacting` status events and
+ * `/context` answers with the structured context breakdown), so compaction is
+ * just the normal run path with that command as the turn's text. The turn
+ * never reaches the model, and the compaction summary arrives as a transcript
+ * fold on the next history refresh.
+ * @param {Object} options - Run options (session id, cwd, ...)
+ * @param {Object} ws - WebSocket writer
+ * @param {Object} context - Provider-scoped lookups
+ * @returns {Promise<void>}
+ */
+function compactClaudeSession(options = {}, ws, context) {
+  return queryClaudeSDK('/compact', options, ws, context);
+}
+
+/**
+ * Fetches the SDK's own context-window breakdown (the structured twin of the
+ * `/context` report) as a token budget.
+ *
+ * `detail: 'summary'` answers from the last response's usage plus local
+ * estimates, so a per-turn badge refresh costs no extra model calls. Returns
+ * null when the SDK build predates the control request.
+ * @param {Object} queryInstance - Active SDK query instance
+ * @returns {Promise<Object|null>} Token budget object or null
+ */
+async function fetchSdkContextBudget(queryInstance) {
+  if (!queryInstance || typeof queryInstance.getContextUsage !== 'function') {
+    return null;
+  }
+
+  try {
+    const usage = await queryInstance.getContextUsage({ detail: 'summary' });
+    const used = readNumber(usage?.totalTokens);
+    const total = readNumber(usage?.rawMaxTokens) || readNumber(usage?.maxTokens);
+    if (!total || used <= 0) {
+      return null;
+    }
+
+    const percentage = readNumber(usage?.percentage);
+    return {
+      used,
+      total,
+      ...(percentage > 0 ? { percentage: Math.round(percentage) } : {}),
+      inputTokens: used,
+      outputTokens: 0,
+      breakdown: { input: used, output: 0 },
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Serialises one run's attempts to read the context window off its own query.
+ *
+ * The window is only observable while a query is live, and a run does not
+ * always reach its `result`: an interrupted turn, a crashed CLI, or the server
+ * restarting mid-turn all end the stream first. Recording only at the end of a
+ * clean turn therefore left those sessions' rows blank — and a session whose
+ * model is `default` carries no `[1m]` tag for the resolver to fall back on,
+ * so it read as 200k from then on, however large the window it ran against.
+ *
+ * Attempts are capped instead of made per message: each one costs a control
+ * request, and the only reason a live query answers with nothing is that the
+ * run has produced no response yet, which the second attempt covers.
+ * @param {() => Promise<TokenBudget|null>} readBudget - Reads the live window
+ * @param {(total: number) => void} onWindow - Receives the window, once
+ * @param {number} [maxAttempts] - Reads to spend before leaving it to the turn's end
+ * @returns {() => Promise<void>} Idempotent probe; safe to call per message
+ */
+export function createContextWindowCapture(readBudget, onWindow, maxAttempts = 2) {
+  let attempts = 0;
+  let inFlight = null;
+  let captured = false;
+
+  return () => {
+    if (inFlight) {
+      return inFlight;
+    }
+    if (captured || attempts >= maxAttempts) {
+      return Promise.resolve();
+    }
+
+    attempts += 1;
+    inFlight = Promise.resolve()
+      .then(readBudget)
+      .then((budget) => {
+        const total = readNumber(budget?.total);
+        if (total > 0) {
+          captured = true;
+          onWindow(total);
+        }
+      })
+      .catch(() => {
+        // A control request that failed says nothing about the window; the
+        // next attempt, or the turn's end, reads it again.
+      })
+      .finally(() => {
+        inFlight = null;
+      });
+    return inFlight;
+  };
+}
+
 export const claudeRuntime = {
   run: queryClaudeSDK,
   abort: abortClaudeSDKSession,
+  compact: compactClaudeSession,
   permissions: {
     resolve: resolveToolApproval,
     listPending: getPendingApprovalsForSession,

@@ -118,7 +118,11 @@
   },
   "version": {
     "updateAvailable": "有可用更新",
-    "restartRequired": "已安装更新 — 请重启服务器以生效"
+    "restartRequired": "已安装更新 — 请重启服务器以生效",
+    "commitsBehind": "{{count}} 个新提交",
+    "rebuildAvailable": "本地代码待构建",
+    "updating": "正在更新…",
+    "viewProgress": "查看进度"
   },
   "search": {
     "modeProjects": "项目",

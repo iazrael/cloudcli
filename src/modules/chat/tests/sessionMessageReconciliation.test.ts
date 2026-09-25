@@ -189,3 +189,37 @@ test('upsertToolUseRow: a blank re-announce frame never blanks a populated card'
   const appended = upsertToolUseRow(updated, toolRow('row_4', 'call_2', {}));
   assert.equal(appended.length, 2);
 });
+
+test('upsertToolUseRow: a completion snapshot settles the card it re-announces', () => {
+  const toolRow = (id: string, overrides: Partial<NormalizedMessage> = {}) => ({
+    id,
+    kind: 'tool_use',
+    provider: 'opencode',
+    sessionId: 's1',
+    toolName: 'bash',
+    toolId: 'call_1',
+    toolInput: { command: 'sleep 90' },
+    timestamp: '2026-01-01T00:00:00.000Z',
+    ...overrides,
+  }) as NormalizedMessage;
+
+  const announced = upsertToolUseRow([], toolRow('row_1'));
+
+  // opencode re-announces the running call with its outcome attached; the
+  // replayed snapshot must settle the card instead of leaving it spinning.
+  const completed = upsertToolUseRow(announced, toolRow('row_2', {
+    toolInput: {},
+    status: 'completed',
+    toolResult: { content: 'done', isError: false },
+  }));
+
+  assert.equal(completed.length, 1);
+  assert.deepEqual(completed[0].toolInput, { command: 'sleep 90' });
+  assert.deepEqual(completed[0].toolResult, { content: 'done', isError: false });
+  assert.equal(completed[0].status, 'completed');
+
+  // A later blank snapshot must not erase the stored outcome.
+  const echoed = upsertToolUseRow(completed, toolRow('row_3', { toolInput: {} }));
+  assert.deepEqual(echoed[0].toolResult, { content: 'done', isError: false });
+  assert.equal(echoed[0].status, 'completed');
+});

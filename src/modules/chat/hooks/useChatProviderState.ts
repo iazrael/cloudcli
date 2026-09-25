@@ -721,6 +721,9 @@ export function useChatProviderState({
   // the primary providers (claude, codex) implement both.
   const supportsMessageEditing = providerCapabilities?.[provider]?.supportsMessageEditing ?? true;
   const supportsSessionForking = providerCapabilities?.[provider]?.supportsSessionForking ?? true;
+  // Default false so an unloaded matrix never claims files will be reverted;
+  // OpenCode is the one provider whose edit restores snapshot files.
+  const editRevertsFiles = providerCapabilities?.[provider]?.editRevertsFiles ?? false;
 
   const applyProviderCatalog = useCallback((
     targetProvider: LLMProvider,
@@ -839,6 +842,7 @@ export function useChatProviderState({
     setProvider,
     supportsMessageEditing,
     supportsSessionForking,
+    editRevertsFiles,
     providerModels,
     setProviderModel,
     currentProviderEffort,

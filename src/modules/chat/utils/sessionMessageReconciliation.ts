@@ -151,6 +151,11 @@ export function upsertToolUseRow(rows: NormalizedMessage[], frame: NormalizedMes
     toolName: frame.toolName || next[index].toolName,
     toolInput: hasUsableToolInput(frame) ? frame.toolInput : next[index].toolInput,
     content: frame.content || next[index].content,
+    // Completion is another snapshot of the same call: opencode re-announces
+    // the toolId with the outcome attached. Dropping these fields left every
+    // finished card spinning until the turn's finalize pass.
+    toolResult: frame.toolResult ?? next[index].toolResult,
+    status: frame.status ?? next[index].status,
   };
   return next;
 }

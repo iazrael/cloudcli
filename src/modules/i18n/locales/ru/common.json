@@ -210,24 +210,9 @@
   },
   "versionUpdate": {
     "title": "Доступно обновление",
-    "newVersionReady": "Новая версия готова",
-    "currentVersion": "Текущая версия",
-    "latestVersion": "Последняя версия",
-    "whatsNew": "Что нового:",
-    "viewFullRelease": "Посмотреть полный релиз",
-    "updateProgress": "Прогресс обновления:",
-    "manualUpgrade": "Ручное обновление:",
-    "npmUpgradeCommand": "npm install -g @cloudcli-ai/cloudcli@latest",
-    "manualUpgradeHint": "Или нажмите \"Обновить сейчас\" для автоматического обновления.",
-    "updateCompleted": "Обновление успешно завершено!",
-    "restartServer": "Пожалуйста, перезапустите сервер для применения изменений.",
-    "updateFailed": "Обновление не удалось",
     "buttons": {
       "close": "Закрыть",
-      "later": "Позже",
-      "copyCommand": "Копировать команду",
-      "updateNow": "Обновить сейчас",
-      "updating": "Обновление..."
+      "later": "Позже"
     },
     "ariaLabels": {
       "closeModal": "Закрыть модальное окно обновления версии",

@@ -70,6 +70,7 @@ export type MessageFieldsByKind = {
   stream_delta: {
     role?: 'user' | 'assistant';
     content?: string;
+    transcriptAnchorId?: string;
     providerRowKey?: string;
   };
   /** Carries nothing of its own: it only says the current segment closed. */

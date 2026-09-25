@@ -25,6 +25,14 @@ import { AppError } from '@/shared/utils.js';
 /** How long a single request may take before the child is killed. */
 const REQUEST_TIMEOUT_MS = 30_000;
 
+/**
+ * How long a compaction may run before the wait gives up. Compaction is a
+ * non-steerable turn that makes its own model call over the whole
+ * conversation, so it needs the model-turn order of magnitude, not the
+ * control-plane one.
+ */
+const COMPACT_NOTIFICATION_TIMEOUT_MS = 10 * 60_000;
+
 type JsonRpcResponse = {
   id?: number;
   result?: unknown;
@@ -106,6 +114,7 @@ export async function openCodexAppServer(
   const child = spawn(process.execPath, [launcher, 'app-server'], {
     env: process.env,
     stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,
   });
 
   // The server logs sandbox and skill warnings to stderr on every start. They
@@ -363,5 +372,65 @@ export const codexAppServer = {
 
       return { threadId, path };
     });
+  },
+
+  /**
+   * Compacts a thread's carried conversation into a summary the next turn
+   * builds on, in place.
+   *
+   * `thread/compact/start` only STARTS a non-steerable compaction turn (the
+   * response is empty), and the work — a model call over the whole
+   * conversation — completes asynchronously. This client spawns a fresh
+   * app-server per operation, so it waits for that completion before the child
+   * is torn down; killing the server earlier discards the summary. The thread
+   * is resumed with its turns hydrated first, because the summarizer reads the
+   * conversation it is replacing.
+   */
+  async compactThread(input: { threadId: string }): Promise<void> {
+    let settleFinished!: () => void;
+    let failFinished!: (error: Error) => void;
+    const finished = new Promise<void>((resolve, reject) => {
+      settleFinished = resolve;
+      failFinished = reject;
+    });
+
+    // Both completion signals are watched from before the request goes out:
+    // the compacting turn ends with a `contextCompaction` item, and the turn
+    // boundary itself is the fallback for builds that emit only one of the two.
+    const connection = await openCodexAppServer({
+      onNotification: (method, params) => {
+        const compactionItem = params.item as { type?: unknown } | undefined;
+        if (
+          (method === 'item/completed'
+            && params.threadId === input.threadId
+            && compactionItem?.type === 'contextCompaction')
+          || (method === 'turn/completed' && params.threadId === input.threadId)
+        ) {
+          settleFinished();
+        }
+      },
+      onExit: (reason) => {
+        failFinished(new AppError(`Codex app-server is not running: ${reason}`, {
+          code: 'CODEX_APP_SERVER_UNAVAILABLE',
+          statusCode: 502,
+        }));
+      },
+    });
+
+    const timer = setTimeout(() => {
+      failFinished(new AppError(
+        `Codex app-server did not report the compaction within ${COMPACT_NOTIFICATION_TIMEOUT_MS}ms.`,
+        { code: 'CODEX_APP_SERVER_TIMEOUT', statusCode: 504 },
+      ));
+    }, COMPACT_NOTIFICATION_TIMEOUT_MS);
+
+    try {
+      await connection.call('thread/resume', { threadId: input.threadId });
+      await connection.call('thread/compact/start', { threadId: input.threadId });
+      await finished;
+    } finally {
+      clearTimeout(timer);
+      connection.close();
+    }
   },
 };

@@ -73,6 +73,12 @@ export type ProviderRuntimeGateway = {
     options: AnyRecord,
     writer: ProviderRuntimeWriter,
   ): Promise<unknown>;
+  compact(
+    provider: LLMProvider,
+    options: AnyRecord,
+    writer: ProviderRuntimeWriter,
+  ): Promise<unknown>;
+  supportsCompaction(provider: string): boolean;
   abort(provider: LLMProvider, sessionId: string): Promise<boolean>;
   resolveToolApproval(requestId: string, payload: ProviderPermissionDecision): void;
   getPendingApprovalsForSession(sessionId: string): unknown[];
@@ -193,6 +199,50 @@ async function handleChatSend(
   await dispatchRun(ws, userId, resolved.sessionId, resolved.session, data, dependencies);
 }
 
+/**
+ * Handles `chat.compact`: asks the session's engine to compact its carried
+ * conversation into a summary, in place.
+ *
+ * Registered and dispatched exactly like a turn — same run reservation,
+ * streaming writer, and terminal `complete` — but the provider-side execution
+ * goes through the runtime's optional `compact` primitive instead of `run`.
+ * That is what lets the frontend omit an optimistic user bubble while the
+ * transcript still refreshes when the summary lands.
+ */
+async function handleChatCompact(
+  ws: WebSocket,
+  userId: string | number | null,
+  data: AnyRecord,
+  dependencies: ChatWebSocketDependencies
+): Promise<void> {
+  const resolved = resolveSendTarget(ws, data, dependencies, 'chat.compact');
+  if (!resolved) {
+    return;
+  }
+
+  if (!dependencies.runtime.supportsCompaction(resolved.provider)) {
+    sendProtocolError(
+      ws,
+      'COMPACTION_UNSUPPORTED',
+      `Provider "${resolved.provider}" cannot compact conversations.`,
+      resolved.sessionId
+    );
+    return;
+  }
+
+  await dispatchRun(
+    ws,
+    userId,
+    resolved.sessionId,
+    resolved.session,
+    data,
+    dependencies,
+    {},
+    undefined,
+    'compact',
+  );
+}
+
 type ResolvedSendTarget = {
   sessionId: string;
   session: NonNullable<ReturnType<typeof sessionsDb.getSessionById>>;
@@ -250,6 +300,7 @@ async function dispatchRun(
   dependencies: ChatWebSocketDependencies,
   extraRuntimeOptions: AnyRecord = {},
   beforeRun?: (run: NonNullable<ReturnType<typeof chatRunRegistry.startRun>>) => void | Promise<void>,
+  execution: 'run' | 'compact' = 'run',
 ): Promise<{ started: boolean; error: string | null }> {
   const provider = session.provider as LLMProvider;
 
@@ -324,7 +375,11 @@ async function dispatchRun(
     // be taken back. Inside the try so a rewind that throws still releases the
     // run instead of leaving the session processing forever.
     await beforeRun?.(run);
-    await dependencies.runtime.run(provider, command, runtimeOptions, run.writer);
+    if (execution === 'compact') {
+      await dependencies.runtime.compact(provider, runtimeOptions, run.writer);
+    } else {
+      await dependencies.runtime.run(provider, command, runtimeOptions, run.writer);
+    }
   } catch (error) {
     failure = error instanceof Error ? error.message : String(error);
     console.error(`[Chat] Provider runtime "${provider}" failed`, { sessionId, error: failure });
@@ -576,6 +631,7 @@ function handlePermissionResponse(data: AnyRecord, dependencies: ChatWebSocketDe
  *
  * Inbound protocol (client to server):
  * - `chat.send`                { sessionId, content, options? }
+ * - `chat.compact`             { sessionId, options? }
  * - `chat.abort`               { sessionId }
  * - `chat.subscribe`           { sessions: [{ sessionId, lastSeq? }] }
  * - `chat.permission-response` { requestId, allow, updatedInput?, message?, rememberEntry? }
@@ -671,12 +727,15 @@ export function handleChatConnection(
       const data = parsed as AnyRecord;
       const messageType = typeof data.type === 'string' ? data.type : '';
 
-      switch (messageType) {
+       switch (messageType) {
         case 'chat.edit-send':
           await handleChatEditSend(ws, userId, data, dependencies);
           return;
         case 'chat.send':
           await handleChatSend(ws, userId, data, dependencies);
+          return;
+        case 'chat.compact':
+          await handleChatCompact(ws, userId, data, dependencies);
           return;
         case 'chat.abort':
           await handleChatAbort(ws, data, dependencies);

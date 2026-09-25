@@ -18,7 +18,7 @@ import {
 } from '@/modules/chat/utils/fileLink';
 import { api, readApiJson, readExternalFileContent } from '@/shared/api';
 import { shouldProxyLocalHref } from '@/modules/chat/utils/localProxyLink';
-import { copyTextToClipboard } from '@/shared/utils';
+import { copyTextToClipboard, normalizeLatexMathDelimiters } from '@/shared/utils';
 import { UnifiedImageViewer } from '@/shared/ui';
 import { usePaletteOps } from '@/modules/command-palette';
 import { useTheme } from '@/shared/context/ThemeContext';
@@ -424,7 +424,10 @@ type MarkdownBodyProps = {
 // direct children of one prose container, keeping block spacing identical to a
 // single-document render.
 export const MarkdownBody = memo(function MarkdownBody({ children, breaks = false }: MarkdownBodyProps) {
-  const content = useMemo(() => normalizeInlineCodeFences(children), [children]);
+  const content = useMemo(
+    () => normalizeLatexMathDelimiters(normalizeInlineCodeFences(children)),
+    [children],
+  );
   const remarkPlugins = useMemo(
     () => (breaks
       ? [remarkGfm, [remarkMath, { singleDollarTextMath: false }], remarkBreaks]

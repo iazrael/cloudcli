@@ -306,10 +306,7 @@
       "description": "외부 API를 사용하여 애플리케이션에서 Claude/Cursor 세션을 트리거하는 방법을 알아보세요.",
       "viewLink": "API 문서 보기 →"
     },
-    "loading": "로딩 중...",
-    "version": {
-      "updateAvailable": "업데이트 가능: v{{version}}"
-    }
+    "loading": "로딩 중..."
   },
   "tasks": {
     "checking": "TaskMaster 설치 확인 중...",

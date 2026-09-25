@@ -9,6 +9,8 @@ import {
   PUSH_SUBSCRIPTIONS_TABLE_SCHEMA_SQL,
   SESSION_DRAFTS_TABLE_SCHEMA_SQL,
   SUPERSEDED_PROVIDER_SESSIONS_TABLE_SCHEMA_SQL,
+  SCHEDULED_JOBS_TABLE_SCHEMA_SQL,
+  SCHEDULED_JOB_RUNS_TABLE_SCHEMA_SQL,
   SCHEDULED_MESSAGES_TABLE_SCHEMA_SQL,
   SESSIONS_TABLE_SCHEMA_SQL,
   USER_PREFERENCES_TABLE_SCHEMA_SQL,
@@ -457,6 +459,33 @@ const addSessionEffortColumn = (db: Database): void => {
   addColumnToTableIfNotExists(db, 'sessions', columnNames, 'effort', 'TEXT');
 };
 
+/**
+ * Adds the `context_window` column that records the window a session actually
+ * runs against, as the provider engine reported it.
+ *
+ * Existing rows stay NULL: the window is a measurement, not something that can
+ * be backfilled from the transcript, so readers keep falling back to
+ * `CONTEXT_WINDOW` and the per-provider default until an engine reports one.
+ */
+const addSessionContextWindowColumn = (db: Database): void => {
+  const sessionsTableInfo = getTableInfo(db, 'sessions');
+  const columnNames = sessionsTableInfo.map((column) => column.name);
+
+  addColumnToTableIfNotExists(db, 'sessions', columnNames, 'context_window', 'INTEGER');
+};
+
+/**
+ * Adds the `run_at` column that marks a job as a one-off.
+ *
+ * Existing rows stay NULL, which is exactly their meaning: every job created
+ * before this column existed was a recurring cron job.
+ */
+const addScheduledJobRunAtColumn = (db: Database): void => {
+  const columnNames = getTableInfo(db, 'scheduled_jobs').map((column) => column.name);
+
+  addColumnToTableIfNotExists(db, 'scheduled_jobs', columnNames, 'run_at', 'DATETIME');
+};
+
 const ensureProjectsForSessionPaths = (db: Database): void => {
   if (!tableExists(db, 'sessions')) {
     return;
@@ -554,9 +583,13 @@ export const runMigrations = (db: Database) => {
     addProviderSessionIdMapping(db);
     addSessionModelColumn(db);
     addSessionEffortColumn(db);
+    addSessionContextWindowColumn(db);
     addForkedFromSessionIdColumn(db);
     ensureProjectsForSessionPaths(db);
     db.exec(SCHEDULED_MESSAGES_TABLE_SCHEMA_SQL);
+    db.exec(SCHEDULED_JOBS_TABLE_SCHEMA_SQL);
+    db.exec(SCHEDULED_JOB_RUNS_TABLE_SCHEMA_SQL);
+    addScheduledJobRunAtColumn(db);
 
     db.exec('CREATE INDEX IF NOT EXISTS idx_session_ids_lookup ON sessions(session_id)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_provider_session_id ON sessions(provider_session_id)');
@@ -565,6 +598,10 @@ export const runMigrations = (db: Database) => {
     // The due-message poll runs on a timer; without this it table-scans.
     db.exec('CREATE INDEX IF NOT EXISTS idx_scheduled_messages_due ON scheduled_messages(status, scheduled_for)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_scheduled_messages_session ON scheduled_messages(session_id)');
+    // The due-job poll runs on a timer; without this it table-scans.
+    db.exec('CREATE INDEX IF NOT EXISTS idx_scheduled_jobs_due ON scheduled_jobs(enabled, next_run_at)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_scheduled_jobs_project ON scheduled_jobs(user_id, project_path)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_scheduled_job_runs_job ON scheduled_job_runs(job_id, started_at DESC)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_is_archived ON sessions(isArchived)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_projects_is_starred ON projects(isStarred)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_projects_is_archived ON projects(isArchived)');

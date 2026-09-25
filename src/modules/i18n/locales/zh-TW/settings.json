@@ -92,11 +92,33 @@
     "apiTokens": "API 和權杖",
     "tasks": "任務",
     "computer": "電腦使用",
+    "browser": "瀏覽器",
+    "scheduled": "定時任務",
     "notifications": "通知",
     "plugins": "外掛",
     "diagnostics": "診斷",
     "about": "關於",
     "sessions": "會話"
+  },
+  "scheduledJobsSettings": {
+    "sectionTitle": "定時任務",
+    "sectionDescription": "依 cron 週期執行的提示詞，可綁定工作階段，也可每次執行建立新工作階段。",
+    "enableLabel": "啟用定時任務",
+    "enableDescription": "為智慧代理註冊定時任務 MCP，並顯示工作區的「定時任務」分頁。關閉後會註銷 MCP、隱藏分頁與 composer 的重複入口，任務也會停止觸發。",
+    "enableAriaLabel": "啟用定時任務",
+    "statusPrefix": "狀態",
+    "checking": "檢查中…",
+    "enabled": "已啟用",
+    "disabled": "已停用",
+    "mcpLabel": "MCP 服務",
+    "mcpDescription": "智慧代理透過定時任務工具管理任務；安裝新引擎後可重新同步。",
+    "providerRegistered": "已註冊",
+    "providerFailed": "失敗",
+    "syncMcp": "重新同步 MCP",
+    "syncing": "同步中…",
+    "loadFailed": "載入定時任務設定失敗",
+    "saveFailed": "儲存定時任務設定失敗",
+    "syncFailed": "同步定時任務 MCP 失敗"
   },
   "notifications": {
     "title": "通知",
@@ -293,10 +315,7 @@
       "description": "了解如何使用外部 API 從您的應用程式觸發 Claude/Cursor 工作階段。",
       "viewLink": "查看 API 文件 →"
     },
-    "loading": "載入中...",
-    "version": {
-      "updateAvailable": "有可用更新：v{{version}}"
-    }
+    "loading": "載入中..."
   },
   "tasks": {
     "checking": "正在檢查 TaskMaster 安裝...",
@@ -536,6 +555,23 @@
     "notice": {
       "title": "数据安全说明：",
       "content": "归档操作只会从侧边栏列表中移出旧会话，绝不会删除您的对话历史和磁盘文件。您随时可以在侧边栏点击“归档视图”（顶部箱子图标）查看完整历史记录，或者一键将其恢复回活跃列表中。"
+    }
+  },
+  "about": {
+    "update": {
+      "checkNow": "檢查更新",
+      "checking": "檢查中…",
+      "upToDate": "已是最新",
+      "checkFailed": "連線遠端失敗",
+      "commitsBehind": "{{count}} 個新提交",
+      "rebuildAvailable": "本機程式碼待建置",
+      "updating": "正在更新…",
+      "unsupported": {
+        "not-git": "自動更新需要 git 儲存庫目錄安裝",
+        "not-pm2": "自動更新需要 PM2 託管",
+        "no-upstream": "目前分支沒有追蹤遠端",
+        "platform": "由平台負責更新"
+      }
     }
   }
 }

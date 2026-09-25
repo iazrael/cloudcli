@@ -12,6 +12,7 @@ import CredentialsSettingsTab from '@/modules/settings/tabs/api-settings/Credent
 import VoiceSettingsTab from '@/modules/settings/tabs/VoiceSettingsTab';
 import GitSettingsTab from '@/modules/settings/tabs/git-settings/GitSettingsTab';
 import BrowserUseSettingsTab from '@/modules/settings/tabs/browser-use-settings/BrowserUseSettingsTab';
+import ScheduledJobsSettingsTab from '@/modules/settings/tabs/scheduled-settings/ScheduledJobsSettingsTab';
 import NotificationsSettingsTab from '@/modules/settings/tabs/NotificationsSettingsTab';
 import TasksSettingsTab from '@/modules/settings/tabs/tasks-settings/TasksSettingsTab';
 import { PluginSettingsTab } from '@/modules/plugins';
@@ -58,6 +59,8 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
     setAntigravityPermissionMode,
     zcodePermissionMode,
     setZcodePermissionMode,
+    opencodePermissionMode,
+    setOpenCodePermissionMode,
     providerAuthStatus,
     openLoginForProvider,
     showLoginModal,
@@ -196,6 +199,8 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
                   onAntigravityPermissionModeChange={setAntigravityPermissionMode}
                   zcodePermissionMode={zcodePermissionMode}
                   onZcodePermissionModeChange={setZcodePermissionMode}
+                  opencodePermissionMode={opencodePermissionMode}
+                  onOpenCodePermissionModeChange={setOpenCodePermissionMode}
                   projects={projects}
                 />
               )}
@@ -205,6 +210,8 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
               {activeTab === 'tasks' && <TasksSettingsTab />}
 
               {activeTab === 'browser' && <BrowserUseSettingsTab />}
+
+              {activeTab === 'scheduled' && <ScheduledJobsSettingsTab />}
 
               {activeTab === 'notifications' && (
                 <NotificationsSettingsTab

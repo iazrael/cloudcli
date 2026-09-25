@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Dispatch, KeyboardEvent, RefObject, SetStateAction } from 'react';
+import { useTranslation } from 'react-i18next';
 
 import { api } from '@/shared/api';
 import { safeLocalStorage } from '@/modules/chat/utils/chatStorage';
@@ -15,6 +16,11 @@ type UseSlashCommandsOptions = {
   setInput: Dispatch<SetStateAction<string>>;
   textareaRef: RefObject<HTMLTextAreaElement>;
   onExecuteCommand: (command: SlashCommand, rawInput?: string) => void | Promise<void>;
+  /**
+   * Whether the active provider's runtime exposes on-demand compaction; when
+   * true the menu offers `/compact` (the command itself IS the capability).
+   */
+  supportsCompaction?: boolean;
 };
 
 type ProviderSkill = {
@@ -133,13 +139,31 @@ export function useSlashCommands({
   setInput,
   textareaRef,
   onExecuteCommand,
+  supportsCompaction = false,
 }: UseSlashCommandsOptions) {
+  const { t } = useTranslation();
   const [slashCommands, setSlashCommands] = useState<SlashCommand[]>([]);
   const [filteredCommands, setFilteredCommands] = useState<SlashCommand[]>([]);
   const [showCommandMenu, setShowCommandMenu] = useState(false);
   const [commandQuery, setCommandQuery] = useState('');
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(-1);
   const [slashPosition, setSlashPosition] = useState(-1);
+
+  // Provider-gated built-in: the entry exists exactly when the backend
+  // capability says the provider runtime can execute it.
+  const compactionCommand = useMemo<SlashCommand | null>(() => (
+    supportsCompaction
+      ? {
+          name: '/compact',
+          description: t('chat:misc.commandDescriptions.compact', {
+            defaultValue: 'Summarize the conversation to free up context.',
+          }),
+          namespace: 'builtin',
+          type: 'built-in',
+          metadata: { type: 'builtin' },
+        }
+      : null
+  ), [supportsCompaction, t]);
 
   const commandQueryTimerRef = useRef<number | null>(null);
 
@@ -184,6 +208,7 @@ export function useSlashCommands({
         const skillCommands = dedupeProviderSkills(skillsData?.data?.skills || [])
           .map(mapSkillToSlashCommand);
         const allCommands: SlashCommand[] = [
+          ...(compactionCommand ? [compactionCommand] : []),
           ...((data.builtIn || []) as SlashCommand[]).map((command) => ({
             ...command,
             type: 'built-in',
@@ -217,7 +242,7 @@ export function useSlashCommands({
     return () => {
       cancelled = true;
     };
-  }, [selectedProject, provider]);
+  }, [selectedProject, provider, compactionCommand]);
 
   useEffect(() => {
     if (!showCommandMenu) {

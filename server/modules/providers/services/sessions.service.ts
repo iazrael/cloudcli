@@ -376,9 +376,11 @@ export const sessionsService = {
       });
     }
 
-    // A session that has never run has no transcript to copy, so there is
-    // nothing a fork of it could resume from.
-    if (!source.provider_session_id || !source.jsonl_path) {
+    // A session that has never run has no conversation to copy, so there is
+    // nothing a fork of it could resume from. Providers whose transcript is not
+    // a file (OpenCode) only need the provider-native session id.
+    const needsTranscriptFile = fork.requiresTranscriptFile !== false;
+    if (!source.provider_session_id || (needsTranscriptFile && !source.jsonl_path)) {
       throw new AppError('This session has not produced a transcript yet.', {
         code: 'FORK_SOURCE_NOT_READY',
         statusCode: 409,
@@ -390,7 +392,7 @@ export const sessionsService = {
 
     const forked = await fork.forkSession({
       providerSessionId: source.provider_session_id,
-      jsonlPath: source.jsonl_path,
+      jsonlPath: source.jsonl_path ?? null,
       projectPath: source.project_path ?? '',
       upToAnchorId: options.upToAnchorId,
       title: sessionName,
@@ -562,6 +564,9 @@ export const sessionsService = {
     const fullHistory = await sessionHistoryCache.getFullHistory({
       sessionId,
       transcriptPath,
+      // `tokenUsage.total` is resolved against this, and it is written after
+      // the turn the page was read for, so it has to invalidate the entry.
+      contextWindow: session.context_window ?? null,
       loadFull: () => providerSessions.fetchHistory(sessionId, {
         limit: null,
         offset: 0,

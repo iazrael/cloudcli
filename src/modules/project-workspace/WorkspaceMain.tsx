@@ -6,6 +6,7 @@ import { StandaloneShell } from '@/modules/standalone-shell';
 import { GitPanel } from '@/modules/git-panel';
 import { PluginTabContent } from '@/modules/plugins';
 import { BrowserUsePanel, useBrowserUseEnabled } from '@/modules/browser-use';
+import { ScheduledJobsPanel, useScheduledJobsEnabled } from '@/modules/scheduled-jobs';
 import { usePaletteOpsRegister } from '@/modules/command-palette';
 import { TaskMasterPanel, useTaskMasterProjectSync, useTasksSettings } from '@/modules/task-master';
 import type { AppTab, Project, ProjectSession, SessionEstablishedContext, SessionNavigationOptions, SettingsMainTab } from '@/shared/types';
@@ -71,6 +72,7 @@ function WorkspaceMain({
 
   const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings();
   const browserUseEnabled = useBrowserUseEnabled();
+  const scheduledJobsEnabled = useScheduledJobsEnabled();
   const { showTerminalTab } = useUiPreferences();
 
   useTaskMasterProjectSync(selectedProject);
@@ -116,6 +118,12 @@ function WorkspaceMain({
     }
   }, [shouldShowShellTab, activeTab, setActiveTab]);
 
+  useEffect(() => {
+    if (!scheduledJobsEnabled && activeTab === 'scheduled') {
+      setActiveTab('chat');
+    }
+  }, [scheduledJobsEnabled, activeTab, setActiveTab]);
+
   // Stable so React.memo(ChatInterface) can bail out: an inline arrow here made
   // every WorkspaceMain render re-render the whole chat tree, including during
   // an editor-divider drag.
@@ -154,6 +162,7 @@ function WorkspaceMain({
         selectedSession={selectedSession}
         shouldShowTasksTab={shouldShowTasksTab}
         shouldShowBrowserTab={shouldShowBrowserTab}
+        shouldShowScheduledTab={scheduledJobsEnabled}
         shouldShowShellTab={shouldShowShellTab}
         isMobile={isMobile}
         onMenuClick={onMenuClick}
@@ -182,6 +191,7 @@ function WorkspaceMain({
                 externalMessageUpdate={externalMessageUpdate}
                 newSessionTrigger={newSessionTrigger}
                 onShowAllTasks={tasksEnabled ? showAllTasks : null}
+                scheduledJobsEnabled={scheduledJobsEnabled}
               />
             </WorkspaceErrorBoundary>
           </div>
@@ -220,6 +230,15 @@ function WorkspaceMain({
           {shouldShowBrowserTab && activeTab === 'browser' && (
             <div className="h-full overflow-hidden">
               <BrowserUsePanel isVisible={activeTab === 'browser'} onShowSettings={onShowSettings} />
+            </div>
+          )}
+
+          {scheduledJobsEnabled && activeTab === 'scheduled' && (
+            <div className="h-full overflow-hidden">
+              <ScheduledJobsPanel
+                projectPath={selectedProject.fullPath}
+                onNavigateToSession={onNavigateToSession}
+              />
             </div>
           )}
 

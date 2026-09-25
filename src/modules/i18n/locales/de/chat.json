@@ -214,8 +214,17 @@
     "editing": {
       "title": "Ersetzt eine frühere Nachricht",
       "filesNotReverted": "bereits geänderte Dateien werden nicht zurückgesetzt",
+      "filesReverted": "bereits geänderte Dateien werden ebenfalls zurückgesetzt",
       "cancel": "Abbrechen"
     }
+  },
+  "misc": {
+    "needsInput": "Der Assistent benötigt deine Eingabe",
+    "selectAllThatApply": "Mehrere auswählbar",
+    "other": "Sonstiges...",
+    "back": "Zurück",
+    "next": "Weiter",
+    "submit": "Senden"
   },
   "export": {
     "trigger": "Unterhaltung exportieren",

@@ -6,6 +6,7 @@ import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 
 import MarkdownCodeBlock from '@/modules/code-editor/markdown/MarkdownCodeBlock';
+import { normalizeLatexMathDelimiters } from '@/shared/utils';
 
 type MarkdownPreviewProps = {
   content: string;
@@ -42,6 +43,7 @@ const markdownPreviewComponents: Components = {
 
 /** Used by the prd-editor module, and by CodeEditorSurface inside code-editor, to render markdown source as formatted preview output. */
 export default function MarkdownPreview({ content }: MarkdownPreviewProps) {
+  const markdown = useMemo(() => normalizeLatexMathDelimiters(content), [content]);
   const remarkPlugins = useMemo(() => [remarkGfm, [remarkMath, { singleDollarTextMath: false }]] as any, []);
   const rehypePlugins = useMemo(() => [rehypeKatex], []);
 
@@ -51,7 +53,7 @@ export default function MarkdownPreview({ content }: MarkdownPreviewProps) {
       rehypePlugins={rehypePlugins}
       components={markdownPreviewComponents}
     >
-      {content}
+      {markdown}
     </ReactMarkdown>
   );
 }

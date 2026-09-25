@@ -45,6 +45,13 @@ const BASELINE: Record<string, Omit<ProviderCapabilities, 'provider'>> = {
     supportsEffort: true,
     supportsMessageEditing: true,
     supportsSessionForking: true,
+    // The Agent SDK processes `/compact` from the held input stream, which is
+    // exactly what the runtime's compact primitive feeds it.
+    supportsCompaction: true,
+    // Claude's CronCreate/ScheduleWakeup schedule inside the running CLI
+    // process; CloudCLI holds that process open so the wake-ups can fire.
+    supportsNativeScheduling: true,
+    editRevertsFiles: false,
     mcp: {
       scopes: ['user', 'local', 'project'],
       transports: ['stdio', 'http', 'sse'],
@@ -65,6 +72,9 @@ const BASELINE: Record<string, Omit<ProviderCapabilities, 'provider'>> = {
     supportsEffort: false,
     supportsMessageEditing: false,
     supportsSessionForking: false,
+    supportsCompaction: false,
+    supportsNativeScheduling: false,
+    editRevertsFiles: false,
     mcp: {
       scopes: ['user', 'project'],
       transports: ['stdio', 'http'],
@@ -90,6 +100,10 @@ const BASELINE: Record<string, Omit<ProviderCapabilities, 'provider'>> = {
     // plus a new prompt, which is how Codex's own IDE clients do it.
     supportsMessageEditing: true,
     supportsSessionForking: true,
+    // `thread/compact/start` on the same app-server transport the fork rides.
+    supportsCompaction: true,
+    supportsNativeScheduling: false,
+    editRevertsFiles: false,
     mcp: {
       scopes: ['user', 'project'],
       transports: ['stdio', 'http'],
@@ -103,13 +117,25 @@ const BASELINE: Record<string, Omit<ProviderCapabilities, 'provider'>> = {
     supportsImages: true,
     supportsFiles: true,
     supportsAbort: true,
-    supportsPermissionRequests: false,
+    // The OpenCode runtime carries a permission bridge (server
+    // `permission.asked` → chat cards, `question.asked` → AskUserQuestion), so
+    // its runtime.permissions facet is present.
+    supportsPermissionRequests: true,
     supportsTokenUsage: true,
-    supportsQuota: false,
+    // OpenCode Go exposes the official usage endpoint (5-hour/weekly/monthly
+    // windows), so its auth facet carries getQuota.
+    supportsQuota: true,
     supportsQuotaReset: false,
     supportsEffort: true,
-    supportsMessageEditing: false,
-    supportsSessionForking: false,
+    // The sessions provider resolves an edit anchor and rewinds through the
+    // server's `revert` primitive, so editing an already-sent message works.
+    supportsMessageEditing: true,
+    // The fork facet branches a conversation through the server's `fork`.
+    supportsSessionForking: true,
+    // `opencode run --command compact` runs the CLI's own compaction command.
+    supportsCompaction: true,
+    supportsNativeScheduling: false,
+    editRevertsFiles: true,
     mcp: {
       scopes: ['user', 'project'],
       transports: ['stdio', 'http'],
@@ -137,6 +163,12 @@ const BASELINE: Record<string, Omit<ProviderCapabilities, 'provider'>> = {
     // provider today.
     supportsMessageEditing: false,
     supportsSessionForking: false,
+    // The runtime's `compact` facet drives the engine's `session/compact` (a
+    // background summarization turn), which is what puts `/compact` in the
+    // composer menu for this provider.
+    supportsCompaction: true,
+    supportsNativeScheduling: false,
+    editRevertsFiles: false,
     mcp: {
       scopes: ['user', 'project'],
       transports: ['stdio', 'http'],
@@ -157,6 +189,12 @@ const BASELINE: Record<string, Omit<ProviderCapabilities, 'provider'>> = {
     supportsEffort: true,
     supportsMessageEditing: false,
     supportsSessionForking: false,
+    // Verified against agy 1.1.x: print mode passes `/compact` through to the
+    // model ("not a built-in slash command"), and the CLI has no compaction
+    // subcommand or flag. Slash expansion only covers skills/custom commands.
+    supportsCompaction: false,
+    supportsNativeScheduling: false,
+    editRevertsFiles: false,
     mcp: {
       scopes: ['user', 'project'],
       transports: ['stdio', 'http', 'sse'],

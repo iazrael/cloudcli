@@ -24,7 +24,10 @@
  * @module zcode-runtime.provider
  */
 
+import fsSync from 'node:fs';
 import path from 'node:path';
+
+import Database from 'better-sqlite3';
 
 import type { IProviderRuntime } from '@/shared/interfaces.js';
 import type { ChatAttachmentDescriptor } from '@/shared/image-attachments.js';
@@ -34,15 +37,18 @@ import type {
   ProviderPermissionDecision,
   ProviderRuntimeContext,
   ProviderRuntimeWriter,
+  ProviderTokenUsageResult,
 } from '@/shared/types.js';
-import { createCompleteMessage, createNormalizedMessage, generateMessageId, readOptionalString } from '@/shared/utils.js';
+import { createCompleteMessage, createNormalizedMessage, generateMessageId, readObjectRecord, readOptionalString } from '@/shared/utils.js';
 import { notifyRunFailed, notifyRunStopped } from '@/modules/notifications/index.js';
 import { sessionsDb } from '@/modules/database/index.js';
 
 import { SESSION_LOST_METHOD } from './zcode-codec.js';
 import { protocolClient } from './zcode-protocol.client.js';
+import { readZCodeContextUsage } from './zcode-context-usage.js';
+import { getZCodeDatabasePath } from './zcode-data-root.js';
 import { ZCODE_CANCELLED_NOTICE, ZCODE_CANCELLED_NOTICE_KEY } from './zcode-live-event-normalizer.js';
-import { buildZCodeSendModelParams } from './zcode-models.provider.js';
+import { ingestZCodeModelCatalog, readZCodeSessionModelInfoFromDb, resolveZCodeModelDefaultReasoningLevel, resolveZCodeModelRef } from './zcode-models.provider.js';
 import { EngineSilenceTimeoutError, ZCodeRunLifecycle, resolveSilenceTimeoutMs } from './zcode-run-lifecycle.js';
 import type { RunHandle, RunSettle } from './zcode-run-lifecycle.js';
 
@@ -56,6 +62,51 @@ import type { RunHandle, RunSettle } from './zcode-run-lifecycle.js';
  * - bypassPermissions → yolo (zcode headless default)
  * - auto → auto
  */
+/**
+ * Shortest gap between two mid-turn `token_budget` frames. Each frame costs one
+ * read-only read of the engine store, and tool results arrive in bursts (one per
+ * parallel call), so the refresh is bounded on the way in rather than on the
+ * number of events.
+ */
+const LIVE_CONTEXT_MIN_INTERVAL_MS = 1500;
+
+/**
+ * How long the engine may take to accept a `session/compact` request. The
+ * response carries a session snapshot but no turn result, so this only bounds
+ * the acceptance handshake — the summarization that follows is watched through
+ * the session's event stream like any other turn.
+ */
+const COMPACT_REQUEST_TIMEOUT_MS = 15_000;
+
+/**
+ * Reads one session's current context occupancy straight from the engine store.
+ *
+ * The runtime cannot ask the engine for this mid-turn (no usage event exists
+ * before `turn.completed`), but every finished step is already persisted with
+ * its own request usage. Returns null when the store or session is unreadable,
+ * and never throws into an event listener.
+ *
+ * Consumers: `ZCodeRuntimeProvider.publishLiveContextUsage`.
+ */
+function readZCodeSessionContextUsage(providerSessionId: string): ProviderTokenUsageResult | null {
+  const dbPath = getZCodeDatabasePath();
+  if (!providerSessionId || !fsSync.existsSync(dbPath)) {
+    return null;
+  }
+
+  let db: Database.Database | null = null;
+  try {
+    db = new Database(dbPath, { readonly: true, fileMustExist: true });
+    return readZCodeContextUsage(db, providerSessionId) ?? null;
+  } catch {
+    return null;
+  } finally {
+    if (db) {
+      db.close();
+    }
+  }
+}
+
 const PERMISSION_MODE_MAP: Record<string, string> = {
   default: 'build',
   acceptEdits: 'edit',
@@ -211,7 +262,7 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
    * 1. Resolve existing session via context.resolveProviderSessionId()
    * 2. Create session if needed and announce it back to the gateway
    * 3. Subscribe to session events so the event stream starts flowing
-   * 4. Resolve the window's model and reasoning selection for this turn
+   * 4. Set model if different from the session's current model
    * 5. Map permission mode and call session/setMode
    * 6. Send user message via session/send
    * 7. Wait for the run end event, then send exactly one complete with tokens
@@ -222,6 +273,70 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
     writer: ProviderRuntimeWriter,
     context: ProviderRuntimeContext,
   ): Promise<unknown> {
+    return this.driveSessionTurn({
+      options,
+      writer,
+      context,
+      configureSession: true,
+      failureMessage: 'ZCode run failed',
+      startTurn: (zcodeSessionId) => this.sendUserMessage(zcodeSessionId, command, options),
+    });
+  }
+
+  /**
+   * Compacts a session's carried conversation into a summary the next turn
+   * builds on (`/compact`).
+   *
+   * `session/compact` answers as soon as the engine accepts the work
+   * (`compact.state === 'accepted'`) and then runs the summarization as a
+   * background prompt turn, so the turn's own terminal event — not that
+   * response — ends this run; that is why the request rides the same plumbing
+   * as `run` (subscribe → listener → settle → exactly one `complete`).
+   *
+   * `expectedRevision` is deliberately omitted: the engine only validates it
+   * when present (-32009 on a stale value), and the app never tracks a
+   * session's revision. The engine compacts with the session's current model
+   * and refuses while a prompt is running, which is why the request reports
+   * that state instead of starting a second turn.
+   */
+  async compact(
+    options: AnyRecord = {},
+    writer: ProviderRuntimeWriter,
+    context: ProviderRuntimeContext,
+  ): Promise<unknown> {
+    return this.driveSessionTurn({
+      options,
+      writer,
+      context,
+      // Summarization uses whatever model the session already runs with and
+      // needs no permission mode, so the engine's session is left untouched.
+      configureSession: false,
+      failureMessage: 'ZCode compaction failed',
+      startTurn: (zcodeSessionId) => this.requestCompaction(zcodeSessionId),
+    });
+  }
+
+  /**
+   * Drives one engine turn to its terminal event and reports it.
+   *
+   * Shared by `run` (a user prompt via `session/send`) and `compact` (a
+   * summarization turn via `session/compact`): resolve or create the session,
+   * register the run, subscribe to its event stream, hand the turn to
+   * `startTurn`, then translate the settle result into exactly one terminal
+   * `complete` frame plus the notification every other runtime emits.
+   */
+  private async driveSessionTurn(input: {
+    options: AnyRecord;
+    writer: ProviderRuntimeWriter;
+    context: ProviderRuntimeContext;
+    /** Whether the app's model/effort and permission mode are applied first. */
+    configureSession: boolean;
+    /** Failure text for the run notification when the engine ends the turn as failed. */
+    failureMessage: string;
+    /** Issues the turn itself; the settle wait observes its terminal event. */
+    startTurn: (zcodeSessionId: string) => Promise<void>;
+  }): Promise<unknown> {
+    const { options, writer, context, configureSession, failureMessage, startTurn } = input;
     const appSessionId = readOptionalString(options.sessionId) ?? null;
     const sessionSummary = readOptionalString(options.sessionSummary);
 
@@ -229,9 +344,11 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
     // session/create failure would never reach the chat stream and the page
     // would stay silent (the gateway only logs runtime rejections).
     let zcodeSessionId: string;
+    let resumedSession = false;
     try {
       const resolved = await this.resolveOrCreateSession(appSessionId, options, context, writer);
       zcodeSessionId = resolved.sessionId;
+      resumedSession = resolved.resumed;
     } catch (error) {
       this.sendRuntimeError(writer, appSessionId, error);
       this.notifyRunOutcome({
@@ -252,15 +369,17 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
 
     try {
       await this.subscribeToSessionEvents(zcodeSessionId);
-      await this.configureSessionMode(zcodeSessionId, options);
-      const modelParams = await this.resolveSendModelParams(options, context);
+      if (configureSession) {
+        await this.configureSessionModel(zcodeSessionId, options, context, resumedSession);
+        await this.configureSessionMode(zcodeSessionId, options);
+      }
 
       const eventListener = this.createSessionEventListener(handle, writer, context);
       protocolClient.addSessionListener(zcodeSessionId, eventListener);
 
       let settle: RunSettle | null = null;
       try {
-        await this.sendUserMessage(zcodeSessionId, command, options, modelParams);
+        await startTurn(zcodeSessionId);
         settle = await runLifecycle.waitForSettle(handle, silenceTimeoutMs);
 
         if (settle.kind === 'silent') {
@@ -308,7 +427,7 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
             sessionId: notifySessionId,
             sessionSummary,
             outcome: completion.failed
-              ? { failed: true, error: completion.failedMessage ?? 'ZCode run failed' }
+              ? { failed: true, error: completion.failedMessage ?? failureMessage }
               : { failed: false, stopReason: 'completed' },
           });
           return { sessionId: zcodeSessionId, success: !completion.failed };
@@ -476,8 +595,12 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
    *    claude-runtime pattern). `writer.setSessionId` updates the stored
    *    mapping, so the replacement is sticky across subsequent sends.
    *
-   * ZCode 0.16.9 validates all session requests strictly. Resume sends only
-   * the session id, while create sends only the workspace descriptor.
+   * Both requests send only the fields the engine's strict schema declares
+   * (`session/resume` takes nothing but `sessionId`; `session/create` takes the
+   * workspace descriptor). The model is applied afterwards through
+   * `session/setModel`, which is what clears the cold-resume "model
+   * unavailable" warning (-32031) without the strict-schema -32602 rejection
+   * that an extra `runtimeModel` key produces on engine 0.16.9.
    */
   private async resolveOrCreateSession(
     appSessionId: string | null,
@@ -500,10 +623,10 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
       );
     }
 
-    // No spawn-cwd fallback: the server's own cwd is the pnpm virtual store
-    // of the deployed build, and a session created there gets indexed by the
-    // synchronizer as a garbage project. A run without a workspace is a
-    // caller bug — fail it visibly instead.
+    // No spawn-cwd fallback: the server's own cwd is the deployed build's
+    // install directory, and silently creating sessions there registered
+    // engine-internal directories as projects. A run that carries neither
+    // workspacePath nor cwd fails visibly instead.
     const workspacePath = readOptionalString(options.workspacePath)
       ?? readOptionalString(options.cwd);
     if (!workspacePath) {
@@ -522,6 +645,11 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
           },
         }
       );
+
+      // `session/create` also carries the engine's resolved model catalog; feed
+      // it to the models provider so `session/setModel` can supply the
+      // reasoning level the engine requires without a second catalog request.
+      ingestZCodeModelCatalog(result);
 
       const newSessionId = readOptionalString(result?.sessionId)
         ?? readOptionalString((result?.session as AnyRecord)?.id)
@@ -564,7 +692,14 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
    */
   private async tryResumeSession(sessionId: string): Promise<boolean> {
     try {
-      await protocolClient.sendRequest('session/resume', { sessionId });
+      // Engine 0.16.9 validates resume against a strict schema that accepts
+      // `sessionId` alone; any extra key is rejected with -32602.
+      const result = await protocolClient.sendRequest<AnyRecord>('session/resume', {
+        sessionId,
+      });
+      // A resumed session carries the same settings payload as create; capture
+      // the catalog for the reasoning level required by session/setModel.
+      ingestZCodeModelCatalog(result);
       return true;
     } catch (error) {
       const code = (error as AnyRecord | undefined)?.code;
@@ -597,6 +732,90 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
       console.debug(`[ZCodeRuntime] Subscribed to events for session ${sessionId}`);
     } catch (error) {
       console.warn(`[ZCodeRuntime] Subscribe failed for session ${sessionId}:`, error);
+    }
+  }
+
+  /**
+   * Configures session model and reasoning effort when it differs from the session's current configuration.
+   *
+   * The current model and variant are read from ZCode's own database (most recent
+   * `message.data.modelID` / `model.variant`).
+   *
+   * `forceModelSync` skips the database early-return: a resumed session's
+   * stored model reference may name a provider that no longer exists in the
+   * engine's config (provider ids drift across engine lifetimes), which makes
+   * the next send fail with -32031 until the model is explicitly re-selected.
+   */
+  private async configureSessionModel(
+    sessionId: string,
+    options: AnyRecord,
+    context: ProviderRuntimeContext,
+    forceModelSync = false,
+  ): Promise<void> {
+    const appSessionId = readOptionalString(options.sessionId);
+    // The composer's explicit choice wins; without one, fall back to the model
+    // recorded on the app session row, and finally to the provider's default —
+    // a forced sync (resumed session) must always re-select *some* valid model
+    // instead of silently keeping a dead engine-side reference.
+    const requestedModel = readOptionalString(options.model)
+      ?? await context.resolveResumeModel(appSessionId ?? undefined, undefined)
+      ?? (forceModelSync ? (await context.getProviderModels()).DEFAULT : undefined);
+    let requestedEffort = readOptionalString(options.effort);
+    if ((!requestedEffort || requestedEffort === 'default') && appSessionId) {
+      const sessionRow = sessionsDb.getSessionById(appSessionId);
+      if (sessionRow?.effort && sessionRow.effort !== 'default') {
+        requestedEffort = sessionRow.effort;
+      }
+    }
+
+    if (!requestedModel) {
+      return; // No model change requested
+    }
+
+    const normalizedVariant = requestedEffort && requestedEffort !== 'default'
+      ? requestedEffort.toLowerCase().trim()
+      : undefined;
+
+    const currentModelInfo = readZCodeSessionModelInfoFromDb(sessionId);
+    if (
+      !forceModelSync
+      && currentModelInfo
+      && currentModelInfo.modelId === requestedModel
+      && (currentModelInfo.variant || undefined) === normalizedVariant
+    ) {
+      return; // Session already runs the requested model and effort variant
+    }
+
+    const resolvedRef = resolveZCodeModelRef(requestedModel, normalizedVariant);
+
+    // The engine's setModel schema is strict: the reasoning level lives under
+    // `model.options.reasoningLevel` (a bare `variant` key is rejected), and a
+    // model with reasoning levels is refused when none is supplied. The user's
+    // explicit effort wins; otherwise use the default captured from the
+    // session/create (or session/resume) response. A resumed session created
+    // outside the app may carry no defaults yet, so fall back to the provider
+    // catalog (which resolves the engine catalog on demand).
+    let reasoningLevel = resolvedRef.variant ?? resolveZCodeModelDefaultReasoningLevel(requestedModel);
+    if (!reasoningLevel) {
+      await context.getProviderModels().catch(() => null);
+      reasoningLevel = resolveZCodeModelDefaultReasoningLevel(requestedModel);
+    }
+    const modelObj: AnyRecord = {
+      providerId: resolvedRef.providerId,
+      modelId: resolvedRef.modelId,
+      ...(reasoningLevel ? { options: { reasoningLevel } } : {}),
+    };
+
+    try {
+      await protocolClient.sendRequest('session/setModel', {
+        sessionId,
+        model: modelObj,
+      });
+
+      console.debug(`[ZCodeRuntime] Set model for session ${sessionId}: ${JSON.stringify(modelObj)}`);
+    } catch (error) {
+      console.warn(`[ZCodeRuntime] Failed to set model ${requestedModel} for session ${sessionId}:`, error);
+      // Continue anyway - use session's existing model
     }
   }
 
@@ -649,10 +868,9 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
    * `session/send` is issued without a request timeout: the response only
    * acknowledges acceptance (observed immediate on engine 0.16.5), while the
    * turn itself completes on the event stream — a timeout here could fire
-   * after acceptance on slow engines. `modelSelection`/`modelExecution` are
-   * optional in 0.16.9's schema (verified live): when the local config cannot
-   * build them the send proceeds without them and the engine runs the turn on
-   * its own default model.
+   * after acceptance on slow engines. The params are strict-schema validated
+   * by the engine (validated against engine 0.16.3 and 0.16.9), so only
+   * `sessionId`, `content`, and `attachments` are sent.
    *
    * Attachments arrive as app descriptors `{path, name, mimeType, size}` and
    * must be re-shaped into the engine's native items before sending — the
@@ -663,13 +881,11 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
     sessionId: string,
     command: string,
     options: AnyRecord,
-    modelParams: ReturnType<typeof buildZCodeSendModelParams>,
   ): Promise<void> {
     const messagePayload: AnyRecord = {
       sessionId,
       // Message content field: content (not message) per protocol findings
       content: command,
-      ...(modelParams ?? {}),
     };
 
     if (Array.isArray(options.attachments)) {
@@ -689,47 +905,31 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
   }
 
   /**
-   * Resolves the chat window's model and reasoning controls into the per-turn
-   * `modelSelection`/`modelExecution` fields for `session/send`, or null to
-   * let the engine's default model take the turn.
+   * Asks the engine to compact one session's carried conversation.
    *
-   * Explicit composer values win, followed by the app session's saved values
-   * and finally the provider catalog default. The model config supplies its
-   * own default reasoning level when the window has no explicit selection.
-   * A model that cannot be resolved into a complete executable selection is
-   * not a send-blocking error — both fields are optional in 0.16.9 (verified
-   * live) — so it degrades to a plain send with a warning.
+   * The response only reports acceptance (`compact.state`), so this resolves as
+   * soon as the engine has taken the work; the following `turn.completed` (or
+   * `compact.failed`) is what ends the run. `already_running` is reported as an
+   * error rather than waited out: the user asked for a compaction that is
+   * already in flight, and silently attaching to it would leave the UI unable
+   * to tell whose progress it is showing.
    */
-  private async resolveSendModelParams(
-    options: AnyRecord,
-    context: ProviderRuntimeContext,
-  ): Promise<ReturnType<typeof buildZCodeSendModelParams>> {
-    const appSessionId = readOptionalString(options.sessionId);
-    const requestedModel = readOptionalString(options.model)
-      ?? await context.resolveResumeModel(appSessionId ?? undefined, undefined)
-      ?? (await context.getProviderModels()).DEFAULT;
-    if (!requestedModel?.trim()) {
-      return null;
-    }
-
-    let requestedEffort = readOptionalString(options.effort);
-    if ((!requestedEffort || requestedEffort === 'default') && appSessionId) {
-      const sessionRow = sessionsDb.getSessionById(appSessionId);
-      if (sessionRow?.effort && sessionRow.effort !== 'default') {
-        requestedEffort = sessionRow.effort;
-      }
-    }
-
-    const modelParams = buildZCodeSendModelParams(
-      requestedModel,
-      requestedEffort && requestedEffort !== 'default' ? requestedEffort : undefined,
-    );
-    if (!modelParams) {
-      console.warn(
-        `[ZCodeRuntime] Model ${requestedModel} is not fully configured in cli/config.json; sending without a per-turn model selection so the engine default applies.`,
+  private async requestCompaction(sessionId: string): Promise<void> {
+    try {
+      const result = await protocolClient.sendRequest<AnyRecord>(
+        'session/compact',
+        { sessionId },
+        COMPACT_REQUEST_TIMEOUT_MS,
       );
+      const state = readOptionalString(readObjectRecord(result?.compact)?.state);
+      if (state === 'already_running') {
+        throw new Error('A compaction is already running for this session.');
+      }
+      console.debug(`[ZCodeRuntime] Requested compaction for session ${sessionId} (state: ${state ?? 'unknown'})`);
+    } catch (error) {
+      console.error(`[ZCodeRuntime] Failed to request compaction for session ${sessionId}:`, error);
+      throw error;
     }
-    return modelParams;
   }
 
   /**
@@ -820,11 +1020,56 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
           }
 
           writer.send(message);
+
+          if (message.kind === 'tool_result') {
+            // A tool result closes a step: that step's usage is already
+            // persisted, so the composer's context badge can move now instead
+            // of waiting for the completion refresh — which is what a long
+            // tool-heavy turn needs.
+            this.publishLiveContextUsage(handle, writer);
+          }
         }
       } catch (error) {
         console.error(`[ZCodeRuntime] Error processing session event:`, error);
       }
     };
+  }
+
+  /**
+   * Pushes one mid-turn `token_budget` frame when the session's context
+   * occupancy has moved since the last one.
+   *
+   * Deliberately silent about everything else: an unchanged reading (several
+   * tool results of the same step), an aborted or already-finished run, and a
+   * reading taken inside the rate-limit window all publish nothing. The payload
+   * is the same shape the `/token-usage` endpoint returns, so the badge, the
+   * percentage it derives, and a reloaded transcript cannot disagree.
+   */
+  private publishLiveContextUsage(handle: RunHandle, writer: ProviderRuntimeWriter): void {
+    if (handle.abortRequested || handle.state.completed) {
+      return;
+    }
+
+    const now = Date.now();
+    if (now - (handle.state.contextPublishedAt ?? 0) < LIVE_CONTEXT_MIN_INTERVAL_MS) {
+      return;
+    }
+    handle.state.contextPublishedAt = now;
+
+    const usage = readZCodeSessionContextUsage(handle.sessionId);
+    if (!usage || usage.used <= 0 || usage.used === handle.state.publishedContextUsed) {
+      return;
+    }
+
+    handle.state.publishedContextUsed = usage.used;
+    writer.send(createNormalizedMessage({
+      id: generateMessageId('zcode'),
+      sessionId: handle.sessionId,
+      provider: 'zcode',
+      kind: 'status',
+      text: 'token_budget',
+      tokenBudget: usage,
+    }));
   }
 
   /**

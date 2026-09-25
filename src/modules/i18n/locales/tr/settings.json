@@ -281,10 +281,7 @@
       "description": "Uygulamalarından Claude/Cursor oturumları tetiklemek için harici API'nin nasıl kullanılacağını öğren.",
       "viewLink": "API Dokümantasyonunu Görüntüle →"
     },
-    "loading": "Yükleniyor...",
-    "version": {
-      "updateAvailable": "Güncelleme mevcut: v{{version}}"
-    }
+    "loading": "Yükleniyor..."
   },
   "tasks": {
     "checking": "TaskMaster kurulumu kontrol ediliyor...",

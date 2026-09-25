@@ -280,10 +280,7 @@
       "description": "Apprenez à utiliser l'API externe pour déclencher des sessions Claude/Cursor depuis vos applications.",
       "viewLink": "Voir la documentation API →"
     },
-    "loading": "Chargement...",
-    "version": {
-      "updateAvailable": "Mise à jour disponible : v{{version}}"
-    }
+    "loading": "Chargement..."
   },
   "tasks": {
     "checking": "Vérification de l'installation TaskMaster...",

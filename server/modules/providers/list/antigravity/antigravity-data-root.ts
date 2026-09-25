@@ -44,8 +44,12 @@ export function getAntigravitySettingsPath(): string {
 }
 
 /**
- * Resolves the OAuth token file written by a completed `agy` login — the only
- * file that counts as authenticated. Consumed by the auth provider.
+ * Resolves the OAuth token file written by a completed `agy` login — the
+ * primary file signal for authenticated state. Not sufficient on its own:
+ * the file never exists on Windows installs (credentials live in the
+ * Windows Credential Manager, probed separately by the auth provider), and
+ * on macOS a failed refresh can clear it while the keychain copy stays
+ * valid. Consumed by the auth provider.
  */
 export function getAntigravityOauthTokenPath(): string {
   return path.join(getAntigravityDataRoot(), 'antigravity-oauth-token');

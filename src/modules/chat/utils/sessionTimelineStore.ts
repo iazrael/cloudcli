@@ -728,8 +728,13 @@ const SERVER_EVENT_ROUTES: Record<string, { flushesStream: boolean; action: Serv
   status: { flushesStream: false, action: 'status' },
   permission_request: { flushesStream: false, action: 'permissionRequest' },
   permission_cancelled: { flushesStream: false, action: 'permissionCancelled' },
-  // Sidebar/global events — owned by useProjectsState.
+  // Sidebar/global events — owned by useProjectsState. `session_removed` is a
+  // batch frame with no id/sessionId; without this row the unknown-kind
+  // fallback appended it to the viewed session's timeline.
   session_upserted: { flushesStream: false, action: 'none' },
+  session_removed: { flushesStream: false, action: 'none' },
+  // Owned by useScheduledJobs; a job-list signal, never a timeline row.
+  scheduled_jobs_changed: { flushesStream: false, action: 'none' },
   loading_progress: { flushesStream: false, action: 'none' },
 };
 
@@ -1330,6 +1335,12 @@ export class SessionTimelineStore {
    * This works regardless of which session is actively viewed.
    */
   appendRealtime(sessionId: string, msg: NormalizedMessage): void {
+    // A frame with no id is not a renderable timeline row — gateway frames
+    // such as `session_removed` carry only their own payload. Admitting one
+    // used to crash every later recompute of the merged view.
+    if (typeof msg.id !== 'string' || msg.id.length === 0) {
+      return;
+    }
     const slot = this.getSlot(sessionId);
     const message =
       msg.sessionId === sessionId

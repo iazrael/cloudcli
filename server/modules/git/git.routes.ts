@@ -36,6 +36,7 @@ function spawnAsync(command, args, options = {}) {
     const child = spawn(command, args, {
       ...options,
       shell: false,
+      windowsHide: true,
     });
 
     let stdout = '';

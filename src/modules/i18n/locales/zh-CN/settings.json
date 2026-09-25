@@ -111,10 +111,31 @@
     "voice": "语音",
     "tasks": "任务",
     "browser": "浏览器",
+    "scheduled": "定时任务",
     "notifications": "通知",
     "plugins": "插件",
     "diagnostics": "诊断",
     "about": "关于"
+  },
+  "scheduledJobsSettings": {
+    "sectionTitle": "定时任务",
+    "sectionDescription": "按 cron 周期运行的提示词，可绑定会话，也可每次运行新建会话。",
+    "enableLabel": "启用定时任务",
+    "enableDescription": "为智能体注册定时任务 MCP，并显示工作区的「定时任务」标签页。关闭后会注销 MCP、隐藏标签页与 composer 的重复入口，任务也会停止触发。",
+    "enableAriaLabel": "启用定时任务",
+    "statusPrefix": "状态",
+    "checking": "检查中…",
+    "enabled": "已启用",
+    "disabled": "已禁用",
+    "mcpLabel": "MCP 服务",
+    "mcpDescription": "智能体通过定时任务工具管理任务；安装新引擎后可重新同步。",
+    "providerRegistered": "已注册",
+    "providerFailed": "失败",
+    "syncMcp": "重新同步 MCP",
+    "syncing": "同步中…",
+    "loadFailed": "加载定时任务设置失败",
+    "saveFailed": "保存定时任务设置失败",
+    "syncFailed": "同步定时任务 MCP 失败"
   },
   "sessions": {
     "title": "会话管理",
@@ -348,10 +369,7 @@
       "description": "了解如何使用外部 API 从您的应用程序触发 Claude/Cursor 会话。",
       "viewLink": "查看 API 文档 →"
     },
-    "loading": "加载中...",
-    "version": {
-      "updateAvailable": "有可用更新：v{{version}}"
-    }
+    "loading": "加载中..."
   },
   "tasks": {
     "checking": "正在检查 TaskMaster 安装...",
@@ -537,6 +555,36 @@
         "overrideNote": "聊天输入框旁的会话权限选择器可为当前回合覆盖此默认值。"
       }
     },
+    "opencode": {
+      "permissionMode": "权限模式",
+      "description": "控制 OpenCode 如何处理文件编辑、计划生成及命令执行",
+      "modes": {
+        "default": {
+          "title": "默认模式",
+          "description": "按你自己的 opencode.json 权限规则运行。非交互运行下，未显式放行的操作会被拒绝。"
+        },
+        "acceptEdits": {
+          "title": "接受编辑",
+          "description": "通过 OPENCODE_PERMISSION 环境变量自动放行文件编辑，其余规则仍遵循你的配置。"
+        },
+        "plan": {
+          "title": "计划模式",
+          "description": "通过内置 plan agent 进行只读分析与计划（--agent plan），生成结构化计划而不修改文件。"
+        },
+        "bypassPermissions": {
+          "title": "跳过权限（危险）",
+          "description": "自动放行配置中未显式拒绝的所有操作（--auto），请谨慎使用。"
+        }
+      },
+      "technicalDetails": "技术详情",
+      "technicalInfo": {
+        "default": "不附加任何参数：非交互运行，opencode.json 中标记为 ask 的规则会被直接拒绝。",
+        "acceptEdits": "映射为 OPENCODE_PERMISSION={\"edit\":\"allow\"}，由 CLI 合并进权限配置。",
+        "plan": "映射为 `opencode run --agent plan`：只读分析与计划，不做修改。",
+        "bypassPermissions": "映射为 `opencode run --auto`：未被显式拒绝的操作全部自动放行。",
+        "overrideNote": "聊天输入框旁的会话权限选择器可为当前回合覆盖此默认值。"
+      }
+    },
     "claude": {
       "permissionMode": "权限模式",
       "description": "控制 Claude 执行工具前如何请求批准；新会话默认从此模式开始。",
@@ -718,5 +766,22 @@
     "clearedNotice": "已清空。复现问题后再导出，文件里只会有这次的记录。",
     "exportSuccess": "诊断文件已下载。",
     "exportFailed": "无法生成诊断文件，请检查浏览器下载权限后重试。"
+  },
+  "about": {
+    "update": {
+      "checkNow": "检查更新",
+      "checking": "检查中…",
+      "upToDate": "已是最新",
+      "checkFailed": "连接远端失败",
+      "commitsBehind": "{{count}} 个新提交",
+      "rebuildAvailable": "本地代码待构建",
+      "updating": "正在更新…",
+      "unsupported": {
+        "not-git": "自动更新需要 git 仓库目录安装",
+        "not-pm2": "自动更新需要 PM2 托管",
+        "no-upstream": "当前分支没有跟踪远端",
+        "platform": "由平台负责更新"
+      }
+    }
   }
 }

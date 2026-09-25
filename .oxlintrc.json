@@ -110,7 +110,8 @@
           "server/shared/claude-cli-path.ts",
           "server/shared/image-attachments.ts",
           "server/shared/message-unification.ts",
-          "server/shared/normalized-message-contract.ts"
+          "server/shared/normalized-message-contract.ts",
+          "server/shared/mcp-stdio.ts"
         ],
         "mode": "file"
       },

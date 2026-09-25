@@ -202,8 +202,17 @@
     "editing": {
       "title": "以前のメッセージを置き換えています",
       "filesNotReverted": "変更済みのファイルは元に戻りません",
+      "filesReverted": "変更済みのファイルも元に戻ります",
       "cancel": "キャンセル"
     }
+  },
+  "misc": {
+    "needsInput": "アシスタントが入力を待っています",
+    "selectAllThatApply": "該当するものをすべて選択",
+    "other": "その他...",
+    "back": "戻る",
+    "next": "次へ",
+    "submit": "送信"
   },
   "export": {
     "trigger": "会話をエクスポート",
