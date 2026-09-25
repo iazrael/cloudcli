@@ -133,6 +133,7 @@ function ComposerModelMenu({
               <ComposerMenuItem
                 role="menuitem"
                 label={modelLabel}
+                description={selectedModelOption?.description}
                 isSelected={false}
                 onSelect={() => setIsModelSectionOpen((current) => !current)}
                 trailing={
@@ -168,6 +169,10 @@ function ComposerModelMenu({
                     <ComposerMenuItem
                       key={option.value}
                       label={option.label || option.value}
+                      // Providers share model names (GLM 5.3 exists on both OpenCode
+                      // Zen and Go); the catalog description names the gateway so
+                      // the duplicate labels stay distinguishable.
+                      description={option.description}
                       isSelected={option.value === model}
                       onSelect={() => {
                         onSelectModel(option.value);
