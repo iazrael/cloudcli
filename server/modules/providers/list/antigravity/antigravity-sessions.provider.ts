@@ -1058,7 +1058,10 @@ export class AntigravitySessionsProvider implements IProviderSessions {
       try {
         const usageRaw = await readFile(tokenUsagePath, 'utf8');
         const usageJson = JSON.parse(usageRaw) as ProviderTokenUsageResult | null;
-        if (usageJson && typeof usageJson.used === 'number') {
+        // Older builds persisted the turn-wide result sum, which can exceed
+        // the window; such a snapshot is not a context reading, so skip it.
+        const overflowsWindow = typeof usageJson?.total === 'number' && usageJson.used > usageJson.total;
+        if (usageJson && typeof usageJson.used === 'number' && !overflowsWindow) {
           return usageJson;
         }
       } catch {

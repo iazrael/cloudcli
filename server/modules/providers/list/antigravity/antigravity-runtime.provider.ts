@@ -679,9 +679,6 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
             if (stepUpdateRecord.step_type === 'system_message') void settleReportedAgents();
           }
 
-          const resultRecord = readObjectRecord(rawRecord?.result);
-          const usageRecord = readObjectRecord(resultRecord?.usage ?? stepUpdateRecord?.usage ?? rawRecord?.usage);
-
           // Context occupancy comes from step_update usage only: each one
           // reports a single model call, i.e. the live context size. The
           // result event's usage sums every call of the turn and would

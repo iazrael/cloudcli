@@ -1678,6 +1678,19 @@ test('AntigravitySessionsProvider prefers persisted token_usage.json over the tr
     });
 
     assert.equal(usage.used, 999);
+
+    // A legacy snapshot larger than its window (a turn-wide sum) is skipped.
+    await fs.writeFile(
+      path.join(tempDirectory, 'brain', 'conv-2', 'token_usage.json'),
+      JSON.stringify({ used: 1791712, total: 1048576, inputTokens: 1740430, outputTokens: 51282 }),
+    );
+    const fallback = await sessions.getTokenUsage({
+      appSessionId: 'app-session',
+      nativeSessionId: 'conv-2',
+      jsonlPath: null,
+      projectPath: null,
+    });
+    assert.equal(fallback.used, 2);
   } finally {
     restoreDataDir();
     await fs.rm(tempDirectory, { recursive: true, force: true });
