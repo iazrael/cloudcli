@@ -88,6 +88,30 @@ function resolveWorkspaceReadOnlyRoot(): string | null {
 }
 
 /**
+ * Operator-configured extra read-only roots from `CLOUDCLI_EXTRA_READ_ROOTS`,
+ * separated by the platform path delimiter (`;` on Windows, `:` elsewhere).
+ * Lets chat links to tool caches outside the workspace (for example a
+ * screenshot cache under the home directory) open in the editor. Relative
+ * entries are dropped because they would silently resolve against the server
+ * cwd; list narrow directories, never the whole home, since every file under
+ * a root becomes readable.
+ */
+function getConfiguredExtraReadRoots(): string[] {
+  const configuredRoots = (process.env.CLOUDCLI_EXTRA_READ_ROOTS ?? '')
+    .split(path.delimiter)
+    .map((rootPath) => rootPath.trim())
+    .filter(Boolean);
+
+  return configuredRoots.filter((rootPath) => {
+    if (path.isAbsolute(rootPath)) {
+      return true;
+    }
+    console.warn(`[file-tree] Ignoring non-absolute CLOUDCLI_EXTRA_READ_ROOTS entry: ${rootPath}`);
+    return false;
+  });
+}
+
+/**
  * Production filesystem adapter owned by the File Tree composition root.
  * Application services receive this complete capability explicitly and never
  * import Node's mutable filesystem APIs themselves.
@@ -156,8 +180,9 @@ const fileTreeServices = createFileTreeService({
   // Antigravity uses brain directories, Claude uses its per-project tree, and
   // ZCode uses narrow memory/skill/instruction paths. Attachments live in
   // ~/.cloudcli/assets, while provider runtimes stage temporary reports under
-  // OS temp directories. The editor may open these roots read-only without
-  // widening project-scoped write access.
+  // OS temp directories; operators may add more via CLOUDCLI_EXTRA_READ_ROOTS.
+  // The editor may open these roots read-only without widening project-scoped
+  // write access.
   //
   // The workspace root itself (the default is the user's home directory) and
   // ~/Downloads join the list so chat links to files an engine drops outside
@@ -173,6 +198,7 @@ const fileTreeServices = createFileTreeService({
     getGlobalImageAssetsDir(),
     ...getExternalTempRoots(),
     ...getZcodeExternalReadOnlyRoots(),
+    ...getConfiguredExtraReadRoots(),
     ...(workspaceReadOnlyRoot ? [workspaceReadOnlyRoot] : []),
     path.join(os.homedir(), 'Downloads'),
   ],
