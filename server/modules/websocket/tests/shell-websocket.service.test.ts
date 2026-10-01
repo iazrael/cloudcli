@@ -274,12 +274,13 @@ test('bypassPermissions carries through to resumed claude sessions', () => {
   );
 
   assert.equal(spawnedCommands.length, 1);
-  if (os.platform() !== 'win32') {
-    assert.equal(
-      spawnedCommands[0],
-      'claude --resume "resumed-session-id" --dangerously-skip-permissions || claude --dangerously-skip-permissions'
-    );
-  }
+  // Windows PTYs run Windows PowerShell 5.1, which rejects `||` as a parse error.
+  assert.equal(
+    spawnedCommands[0],
+    os.platform() === 'win32'
+      ? 'claude --resume "resumed-session-id" --dangerously-skip-permissions; if ($LASTEXITCODE -ne 0) { claude --dangerously-skip-permissions }'
+      : 'claude --resume "resumed-session-id" --dangerously-skip-permissions || claude --dangerously-skip-permissions'
+  );
 });
 
 test('a missing project directory is reported as an error frame and starts no pty', () => {
