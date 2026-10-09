@@ -37,7 +37,13 @@
     "invalidOnce": "Pick a valid date and time.",
     "save": "Save",
     "create": "Create",
-    "cancel": "Cancel"
+    "cancel": "Cancel",
+    "rotateSession": "Session rotation",
+    "rotateNever": "Never (keep one session)",
+    "rotateEvery_one": "Every {{count}} day",
+    "rotateEvery_other": "Every {{count}} days",
+    "sessionRotateHint_one": "Runs in the bound session; once it is {{count}} day old, the next run moves to a fresh session and archives the old one.",
+    "sessionRotateHint_other": "Runs in the bound session; once it is {{count}} days old, the next run moves to a fresh session and archives the old one."
   },
   "job": {
     "nextRun": "Next run {{when}}",
@@ -54,7 +60,9 @@
     "confirmDelete": "Click again to delete",
     "history": "Run history",
     "newSessionEachRun": "New session each run",
-    "boundSession": "Bound session"
+    "boundSession": "Bound session",
+    "boundSessionRotating_one": "Bound session · rotates every {{count}} day",
+    "boundSessionRotating_other": "Bound session · rotates every {{count}} days"
   },
   "status": {
     "running": "Running",

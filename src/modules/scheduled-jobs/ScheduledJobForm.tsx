@@ -29,11 +29,16 @@ type ScheduledJobFormProps = {
     cronExpression?: string;
     runAt?: string;
     timezone: string;
+    /** Only sent for a `reuse` job; `null` turns rotation off. */
+    rotateAfterDays?: number | null;
   }) => void;
   onCancel: () => void;
 };
 
 const PRESET_OPTIONS: ScheduleChoiceId[] = ['once', 'daily', 'weekdays', 'weekly', 'hourly', 'custom'];
+
+/** Rotation periods offered for a reused session, in days; 0 stands for "never". */
+const ROTATE_AFTER_DAYS_OPTIONS = [0, 1, 3, 7, 14, 30];
 
 /**
  * Rendered by the Scheduled tab to create a job (always `new` mode: a fresh
@@ -90,6 +95,9 @@ export function ScheduledJobForm({
   const [customCron, setCustomCron] = useState(
     initialPattern.kind === 'custom' ? editingJob?.cronExpression ?? '' : '',
   );
+  // How old the bound session may get before runs move to a fresh one; 0 is
+  // "never". Only shown and sent for a job that reuses a session.
+  const [rotateAfterDays, setRotateAfterDays] = useState(editingJob?.rotateAfterDays ?? 0);
   // Validation is only surfaced after a save attempt, so the form does not
   // complain while the user is still typing the first field.
   const [validationError, setValidationError] = useState<string | null>(null);
@@ -99,6 +107,12 @@ export function ScheduledJobForm({
   const capability = capabilities?.[provider];
   const permissionModes = capability?.permissionModes ?? ['default'];
   const supportsNativeScheduling = capability?.supportsNativeScheduling ?? false;
+  // A period set elsewhere (an agent over MCP) stays selectable instead of
+  // silently snapping to a preset on save.
+  const rotateOptions = ROTATE_AFTER_DAYS_OPTIONS.includes(rotateAfterDays)
+    ? ROTATE_AFTER_DAYS_OPTIONS
+    : [...ROTATE_AFTER_DAYS_OPTIONS, rotateAfterDays].sort((a, b) => a - b);
+  const rotation = isReuseJob ? { rotateAfterDays: rotateAfterDays || null } : {};
 
   const submit = () => {
     const trimmedName = name.trim();
@@ -122,6 +136,7 @@ export function ScheduledJobForm({
         permissionMode,
         runAt: runAt.toISOString(),
         timezone,
+        ...rotation,
       });
       return;
     }
@@ -140,6 +155,7 @@ export function ScheduledJobForm({
       permissionMode,
       cronExpression,
       timezone,
+      ...rotation,
     });
   };
 
@@ -259,7 +275,25 @@ export function ScheduledJobForm({
       </div>
 
       {isReuseJob ? (
-        <p className="text-[11px] leading-snug text-muted-foreground/70">{t('form.sessionReuseHint')}</p>
+        <div>
+          <label className="block sm:w-1/2">
+            <span className="text-xs font-medium text-muted-foreground">{t('form.rotateSession')}</span>
+            <select
+              value={rotateAfterDays}
+              onChange={(event) => setRotateAfterDays(Number(event.target.value))}
+              className="mt-1 w-full rounded-md border border-border/60 bg-background px-2 py-1.5 text-sm text-foreground"
+            >
+              {rotateOptions.map((days) => (
+                <option key={days} value={days}>
+                  {days === 0 ? t('form.rotateNever') : t('form.rotateEvery', { count: days })}
+                </option>
+              ))}
+            </select>
+          </label>
+          <p className="mt-1 text-[11px] leading-snug text-muted-foreground/70">
+            {rotateAfterDays ? t('form.sessionRotateHint', { count: rotateAfterDays }) : t('form.sessionReuseHint')}
+          </p>
+        </div>
       ) : (
         <p className="text-[11px] leading-snug text-muted-foreground/70">{t('form.sessionNewHint', { projectPath })}</p>
       )}

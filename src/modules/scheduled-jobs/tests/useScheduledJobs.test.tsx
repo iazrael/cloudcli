@@ -40,6 +40,7 @@ const JOB_A: ScheduledJob = {
   projectPath: '/workspace/a',
   sessionId: 'session-a',
   sessionMode: 'reuse',
+  rotateAfterDays: null,
   prompt: 'run checks',
   options: {},
   cronExpression: '30 9 * * *',

@@ -37,6 +37,11 @@ function readRequiredText(value: unknown, field: string): string {
   return text;
 }
 
+/** The bridge's `rotateAfterDays`: omitted stays omitted, `0` turns rotation off. */
+function readRotateAfterDays(value: unknown): unknown {
+  return value === 0 ? null : value;
+}
+
 function readContext(input: AgentToolInput): AgentCallContext {
   return {
     provider: readOptionalText(input.context?.provider),
@@ -199,6 +204,7 @@ export const scheduledJobsAgentService = {
       projectPath: projectPath ?? undefined,
       sessionId: sessionId ?? undefined,
       sessionMode: sessionId ? 'reuse' : 'new',
+      rotateAfterDays: readRotateAfterDays(input.rotateAfterDays),
       prompt,
       options: { permissionMode },
       cronExpression: cronExpression ?? undefined,
@@ -247,6 +253,7 @@ export const scheduledJobsAgentService = {
       cronExpression?: unknown;
       timezone?: unknown;
       runAt?: unknown;
+      rotateAfterDays?: unknown;
       enabled?: unknown;
     } = {};
 
@@ -256,6 +263,7 @@ export const scheduledJobsAgentService = {
     if (input.runAt !== undefined) patch.runAt = input.runAt;
     if (input.timezone !== undefined) patch.timezone = input.timezone;
     if (input.enabled !== undefined) patch.enabled = input.enabled;
+    if (input.rotateAfterDays !== undefined) patch.rotateAfterDays = readRotateAfterDays(input.rotateAfterDays);
     if (input.permissionMode !== undefined) {
       const existing = scheduledJobsService.list(userId, {}).find((task) => task.id === id);
       if (!existing) {

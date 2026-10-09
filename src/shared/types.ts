@@ -208,8 +208,11 @@ export type ScheduledJobStatus = 'succeeded' | 'failed' | 'skipped' | 'missed';
  *
  * `sessionMode` decides where each occurrence runs: `reuse` sends it into the
  * bound conversation, `new` creates a fresh session per run so a daily job's
- * context never accumulates. A one-off disables itself once it has fired, so
- * it drops out of the composer banner and reads as completed.
+ * context never accumulates. A `reuse` job with `rotateAfterDays` moves to a
+ * fresh session (archiving the old one) once its bound session is that many
+ * days old, so it keeps one live conversation that stays fast to open. A
+ * one-off disables itself once it has fired, so it drops out of the composer
+ * banner and reads as completed.
  */
 export type ScheduledJob = {
   id: string;
@@ -218,6 +221,8 @@ export type ScheduledJob = {
   projectPath: string;
   sessionId: string | null;
   sessionMode: 'reuse' | 'new';
+  /** `reuse` only: days a bound session lives before runs move to a fresh one; `null` never rotates. */
+  rotateAfterDays: number | null;
   prompt: string;
   options: Record<string, unknown>;
   /** Standard five-field cron expression, evaluated in `timezone`. */

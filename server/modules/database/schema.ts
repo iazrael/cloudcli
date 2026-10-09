@@ -145,6 +145,9 @@ CREATE TABLE IF NOT EXISTS scheduled_jobs (
     session_id TEXT,
     -- reuse | new
     session_mode TEXT NOT NULL DEFAULT 'reuse',
+    -- 'reuse' only: once the bound session is this many days old, the next run
+    -- moves to a fresh session and archives the old one. NULL never rotates.
+    rotate_after_days INTEGER,
     prompt TEXT NOT NULL,
     -- Composer preferences (model, effort, permission mode) as they were when
     -- the job was created, so each occurrence runs the way the user set it up.

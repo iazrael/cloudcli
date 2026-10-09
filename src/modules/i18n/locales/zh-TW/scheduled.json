@@ -37,7 +37,11 @@
     "invalidOnce": "請選擇有效的日期與時間。",
     "save": "儲存",
     "create": "建立",
-    "cancel": "取消"
+    "cancel": "取消",
+    "rotateSession": "工作階段輪替",
+    "rotateNever": "不輪替（一直用同一個工作階段）",
+    "rotateEvery_other": "每 {{count}} 天",
+    "sessionRotateHint_other": "在綁定的工作階段裡執行；工作階段滿 {{count}} 天後，下一次執行會換到新的工作階段並封存舊的。"
   },
   "job": {
     "nextRun": "下次執行 {{when}}",
@@ -54,7 +58,8 @@
     "confirmDelete": "再次點擊確認刪除",
     "history": "執行歷史",
     "newSessionEachRun": "每次建立新工作階段",
-    "boundSession": "綁定工作階段"
+    "boundSession": "綁定工作階段",
+    "boundSessionRotating_other": "綁定工作階段 · 每 {{count}} 天輪替"
   },
   "status": {
     "running": "執行中",

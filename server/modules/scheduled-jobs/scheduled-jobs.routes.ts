@@ -90,6 +90,7 @@ router.post(
       projectPath: body.projectPath,
       sessionId: body.sessionId,
       sessionMode: body.sessionMode,
+      rotateAfterDays: body.rotateAfterDays,
       prompt: body.prompt,
       options: body.options,
       cronExpression: body.cronExpression,
@@ -116,6 +117,7 @@ router.patch(
         runAt: body.runAt,
         sessionMode: body.sessionMode,
         sessionId: body.sessionId,
+        rotateAfterDays: body.rotateAfterDays,
         enabled: body.enabled,
       },
     );

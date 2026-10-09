@@ -198,6 +198,94 @@ test('a new-mode job creates a session per occurrence', async () => {
   });
 });
 
+test('a rotating job keeps its session until it reaches the rotation age', async () => {
+  await withIsolatedDatabase(async (userId) => {
+    const job = createReuseJob(userId, { rotateAfterDays: 7 });
+    assert.equal(job.rotateAfterDays, 7);
+
+    const runs: RunCall[] = [];
+    await dispatchDueScheduledJobs(createRuntime(runs), new Date(Date.now() + 120_000));
+
+    assert.equal(scheduledJobsService.listRuns(userId, job.id)[0].sessionId, SESSION_ID);
+    assert.equal(scheduledJobsDb.getById(userId, job.id)?.session_id, SESSION_ID);
+    assert.equal(sessionsDb.getSessionById(SESSION_ID)?.isArchived, 0);
+  });
+});
+
+test('a rotating job moves to a fresh session and archives the old one once it is due', async () => {
+  await withIsolatedDatabase(async (userId, projectPath) => {
+    const job = createReuseJob(userId, { rotateAfterDays: 7 });
+
+    const runs: RunCall[] = [];
+    const now = new Date(Date.now() + 8 * 24 * 60 * 60 * 1000);
+    const { runId } = scheduledJobsService.requestManualRun(userId, job.id);
+    await executeScheduledJobRun(scheduledJobsDb.getById(userId, job.id)!, runId, createRuntime(runs), now);
+
+    const rebound = scheduledJobsDb.getById(userId, job.id)?.session_id;
+    assert.ok(rebound);
+    assert.notEqual(rebound, SESSION_ID);
+    assert.equal(runs.length, 1);
+
+    const history = scheduledJobsService.listRuns(userId, job.id);
+    assert.equal(history[0].status, 'succeeded');
+    assert.equal(history[0].sessionId, rebound);
+
+    const fresh = sessionsDb.getSessionById(rebound as string);
+    assert.equal(fresh?.project_path, projectPath);
+    assert.match(fresh?.custom_name ?? '', /^Nightly checks/);
+    assert.equal(sessionsDb.getSessionById(SESSION_ID)?.isArchived, 1);
+  });
+});
+
+test('a rotating job never rotates a session that is mid-run', async () => {
+  await withIsolatedDatabase(async (userId) => {
+    const job = createReuseJob(userId, { rotateAfterDays: 1 });
+    chatRunRegistry.startRun({
+      appSessionId: SESSION_ID,
+      provider: 'claude',
+      providerSessionId: null,
+      connection: null,
+      userId,
+    });
+
+    const { runId } = scheduledJobsService.requestManualRun(userId, job.id);
+    const now = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000);
+    await executeScheduledJobRun(scheduledJobsDb.getById(userId, job.id)!, runId, createRuntime([]), now);
+
+    assert.equal(scheduledJobsDb.getById(userId, job.id)?.session_id, SESSION_ID);
+    assert.equal(sessionsDb.getSessionById(SESSION_ID)?.isArchived, 0);
+    assert.equal(scheduledJobsService.listRuns(userId, job.id)[0].status, 'skipped');
+  });
+});
+
+test('rotation is validated and only offered to reuse jobs', async () => {
+  await withIsolatedDatabase(async (userId, projectPath) => {
+    assert.throws(() => createReuseJob(userId, { rotateAfterDays: 0 }), /rotateAfterDays/);
+    assert.throws(() => createReuseJob(userId, { rotateAfterDays: 2.5 }), /rotateAfterDays/);
+    assert.throws(() => scheduledJobsService.create({
+      userId,
+      name: 'Daily audit',
+      provider: 'claude',
+      projectPath,
+      sessionId: undefined,
+      sessionMode: 'new',
+      rotateAfterDays: 7,
+      prompt: 'audit the workspace',
+      cronExpression: CRON_EVERY_MINUTE,
+      timezone: TIMEZONE,
+    }), /reuses a session/);
+
+    const job = createReuseJob(userId);
+    assert.equal(job.rotateAfterDays, null);
+    assert.equal(scheduledJobsService.update(userId, job.id, { rotateAfterDays: 14 }).rotateAfterDays, 14);
+    assert.equal(scheduledJobsService.update(userId, job.id, { rotateAfterDays: null }).rotateAfterDays, null);
+
+    scheduledJobsService.update(userId, job.id, { rotateAfterDays: 14 });
+    const switched = scheduledJobsService.update(userId, job.id, { sessionMode: 'new' });
+    assert.equal(switched.rotateAfterDays, null);
+  });
+});
+
 test('overlapping passes cannot double-fire one occurrence', async () => {
   await withIsolatedDatabase(async (userId) => {
     createReuseJob(userId);

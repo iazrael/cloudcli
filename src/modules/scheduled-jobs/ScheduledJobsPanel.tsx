@@ -64,6 +64,7 @@ export default function ScheduledJobsPanel({ projectPath, onNavigateToSession }:
     cronExpression?: string;
     runAt?: string;
     timezone: string;
+    rotateAfterDays?: number | null;
   }) => {
     setSaving(true);
     setFormError(null);
@@ -81,6 +82,7 @@ export default function ScheduledJobsPanel({ projectPath, onNavigateToSession }:
           options: { ...editingJob.options, permissionMode: input.permissionMode },
           ...schedule,
           timezone: input.timezone,
+          ...(input.rotateAfterDays !== undefined ? { rotateAfterDays: input.rotateAfterDays } : {}),
         });
       } else {
         await createJob({

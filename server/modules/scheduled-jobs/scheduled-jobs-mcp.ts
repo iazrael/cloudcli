@@ -70,6 +70,11 @@ const runAtDescription =
   'ISO 8601 instant for a one-off task, e.g. "2026-09-23T16:12:00+02:00". It fires once and then '
   + 'completes; do not pass cron at the same time.';
 
+const rotateAfterDaysDescription =
+  'Reused sessions only: once the bound session is this many days old, the next run moves to a fresh '
+  + 'session and archives the old one, so the sidebar keeps one live session while it stays fast to open. '
+  + 'Whole days (1-365); 0 turns rotation off.';
+
 const tools: McpToolDefinition[] = [
   {
     name: 'create_scheduled_task',
@@ -100,6 +105,7 @@ const tools: McpToolDefinition[] = [
         },
         projectPath: { type: 'string', description: 'Workspace for the task. Required for sessionMode "new" unless a running session lets it be inferred; for "reuse" the bound session\'s workspace wins.' },
         provider: { type: 'string', description: 'Engine for new sessions; defaults to the calling engine.' },
+        rotateAfterDays: { type: 'number', description: rotateAfterDaysDescription },
         permissionMode: { type: 'string', description: 'Permission mode for runs; defaults to bypassPermissions.' },
       },
       required: ['prompt'],
@@ -123,7 +129,8 @@ const tools: McpToolDefinition[] = [
     description:
       'Update a scheduled task: name, prompt, schedule (cron for recurring, or runAt for a one-off; pass '
       + 'one at a time), timezone, permission mode, or enabled state (set enabled=false to pause it, true to '
-      + 'resume). The session binding (reuse vs new, sessionId) cannot be changed here; delete the task and '
+      + 'resume), or session rotation (rotateAfterDays, reused sessions only). The session binding (reuse vs '
+      + 'new, sessionId) cannot be changed here; delete the task and '
       + 'create a new one to switch it.',
     inputSchema: {
       type: 'object',
@@ -135,6 +142,7 @@ const tools: McpToolDefinition[] = [
         runAt: { type: 'string', description: runAtDescription },
         timezone: { type: 'string' },
         permissionMode: { type: 'string' },
+        rotateAfterDays: { type: 'number', description: rotateAfterDaysDescription },
         enabled: { type: 'boolean' },
       },
       required: ['id'],
@@ -190,6 +198,7 @@ async function callTool(name: string, args: Record<string, unknown>) {
         projectPath: readMcpOptionalString(args.projectPath),
         provider: readMcpOptionalString(args.provider),
         permissionMode: readMcpOptionalString(args.permissionMode),
+        rotateAfterDays: readMcpNumber(args.rotateAfterDays),
       }));
     case 'list_scheduled_tasks':
       return mcpJson(await callScheduledJobsApi(name, {
@@ -205,6 +214,7 @@ async function callTool(name: string, args: Record<string, unknown>) {
         runAt: readMcpOptionalString(args.runAt),
         timezone: readMcpOptionalString(args.timezone),
         permissionMode: readMcpOptionalString(args.permissionMode),
+        rotateAfterDays: readMcpNumber(args.rotateAfterDays),
         enabled: typeof args.enabled === 'boolean' ? args.enabled : undefined,
       }));
     case 'delete_scheduled_task':

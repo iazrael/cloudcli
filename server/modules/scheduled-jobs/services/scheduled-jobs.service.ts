@@ -23,6 +23,7 @@ export const SCHEDULED_JOB_MISSED_GRACE_MS = 10 * 60 * 1000;
 export const SCHEDULED_JOB_RUN_HISTORY_LIMIT = 50;
 
 const MAX_NAME_LENGTH = 120;
+const MAX_ROTATE_AFTER_DAYS = 365;
 const MAX_PROMPT_LENGTH = 100_000;
 
 /** A recurring or one-off job as the API serves it (camelCase, absolute timestamps). */
@@ -33,6 +34,8 @@ export type ScheduledJob = {
   projectPath: string;
   sessionId: string | null;
   sessionMode: ScheduledJobSessionMode;
+  /** `reuse` only: days a bound session lives before runs move to a fresh one; `null` never rotates. */
+  rotateAfterDays: number | null;
   prompt: string;
   options: Record<string, unknown>;
   cronExpression: string;
@@ -103,6 +106,23 @@ function readRequiredText(value: unknown, field: string, maxLength: number): str
 function readSessionMode(value: unknown): ScheduledJobSessionMode {
   if (value !== 'reuse' && value !== 'new') {
     throw new AppError('sessionMode must be "reuse" or "new".', {
+      code: 'INVALID_SCHEDULED_JOB',
+      statusCode: 400,
+    });
+  }
+  return value;
+}
+
+/**
+ * Reads a rotation period. `null` turns rotation off; otherwise a whole number
+ * of days, so the boundary is easy to reason about from the sidebar.
+ */
+function readRotateAfterDays(value: unknown): number | null {
+  if (value === null) {
+    return null;
+  }
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > MAX_ROTATE_AFTER_DAYS) {
+    throw new AppError(`rotateAfterDays must be a whole number from 1 to ${MAX_ROTATE_AFTER_DAYS}, or null.`, {
       code: 'INVALID_SCHEDULED_JOB',
       statusCode: 400,
     });
@@ -232,6 +252,7 @@ export function toScheduledJob(row: ScheduledJobRow): ScheduledJob {
     projectPath: row.project_path,
     sessionId: row.session_id,
     sessionMode: row.session_mode,
+    rotateAfterDays: row.rotate_after_days ?? null,
     prompt: row.prompt,
     options: readOptions(row.options),
     cronExpression: row.cron_expression,
@@ -289,7 +310,7 @@ export const scheduledJobsService = {
    * from `runAt` (exactly one of the two). A `reuse` job is bound to an
    * existing session and inherits its provider and workspace; a `new` job runs
    * each occurrence in a freshly created session and carries provider and
-   * workspace itself.
+   * workspace itself. A `reuse` job may also rotate: see `rotateAfterDays`.
    */
   create(input: {
     userId: number;
@@ -299,6 +320,8 @@ export const scheduledJobsService = {
     projectPath?: unknown;
     sessionId: unknown;
     sessionMode: unknown;
+    /** `reuse` only; omitted or `null` keeps one session forever. */
+    rotateAfterDays?: unknown;
     prompt: unknown;
     options?: unknown;
     cronExpression: unknown;
@@ -329,13 +352,21 @@ export const scheduledJobsService = {
     let provider: LLMProvider;
     let projectPath: string;
     let sessionId: string | null = null;
+    let rotateAfterDays: number | null = null;
 
     if (sessionMode === 'reuse') {
       sessionId = readRequiredText(input.sessionId, 'sessionId', 200);
       const bound = resolveReuseSession(sessionId);
       provider = bound.provider;
       projectPath = bound.projectPath;
+      rotateAfterDays = input.rotateAfterDays === undefined ? null : readRotateAfterDays(input.rotateAfterDays);
     } else {
+      if (input.rotateAfterDays !== undefined && input.rotateAfterDays !== null) {
+        throw new AppError('Only a job that reuses a session can rotate it.', {
+          code: 'INVALID_SCHEDULED_JOB',
+          statusCode: 400,
+        });
+      }
       provider = assertKnownProvider(readRequiredText(input.provider, 'provider', 40));
       projectPath = readRequiredText(input.projectPath, 'projectPath', 2000);
     }
@@ -347,6 +378,7 @@ export const scheduledJobsService = {
       projectPath,
       sessionId,
       sessionMode,
+      rotateAfterDays,
       prompt,
       options: normalizeOptions(input.options),
       cronExpression,
@@ -376,6 +408,7 @@ export const scheduledJobsService = {
     runAt?: unknown;
     sessionMode?: unknown;
     sessionId?: unknown;
+    rotateAfterDays?: unknown;
     enabled?: unknown;
   }): ScheduledJob {
     const existing = scheduledJobsDb.getById(userId, id);
@@ -454,6 +487,8 @@ export const scheduledJobsService = {
       update.sessionMode = sessionMode;
       if (sessionMode === 'new') {
         update.sessionId = null;
+        // Every run already gets a fresh session; there is nothing to rotate.
+        update.rotateAfterDays = null;
       } else {
         const sessionId = patch.sessionId !== undefined
           ? readRequiredText(patch.sessionId, 'sessionId', 200)
@@ -468,6 +503,18 @@ export const scheduledJobsService = {
       }
     } else if (patch.sessionId !== undefined && existing.session_mode === 'reuse') {
       rebind(readRequiredText(patch.sessionId, 'sessionId', 200));
+    }
+
+    if (patch.rotateAfterDays !== undefined) {
+      const rotateAfterDays = readRotateAfterDays(patch.rotateAfterDays);
+      const sessionMode = update.sessionMode ?? existing.session_mode;
+      if (rotateAfterDays !== null && sessionMode !== 'reuse') {
+        throw new AppError('Only a job that reuses a session can rotate it.', {
+          code: 'INVALID_SCHEDULED_JOB',
+          statusCode: 400,
+        });
+      }
+      update.rotateAfterDays = rotateAfterDays;
     }
 
     if (patch.enabled !== undefined) {

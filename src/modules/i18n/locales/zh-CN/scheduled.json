@@ -37,7 +37,11 @@
     "invalidOnce": "请选择有效的日期和时间。",
     "save": "保存",
     "create": "创建",
-    "cancel": "取消"
+    "cancel": "取消",
+    "rotateSession": "会话轮换",
+    "rotateNever": "不轮换（一直用同一个会话）",
+    "rotateEvery_other": "每 {{count}} 天",
+    "sessionRotateHint_other": "在绑定的会话里运行；会话满 {{count}} 天后，下一次运行会换到新会话并归档旧会话。"
   },
   "job": {
     "nextRun": "下次运行 {{when}}",
@@ -54,7 +58,8 @@
     "confirmDelete": "再次点击确认删除",
     "history": "运行历史",
     "newSessionEachRun": "每次新建会话",
-    "boundSession": "绑定会话"
+    "boundSession": "绑定会话",
+    "boundSessionRotating_other": "绑定会话 · 每 {{count}} 天轮换"
   },
   "status": {
     "running": "运行中",

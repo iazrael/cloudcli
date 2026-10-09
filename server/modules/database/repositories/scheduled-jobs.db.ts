@@ -21,6 +21,8 @@ export type ScheduledJobRow = {
   project_path: string;
   session_id: string | null;
   session_mode: ScheduledJobSessionMode;
+  /** `reuse` only: rebind to a fresh session once the bound one is this many days old; NULL never rotates. */
+  rotate_after_days: number | null;
   prompt: string;
   options: string;
   cron_expression: string;
@@ -65,12 +67,13 @@ export type ScheduledJobUpdate = {
   projectPath?: string;
   sessionMode?: ScheduledJobSessionMode;
   sessionId?: string | null;
+  rotateAfterDays?: number | null;
   nextRunAt?: Date;
   enabled?: boolean;
 };
 
 const JOB_COLUMNS =
-  'id, user_id, name, provider, project_path, session_id, session_mode, prompt, options, '
+  'id, user_id, name, provider, project_path, session_id, session_mode, rotate_after_days, prompt, options, '
   + 'cron_expression, timezone, run_at, enabled, next_run_at, last_run_at, last_status, created_at, updated_at';
 
 const RUN_COLUMNS = 'id, job_id, session_id, trigger, status, error, started_at, finished_at';
@@ -83,6 +86,7 @@ export const scheduledJobsDb = {
     projectPath: string;
     sessionId: string | null;
     sessionMode: ScheduledJobSessionMode;
+    rotateAfterDays: number | null;
     prompt: string;
     options: unknown;
     cronExpression: string;
@@ -96,9 +100,9 @@ export const scheduledJobsDb = {
 
     db.prepare(
       `INSERT INTO scheduled_jobs
-         (id, user_id, name, provider, project_path, session_id, session_mode, prompt, options,
-          cron_expression, timezone, run_at, enabled, next_run_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`
+         (id, user_id, name, provider, project_path, session_id, session_mode, rotate_after_days,
+          prompt, options, cron_expression, timezone, run_at, enabled, next_run_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`
     ).run(
       id,
       input.userId,
@@ -107,6 +111,7 @@ export const scheduledJobsDb = {
       input.projectPath,
       input.sessionId,
       input.sessionMode,
+      input.rotateAfterDays,
       input.prompt,
       JSON.stringify(input.options ?? {}),
       input.cronExpression,
@@ -169,6 +174,7 @@ export const scheduledJobsDb = {
     if (patch.projectPath !== undefined) push('project_path', patch.projectPath);
     if (patch.sessionMode !== undefined) push('session_mode', patch.sessionMode);
     if (patch.sessionId !== undefined) push('session_id', patch.sessionId);
+    if (patch.rotateAfterDays !== undefined) push('rotate_after_days', patch.rotateAfterDays);
     if (patch.nextRunAt !== undefined) push('next_run_at', patch.nextRunAt.toISOString());
     if (patch.enabled !== undefined) push('enabled', patch.enabled ? 1 : 0);
 

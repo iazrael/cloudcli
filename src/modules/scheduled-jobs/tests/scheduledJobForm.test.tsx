@@ -73,6 +73,7 @@ test('editing a one-off opens on its instant and keeps saving it as runAt', () =
     projectPath: '/workspace/a',
     sessionId: null,
     sessionMode: 'new',
+    rotateAfterDays: null,
     prompt: 'check once',
     options: {},
     cronExpression: '30 9 5 3 *',
@@ -96,4 +97,59 @@ test('editing a one-off opens on its instant and keeps saving it as runAt', () =
 
   const saved = onSave.mock.calls[0][0] as { runAt?: string };
   assert.equal(saved.runAt, runAt.toISOString());
+});
+
+test('a reuse job offers session rotation and saves the chosen period', () => {
+  const job: ScheduledJob = {
+    id: 'job-reuse',
+    name: 'Patrol',
+    provider: 'opencode',
+    projectPath: '/workspace/a',
+    sessionId: 'session-a',
+    sessionMode: 'reuse',
+    rotateAfterDays: null,
+    prompt: 'patrol',
+    options: {},
+    cronExpression: '28 0,8,16 * * *',
+    timezone: 'UTC',
+    runAt: null,
+    enabled: true,
+    nextRunAt: '2026-10-10T00:28:00.000Z',
+    lastRunAt: null,
+    lastStatus: null,
+    createdAt: '2026-09-29T00:00:00.000Z',
+  };
+  const onSave = vi.fn();
+  const { container } = renderForm(job, onSave);
+
+  const rotateSelect = Array.from(container.querySelectorAll('select'))
+    .find((candidate) => candidate.querySelector('option[value="7"]')) as HTMLSelectElement;
+  assert.ok(rotateSelect, 'a reuse job shows the rotation select');
+  assert.equal(rotateSelect.value, '0');
+  fireEvent.change(rotateSelect, { target: { value: '7' } });
+
+  const buttons = Array.from(container.querySelectorAll('button'));
+  fireEvent.click(buttons[buttons.length - 1] as HTMLButtonElement);
+
+  const saved = onSave.mock.calls[0][0] as { rotateAfterDays?: number | null };
+  assert.equal(saved.rotateAfterDays, 7);
+});
+
+test('a new-session job has no rotation and never sends it', () => {
+  const onSave = vi.fn();
+  const { container } = renderForm(null, onSave);
+
+  assert.equal(container.querySelector('option[value="7"]'), null);
+
+  fireEvent.change(container.querySelector('input[type="text"]') as HTMLInputElement, {
+    target: { value: 'Daily' },
+  });
+  fireEvent.change(container.querySelector('textarea') as HTMLTextAreaElement, {
+    target: { value: 'check' },
+  });
+  const buttons = Array.from(container.querySelectorAll('button'));
+  fireEvent.click(buttons[buttons.length - 1] as HTMLButtonElement);
+
+  const saved = onSave.mock.calls[0][0] as Record<string, unknown>;
+  assert.equal('rotateAfterDays' in saved, false);
 });

@@ -75,7 +75,11 @@ export function ScheduledJobList({
                     {job.provider}
                   </span>
                   <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                    {job.sessionMode === 'new' ? t('job.newSessionEachRun') : t('job.boundSession')}
+                    {job.sessionMode === 'new'
+                      ? t('job.newSessionEachRun')
+                      : job.rotateAfterDays
+                        ? t('job.boundSessionRotating', { count: job.rotateAfterDays })
+                        : t('job.boundSession')}
                   </span>
                   {isCompletedOnce ? (
                     <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] text-emerald-600 dark:text-emerald-400">

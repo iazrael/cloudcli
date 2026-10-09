@@ -413,6 +413,8 @@ export const api = {
       runAt?: string | null;
       sessionMode?: 'reuse' | 'new';
       sessionId?: string;
+      /** Reuse jobs only; null turns rotation off. */
+      rotateAfterDays?: number | null;
       enabled?: boolean;
     }) => patch(`/api/scheduled-jobs/${encodeURIComponent(id)}`, body),
     remove: (id: string) => del(`/api/scheduled-jobs/${encodeURIComponent(id)}`),

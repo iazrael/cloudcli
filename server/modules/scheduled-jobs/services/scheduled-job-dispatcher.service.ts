@@ -18,6 +18,8 @@ import { scheduledJobsSettingsService } from '@/modules/scheduled-jobs/services/
  */
 const POLL_INTERVAL_MS = 30_000;
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let dispatchInFlight = false;
 /** Set by the server entrypoint; manual runs from the API use the same gateway. */
@@ -62,6 +64,56 @@ function resolveRunSession(job: ScheduledJobRow): string {
 }
 
 /**
+ * Moves a rotating `reuse` job onto a fresh session once its bound one is
+ * `rotate_after_days` old, and archives the old one.
+ *
+ * Reusing one session forever makes it ever slower to open — compaction only
+ * shrinks what the model sees, every earlier turn stays in the transcript — so
+ * a rotating job keeps one live conversation in the sidebar while bounding its
+ * length. Age is read from the session itself, so binding a job to an already
+ * old session rotates on its next run. A session with a run in flight is left
+ * alone: the caller then records the occurrence as skipped, and the next one
+ * rotates.
+ */
+async function rotateReuseSessionIfDue(job: ScheduledJobRow, now: Date): Promise<ScheduledJobRow> {
+  if (job.session_mode !== 'reuse' || !job.session_id || !job.rotate_after_days) {
+    return job;
+  }
+
+  const bound = sessionsDb.getSessionById(job.session_id);
+  const createdAt = bound ? Date.parse(bound.created_at) : Number.NaN;
+  if (Number.isNaN(createdAt) || now.getTime() - createdAt < job.rotate_after_days * DAY_MS) {
+    return job;
+  }
+  if (chatRunRegistry.isProcessing(job.session_id)) {
+    return job;
+  }
+
+  const created = sessionsService.createAppSession(
+    job.provider as LLMProvider,
+    job.project_path,
+    job.prompt,
+  );
+  sessionsService.renameSessionById(created.sessionId, buildRunSessionName(job, now));
+  scheduledJobsDb.update(job.user_id, job.id, { sessionId: created.sessionId });
+  broadcastScheduledJobsChanged();
+
+  try {
+    await sessionsService.deleteOrArchiveSessionById(job.session_id);
+  } catch (error) {
+    // The job already moved on; a session left in the sidebar is cosmetic.
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn('[ScheduledJobs] Could not archive the rotated-out session', {
+      jobId: job.id,
+      sessionId: job.session_id,
+      error: message,
+    });
+  }
+
+  return { ...job, session_id: created.sessionId };
+}
+
+/**
  * Runs one claimed occurrence and records how it ended.
  *
  * Never interrupts a run already in progress: a recurring job can wait for the
@@ -73,10 +125,13 @@ export async function executeScheduledJobRun(
   job: ScheduledJobRow,
   runId: string,
   runtime: ProviderRuntimeGateway,
+  now: Date = new Date(),
 ): Promise<void> {
   try {
-    const sessionId = resolveRunSession(job);
-    if (job.session_mode === 'new') {
+    const runJob = await rotateReuseSessionIfDue(job, now);
+    const sessionId = resolveRunSession(runJob);
+    // The run row was opened with the bound session (or none, for `new`).
+    if (sessionId !== job.session_id) {
       scheduledJobsDb.setRunSession(runId, sessionId);
     }
 
@@ -141,7 +196,7 @@ export async function dispatchDueScheduledJobs(
   await Promise.all(claimed.map((entry) => (
     entry.missed
       ? Promise.resolve()
-      : executeScheduledJobRun(entry.job, entry.runId, runtime)
+      : executeScheduledJobRun(entry.job, entry.runId, runtime, now)
   )));
   // The runs recorded their outcomes (last status) on the jobs.
   broadcastScheduledJobsChanged();

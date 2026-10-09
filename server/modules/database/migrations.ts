@@ -525,6 +525,16 @@ const addScheduledJobRunAtColumn = (db: Database): void => {
   addColumnToTableIfNotExists(db, 'scheduled_jobs', columnNames, 'run_at', 'DATETIME');
 };
 
+/**
+ * Adds the `rotate_after_days` column that lets a `reuse` job roll over to a
+ * fresh session. Existing rows stay NULL: they keep reusing one session.
+ */
+const addScheduledJobRotateAfterDaysColumn = (db: Database): void => {
+  const columnNames = getTableInfo(db, 'scheduled_jobs').map((column) => column.name);
+
+  addColumnToTableIfNotExists(db, 'scheduled_jobs', columnNames, 'rotate_after_days', 'INTEGER');
+};
+
 const ensureProjectsForSessionPaths = (db: Database): void => {
   if (!tableExists(db, 'sessions')) {
     return;
@@ -632,6 +642,7 @@ export const runMigrations = (db: Database) => {
     db.exec(SCHEDULED_JOBS_TABLE_SCHEMA_SQL);
     db.exec(SCHEDULED_JOB_RUNS_TABLE_SCHEMA_SQL);
     addScheduledJobRunAtColumn(db);
+    addScheduledJobRotateAfterDaysColumn(db);
 
     db.exec('CREATE INDEX IF NOT EXISTS idx_session_ids_lookup ON sessions(session_id)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_provider_session_id ON sessions(provider_session_id)');
