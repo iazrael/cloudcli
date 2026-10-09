@@ -6,6 +6,7 @@ import type { LLMProvider, ScheduledJob } from '@/shared/types';
 import { PROVIDER_FALLBACK_ORDER } from '@/shared/providerCatalogFallback';
 import { useProviderCapabilitiesMap } from '@/shared/hooks/useProviderCapabilities';
 import { readLocalDateTimeInputValue, toLocalDateTimeInputValue } from '@/shared/utils';
+import { SCHEDULED_JOB_ROTATE_AFTER_DAYS_OPTIONS } from '@/shared/constants';
 import {
   buildCronExpression,
   presetForPattern,
@@ -36,9 +37,6 @@ type ScheduledJobFormProps = {
 };
 
 const PRESET_OPTIONS: ScheduleChoiceId[] = ['once', 'daily', 'weekdays', 'weekly', 'hourly', 'custom'];
-
-/** Rotation periods offered for a reused session, in days; 0 stands for "never". */
-const ROTATE_AFTER_DAYS_OPTIONS = [0, 1, 3, 7, 14, 30];
 
 /**
  * Rendered by the Scheduled tab to create a job (always `new` mode: a fresh
@@ -109,9 +107,9 @@ export function ScheduledJobForm({
   const supportsNativeScheduling = capability?.supportsNativeScheduling ?? false;
   // A period set elsewhere (an agent over MCP) stays selectable instead of
   // silently snapping to a preset on save.
-  const rotateOptions = ROTATE_AFTER_DAYS_OPTIONS.includes(rotateAfterDays)
-    ? ROTATE_AFTER_DAYS_OPTIONS
-    : [...ROTATE_AFTER_DAYS_OPTIONS, rotateAfterDays].sort((a, b) => a - b);
+  const rotateOptions = SCHEDULED_JOB_ROTATE_AFTER_DAYS_OPTIONS.includes(rotateAfterDays)
+    ? SCHEDULED_JOB_ROTATE_AFTER_DAYS_OPTIONS
+    : [...SCHEDULED_JOB_ROTATE_AFTER_DAYS_OPTIONS, rotateAfterDays].sort((a, b) => a - b);
   const rotation = isReuseJob ? { rotateAfterDays: rotateAfterDays || null } : {};
 
   const submit = () => {

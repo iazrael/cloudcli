@@ -16,6 +16,8 @@ type ScheduledJobDraft = {
   prompt: string;
   sessionMode: 'reuse' | 'new';
   sessionId?: string;
+  /** Reuse jobs only; omitted or null never rotates. */
+  rotateAfterDays?: number | null;
   provider?: string;
   projectPath?: string;
   options?: unknown;

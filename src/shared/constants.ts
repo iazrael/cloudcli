@@ -247,3 +247,16 @@ export const AUTH_ACCOUNT_CHANGED_EVENT = 'auth-account-changed';
 //----------------- MARKDOWN REFERENCE PLUGINS ------------
 /** remark 引用插件（remarkFileReferences / remarkImageReferences）遇到这些节点类型时跳过整棵子树：链接、代码块、公式和 HTML 内部不做转换。 */
 export const REMARK_SKIP_CONTAINER_RE = /^(?:link|linkReference|image|imageReference|code|math|inlineMath|html)$/;
+
+// ---------------------------
+
+//----------------- SCHEDULED JOBS ------------
+
+/**
+ * Session-rotation periods (in days) offered for a scheduled task that reuses
+ * a session; `0` stands for "never rotate" and is sent to the API as `null`.
+ * Used by the scheduled-jobs edit form and the chat composer's task popover so
+ * both offer the same choices.
+ */
+export const SCHEDULED_JOB_ROTATE_AFTER_DAYS_OPTIONS = [0, 1, 3, 7, 14, 30];
+>>>>>>> 6d861795 (feat(chat): offer session rotation when scheduling a task from the composer)

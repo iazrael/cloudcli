@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { Clock } from 'lucide-react';
 
 import { cn, readLocalDateTimeInputValue, toLocalDateTimeInputValue } from '@/shared/utils';
+import { SCHEDULED_JOB_ROTATE_AFTER_DAYS_OPTIONS } from '@/shared/constants';
 import { useComposerMenuAnchor } from '@/modules/chat/hooks/useComposerMenuAnchor';
 import {
   ComposerMenuHeading,
@@ -21,7 +22,13 @@ type ScheduleMessagePopoverProps = {
   disabled: boolean;
   onSchedule: (scheduledFor: Date) => void;
   /** Creates a task bound to the current session instead of a one-off message. */
-  onScheduleTask: (schedule: { cronExpression?: string; runAt?: string; timezone: string }) => void;
+  onScheduleTask: (schedule: {
+    cronExpression?: string;
+    runAt?: string;
+    timezone: string;
+    /** Days before the bound session is rotated; omitted never rotates. */
+    rotateAfterDays?: number;
+  }) => void;
   /** Whether the engine also schedules inside its own session (drives the hint). */
   supportsNativeScheduling: boolean;
   /** Whether the scheduled-tasks feature is on; when off the popover is one-off only. */
@@ -64,6 +71,9 @@ export function ScheduleMessagePopover({
   const [customCron, setCustomCron] = useState('');
   // The task half's one-off instant, in the browser's zone.
   const [onceValue, setOnceValue] = useState(() => toLocalDateTimeInputValue(new Date(Date.now() + 3_600_000)));
+  // How old this session may get before a recurring task moves to a fresh one;
+  // 0 (the default) keeps reusing it forever.
+  const [rotateAfterDays, setRotateAfterDays] = useState(0);
 
   const commit = (scheduledFor: Date) => {
     onSchedule(scheduledFor);
@@ -84,7 +94,12 @@ export function ScheduleMessagePopover({
     if (cronExpression.split(/\s+/).length !== 5) {
       return;
     }
-    onScheduleTask({ cronExpression, timezone: readLocalTimezone() });
+    // A one-off fires once, so only a recurring task carries a rotation period.
+    onScheduleTask({
+      cronExpression,
+      timezone: readLocalTimezone(),
+      ...(rotateAfterDays ? { rotateAfterDays } : {}),
+    });
     setIsOpen(false);
   };
 
@@ -225,8 +240,29 @@ export function ScheduleMessagePopover({
                   />
                 )}
 
+                {choice !== 'once' && (
+                  <label className="block">
+                    <span className="text-[11px] font-medium text-muted-foreground">{tScheduled('form.rotateSession')}</span>
+                    <select
+                      value={rotateAfterDays}
+                      onChange={(event) => setRotateAfterDays(Number(event.target.value))}
+                      className="mt-1 w-full rounded-md border border-border/60 bg-background px-2 py-1.5 text-xs text-foreground"
+                    >
+                      {SCHEDULED_JOB_ROTATE_AFTER_DAYS_OPTIONS.map((days) => (
+                        <option key={days} value={days}>
+                          {days === 0 ? tScheduled('form.rotateNever') : tScheduled('form.rotateEvery', { count: days })}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+
                 <p className="text-[11px] leading-snug text-muted-foreground/70">
-                  {choice === 'once' ? tScheduled('form.onceHint') : tScheduled('composer.recurringHint')}
+                  {choice === 'once'
+                    ? tScheduled('form.onceHint')
+                    : rotateAfterDays
+                      ? tScheduled('form.sessionRotateHint', { count: rotateAfterDays })
+                      : tScheduled('composer.recurringHint')}
                 </p>
 
                 {supportsNativeScheduling && (

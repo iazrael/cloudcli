@@ -114,7 +114,13 @@ type ChatComposerProps = {
   /** Whether the scheduled-tasks feature is on; hides the repeat entry when off. */
   scheduledJobsEnabled: boolean;
   onScheduleMessage: (scheduledFor: Date) => void;
-  onScheduleTask: (schedule: { cronExpression?: string; runAt?: string; timezone: string }) => void;
+  onScheduleTask: (schedule: {
+    cronExpression?: string;
+    runAt?: string;
+    timezone: string;
+    /** Days before the bound session is rotated; omitted never rotates. */
+    rotateAfterDays?: number;
+  }) => void;
   onCancelScheduledMessage: (id: string) => void;
   onDeleteScheduledJob: (id: string) => void;
   /** Whether the current provider schedules inside its own session (hint only). */
