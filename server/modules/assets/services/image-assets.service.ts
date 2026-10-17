@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import fsSync, { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { Transform } from 'node:stream';
+import type { Transform } from 'node:stream';
 
 import mime from 'mime-types';
 import type multer from 'multer';
 
 import { getGlobalImageAssetsDir, toPosixPath } from '@/shared/image-attachments.js';
+import { createByteLimitTransform } from '@/shared/utils.js';
 
 /**
  * Image mime types accepted for chat attachment uploads. SVG is allowed for
@@ -53,35 +54,12 @@ export async function ensureImageAssetsDir(): Promise<string> {
 }
 
 /**
- * Caps the bytes forwarded from one upload stream at `maxBytes`. Multer gives
- * Busboy a `fileSize + 1` limit so an exact-size file is not falsely rejected,
- * which lets one extra byte reach storage before Multer aborts. This gate
- * silently drops anything past the route's real limit; Multer remains
- * responsible for rejecting the oversized upload.
- */
-function createByteLimitGate(maxBytes: number): Transform {
-  let accepted = 0;
-  return new Transform({
-    transform(chunk: Buffer, _encoding, callback) {
-      const remaining = maxBytes - accepted;
-      if (remaining <= 0) { callback(); return; }
-      if (chunk.length > remaining) {
-        accepted = maxBytes;
-        callback(null, chunk.subarray(0, remaining));
-        return;
-      }
-      accepted += chunk.length;
-      callback(null, chunk);
-    },
-  });
-}
-
-/**
  * Used by the assets routes for streaming multipart files to the global asset store.
  * `maxBytes` must match Multer's `limits.fileSize` for the route, keeping the
- * stored partial file within the configured cap. Aborted requests close the
- * writer and remove its partial file before notifying Multer, so failed uploads
- * release the replay slot as well as disk resources.
+ * stored partial file within the configured cap (see
+ * `createByteLimitTransform`). Aborted requests close the writer and remove
+ * its partial file before notifying Multer, so failed uploads release the
+ * replay slot as well as disk resources.
  */
 export function createAttachmentUploadStorage(maxBytes = Number.POSITIVE_INFINITY): multer.StorageEngine {
   return {
@@ -137,7 +115,7 @@ export function createAttachmentUploadStorage(maxBytes = Number.POSITIVE_INFINIT
           req.off('aborted', onAbort);
           callback(null, { destination, filename, path: filePath, size: output!.bytesWritten });
         });
-        limitGate = createByteLimitGate(maxBytes);
+        limitGate = createByteLimitTransform(maxBytes);
         file.stream.pipe(limitGate).pipe(output);
       }, (error: unknown) => fail(error instanceof Error ? error : new Error(String(error))));
     },

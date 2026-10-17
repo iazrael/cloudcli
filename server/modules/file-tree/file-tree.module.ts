@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import fs, { promises as fsPromises } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pipeline } from 'node:stream';
 
 import { rgPath } from '@vscode/ripgrep';
 import mime from 'mime-types';
@@ -24,7 +25,14 @@ import type {
   FileTreeProjectGateway,
   FileTreeWorkspaceGateway,
 } from '@/shared/types.js';
-import { FORBIDDEN_WORKSPACE_PATHS, WORKSPACES_ROOT, normalizeProjectPath, resolveReadOnlyRootPath, validateWorkspacePath } from '@/shared/utils.js';
+import {
+  FORBIDDEN_WORKSPACE_PATHS,
+  WORKSPACES_ROOT,
+  createByteLimitTransform,
+  normalizeProjectPath,
+  resolveReadOnlyRootPath,
+  validateWorkspacePath,
+} from '@/shared/utils.js';
 
 const MAXIMUM_UPLOAD_SIZE_MEGABYTES = 200;
 const MAXIMUM_UPLOAD_SIZE_BYTES = MAXIMUM_UPLOAD_SIZE_MEGABYTES * 1024 * 1024;
@@ -171,13 +179,86 @@ const fileTreeServices = createFileTreeService({
   resolveWorktreeRoots: (projectRoot) => getProjectWorktreeRoots(projectRoot),
 });
 
-const fileUploadMiddleware = multer({
-  storage: multer.diskStorage({
-    destination: os.tmpdir(),
-    filename: (_request, _file, callback) => {
-      callback(null, `cloudcli-file-upload-${randomUUID()}`);
+/**
+ * Disk storage for file uploads that never writes more than `maxBytes`.
+ *
+ * Mirrors `multer.diskStorage` (same temp destination and
+ * `cloudcli-file-upload-<uuid>` names) but routes the incoming stream through
+ * `createByteLimitTransform`, because Multer's `fileSize + 1` Busboy limit
+ * lets one extra byte reach a built-in storage before the abort. Open write
+ * streams are tracked so `_removeFile` can wait for the descriptor to close
+ * before unlinking (Windows refuses to unlink an open file), like Multer's
+ * own disk storage.
+ *
+ * Consumer: `fileUploadMiddleware` below; exercised directly by
+ * `server/modules/file-tree/tests/file-tree-upload-storage.test.ts`.
+ */
+export function createBoundedDiskStorage(maxBytes: number): multer.StorageEngine {
+  const openStreams = new WeakMap<Express.Multer.File, fs.WriteStream>();
+
+  return {
+    _handleFile(_request, file, callback) {
+      const destination = os.tmpdir();
+      const filename = `cloudcli-file-upload-${randomUUID()}`;
+      const finalPath = path.join(destination, filename);
+      const output = fs.createWriteStream(finalPath);
+      file.path = finalPath;
+      openStreams.set(file, output);
+      output.once('close', () => openStreams.delete(file));
+
+      pipeline(file.stream, createByteLimitTransform(maxBytes), output, (error) => {
+        if (error) {
+          callback(error);
+          return;
+        }
+        callback(null, {
+          destination,
+          filename,
+          path: finalPath,
+          size: output.bytesWritten,
+        });
+      });
     },
-  }),
+
+    _removeFile(_request, file, callback) {
+      const finalPath = file.path;
+      const mutableFile = file as { destination?: string; filename?: string; path?: string };
+
+      delete mutableFile.destination;
+      delete mutableFile.filename;
+      delete mutableFile.path;
+
+      if (!finalPath) {
+        callback(null);
+        return;
+      }
+
+      const unlink = () => {
+        fs.unlink(finalPath, (error) => callback(error?.code === 'ENOENT' ? null : error));
+      };
+
+      const output = openStreams.get(file);
+      if (!output || output.closed) {
+        unlink();
+        return;
+      }
+
+      // The descriptor is still open: wait for it to be released, whichever
+      // way it goes, then unlink.
+      function onReleased() {
+        output!.removeListener('close', onReleased);
+        output!.removeListener('error', onReleased);
+        unlink();
+      }
+      output.once('close', onReleased);
+      output.once('error', onReleased);
+      output.destroy();
+    },
+  };
+}
+
+const fileUploadMiddleware = multer({
+  storage: createBoundedDiskStorage(MAXIMUM_UPLOAD_SIZE_BYTES),
   limits: {
     fileSize: MAXIMUM_UPLOAD_SIZE_BYTES,
     files: MAXIMUM_UPLOAD_FILE_COUNT,

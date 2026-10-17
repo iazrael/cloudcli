@@ -16,6 +16,7 @@ import {
 import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
+import { Transform } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
@@ -313,6 +314,40 @@ export function asyncHandler(
   return (req, res, next) => {
     void Promise.resolve(handler(req, res, next)).catch(next);
   };
+}
+
+// ---------------------------
+//----------------- UPLOAD STREAM LIMIT UTILITIES ------------
+/**
+ * Caps the bytes forwarded through an upload stream at `maxBytes`; anything
+ * past the cap is silently dropped. Multer configures Busboy with
+ * `fileSize + 1` (so an exactly-sized file is not falsely rejected), which
+ * lets one extra byte reach a storage engine before Multer aborts with
+ * `LIMIT_FILE_SIZE`. Inserting this transform between the incoming file
+ * stream and the sink keeps every stored byte within the route's real limit;
+ * Multer stays responsible for rejecting the oversized upload.
+ *
+ * Consumers: the image-assets upload storage, the file-tree disk upload
+ * storage, and the voice memory upload storage.
+ */
+export function createByteLimitTransform(maxBytes: number): Transform {
+  let accepted = 0;
+  return new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      const remaining = maxBytes - accepted;
+      if (remaining <= 0) {
+        callback();
+        return;
+      }
+      if (chunk.length > remaining) {
+        accepted = maxBytes;
+        callback(null, chunk.subarray(0, remaining));
+        return;
+      }
+      accepted += chunk.length;
+      callback(null, chunk);
+    },
+  });
 }
 
 // ---------------------------
