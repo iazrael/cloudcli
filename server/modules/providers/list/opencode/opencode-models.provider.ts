@@ -368,6 +368,8 @@ const readOpenCodeCliModelIds = async (): Promise<string[]> => {
   try {
     const { stdout } = await execFileAsync(executable, ['models'], {
       timeout: OPENCODE_MODELS_PROBE_TIMEOUT_MS,
+      // Otherwise the probe flashes a console window on Windows.
+      windowsHide: true,
     });
 
     const modelIds: string[] = [];
