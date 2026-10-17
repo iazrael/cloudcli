@@ -62,6 +62,12 @@ export type CliEnginePathResolverConfig = {
   platformCandidates: Partial<Record<NodeJS.Platform, string[]>>;
   /** Path validity rule: executable-bit check for native binaries, regular-file check for `.cjs` bundles. */
   isValidPath: (filePath: string) => boolean;
+  /**
+   * Maps a found candidate to the binary to spawn before validation, e.g. a
+   * Windows npm shim (`opencode`, `opencode.cmd`) to the native `.exe` it
+   * wraps, which `spawn` without a shell cannot execute. Defaults to identity.
+   */
+  toEnginePath?: (filePath: string) => string;
   /** Optional version probe. */
   versionProbe?: CliEngineVersionProbe;
   /**
@@ -112,11 +118,17 @@ export function createCliEnginePathResolver(
   let cachedVersion: string | null = null;
   let versionProbeScheduled = false;
 
+  function accept(candidate: string): string | null {
+    const enginePath = config.toEnginePath ? config.toEnginePath(candidate) : candidate;
+    return config.isValidPath(enginePath) ? path.resolve(enginePath) : null;
+  }
+
   function resolveFromEnv(): string | null {
     for (const envVar of config.envVars) {
       const envPath = process.env[envVar]?.trim();
-      if (envPath && config.isValidPath(envPath)) {
-        return path.resolve(envPath);
+      const resolved = envPath ? accept(envPath) : null;
+      if (resolved) {
+        return resolved;
       }
     }
     return null;
@@ -133,9 +145,14 @@ export function createCliEnginePathResolver(
       if (result.status !== 0) {
         return null;
       }
-      const firstLine = (result.stdout ?? '').split(/\r?\n/)[0]?.trim();
-      if (firstLine && config.isValidPath(firstLine)) {
-        return path.resolve(firstLine);
+      // `where` lists every PATHEXT match (`opencode`, `opencode.cmd`, ...);
+      // take the first one that validates rather than only the first line.
+      for (const rawLine of (result.stdout ?? '').split(/\r?\n/)) {
+        const line = rawLine.trim();
+        const resolved = line ? accept(line) : null;
+        if (resolved) {
+          return resolved;
+        }
       }
     } catch {
       // PATH lookup unavailable or failed; fall through to platform paths.
@@ -145,8 +162,9 @@ export function createCliEnginePathResolver(
 
   function resolveFromPlatformPaths(): string | null {
     for (const candidate of config.platformCandidates[process.platform] ?? []) {
-      if (config.isValidPath(candidate)) {
-        return path.resolve(candidate);
+      const resolved = accept(candidate);
+      if (resolved) {
+        return resolved;
       }
     }
     return null;
