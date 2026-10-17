@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import fsSync, { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { Transform } from 'node:stream';
 
 import mime from 'mime-types';
 import type multer from 'multer';
@@ -52,14 +53,41 @@ export async function ensureImageAssetsDir(): Promise<string> {
 }
 
 /**
- * Used by the assets routes for streaming multipart files to the global asset store.
- * Aborted requests close the writer and remove its partial file before notifying
- * Multer, so failed uploads release the replay slot as well as disk resources.
+ * Caps the bytes forwarded from one upload stream at `maxBytes`. Multer gives
+ * Busboy a `fileSize + 1` limit so an exact-size file is not falsely rejected,
+ * which lets one extra byte reach storage before Multer aborts. This gate
+ * silently drops anything past the route's real limit; Multer remains
+ * responsible for rejecting the oversized upload.
  */
-export function createAttachmentUploadStorage(): multer.StorageEngine {
+function createByteLimitGate(maxBytes: number): Transform {
+  let accepted = 0;
+  return new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      const remaining = maxBytes - accepted;
+      if (remaining <= 0) { callback(); return; }
+      if (chunk.length > remaining) {
+        accepted = maxBytes;
+        callback(null, chunk.subarray(0, remaining));
+        return;
+      }
+      accepted += chunk.length;
+      callback(null, chunk);
+    },
+  });
+}
+
+/**
+ * Used by the assets routes for streaming multipart files to the global asset store.
+ * `maxBytes` must match Multer's `limits.fileSize` for the route, keeping the
+ * stored partial file within the configured cap. Aborted requests close the
+ * writer and remove its partial file before notifying Multer, so failed uploads
+ * release the replay slot as well as disk resources.
+ */
+export function createAttachmentUploadStorage(maxBytes = Number.POSITIVE_INFINITY): multer.StorageEngine {
   return {
     _handleFile(req, file, callback) {
       let output: fsSync.WriteStream | undefined;
+      let limitGate: Transform | undefined;
       let filePath: string | undefined;
       let finished = false;
 
@@ -67,7 +95,9 @@ export function createAttachmentUploadStorage(): multer.StorageEngine {
         if (finished) return;
         finished = true;
         req.off('aborted', onAbort);
-        file.stream.unpipe(output);
+        file.stream.unpipe(limitGate);
+        limitGate?.unpipe(output);
+        limitGate?.destroy();
         // Destroy without an error: Multer decrements its write counter itself
         // on a source-stream error, and must not decrement it again via callback.
         file.stream.destroy();
@@ -107,7 +137,8 @@ export function createAttachmentUploadStorage(): multer.StorageEngine {
           req.off('aborted', onAbort);
           callback(null, { destination, filename, path: filePath, size: output!.bytesWritten });
         });
-        file.stream.pipe(output);
+        limitGate = createByteLimitGate(maxBytes);
+        file.stream.pipe(limitGate).pipe(output);
       }, (error: unknown) => fail(error instanceof Error ? error : new Error(String(error))));
     },
     _removeFile(_req, file, callback) {
