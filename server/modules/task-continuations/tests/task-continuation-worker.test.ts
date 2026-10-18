@@ -7,7 +7,13 @@ import test from 'node:test';
 
 import { runTaskContinuationWorker } from '@/modules/task-continuations/cli/task-continuation-worker.js';
 
-test('real Codex command/exec writes a bounded result and task output without host credentials', async () => {
+import { isCodexCommandSandboxAvailable } from './helpers/codex-sandbox-availability.js';
+
+test('real Codex command/exec writes a bounded result and task output without host credentials', async (t) => {
+  if (!await isCodexCommandSandboxAvailable()) {
+    t.skip('Codex command sandbox is unavailable on this machine; see the helper for the Windows requirements.');
+    return;
+  }
   const directory = await mkdtemp(path.join(os.tmpdir(), 'task-worker-codex-'));
   const previousRegistrationToken = process.env.CLOUDCLI_REGISTRATION_TOKEN;
   const previousRunContext = process.env.CLOUDCLI_TASK_RUN_CONTEXT;
