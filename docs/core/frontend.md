@@ -1,6 +1,6 @@
 # 前端架构（Frontend）
 
-> 基准：2.10.0 / 2026-10-21
+> 基准：2.11.0 / 2026-10-24
 > **核心文档**：改动 `src/shared/**` 或聊天渲染/性能相关代码时**必须同步更新本文**。
 > 普通 bug 修复不动架构的不需要更新（提交时走 `--no-verify`，见 `AGENTS.md`）。
 
@@ -23,6 +23,8 @@ React 18 + TypeScript + Vite 7（`vite.config.js`，别名 `@` → `src/`，`@sh
 | `PluginsContext` | `src/modules/plugins/context/PluginsContext.tsx` | 插件 |
 
 聊天消息**不走 Context**：走 `SessionTimelineStore`（框架无关）+ `useSessionStore` 适配器，见 [chat.md](./chat.md) 的四层结构。
+
+输入框草稿和排队消息也不走 Context：`src/shared/chatDrafts.ts` 按作用域（会话 id，或新会话的 `project:<id>`）存，服务端 `auth.db` 为准，localStorage 只做首屏镜像，订阅用 `subscribeToChatDrafts`。排队消息只由服务端发出，页面只写入和跟随，见 [chat.md](./chat.md) 的「排队消息」。
 
 `SessionProtectionContext` 的活动表区分主轮和后台等待两个阶段。后台等待包括任务执行和后续汇报，卡片消失不等于活动结束；后台结束事件只清后台阶段，新主轮会建立自己的活动。阶段交接不依赖毫秒时间比较。消息排队、中止资格和提示音按后台等待状态判断，具体链路见 [chat.md](./chat.md)。
 
@@ -71,6 +73,8 @@ WebSocket 进来的帧类型 `ServerEvent` 定义在 `shared/protocol/frames.ts`
 **没有索引签名**。读任何字段之前必须先确定是哪种帧，用 `shared/protocol/frameNarrowing.ts` 的谓词；
 `sessionId` 与 `seq` 并非每种帧都有（重连通知、加载进度就没有），用 `readFrameSessionId()` /
 `readFrameSeq()` 读。
+新增网关帧要同时登记到 `frameNarrowing.ts` 的 `GATEWAY_KINDS` 和时间线 store 的路由表 `SERVER_EVENT_ROUTES`：
+路由表里没有的 kind 一律按未知内容行追加进当前会话的时间线。
 
 此前它是 `{ kind?, type?, sessionId?, seq?, [key: string]: unknown }`，
 时间线 store 从中读 22 个字段，全部未经检查。三种网关帧

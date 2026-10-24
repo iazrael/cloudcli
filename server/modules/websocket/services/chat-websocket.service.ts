@@ -815,6 +815,8 @@ export async function runDetachedChatTurn(
      * land mid-run, so the timer outranks whatever is running.
      */
     interruptActiveRun?: boolean;
+    /** Called once the run is registered, before the provider starts working on it. */
+    onRunStarted?: () => void;
     taskContinuation?: AnyRecord;
     onEngineTurnStarted?: (engineTurnId: string) => boolean;
     taskContinuationTarget?: {
@@ -889,6 +891,7 @@ export async function runDetachedChatTurn(
         taskContinuationLifecycle: { onEngineTurnStarted: input.onEngineTurnStarted },
       } : {}),
     },
+    input.onRunStarted ? () => input.onRunStarted?.() : undefined,
   );
 }
 

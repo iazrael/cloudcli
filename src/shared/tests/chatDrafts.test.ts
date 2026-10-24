@@ -17,6 +17,8 @@ const savedDrafts: SavedDraft[] = [];
 const deletedScopes: string[] = [];
 let serverDrafts: unknown[] = [];
 let draftsRequestFailed = false;
+let saveStatus = 200;
+let saveGate: Promise<void> | null = null;
 
 vi.mock('@/shared/api', () => ({
   api: {
@@ -31,6 +33,10 @@ vi.mock('@/shared/api', () => ({
         });
       },
       saveDraft: async (scope: string, draft: { text: string; queuedMessage?: unknown }) => {
+        if (saveGate) await saveGate;
+        if (saveStatus !== 200) {
+          return new Response('{}', { status: saveStatus });
+        }
         savedDrafts.push({ scope, ...draft });
         return new Response('{}', { status: 200 });
       },
@@ -53,6 +59,8 @@ beforeEach(() => {
   deletedScopes.length = 0;
   serverDrafts = [];
   draftsRequestFailed = false;
+  saveStatus = 200;
+  saveGate = null;
   vi.useFakeTimers();
 });
 
@@ -228,4 +236,42 @@ test('reset clears the drafts so the next user does not see them', async () => {
 
   assert.equal(store.readDraftText('session-a'), '');
   assert.equal(localStorage.getItem('chat-drafts'), null);
+});
+
+test('a queued message the server refused to save is kept and saved again', async () => {
+  const store = await loadStore();
+  saveStatus = 503;
+
+  store.writeQueuedMessage('session-a', { content: 'must reach the server' });
+  await vi.advanceTimersByTimeAsync(0);
+  assert.deepEqual(savedDrafts, []);
+
+  // The server does not have it, so a hydrate must not treat it as sent.
+  serverDrafts = [];
+  await store.hydrateChatDrafts();
+  assert.equal(store.readQueuedMessage('session-a')?.content, 'must reach the server');
+
+  saveStatus = 200;
+  await vi.advanceTimersByTimeAsync(10_000);
+  assert.deepEqual(savedDrafts, [
+    { scope: 'session-a', text: '', queuedMessage: { content: 'must reach the server' } },
+  ]);
+});
+
+test('a hydrate that lands while a queued message is still being saved keeps it', async () => {
+  const store = await loadStore();
+  let releaseSave!: () => void;
+  saveGate = new Promise((resolve) => { releaseSave = resolve; });
+
+  store.writeQueuedMessage('session-a', { content: 'on its way' });
+  // The server answers the read before the write has landed.
+  serverDrafts = [];
+  await store.hydrateChatDrafts();
+  assert.equal(store.readQueuedMessage('session-a')?.content, 'on its way');
+
+  releaseSave();
+  await vi.advanceTimersByTimeAsync(0);
+  serverDrafts = [{ scope: 'session-a', text: '', queuedMessage: { content: 'on its way' } }];
+  await store.hydrateChatDrafts();
+  assert.equal(store.readQueuedMessage('session-a')?.content, 'on its way');
 });

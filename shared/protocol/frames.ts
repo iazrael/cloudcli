@@ -78,6 +78,15 @@ export type LoadingProgressEvent = {
 };
 
 /**
+ * The server started a session's queued message as a new turn. Only the id
+ * travels: every connected page receives it, and pages already hold the text.
+ */
+export type QueuedMessageDispatchedEvent = {
+  kind: 'queued_message_dispatched';
+  sessionId: string;
+};
+
+/**
  * Synthesized by the client when the socket re-opens after a drop; no server
  * sends it. It is in this union because every subscriber sees it on the same
  * channel and has to account for it.
@@ -95,6 +104,7 @@ export type ServerEvent =
   | SessionRemovedEvent
   | LoadingProgressEvent
   | ProtocolErrorEvent
+  | QueuedMessageDispatchedEvent
   | WebsocketReconnectedEvent;
 
 /** Shared transport budgets used by the gateway replay log and client gap buffer. */

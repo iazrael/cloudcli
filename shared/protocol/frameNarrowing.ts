@@ -54,6 +54,7 @@ const GATEWAY_KINDS: ReadonlySet<string> = new Set([
   'session_removed',
   'loading_progress',
   'protocol_error',
+  'queued_message_dispatched',
   'websocket_reconnected',
 ]);
 

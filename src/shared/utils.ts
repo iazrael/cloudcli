@@ -2,7 +2,7 @@ import { clsx, type ClassValue } from 'clsx';
 import { defaultUrlTransform } from 'react-markdown';
 import { twMerge } from 'tailwind-merge';
 
-import type { Project, ProjectSession, QuickSettingsTab, SlashCommand } from '@/shared/types';
+import type { ChatAttachment, Project, ProjectSession, QuickSettingsTab, SlashCommand } from '@/shared/types';
 
 //----------------- DEPLOYMENT MODE ------------
 
@@ -530,6 +530,20 @@ export function createClientRequestId(): string {
     return crypto.randomUUID();
   }
   return `submit-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+// ---------------------------
+
+//----------------- CHAT ATTACHMENTS ------------
+
+/**
+ * Whether an uploaded chat attachment is an image, by MIME type or, for
+ * descriptors that carry none, by file extension. Splits a message's
+ * attachments into the `images` and `files` its timeline row shows.
+ */
+export function isImageAttachment(attachment: ChatAttachment): boolean {
+  if (attachment.mimeType?.startsWith('image/')) return true;
+  return /\.(gif|jpe?g|png|svg|webp)$/i.test(attachment.path || attachment.name || '');
 }
 
 // ---------------------------

@@ -119,6 +119,17 @@ export function broadcastSessionRemoved(sessionIds: string[]): void {
 }
 
 /**
+ * Announces that the server just started a session's queued message as a new
+ * turn. Used by the scheduled-messages dispatcher, the only sender of queued
+ * messages. Pages drop their copy of the queued card and, when they are
+ * showing that session, echo the message they already hold. Only the id goes
+ * out: every connected page receives this, and the text belongs to one user.
+ */
+export function broadcastQueuedMessageDispatched(sessionId: string): void {
+  sendToConnectedClients([JSON.stringify({ kind: 'queued_message_dispatched', sessionId })]);
+}
+
+/**
  * Announces a batch of sessions. Used by the providers module's sessions
  * watcher, whose debounced flush can carry dozens of ids at once — the client
  * set is walked once for the whole batch rather than once per session.

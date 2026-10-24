@@ -23,6 +23,10 @@ vi.mock('@/shared/api', () => ({
   api: {
     getFiles: () => Promise.resolve({ ok: false }),
     slashCommands: () => Promise.resolve({ ok: false }),
+    user: {
+      saveDraft: () => Promise.resolve(new Response('{}')),
+      deleteDraft: () => Promise.resolve(new Response('{}')),
+    },
   },
 }));
 
@@ -48,7 +52,7 @@ const selectedProject = {
 
 const submitEvent = { preventDefault: () => undefined } as never;
 
-async function setup() {
+async function setup(options: { isConnected?: boolean } = {}) {
   const { useChatComposerState } = await import('@/modules/chat/hooks/useChatComposerState');
 
   const sent: Array<Record<string, unknown>> = [];
@@ -72,6 +76,7 @@ async function setup() {
       stickToBottomAfterSend: () => undefined,
       addMessage: (message: ChatMessage) => added.push(message),
       setPendingPermissionRequests: () => undefined,
+      isConnected: options.isConnected,
     }),
   );
 
@@ -250,4 +255,21 @@ test('a queued message that fails to send goes back to the queue, not into the c
   // recoverable instead of silently gone.
   assert.equal(result.current.input, 'the next message');
   assert.equal(result.current.queuedDraft?.content, 'the queued message');
+});
+
+test('a send while the socket is down keeps the text instead of dropping the message', async () => {
+  const { result, sent, added, type } = await setup({ isConnected: false });
+  await type('hello world');
+
+  let accepted: boolean | undefined;
+  await act(async () => {
+    accepted = await result.current.handleSubmit(submitEvent);
+  });
+
+  // No session is allocated and no frame leaves: the socket would drop it.
+  assert.equal(authenticatedFetch.mock.calls.length, 0);
+  assert.equal(sent.length, 0);
+  assert.equal(accepted, false);
+  assert.equal(result.current.input, 'hello world');
+  assert.deepEqual(added.map((message) => message.type), ['error']);
 });

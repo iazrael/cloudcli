@@ -782,7 +782,10 @@ const SERVER_EVENT_ROUTES: Record<string, { flushesStream: boolean; action: Serv
   permission_cancelled: { flushesStream: false, action: 'permissionCancelled' },
   // Sidebar/global events — owned by useProjectsState.
   session_upserted: { flushesStream: false, action: 'none' },
+  session_removed: { flushesStream: false, action: 'none' },
   loading_progress: { flushesStream: false, action: 'none' },
+  // Owned by useQueuedMessageSync.
+  queued_message_dispatched: { flushesStream: false, action: 'none' },
 };
 
 /**

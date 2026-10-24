@@ -5,6 +5,7 @@ import { useChatComposerState } from '@/modules/chat/hooks/useChatComposerState'
 import { useChatSessionState } from '@/modules/chat/hooks/useChatSessionState';
 import { useChatRealtimeHandlers } from '@/modules/chat/hooks/useChatRealtimeHandlers';
 import { useSessionStore } from '@/modules/chat/hooks/useSessionStore';
+import { readQueuedMessage, resetChatDrafts } from '@/shared/chatDrafts';
 import { useSessionProtection } from '@/shared/hooks/useSessionProtection';
 import type { ActiveBackgroundTask, Project, ProjectSession, ServerEvent, SessionActivityMap } from '@/shared/types';
 
@@ -16,6 +17,9 @@ const task: ActiveBackgroundTask = { id: 'toolu_bash', taskId: 'bash-1', toolNam
 
 beforeEach(() => {
   localStorage.clear();
+  // The queue lives in a module-level store; one test's queued message must
+  // not leak into the next.
+  resetChatDrafts();
   vi.stubGlobal('fetch', vi.fn(async (url: string) => new Response(JSON.stringify(url.includes('/files') ? [] : {
     success: true, data: { messages: [], total: 0, hasMore: false, commands: [], skills: [] },
   }), { status: 200, headers: { 'Content-Type': 'application/json' } })));
@@ -139,7 +143,7 @@ test('work without a task stop handle is cancelled through the held session', as
   ]);
 });
 
-test('queued input waits for server confirmation and a pending reply can still be stopped after cards disappear', async () => {
+test('queued input stays queued for the server and a pending reply can still be stopped after cards disappear', async () => {
   const { result, sendMessage } = await mountComposer([task]);
   act(() => result.current.handleInputChange({ target: { value: 'next prompt' } } as never));
   await act(async () => { await result.current.handleSubmit({ preventDefault: () => {} } as never); });
@@ -153,8 +157,12 @@ test('queued input waits for server confirmation and a pending reply can still b
   act(() => result.current.handleAbortSession());
   expect(sendMessage).toHaveBeenLastCalledWith({ type: 'chat.abort', sessionId: 'session-1' });
 
+  // Once the work is done the server sends it; the page never does, so a
+  // page that is closed or offline by then cannot hold it back or drop it.
   act(() => result.current.sessionStore.applyServerEvent(backgroundStatus([], false)));
-  await waitFor(() => expect(sendMessage.mock.calls.some(([frame]) => frame.type === 'chat.send' && frame.content === 'next prompt')).toBe(true));
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 30)); });
+  expect(sendMessage.mock.calls.some(([frame]) => frame.type === 'chat.send')).toBe(false);
+  expect(readQueuedMessage(session.id)?.content).toBe('next prompt');
 });
 
 test('stopping after the final completion event sends no stale abort or task request', async () => {

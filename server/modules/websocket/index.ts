@@ -7,8 +7,15 @@ export { chatRunRegistry } from './services/chat-run-registry.service.js';
 // broadcastSessionRemoved: used by the providers module's auto-archive runner
 // and single-session archive/delete service to announce rows leaving the
 // active sidebar list.
-export { broadcastSessionRemoved, broadcastSessionUpserted, broadcastSessionUpsertedBatch } from './services/session-upsert-broadcast.service.js';
-// runDetachedChatTurn: used by the scheduled-messages module to run a turn
-// from a timer, with no socket to stream to or report errors on.
+// broadcastQueuedMessageDispatched: used by the scheduled-messages dispatcher
+// when it starts a session's queued message.
+export {
+  broadcastQueuedMessageDispatched,
+  broadcastSessionRemoved,
+  broadcastSessionUpserted,
+  broadcastSessionUpsertedBatch,
+} from './services/session-upsert-broadcast.service.js';
+// runDetachedChatTurn: used by the scheduled-messages module to run a
+// scheduled or queued message with no socket to stream to or report errors on.
 export { runDetachedChatTurn } from './services/chat-websocket.service.js';
 export type { ProviderRuntimeGateway } from './services/chat-websocket.service.js';

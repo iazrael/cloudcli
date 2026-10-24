@@ -129,8 +129,14 @@ export function useChatRealtimeHandlers({
         return;
       }
 
-      // Sidebar/global events — owned by useProjectsState.
-      if (msg.kind === 'session_upserted' || msg.kind === 'loading_progress') {
+      // Sidebar/global events — owned by useProjectsState; queued-message
+      // starts — owned by useQueuedMessageSync.
+      if (
+        msg.kind === 'session_upserted'
+        || msg.kind === 'session_removed'
+        || msg.kind === 'loading_progress'
+        || msg.kind === 'queued_message_dispatched'
+      ) {
         return;
       }
 

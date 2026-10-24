@@ -54,7 +54,7 @@ server/
     agent/                 无头 Agent API（API key / 平台模式鉴权）
     notifications/         Web Push（VAPID）+ 桌面通知 WS
     plugins/               插件注册表、插件子进程、WS 代理
-    scheduled-messages/    定时消息（调度器 → 无附着 chat turn）
+    scheduled-messages/    定时消息与排队消息（调度器 → 无附着 chat turn）
     browser-use/           浏览器自动化 service + 本地 MCP 桥接
     local-proxy/           把服务器本机端口上的服务转发给远程浏览器（票据 + 会话 cookie）
     voice/  cli/  git/  file-tree/  worktrees/  projects/  settings/  system/  user/

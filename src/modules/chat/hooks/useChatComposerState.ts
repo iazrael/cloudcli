@@ -12,24 +12,25 @@ import type {
 import { useDropzone } from 'react-dropzone';
 
 import { authenticatedFetch } from '@/shared/api';
-import { createClientRequestId, isEnginePromptCommand } from '@/shared/utils';
+import { createClientRequestId, isEnginePromptCommand, isImageAttachment } from '@/shared/utils';
 import type { MarkSessionProcessing, SessionActivityMap } from '@/shared/types';
 import { uploadAttachmentFiles } from '@/modules/chat/utils/attachmentUpload';
 import { grantClaudeToolPermission } from '@/modules/chat/utils/chatPermissions';
+import { readProviderToolsSettings, safeLocalStorage } from '@/modules/chat/utils/chatStorage';
 import {
   clearQueuedMessage,
-  readProviderToolsSettings,
   readQueuedMessage,
-  safeLocalStorage,
+  subscribeToChatDrafts,
   writeQueuedMessage,
-  type QueuedSendOptions,
-} from '@/modules/chat/utils/chatStorage';
+  type StoredQueuedMessage,
+} from '@/shared/chatDrafts';
 import type {
   ActiveBackgroundTask,
   ChatAttachment,
   ChatMessage,
   PendingPermissionRequest,
   PermissionMode,
+  QueuedSendOptions,
   SessionEstablishedContext,
 } from '@/shared/types';
 import type { Project, ProjectSession, LLMProvider, ProviderModelOption, ProviderQuotaData } from '@/shared/types';
@@ -61,6 +62,8 @@ type UseChatComposerStateArgs = {
    * turn alongside it (Claude's held process).
    */
   isInputBlocked?: boolean;
+  /** Live websocket connectivity; unknown counts as connected. */
+  isConnected?: boolean;
   backgroundTasks?: ActiveBackgroundTask[];
   hasActiveBackgroundTasks?: boolean;
   processingSessions?: SessionActivityMap;
@@ -207,11 +210,6 @@ const createFakeSubmitEvent = () => {
 const MAX_ATTACHMENT_COUNT = 10;
 const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024;
 
-const isImageAttachment = (attachment: ChatAttachment) => {
-  if (attachment.mimeType?.startsWith('image/')) return true;
-  return /\.(gif|jpe?g|png|svg|webp)$/i.test(attachment.path || attachment.name || '');
-};
-
 export type QueuedDraft = {
   content: string;
   /** Browser files retained while this composer stays mounted, for editing. */
@@ -219,12 +217,25 @@ export type QueuedDraft = {
   /** JSON-safe descriptors uploaded when the message is queued. */
   uploadedAttachments?: unknown[];
   /**
-   * Send options snapshotted at queue time. Persisted with the draft so the
-   * app-level auto-send can dispatch the message with the right model and
-   * permission settings while another session is being viewed.
+   * Send options snapshotted at queue time. Stored with the message so the
+   * server sends it with the model and permission settings it was queued under,
+   * whichever page (if any) is open by then.
    */
   options?: QueuedSendOptions;
 };
+
+/** The JSON-safe part of a queued draft, as the server stores and sends it. */
+const toStoredQueuedMessage = (draft: QueuedDraft): StoredQueuedMessage => ({
+  content: draft.content,
+  options: draft.options,
+  attachments: draft.uploadedAttachments,
+});
+
+const isSameQueuedMessage = (a: StoredQueuedMessage, b: StoredQueuedMessage): boolean => (
+  a.content === b.content
+  && JSON.stringify(a.options ?? null) === JSON.stringify(b.options ?? null)
+  && JSON.stringify(a.attachments ?? []) === JSON.stringify(b.attachments ?? [])
+);
 
 const restoreQueuedDraft = (sessionKey: string): QueuedDraft | null => {
   const saved = readQueuedMessage(sessionKey);
@@ -268,6 +279,7 @@ export function useChatComposerState({
   currentProviderEffort,
   isLoading,
   isInputBlocked,
+  isConnected,
   backgroundTasks = [],
   hasActiveBackgroundTasks = false,
   processingSessions,
@@ -319,9 +331,7 @@ export function useChatComposerState({
   // handed back to the parent's `selectedSession` prop yet.
   const sessionKey = selectedSession?.id || currentSessionId || null;
   const sessionKeyRef = useRef(sessionKey);
-  const processingSessionsRef = useRef<SessionActivityMap | undefined>(processingSessions);
   sessionKeyRef.current = sessionKey;
-  processingSessionsRef.current = processingSessions;
 
   // Every programmatic input write goes through the same pair of stores a send
   // reads: the state (for the render) and inputValueRef (so an immediate Enter
@@ -811,6 +821,8 @@ export function useChatComposerState({
       // The one send identity the backend dedupes on. It covers what the latch
       // cannot: a retried fetch, or a second tab replaying the same submit.
       const clientRequestId = createClientRequestId();
+      // False only when the submit failed and its message went back where it came from.
+      let accepted = true;
       // Emptied up front rather than after the awaits, so the send is visible
       // immediately and the button stops looking dead. A queued flush carries
       // its own copy of the message and must leave the composer alone — the
@@ -909,31 +921,23 @@ export function useChatComposerState({
           recordSentMessage(currentInput, queuedSessionKey);
 
           // The upload is asynchronous. If the user changed sessions while it
-          // was running, persist/send against the session where Queue was
-          // pressed rather than putting the draft into the newly opened chat.
+          // was running, the message is already queued on the server for the
+          // session where Queue was pressed; the newly opened chat must not
+          // take it into its own queue.
           if (queuedSessionKey && sessionKeyRef.current !== queuedSessionKey) {
-            if (
-              processingSessionsRef.current
-              && !processingSessionsRef.current.has(queuedSessionKey)
-            ) {
-              clearQueuedMessage(queuedSessionKey);
-              sendMessage({
-                type: 'chat.send',
-                sessionId: queuedSessionKey,
-                content: durableDraft.content,
-                options: {
-                  ...(durableDraft.options ?? {}),
-                  attachments: durableDraft.uploadedAttachments ?? [],
-                },
-              });
-              onSessionProcessing?.(queuedSessionKey, { statusText: null, canInterrupt: true });
-            }
             return true;
           }
 
           queuedDraftSessionRef.current = queuedSessionKey;
           setQueuedDraft(durableDraft);
           return true;
+        }
+
+        // A closed socket drops the frame without a word, after the echo and
+        // the busy marker below have already told the user it went out. Refuse
+        // up front instead, before a new chat allocates a session for nothing.
+        if (isConnected === false) {
+          throw new ComposerSubmitError('Not connected to the server. Your message was kept; send it again once the connection is back.');
         }
 
         const messageContent = currentInput;
@@ -1051,6 +1055,7 @@ export function useChatComposerState({
         // consecutive-duplicate check keeps this second call a no-op.
         recordSentMessage(currentInput, targetSessionId);
       } catch (error) {
+        accepted = false;
         // One place turns a failed submit back into an editable message, and
         // exactly one error row is rendered. Nothing is dropped silently.
         if (queuedSubmission) {
@@ -1074,7 +1079,7 @@ export function useChatComposerState({
         setSubmittingScopes(new Set(submittingScopesRef.current));
       }
 
-      return true;
+      return accepted;
     },
     [
       selectedSession,
@@ -1084,6 +1089,7 @@ export function useChatComposerState({
       executeCommand,
       isLoading,
       isInputBlocked,
+      isConnected,
       hasActiveBackgroundTasks,
       onSessionProcessing,
       onSessionEstablished,
@@ -1105,59 +1111,29 @@ export function useChatComposerState({
     handleSubmitRef.current = handleSubmit;
   }, [handleSubmit]);
 
-  // Once the in-flight turn ends, replay the queued draft through the normal
-  // submit path. The draft itself is passed directly so submission never
-  // depends on React committing restored attachment state first.
-  const isBusy = isInputBlocked ?? (isLoading || Boolean(hasActiveBackgroundTasks));
-  const wasBusyRef = useRef(isBusy);
-  const flushSessionKeyRef = useRef(sessionKey);
+  // The server sends queued messages, and another page can queue, edit or
+  // drop one, so the card follows what the store holds for this session. Its
+  // own copy is kept while it matches, since only it has the browser files the
+  // edit button puts back.
   useEffect(() => {
-    const wasBusy = wasBusyRef.current;
-    wasBusyRef.current = isBusy;
-
-    // A session switch changes which session `isLoading` describes, so this
-    // transition says nothing about the queued draft's own session. Never
-    // flush across it — the swap effect below replaces `queuedDraft` with the
-    // new session's saved draft right after this.
-    if (flushSessionKeyRef.current !== sessionKey) {
-      flushSessionKeyRef.current = sessionKey;
-      return;
+    if (!sessionKey) {
+      return undefined;
     }
-
-    // A manual submit in flight owns the latch; flushing now would be refused.
-    // This effect re-runs when it finishes, which is the retry.
-    if (isBusy || isSubmitting || !queuedDraft) {
-      return;
-    }
-
-    // Turn just ended in this session: flush immediately. Otherwise this is a
-    // saved draft restored into an apparently idle session — hold it briefly
-    // so the `chat_subscribed` ack can flip `isLoading` if a run is actually
-    // still live (the cleanup below cancels the send in that case).
-    const delay = wasBusy ? 0 : 750;
-    const timer = setTimeout(() => {
-      // The saved key is the claim ticket shared with the app-level auto-send
-      // (which handles sessions that finish while not viewed). If it's gone,
-      // the message was already dispatched — don't send it twice.
-      if (sessionKey && !readQueuedMessage(sessionKey)) {
-        setQueuedDraft(null);
+    return subscribeToChatDrafts(() => {
+      if (queuedDraftSessionRef.current !== sessionKey) {
         return;
       }
-      setQueuedDraft(null);
-      // The draft travels as an argument — the composer is never loaded with
-      // it, so whatever the user is typing survives the flush.
-      const submitted = handleSubmitRef.current?.(createFakeSubmitEvent(), queuedDraft);
-      void submitted?.then((accepted) => {
-        if (!accepted) {
-          // Refused after this effect already cleared the queue: nobody took
-          // the message, so put it back rather than losing it silently.
-          queuedDraftSessionRef.current = sessionKey;
-          setQueuedDraft(queuedDraft);
+      const stored = readQueuedMessage(sessionKey);
+      setQueuedDraft((current) => {
+        if (!stored) {
+          return null;
         }
+        return current && isSameQueuedMessage(toStoredQueuedMessage(current), stored)
+          ? current
+          : restoreQueuedDraft(sessionKey);
       });
-    }, delay);
-    return () => clearTimeout(timer);
-  }, [isBusy, isSubmitting, queuedDraft, sessionKey]);
+    });
+  }, [sessionKey]);
 
   const editQueuedDraft = useCallback(() => {
     if (!queuedDraft) {
@@ -1244,16 +1220,18 @@ export function useChatComposerState({
     if (!sessionKey || queuedDraftSessionRef.current !== sessionKey) {
       return;
     }
+    const stored = readQueuedMessage(sessionKey);
     if (
       queuedDraft
       && (queuedDraft.content.trim() || (queuedDraft.uploadedAttachments?.length ?? 0) > 0)
     ) {
-      writeQueuedMessage(sessionKey, {
-        content: queuedDraft.content,
-        options: queuedDraft.options,
-        attachments: queuedDraft.uploadedAttachments,
-      });
-    } else {
+      const next = toStoredQueuedMessage(queuedDraft);
+      // Already what the server holds (written at queue time, or adopted from
+      // the store): writing it again would only repeat the request.
+      if (!stored || !isSameQueuedMessage(next, stored)) {
+        writeQueuedMessage(sessionKey, next);
+      }
+    } else if (stored) {
       clearQueuedMessage(sessionKey);
     }
   }, [queuedDraft, sessionKey]);

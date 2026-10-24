@@ -52,6 +52,8 @@ const listeners = new Set<() => void>();
 
 let drafts = new Map<string, DraftRecord>();
 const pendingScopes = new Set<string>();
+/** Scopes with a write sent but not yet answered, and how many are outstanding. */
+const inFlightScopes = new Map<string, number>();
 let serverWriteTimer: ReturnType<typeof setTimeout> | null = null;
 
 const isRecord = (value: unknown): value is Record<string, unknown> => (
@@ -110,6 +112,22 @@ function notifyListeners(): void {
   }
 }
 
+/**
+ * How long a write the server did not take waits before it is sent again. The
+ * scope stays pending meanwhile, which is what keeps a hydrate from replacing
+ * it with the server's older copy: a queued message the server never received
+ * is one nobody will ever send.
+ */
+const SERVER_RETRY_DELAY_MS = 5_000;
+
+function retryServerWrite(scope: string, error: unknown): void {
+  console.error('Failed to save chat draft; retrying:', error);
+  pendingScopes.add(scope);
+  if (serverWriteTimer === null) {
+    serverWriteTimer = setTimeout(flushServerWrites, SERVER_RETRY_DELAY_MS);
+  }
+}
+
 function flushServerWrites(): void {
   serverWriteTimer = null;
   const scopes = [...pendingScopes];
@@ -119,24 +137,41 @@ function flushServerWrites(): void {
     const draft = drafts.get(scope);
 
     // A save that fails must never surface as an unhandled rejection out of a
-    // timer callback: the mirror already holds the draft, and the next
-    // keystroke re-sends it.
+    // timer callback: the mirror already holds the draft, and the retry
+    // re-sends whatever the scope holds by then.
     try {
-      if (!draft || isEmptyDraft(draft)) {
-        void api.user.deleteDraft(scope).catch((error: unknown) => {
-          console.error('Failed to delete chat draft:', error);
+      const request = !draft || isEmptyDraft(draft)
+        ? api.user.deleteDraft(scope)
+        : api.user.saveDraft(scope, {
+          text: draft.text,
+          queuedMessage: draft.queuedMessage,
         });
-        continue;
-      }
-
-      void api.user.saveDraft(scope, {
-        text: draft.text,
-        queuedMessage: draft.queuedMessage,
-      }).catch((error: unknown) => {
-        console.error('Failed to save chat draft:', error);
-      });
+      inFlightScopes.set(scope, (inFlightScopes.get(scope) ?? 0) + 1);
+      void request
+        .then((response) => {
+          if (response.ok) {
+            return;
+          }
+          const transient = response.status >= 500 || response.status === 408 || response.status === 429;
+          if (transient) {
+            retryServerWrite(scope, new Error(`HTTP ${response.status}`));
+          } else {
+            // Refused for good (a malformed draft, a lost session): resending
+            // the same body cannot succeed, so say so instead of looping.
+            console.error('Chat draft rejected by the server:', { scope, status: response.status });
+          }
+        })
+        .catch((error: unknown) => retryServerWrite(scope, error))
+        .finally(() => {
+          const outstanding = (inFlightScopes.get(scope) ?? 1) - 1;
+          if (outstanding > 0) {
+            inFlightScopes.set(scope, outstanding);
+          } else {
+            inFlightScopes.delete(scope);
+          }
+        });
     } catch (error) {
-      console.error('Failed to save chat draft:', error);
+      retryServerWrite(scope, error);
     }
   }
 }
@@ -229,9 +264,9 @@ export function subscribeToChatDrafts(listener: () => void): () => void {
 /**
  * Loads the server's drafts and adopts them as the source of truth.
  *
- * A scope the client has typed into since this page loaded is left alone: the
- * user is looking at that composer right now, and replacing its contents with a
- * staler server copy would delete what they are in the middle of writing.
+ * A scope with a local change the server may not have yet (not sent, or sent
+ * and unanswered) is left alone: replacing it with a staler server copy would
+ * delete what the user just wrote or queued.
  */
 export async function hydrateChatDrafts(): Promise<void> {
   let serverDrafts: Array<{ scope?: unknown; text?: unknown; queuedMessage?: unknown }> = [];
@@ -253,10 +288,14 @@ export async function hydrateChatDrafts(): Promise<void> {
     return;
   }
 
+  // Scopes whose local copy may be newer than this snapshot: edits not sent
+  // yet, and writes the server has not answered.
+  const localAhead = new Set([...pendingScopes, ...inFlightScopes.keys()]);
+
   const merged = new Map<string, DraftRecord>();
   for (const draft of serverDrafts) {
     const scope = typeof draft.scope === 'string' ? draft.scope : '';
-    if (!scope || pendingScopes.has(scope)) {
+    if (!scope || localAhead.has(scope)) {
       continue;
     }
 
@@ -268,10 +307,10 @@ export async function hydrateChatDrafts(): Promise<void> {
     });
   }
 
-  // Local edits whose debounced write has not left the browser yet win over
-  // the server snapshot. Every other missing scope was deleted remotely and
-  // must also disappear from the mirror.
-  for (const scope of pendingScopes) {
+  // Local edits the server may not have yet win over the snapshot. Every
+  // other missing scope was deleted remotely and must also disappear from the
+  // mirror.
+  for (const scope of localAhead) {
     const pending = drafts.get(scope);
     if (pending) {
       merged.set(scope, pending);
@@ -287,6 +326,7 @@ export async function hydrateChatDrafts(): Promise<void> {
 export function resetChatDrafts(): void {
   drafts = new Map();
   pendingScopes.clear();
+  inFlightScopes.clear();
   if (serverWriteTimer !== null) {
     clearTimeout(serverWriteTimer);
     serverWriteTimer = null;

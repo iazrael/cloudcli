@@ -15,6 +15,7 @@ import { getProviderDisplayName } from '@/shared/providerDisplay';
 import { useProviderAuthStatus } from '@/modules/provider-auth';
 
 import { useScheduledMessages } from '@/modules/chat/composer/useScheduledMessages';
+import { useQueuedMessageSync } from '@/modules/chat/hooks/useQueuedMessageSync';
 import ChatMessagesPane from '@/modules/chat/transcript/ChatMessagesPane';
 import ProviderSelectionEmptyState from '@/modules/chat/transcript/ProviderSelectionEmptyState';
 import type { ChatMessage } from '@/shared/types';
@@ -44,7 +45,7 @@ function ChatInterface({
   onShowAllTasks,
 }: ChatInterfaceProps) {
   const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings();
-  const { subscribe } = useWebSocket();
+  const { subscribe, isConnected } = useWebSocket();
   const { t } = useTranslation('chat');
   const { providerAuthStatus, refreshProviderAuthStatuses } = useProviderAuthStatus();
 
@@ -235,6 +236,14 @@ function ChatInterface({
     isInputBlocked,
     backgroundTasks,
     hasActiveBackgroundTasks,
+    isConnected,
+  });
+
+  useQueuedMessageSync({
+    activeSessionId: selectedSession?.id || currentSessionId || null,
+    subscribe,
+    addMessage,
+    onSessionProcessing,
   });
 
   // On WebSocket reconnect, request a bounded persisted-tail sync (deferred
