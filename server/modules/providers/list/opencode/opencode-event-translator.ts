@@ -55,6 +55,7 @@ import {
   toAgentCardInput,
   toClientToolName,
 } from './opencode-subagent.js';
+import { isOpenCodeQuestionTool, toQuestionCardInput } from './opencode-question.js';
 
 const PROVIDER = 'opencode' as const;
 
@@ -447,7 +448,9 @@ export class OpenCodeSessionEventTranslator {
       provider: PROVIDER,
       kind: 'tool_use',
       toolName: toClientToolName(engineToolName),
-      toolInput: isSubagent ? toAgentCardInput(engineInput) : engineInput,
+      toolInput: isSubagent
+        ? toAgentCardInput(engineInput)
+        : isOpenCodeQuestionTool(engineToolName) ? toQuestionCardInput(engineInput) : engineInput,
       toolId: callId,
     });
   }

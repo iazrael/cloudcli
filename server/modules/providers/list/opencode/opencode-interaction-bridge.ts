@@ -27,11 +27,9 @@ import { createNormalizedMessage, generateMessageId, readObjectRecord, readOptio
 import type { OpenCodeApiClient, OpenCodeFormAnswer } from './opencode-api.client.js';
 import type { OpenCodeEventEnvelope } from './opencode-event-stream.js';
 import type { OpenCodeToolCall } from './opencode-event-translator.js';
+import { MULTI_SELECT_JOINER, QUESTION_CARD_TOOL_NAME } from './opencode-question.js';
 
 const PROVIDER = 'opencode' as const;
-const QUESTION_TOOL_NAME = 'AskUserQuestion';
-/** How the question panel joins multi-select answers (`AskUserQuestionPanel`). */
-const MULTI_SELECT_JOINER = ', ';
 const DEFAULT_PENDING_TTL_MS = 30 * 60 * 1000;
 const SKIPPED_FORM_MESSAGE = 'The user skipped these questions. Continue without the answers; make reasonable assumptions and state them.';
 const DECLINED_PERMISSION_MESSAGE = 'The user declined this action.';
@@ -363,7 +361,7 @@ export class OpenCodeInteractionBridge {
       kind: 'form',
       appSessionId: session.appSessionId,
       providerSessionId,
-      toolName: QUESTION_TOOL_NAME,
+      toolName: QUESTION_CARD_TOOL_NAME,
       toolId: readOptionalString(tool?.id),
       input: { questions: fields.map(toPanelQuestion) },
       context: { reason: readOptionalString(form.title) ?? 'Questions', kind: readOptionalString(metadata?.kind), ...this.originOf(session) },
