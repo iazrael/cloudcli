@@ -147,6 +147,77 @@ test('AntigravityProviderModels returns builtin models fallback', async () => {
   }
 });
 
+test('AntigravityProviderModels retries the CLI once the fallback cache expires', async () => {
+  // The builtin catalog is only a stopgap while `agy models` is failing
+  // (cold start, slow fetch). It must not pin the picker to a stale list
+  // for five minutes, so the fallback TTL expires fast; 0 makes the
+  // retry immediate in this test.
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'antigravity-models-ttl-'));
+  const stubPath = path.join(tempRoot, 'agy');
+  const restoreAgyPath = withEnvValue('CLOUDCLI_AGY_PATH', stubPath);
+  await fs.writeFile(stubPath, '#!/bin/sh\n', { mode: 0o755 });
+  clearEnginePathCache();
+  try {
+    const models = new AntigravityProviderModels(0);
+    const fallback = await models.getSupportedModels();
+    assert.ok(fallback.OPTIONS.some((m) => m.value === 'gemini-3.7-flash'));
+
+    // A healthy CLI output replaces the dead stub; with the (zero) TTL
+    // elapsed the next call must re-query instead of serving the fallback.
+    await fs.writeFile(
+      stubPath,
+      `#!/bin/sh\nprintf 'gemini-4-argon-medium\\tGemini 4 Argon (Medium)\\n'\n`,
+      { mode: 0o755 },
+    );
+    clearEnginePathCache();
+    const refreshed = await models.getSupportedModels();
+    assert.ok(
+      refreshed.OPTIONS.some((m) => m.value === 'gemini-4-argon-medium'),
+      `expected CLI catalog, got: ${JSON.stringify(refreshed.OPTIONS.map((m) => m.value))}`,
+    );
+  } finally {
+    restoreAgyPath();
+    clearEnginePathCache();
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('AntigravityProviderModels keeps caching a healthy CLI catalog', async () => {
+  // A successful `agy models` result keeps its five-minute cache so the
+  // picker never re-runs the ~5s CLI on every open; only the fallback
+  // path uses the short TTL.
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'antigravity-models-cache-'));
+  const stubPath = path.join(tempRoot, 'agy');
+  const restoreAgyPath = withEnvValue('CLOUDCLI_AGY_PATH', stubPath);
+  await fs.writeFile(
+    stubPath,
+    `#!/bin/sh\nprintf 'gemini-4-argon-medium\\tGemini 4 Argon (Medium)\\n'\n`,
+    { mode: 0o755 },
+  );
+  clearEnginePathCache();
+  try {
+    const models = new AntigravityProviderModels();
+    const first = await models.getSupportedModels();
+    assert.ok(first.OPTIONS.some((m) => m.value === 'gemini-4-argon-medium'));
+
+    // The stub now reports a different catalog; inside the cache window
+    // the provider must keep serving the first result.
+    await fs.writeFile(
+      stubPath,
+      `#!/bin/sh\nprintf 'claude-opus-5-5-high\\tClaude Opus 5.5 (High)\\n'\n`,
+      { mode: 0o755 },
+    );
+    clearEnginePathCache();
+    const cached = await models.getSupportedModels();
+    assert.ok(cached.OPTIONS.some((m) => m.value === 'gemini-4-argon-medium'));
+    assert.ok(!cached.OPTIONS.some((m) => m.value.startsWith('claude-')));
+  } finally {
+    restoreAgyPath();
+    clearEnginePathCache();
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test('ANTIGRAVITY_BUILTIN_MODELS collapses multi-tier families and keeps fixed models', () => {
   assert.equal(ANTIGRAVITY_BUILTIN_MODELS.DEFAULT, 'gemini-3.7-flash');
 

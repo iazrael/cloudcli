@@ -85,7 +85,9 @@ async function fetchModelsFromCli(): Promise<ProviderModelsDefinition | null> {
   try {
     const { stdout } = await execFileAsync(enginePath, ['models'], {
       encoding: 'utf8',
-      timeout: 8000,
+      // A healthy `agy models` takes ~5s cold (token refresh included);
+      // leave headroom so a cold start is not misread as a dead CLI.
+      timeout: 15000,
     });
 
     const entries: AntigravityRawModelEntry[] = [];
@@ -154,6 +156,14 @@ export class AntigravityProviderModels implements IProviderModels {
   private cacheExpiry: number = 0;
 
   /**
+   * TTL for the builtin fallback catalog. Unlike a healthy CLI result it
+   * expires fast: the builtin list is a stopgap that goes stale, so the
+   * next call re-queries `agy models` instead of serving the stale list
+   * for the full five-minute window.
+   */
+  constructor(private readonly fallbackTtlMs: number = 10_000) {}
+
+  /**
    * Returns supported Antigravity models, dynamically loaded or from builtin defaults.
    */
   async getSupportedModels(): Promise<ProviderModelsDefinition> {
@@ -164,7 +174,9 @@ export class AntigravityProviderModels implements IProviderModels {
 
     const cliModels = await fetchModelsFromCli();
     this.cachedModels = cliModels ?? ANTIGRAVITY_BUILTIN_MODELS;
-    this.cacheExpiry = now + 5 * 60 * 1000; // Cache for 5 minutes
+    // A healthy catalog is stable for minutes; the builtin fallback is
+    // only served briefly so a later call picks up the real CLI output.
+    this.cacheExpiry = now + (cliModels ? 5 * 60 * 1000 : this.fallbackTtlMs);
 
     return this.cachedModels;
   }
