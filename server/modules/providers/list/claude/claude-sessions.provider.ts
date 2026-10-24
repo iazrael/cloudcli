@@ -32,7 +32,6 @@ import {
   createCompactionMessage,
   createNormalizedMessage,
   generateMessageId,
-  isClaudeNonTurnMessageRow,
   isPlaceholderProviderModel,
   normalizeProjectPath,
   readObjectRecord,
@@ -44,11 +43,9 @@ import {
   truncateSubagentActivity,
 } from '@/shared/utils.js';
 import { sessionsDb } from '@/modules/database/index.js';
+import { readClaudeSessionWindowSources } from '@/modules/providers/services/claude-context-window.js';
 import { getClaudeSDKSessionStartTime } from '@/modules/providers/list/claude/claude-runtime.provider.js';
-import {
-  getReportedClaudeContextWindow,
-  summarizeClaudeTokenUsage,
-} from '@/modules/providers/services/claude-usage.js';
+import { summarizeClaudeTokenUsage } from '@/modules/providers/services/claude-usage.js';
 import { liftMemoryCitations } from '@/modules/providers/shared/memory-citations.js';
 import { isClaudeConversationRecord } from '@/shared/index.js';
 
@@ -114,7 +111,7 @@ async function readClaudeSubagentTranscript(filePath: string): Promise<ClaudeSub
 
       try {
         const entry = parseProviderJson(line) as AnyRecord;
-        if (!isClaudeConversationRecord(entry) || isClaudeNonTurnMessageRow(entry)) continue;
+        if (!isClaudeConversationRecord(entry)) continue;
         const timestamp = typeof entry.timestamp === 'string' ? entry.timestamp : undefined;
         if (timestamp && !transcript.startedAt) {
           transcript.startedAt = timestamp;
@@ -457,7 +454,6 @@ async function readTranscriptRows(jsonlPath: string, providerSessionId: string):
   const rows: AnyRecord[] = [];
   for await (const entry of readJsonlRecords(jsonlPath)) {
     if (entry.sessionId !== providerSessionId) continue;
-    if (isClaudeNonTurnMessageRow(entry)) continue;
     // Preserve graph/control records for their own consumers. A nested message
     // in any other record is a diagnostic payload, not another conversation.
     if (isClaudeConversationRecord(entry)
@@ -932,30 +928,6 @@ const INTERNAL_CONTENT_PREFIXES = [
   'Base directory for this skill:',
 ] as const;
 
-/**
- * Claude Code 2.1.282+ writes pasted text into the transcript already wrapped as
- * `<pasted_content id="ID">\nBODY\n</pasted_content id="ID">`. The closing tag
- * carries the id too, so a generic closing-tag stripper misses it.
- */
-const PASTED_CONTENT =
-  /<pasted_content id="([^"]*)">\n?([\s\S]*?)\n?<\/pasted_content(?: id="\1")?>/g;
-
-/**
- * Replaces each well-formed `<pasted_content>` wrapper with its body so a user
- * message shows the text that was pasted. Unclosed or mismatched-id wrappers are
- * left untouched, and a message with no wrapper is returned unchanged.
- */
-function unwrapPastedContent(text: string): string {
-  let unwrapped = false;
-  const result = text.replace(PASTED_CONTENT, (_match, _id: string, body: string) => {
-    unwrapped = true;
-    return body;
-  });
-
-  if (!unwrapped) return text;
-  return result.replace(/^[\r\n]+|[\r\n]+$/g, '');
-}
-
 function isInternalContent(content: string): boolean {
   return INTERNAL_CONTENT_PREFIXES.some((prefix) => content.startsWith(prefix));
 }
@@ -1056,24 +1028,25 @@ function readTaskUsage(value: unknown): TaskUsage | undefined {
 }
 
 /**
- * Reads the latest assistant-message usage snapshot from a Claude JSONL file.
+ * Parses a Claude JSONL transcript into the rows the usage summarizer reads.
  *
- * Only assistant rows that carry usage are kept, and the snapshot is picked by
- * `summarizeClaudeTokenUsage` — the same rule the history reader applies — so
- * a subagent turn or a `<synthetic>` all-zero row never becomes the newest turn.
+ * Malformed lines are dropped rather than aborting the scan: a transcript
+ * whose tail is being appended to while it is read is normal, and the rows
+ * before it still carry the session's usage.
  */
-async function readClaudeTokenUsage(
-  filename: string,
-  configuredContextWindow: string | undefined,
-  reportedContextWindow?: number,
-): Promise<ProviderTokenUsageResult> {
-  const usageRows: AnyRecord[] = [];
-  for await (const entry of readJsonlRecords(filename)) {
-    if (entry.type === 'assistant' && entry.message?.usage) {
-      usageRows.push({ type: entry.type, isSidechain: entry.isSidechain, message: { usage: entry.message.usage } });
+function parseClaudeTranscriptEntries(fileContent: string): AnyRecord[] {
+  const entries: AnyRecord[] = [];
+  for (const line of fileContent.split('\n')) {
+    if (!line.trim()) {
+      continue;
+    }
+    try {
+      entries.push(JSON.parse(line) as AnyRecord);
+    } catch {
+      // Skip malformed lines without discarding usage from earlier messages.
     }
   }
-  return summarizeClaudeTokenUsage(usageRows, configuredContextWindow, reportedContextWindow);
+  return entries;
 }
 
 /**
@@ -1270,12 +1243,6 @@ export class ClaudeSessionsProvider implements IProviderSessions {
       return [];
     }
     const messages = this.normalizeMessageRows(rawMessage, sessionId);
-    // Show the text that was pasted, not the wrapper tags Claude Code stores it in.
-    for (const message of messages) {
-      if (message.role === 'user' && message.kind === 'text' && typeof message.content === 'string') {
-        message.content = unwrapPastedContent(message.content);
-      }
-    }
     // A synthesized id is useless as an anchor — it changes on every read — so
     // a row without its own uuid produces messages with no anchor at all.
     const raw = readObjectRecord(compactProviderPayload(rawMessage));
@@ -1897,11 +1864,10 @@ export class ClaudeSessionsProvider implements IProviderSessions {
       // Carried on every page, like the Codex and OpenCode readers do, so the
       // composer's counter tracks the conversation instead of being frozen at
       // whatever it was when the session was opened.
-      tokenUsage: summarizeClaudeTokenUsage(
-        rawMessages,
-        undefined,
-        getReportedClaudeContextWindow(providerSessionId),
-      ),
+      tokenUsage: summarizeClaudeTokenUsage(rawMessages, {
+        ...readClaudeSessionWindowSources(sessionId),
+        configured: process.env.CONTEXT_WINDOW,
+      }),
     };
   }
 
@@ -1947,11 +1913,13 @@ export class ClaudeSessionsProvider implements IProviderSessions {
       });
     }
 
-    return readClaudeTokenUsage(
-      sessionFilePath,
-      process.env.CONTEXT_WINDOW,
-      getReportedClaudeContextWindow(input.nativeSessionId),
-    );
+    const fileContent = await fsp.readFile(sessionFilePath, 'utf8');
+    // Same summarizer the history page uses, so the endpoint and the page can
+    // never report a different occupancy or a different window for one session.
+    return summarizeClaudeTokenUsage(parseClaudeTranscriptEntries(fileContent), {
+      ...readClaudeSessionWindowSources(input.appSessionId),
+      configured: process.env.CONTEXT_WINDOW,
+    });
   }
 
   /**

@@ -1,6 +1,11 @@
 import { useEffect, useRef } from 'react';
 
-import { clearQueuedMessage, readQueuedMessage } from '@/modules/chat/utils/chatStorage';
+import {
+  clearQueuedCompact,
+  clearQueuedMessage,
+  readQueuedCompact,
+  readQueuedMessage,
+} from '@/modules/chat/utils/chatStorage';
 import {
   useProcessingSessions,
   useSessionProtectionActions,
@@ -19,14 +24,15 @@ type UseQueuedMessageAutoSendArgs = {
 };
 
 /**
- * Dispatches queued messages for sessions the user is NOT currently viewing.
+ * Dispatches queued work for sessions the user is NOT currently viewing.
  *
  * The composer persists each queued draft (text + send options snapshotted at
- * queue time) under `queued_message_<sessionId>`. When a session's run leaves
- * the processing map — its previous response completed — this hook sends that
- * session's queued message immediately instead of waiting for the user to
- * open the session again. Removing the storage key before sending is the
- * claim that keeps the composer's own flush from double-sending.
+ * queue time) under `queued_message_<sessionId>`, and each `/compact` asked
+ * for mid-turn under `queued_compact_<sessionId>`. When a session's run leaves
+ * the processing map — its previous response completed — this hook dispatches
+ * that work immediately instead of waiting for the user to open the session
+ * again. Removing the storage key before sending is the claim that keeps the
+ * composer's own flush from double-sending.
  *
  * Mounted by the project-workspace shell, one level below the
  * SessionProtectionProvider, so every viewed project gets exactly one instance.
@@ -50,14 +56,28 @@ export function useQueuedMessageAutoSend({
         continue;
       }
 
-      const queued = readQueuedMessage(sessionId);
-      if (!queued) {
+      // A closed socket would drop the send silently; keep the work so the
+      // composer (or a later completion) can retry once we're connected.
+      if (!isConnected) {
         continue;
       }
 
-      // A closed socket would drop the send silently; keep the draft so the
-      // composer (or a later completion) can retry once we're connected.
-      if (!isConnected) {
+      // A parked `/compact` goes first: compaction is a run of its own, so the
+      // queued message behind it waits for the next completion.
+      const parkedCompact = readQueuedCompact(sessionId);
+      if (parkedCompact) {
+        clearQueuedCompact(sessionId);
+        sendMessage({
+          type: 'chat.compact',
+          sessionId,
+          options: parkedCompact.options ?? {},
+        });
+        markSessionProcessing(sessionId, { statusText: null, canInterrupt: false });
+        continue;
+      }
+
+      const queued = readQueuedMessage(sessionId);
+      if (!queued) {
         continue;
       }
 

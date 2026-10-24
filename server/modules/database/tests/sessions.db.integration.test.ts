@@ -77,19 +77,30 @@ test('createSession preserves archived state of existing rows', async () => {
 
 test('the cutoff listing and the archiving by id cover the stale sessions and only those', async () => {
   await withIsolatedDatabase(() => {
-    const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+    // One clock read for every instant, and a cutoff a full day in the past,
+    // so nothing here depends on how long the test itself takes. Reading the
+    // clock afresh for each cutoff instead put `session-fresh` — written with
+    // SQLite's second-resolution CURRENT_TIMESTAMP — exactly on the boundary:
+    // the test only passed while its whole body ran inside one second, and
+    // under full-suite load the second call archived it and the run went red.
+    const now = Date.now();
+    const twoDaysAgo = new Date(now - 2 * 24 * 60 * 60 * 1000).toISOString();
+    const oneDayAgo = new Date(now - 24 * 60 * 60 * 1000).toISOString();
+
     sessionsDb.createSession('session-stale-1', 'claude', '/workspace/demo-project', 'Stale 1', twoDaysAgo, twoDaysAgo);
     sessionsDb.createSession('session-stale-2', 'claude', '/workspace/demo-project', 'Stale 2', twoDaysAgo, twoDaysAgo);
+    // Left on CURRENT_TIMESTAMP on purpose — that default is what a rescan
+    // writes, and it must still read as newer than the cutoff.
     sessionsDb.createSession('session-fresh', 'claude', '/workspace/demo-project', 'Fresh');
     sessionsDb.createSession('session-already-archived', 'claude', '/workspace/demo-project', 'Archived', twoDaysAgo, twoDaysAgo);
     sessionsDb.updateSessionIsArchived('session-already-archived', true);
 
-    const candidates = sessionsDb.listSessionsOlderThanCutoff(new Date().toISOString());
+    const candidates = sessionsDb.listSessionsOlderThanCutoff(oneDayAgo);
     const archivedIds = sessionsDb.archiveSessionsByIds(candidates);
 
     assert.deepEqual(archivedIds.sort(), ['session-stale-1', 'session-stale-2']);
     // A second run finds nothing left to archive.
-    assert.deepEqual(sessionsDb.listSessionsOlderThanCutoff(new Date().toISOString()), []);
+    assert.deepEqual(sessionsDb.listSessionsOlderThanCutoff(oneDayAgo), []);
   });
 });
 
@@ -229,8 +240,7 @@ test('updateSessionCustomName only locks when asked', async () => {
   });
 });
 
-test('createForkedSession locks the name only when the user typed one', async () => {
-  await withIsolatedDatabase(() => {
+test('createForkedSession locks the name only when the user typed one', async () => {  await withIsolatedDatabase(() => {
     const baseInput = {
       sessionId: 'unused',
       provider: 'claude',
@@ -248,6 +258,28 @@ test('createForkedSession locks the name only when the user typed one', async ()
 
     assert.equal(sessionsDb.getSessionById('fork-user-title')?.name_locked, 1);
     assert.equal(sessionsDb.getSessionById('fork-auto-title')?.name_locked, 0);
+  });
+});
+
+test('a fork inherits the window the branched conversation was measured against', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createForkedSession({
+      sessionId: 'fork-with-window',
+      provider: 'claude',
+      projectPath: '/workspace/demo-project',
+      customName: 'Fork',
+      nameLocked: false,
+      providerSessionId: 'prov-fork-window',
+      jsonlPath: '/transcripts/fork-window.jsonl',
+      forkedFromSessionId: 'source-session',
+      model: 'opus[1m]',
+      effort: null,
+      contextWindow: 1_000_000,
+    });
+
+    // Without this the page's first reading falls back to a 200k default and
+    // draws 5x the real occupancy until the first turn ends.
+    assert.equal(sessionsDb.getSessionById('fork-with-window')?.context_window, 1_000_000);
   });
 });
 

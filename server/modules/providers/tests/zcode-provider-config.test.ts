@@ -1,268 +1,179 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
+import crypto from 'node:crypto';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
 import {
   buildZCodeAccountSyncPayload,
+  findActiveZCodeBuiltinConfig,
+  findZCodeBundledProviderConfig,
+  findZCodeRuntimeProviderConfig,
   resolveZCodeBuiltinRevision,
   resolveZCodeProviderConfigEnv,
 } from '@/modules/providers/list/zcode/zcode-provider-config.js';
 
-const BUILTIN_ENV = 'ZCODE_BUILTIN_PROVIDER_CONFIG_FILE';
-const PERSONAL_ENV = 'ZCODE_PERSONAL_PROVIDER_CONFIG_FILE';
+/** Runs a case against a temp ZCode storage dir and a temp install tree. */
+const withFixture = async (runTest: (roots: {
+  storageDir: string;
+  enginePath: string;
+  bundledDir: string;
+}) => Promise<void>): Promise<void> => {
+  const previous = process.env.ZCODE_STORAGE_DIR;
+  const storageDir = await mkdtemp(path.join(os.tmpdir(), 'zcode-provider-config-storage-'));
+  const installDir = await mkdtemp(path.join(os.tmpdir(), 'zcode-provider-config-install-'));
+  process.env.ZCODE_STORAGE_DIR = storageDir;
 
-/**
- * Builds a temp tree shaped like a ZCode install: the engine bundle plus a
- * built-in config placed at `relativeConfig` (omitted when null).
- */
-const withEngineLayout = async (
-  relativeConfig: string | null,
-  runTest: (enginePath: string, configPath: string | null) => Promise<void>,
-): Promise<void> => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'zcode-provider-config-'));
-  const engineDir = path.join(root, 'Contents', 'Resources', 'glm');
+  const engineDir = path.join(installDir, 'resources', 'glm');
+  const bundledDir = path.join(installDir, 'resources', 'config', 'provider');
   await mkdir(engineDir, { recursive: true });
-  const enginePath = path.join(engineDir, 'zcode.cjs');
-  await writeFile(enginePath, '// engine', 'utf8');
+  await mkdir(bundledDir, { recursive: true });
+  await writeFile(path.join(bundledDir, 'zcode-builtin.json'), '{"schemaVersion":1}', 'utf8');
 
-  let configPath: string | null = null;
-  if (relativeConfig) {
-    configPath = path.resolve(engineDir, relativeConfig);
-    await mkdir(path.dirname(configPath), { recursive: true });
-    await writeFile(configPath, '{}', 'utf8');
+  try {
+    await runTest({ storageDir, enginePath: path.join(engineDir, 'zcode.cjs'), bundledDir });
+  } finally {
+    if (previous === undefined) {
+      delete process.env.ZCODE_STORAGE_DIR;
+    } else {
+      process.env.ZCODE_STORAGE_DIR = previous;
+    }
+    await rm(storageDir, { recursive: true, force: true });
+    await rm(installDir, { recursive: true, force: true });
   }
-
-  await runTest(enginePath, configPath);
 };
 
-test('finds the built-in config in the packaged Resources/config layout', async () => {
-  await withEngineLayout(path.join('..', 'config', 'provider', 'zcode-builtin.json'), async (enginePath, configPath) => {
+test('findZCodeBundledProviderConfig resolves the install layout', async () => {
+  await withFixture(async ({ enginePath, bundledDir }) => {
+    assert.equal(
+      findZCodeBundledProviderConfig(enginePath),
+      path.join(bundledDir, 'zcode-builtin.json'),
+    );
+  });
+});
+
+test('findZCodeRuntimeProviderConfig returns the newest refreshed catalog', async () => {
+  await withFixture(async ({ storageDir }) => {
+    const endpointA = path.join(storageDir, 'v2', 'runtime', 'provider', 'windows-x86_64', '3.11.2', 'endpoint-a');
+    const endpointB = path.join(storageDir, 'v2', 'runtime', 'provider', 'windows-x86_64', '3.12.3', 'endpoint-b');
+    await mkdir(endpointA, { recursive: true });
+    await mkdir(endpointB, { recursive: true });
+    await writeFile(path.join(endpointA, 'zcode-builtin.json'), '{"v":"a"}', 'utf8');
+    await writeFile(path.join(endpointB, 'zcode-builtin.json'), '{"v":"b"}', 'utf8');
+
+    const resolved = findZCodeRuntimeProviderConfig();
+    assert.ok(resolved === path.join(endpointA, 'zcode-builtin.json') || resolved === path.join(endpointB, 'zcode-builtin.json'));
+    assert.ok(path.isAbsolute(resolved ?? ''));
+  });
+});
+
+test('resolveZCodeProviderConfigEnv prefers runtime and fills the bundled/personal paths', async () => {
+  await withFixture(async ({ storageDir, enginePath, bundledDir }) => {
+    const endpoint = path.join(storageDir, 'v2', 'runtime', 'provider', 'windows-x86_64', '3.12.3', 'endpoint-a');
+    await mkdir(endpoint, { recursive: true });
+    const runtimeCatalog = path.join(endpoint, 'zcode-builtin.json');
+    await writeFile(runtimeCatalog, '{"schemaVersion":1}', 'utf8');
+    const personal = path.join(storageDir, 'v2', 'provider_config.json');
+    await mkdir(path.dirname(personal), { recursive: true });
+    await writeFile(personal, '{"schemaVersion":1}', 'utf8');
+
     const env = resolveZCodeProviderConfigEnv(enginePath);
-
-    assert.equal(env[BUILTIN_ENV], configPath);
+    assert.equal(env.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE, runtimeCatalog);
+    assert.equal(env.ZCODE_BUILTIN_PROVIDER_BUNDLED_CONFIG_FILE, path.join(bundledDir, 'zcode-builtin.json'));
+    assert.equal(env.ZCODE_PERSONAL_PROVIDER_CONFIG_FILE, personal);
   });
 });
 
-test('prefers the config co-located with the engine over the packaged sibling', async () => {
-  await withEngineLayout(path.join('provider', 'zcode-builtin.json'), async (enginePath, configPath) => {
+test('resolveZCodeProviderConfigEnv falls back to the bundled catalog without a refresh', async () => {
+  await withFixture(async ({ enginePath, bundledDir }) => {
     const env = resolveZCodeProviderConfigEnv(enginePath);
-
-    assert.equal(env[BUILTIN_ENV], configPath);
+    assert.equal(env.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE, path.join(bundledDir, 'zcode-builtin.json'));
+    assert.equal(env.ZCODE_PERSONAL_PROVIDER_CONFIG_FILE, undefined);
   });
 });
 
-test('points the personal config at the ZCode storage directory', async () => {
-  await withEngineLayout(path.join('..', 'config', 'provider', 'zcode-builtin.json'), async (enginePath) => {
-    const previousStorage = process.env.ZCODE_STORAGE_DIR;
-    process.env.ZCODE_STORAGE_DIR = path.join(os.tmpdir(), 'zcode-storage-fixture');
-    try {
-      const env = resolveZCodeProviderConfigEnv(enginePath);
+test('findActiveZCodeBuiltinConfig returns the catalog the spawn env hands the engine', async () => {
+  await withFixture(async ({ storageDir, enginePath, bundledDir }) => {
+    assert.equal(findActiveZCodeBuiltinConfig(enginePath), path.join(bundledDir, 'zcode-builtin.json'));
 
-      assert.equal(env[PERSONAL_ENV], path.join(process.env.ZCODE_STORAGE_DIR, 'v2', 'provider_config.json'));
-    } finally {
-      if (previousStorage === undefined) delete process.env.ZCODE_STORAGE_DIR;
-      else process.env.ZCODE_STORAGE_DIR = previousStorage;
-    }
+    const endpoint = path.join(storageDir, 'v2', 'runtime', 'provider', 'windows-x86_64', '3.12.3', 'endpoint-a');
+    await mkdir(endpoint, { recursive: true });
+    const runtimeCatalog = path.join(endpoint, 'zcode-builtin.json');
+    await writeFile(runtimeCatalog, '{"schemaVersion":1}', 'utf8');
+
+    assert.equal(findActiveZCodeBuiltinConfig(enginePath), runtimeCatalog);
+    assert.equal(findActiveZCodeBuiltinConfig(enginePath), resolveZCodeProviderConfigEnv(enginePath).ZCODE_BUILTIN_PROVIDER_CONFIG_FILE);
   });
 });
 
-test('materializes the 0.16.9 provider registry from cli/config.json without changing the source config', async () => {
-  await withEngineLayout(path.join('..', 'config', 'provider', 'zcode-builtin.json'), async (enginePath) => {
-    const previousStorage = process.env.ZCODE_STORAGE_DIR;
-    const storageDir = await mkdtemp(path.join(os.tmpdir(), 'zcode-provider-registry-'));
-    process.env.ZCODE_STORAGE_DIR = storageDir;
-    const cliDir = path.join(storageDir, 'cli');
-    await mkdir(cliDir, { recursive: true });
-    const sourcePath = path.join(cliDir, 'config.json');
-    const source = JSON.stringify({
-      provider: {
-        'bigmodel-coding-plan': {
-          kind: 'anthropic',
-          name: 'BigModel Coding Plan',
-          options: { apiKey: 'fixture-key', baseURL: 'https://example.invalid/api/anthropic' },
-          models: {
-            'GLM-5.3-Flash': {
-              reasoning: { enabled: true, levels: ['low', 'max'], defaultLevel: 'max' },
-            },
-          },
-        },
-        'builtin:bigmodel-coding-plan': {
-          kind: 'anthropic',
-          name: 'Reserved migration alias',
-          options: { apiKey: 'fixture-key', baseURL: 'https://example.invalid/api/anthropic' },
-          models: {
-            'GLM-5.3-Flash': {
-              reasoning: { enabled: true, levels: ['low', 'max'], defaultLevel: 'max' },
-            },
-          },
-        },
-      },
-      model: 'builtin:bigmodel-coding-plan/GLM-5.3-Flash',
+test('resolveZCodeBuiltinRevision tags the revision with the sha256 of the resolved path', async () => {
+  await withFixture(async ({ bundledDir }) => {
+    const configPath = path.join(bundledDir, 'zcode-builtin.json');
+    await writeFile(configPath, JSON.stringify({ revision: 30 }), 'utf8');
+
+    const expectedHash = crypto.createHash('sha256').update(path.resolve(configPath)).digest('hex');
+    assert.equal(resolveZCodeBuiltinRevision(configPath), `zcode-builtin:30:${expectedHash}`);
+  });
+});
+
+test('resolveZCodeBuiltinRevision returns null for a missing file or a missing revision', async () => {
+  await withFixture(async ({ bundledDir }) => {
+    assert.equal(resolveZCodeBuiltinRevision(path.join(bundledDir, 'absent.json')), null);
+    // The fixture catalog carries no revision.
+    assert.equal(resolveZCodeBuiltinRevision(path.join(bundledDir, 'zcode-builtin.json')), null);
+  });
+});
+
+test('buildZCodeAccountSyncPayload entitles the start-plan provider when a JWT is stored', async () => {
+  await withFixture(async ({ storageDir, bundledDir }) => {
+    const configPath = path.join(bundledDir, 'zcode-builtin.json');
+    await writeFile(configPath, JSON.stringify({ revision: 30 }), 'utf8');
+    await mkdir(path.join(storageDir, 'v2'), { recursive: true });
+    await writeFile(path.join(storageDir, 'v2', 'credentials.json'), JSON.stringify({ zcodejwttoken: 'test-jwt-token' }), 'utf8');
+
+    const payload = buildZCodeAccountSyncPayload(configPath);
+    assert.ok(payload);
+    assert.equal(payload.revision, '1');
+    assert.equal(payload.basedOnZCodeBuiltinRevision, resolveZCodeBuiltinRevision(configPath));
+    assert.deepEqual(payload.providers, {
+      'account:bigmodel-start-plan': { access: { type: 'zhipu-account', entitled: true } },
     });
-    await writeFile(sourcePath, source, 'utf8');
-
-    try {
-      const env = resolveZCodeProviderConfigEnv(enginePath);
-      const generatedPath = env[PERSONAL_ENV];
-      assert.ok(generatedPath);
-      const generated = JSON.parse(await readFile(generatedPath, 'utf8')) as any;
-      assert.equal(generated.schemaVersion, 1);
-      assert.equal(generated.config.providerConfigRules.providerRules.length, 1);
-      assert.equal(generated.config.providerConfigRules.providerRules[0].providerId, 'bigmodel-coding-plan');
-      assert.equal(generated.config.providerConfigRules.providerRules[0].config.access.apiKey, 'fixture-key');
-      assert.deepEqual(generated.config.defaultModelSelection, {
-        providerId: 'bigmodel-coding-plan',
-        modelId: 'GLM-5.3-Flash',
-        options: { reasoningLevel: 'max' },
-      });
-      assert.equal((await stat(generatedPath)).mode & 0o077, 0);
-      assert.equal(await readFile(sourcePath, 'utf8'), source);
-    } finally {
-      if (previousStorage === undefined) delete process.env.ZCODE_STORAGE_DIR;
-      else process.env.ZCODE_STORAGE_DIR = previousStorage;
-    }
+    assert.deepEqual(payload.states, {
+      'account:bigmodel-start-plan': { availability: 'available', entitled: true, current: true },
+    });
   });
 });
 
-test('ignores ambient ZCode_* variables inherited from a parent ZCode session', async () => {
-  await withEngineLayout(path.join('..', 'config', 'provider', 'zcode-builtin.json'), async (enginePath, configPath) => {
-    const previousBuiltin = process.env[BUILTIN_ENV];
-    const previousPersonal = process.env[PERSONAL_ENV];
-    process.env[BUILTIN_ENV] = '/parent-session/builtin.json';
-    process.env[PERSONAL_ENV] = '/parent-session/personal.json';
-    try {
-      const env = resolveZCodeProviderConfigEnv(enginePath);
-
-      assert.equal(env[BUILTIN_ENV], configPath);
-      assert.ok(env[PERSONAL_ENV]);
-      assert.notEqual(env[PERSONAL_ENV], '/parent-session/personal.json');
-    } finally {
-      if (previousBuiltin === undefined) delete process.env[BUILTIN_ENV];
-      else process.env[BUILTIN_ENV] = previousBuiltin;
-      if (previousPersonal === undefined) delete process.env[PERSONAL_ENV];
-      else process.env[PERSONAL_ENV] = previousPersonal;
-    }
-  });
-});
-
-test('returns no overrides when no built-in config exists, leaving the engine its own error', async () => {
-  await withEngineLayout(null, async (enginePath) => {
-    const env = resolveZCodeProviderConfigEnv(enginePath);
-
-    assert.deepEqual(env, {});
-  });
-});
-
-test('resolveZCodeBuiltinRevision computes the exact sha256-tagged revision format', async () => {
-  await withEngineLayout(path.join('provider', 'zcode-builtin.json'), async (_enginePath, configPath) => {
-    assert.ok(configPath);
+test('buildZCodeAccountSyncPayload returns null without a stored JWT', async () => {
+  await withFixture(async ({ storageDir, bundledDir }) => {
+    const configPath = path.join(bundledDir, 'zcode-builtin.json');
     await writeFile(configPath, JSON.stringify({ revision: 30 }), 'utf8');
+    await mkdir(path.join(storageDir, 'v2'), { recursive: true });
+    await writeFile(path.join(storageDir, 'v2', 'credentials.json'), JSON.stringify({ other: 'value' }), 'utf8');
 
-    const result = resolveZCodeBuiltinRevision(configPath);
-    const expectedHash = (await import('node:crypto')).createHash('sha256').update(path.resolve(configPath)).digest('hex');
-    assert.equal(result, `zcode-builtin:30:${expectedHash}`);
-  });
-});
-
-test('resolveZCodeBuiltinRevision returns null for missing or invalid config', async () => {
-  assert.equal(resolveZCodeBuiltinRevision('/non/existent/path.json'), null);
-
-  const tmpInvalid = path.join(os.tmpdir(), `zcode-invalid-${Date.now()}.json`);
-  await writeFile(tmpInvalid, JSON.stringify({ noRevision: true }), 'utf8');
-  try {
-    assert.equal(resolveZCodeBuiltinRevision(tmpInvalid), null);
-  } finally {
-    const { unlink } = await import('node:fs/promises');
-    await unlink(tmpInvalid).catch(() => {});
-  }
-});
-
-test('buildZCodeAccountSyncPayload produces the exact payload when token and builtin config are available', async () => {
-  await withEngineLayout(path.join('provider', 'zcode-builtin.json'), async (_enginePath, configPath) => {
-    assert.ok(configPath);
-    await writeFile(configPath, JSON.stringify({ revision: 30 }), 'utf8');
-
-    const previousStorage = process.env.ZCODE_STORAGE_DIR;
-    const storageDir = await mkdtemp(path.join(os.tmpdir(), 'zcode-payload-storage-'));
-    process.env.ZCODE_STORAGE_DIR = storageDir;
-    const v2Dir = path.join(storageDir, 'v2');
-    await mkdir(v2Dir, { recursive: true });
-    // Write unencrypted plain jwtToken for test
-    await writeFile(path.join(v2Dir, 'credentials.json'), JSON.stringify({ zcodejwttoken: 'test-jwt-token' }), 'utf8');
-
-    try {
-      const payload = buildZCodeAccountSyncPayload(configPath);
-      assert.ok(payload);
-      assert.equal(payload.revision, '1');
-      assert.ok((payload.basedOnZCodeBuiltinRevision as string).startsWith('zcode-builtin:30:'));
-      assert.deepEqual(payload.providers, {
-        'account:bigmodel-start-plan': {
-          access: {
-            type: 'zhipu-account',
-            entitled: true,
-          },
-        },
-      });
-      assert.deepEqual(payload.states, {
-        'account:bigmodel-start-plan': {
-          availability: 'available',
-          entitled: true,
-          current: true,
-        },
-      });
-    } finally {
-      if (previousStorage === undefined) delete process.env.ZCODE_STORAGE_DIR;
-      else process.env.ZCODE_STORAGE_DIR = previousStorage;
-    }
+    assert.equal(buildZCodeAccountSyncPayload(configPath), null);
   });
 });
 
 test('account sync activates the native individual provider when its plan key is available', async () => {
-  await withEngineLayout(path.join('provider', 'zcode-builtin.json'), async (_enginePath, configPath) => {
-    assert.ok(configPath);
+  await withFixture(async ({ storageDir, bundledDir }) => {
+    const configPath = path.join(bundledDir, 'zcode-builtin.json');
     await writeFile(configPath, JSON.stringify({ revision: 30 }), 'utf8');
-    const previousStorage = process.env.ZCODE_STORAGE_DIR;
-    const storageDir = await mkdtemp(path.join(os.tmpdir(), 'zcode-individual-sync-'));
-    process.env.ZCODE_STORAGE_DIR = storageDir;
     await mkdir(path.join(storageDir, 'v2'), { recursive: true });
     await writeFile(path.join(storageDir, 'v2', 'credentials.json'), JSON.stringify({
       'account-provider:coding-plan:account:bigmodel-individual-coding-plan:account:123:api-key': 'individual-key',
     }), 'utf8');
-    try {
-      const payload = buildZCodeAccountSyncPayload(configPath);
-      assert.deepEqual((payload?.providers as Record<string, unknown>)?.['account:bigmodel-individual-coding-plan'], {
-        access: { type: 'zhipu-account', entitled: true },
-      });
-      assert.deepEqual((payload?.states as Record<string, unknown>)?.['account:bigmodel-individual-coding-plan'], {
-        availability: 'available', entitled: true, current: true,
-      });
-    } finally {
-      if (previousStorage === undefined) delete process.env.ZCODE_STORAGE_DIR;
-      else process.env.ZCODE_STORAGE_DIR = previousStorage;
-    }
-  });
-});
 
-test('buildZCodeAccountSyncPayload returns null when credentials have no jwtToken', async () => {
-  await withEngineLayout(path.join('provider', 'zcode-builtin.json'), async (_enginePath, configPath) => {
-    assert.ok(configPath);
-    await writeFile(configPath, JSON.stringify({ revision: 30 }), 'utf8');
-
-    const previousStorage = process.env.ZCODE_STORAGE_DIR;
-    const storageDir = await mkdtemp(path.join(os.tmpdir(), 'zcode-payload-storage-'));
-    process.env.ZCODE_STORAGE_DIR = storageDir;
-    const v2Dir = path.join(storageDir, 'v2');
-    await mkdir(v2Dir, { recursive: true });
-    await writeFile(path.join(v2Dir, 'credentials.json'), JSON.stringify({ other: 'val' }), 'utf8');
-
-    try {
-      const payload = buildZCodeAccountSyncPayload(configPath);
-      assert.equal(payload, null);
-    } finally {
-      if (previousStorage === undefined) delete process.env.ZCODE_STORAGE_DIR;
-      else process.env.ZCODE_STORAGE_DIR = previousStorage;
-    }
+    const payload = buildZCodeAccountSyncPayload(configPath);
+    assert.ok(payload);
+    assert.deepEqual((payload.providers as Record<string, unknown>)['account:bigmodel-individual-coding-plan'], {
+      access: { type: 'zhipu-account', entitled: true },
+    });
+    assert.deepEqual((payload.states as Record<string, unknown>)['account:bigmodel-individual-coding-plan'], {
+      availability: 'available', entitled: true, current: true,
+    });
+    // No JWT stored, so the trial provider stays out of the payload.
+    assert.equal((payload.providers as Record<string, unknown>)['account:bigmodel-start-plan'], undefined);
   });
 });

@@ -14,6 +14,10 @@ export const isCloneWorkflow = (githubUrl: string): boolean =>
 
 export const getSuggestionRootPath = (inputPath: string): string => {
   const trimmedPath = inputPath.trim();
+  if (trimmedPath === 'drives') {
+    return 'drives';
+  }
+
   const lastSeparatorIndex = Math.max(trimmedPath.lastIndexOf('/'), trimmedPath.lastIndexOf('\\'));
   if (lastSeparatorIndex === 2 && /^[A-Za-z]:/.test(trimmedPath)) {
     return `${trimmedPath.slice(0, 2)}\\`;
@@ -24,8 +28,12 @@ export const getSuggestionRootPath = (inputPath: string): string => {
 
 // Handles root edge cases for Unix-like and Windows paths.
 export const getParentPath = (currentPath: string): string | null => {
-  if (currentPath === '~' || currentPath === '/' || WINDOWS_DRIVE_PATTERN.test(currentPath)) {
+  if (currentPath === '~' || currentPath === '/' || currentPath === 'drives') {
     return null;
+  }
+
+  if (WINDOWS_DRIVE_PATTERN.test(currentPath)) {
+    return 'drives';
   }
 
   const lastSeparatorIndex = Math.max(currentPath.lastIndexOf('/'), currentPath.lastIndexOf('\\'));
@@ -41,8 +49,9 @@ export const getParentPath = (currentPath: string): string | null => {
 };
 
 export const joinFolderPath = (basePath: string, folderName: string): string => {
-  const normalizedBasePath = basePath.trim().replace(/[\\/]+$/, '');
-  const separator =
-    normalizedBasePath.includes('\\') && !normalizedBasePath.includes('/') ? '\\' : '/';
+  const trimmed = basePath.trim();
+  const isWindows = /^[A-Za-z]:/.test(trimmed) || (trimmed.includes('\\') && !trimmed.includes('/'));
+  const normalizedBasePath = trimmed.replace(/[\\/]+$/, '');
+  const separator = isWindows ? '\\' : '/';
   return `${normalizedBasePath}${separator}${folderName.trim()}`;
 };

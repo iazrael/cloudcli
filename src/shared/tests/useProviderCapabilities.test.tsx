@@ -88,8 +88,9 @@ describe('useProviderCapabilitiesMap', () => {
     assert.equal(getRequestCount(), 1);
   });
 
-  it('reports a failed request as loaded-with-no-capabilities and retries on the next mount', async () => {
+  it('retries a failed request in place, then settles and retries again on the next mount', async () => {
     vi.resetModules();
+    vi.useFakeTimers();
     let requestCount = 0;
     let fail = true;
     vi.stubGlobal('fetch', vi.fn(() => {
@@ -112,18 +113,28 @@ describe('useProviderCapabilitiesMap', () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     const first = render(<Probe />);
     await act(async () => {});
+    assert.equal(requestCount, 1);
+    assert.equal(states[states.length - 1]!.loaded, false,
+      'the mount stays unresolved while the retries are still pending');
+
+    // Two backoff retries (2s, 8s) before the mount gives up.
+    await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+    assert.equal(requestCount, 2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(8_000); });
+    assert.equal(requestCount, 3);
     assert.deepEqual(states[states.length - 1], { capabilities: null, loaded: true, forkable: [] },
-      'a failure must settle as loaded with no capabilities so consumers use their fallback');
+      'an exhausted retry must settle as loaded with no capabilities so consumers use their fallback');
     first.unmount();
     consoleError.mockRestore();
 
-    // The failure was not cached: the next mount retries and succeeds.
+    // The failure was not cached: the next mount retries once and succeeds.
     fail = false;
     const second = render(<Probe />);
     await act(async () => {});
     second.unmount();
     assert.ok(states[states.length - 1]!.capabilities !== null, 'the retried mount must receive the matrix');
-    assert.equal(requestCount, 2);
+    assert.equal(requestCount, 4);
+    vi.useRealTimers();
   });
 
   it('serves simultaneous first mounts with a single in-flight request', async () => {

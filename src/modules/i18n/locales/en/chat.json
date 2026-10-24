@@ -172,6 +172,11 @@
       "willSendAfterBackground": "Will send when the background tasks finish",
       "forceSend": "Send now; background tasks keep running",
       "forceSendButton": "Send now"
+    },
+    "compactQueued": {
+      "label": "Compaction queued",
+      "willRun": "Will compact when this turn finishes",
+      "cancel": "Cancel"
     }
   },
   "composer": {
@@ -184,7 +189,8 @@
     "editing": {
       "title": "Replacing an earlier message",
       "filesNotReverted": "files the agent already changed are not reverted",
-      "cancel": "Cancel"
+      "cancel": "Cancel",
+      "filesReverted": "files the agent changed are also reverted"
     },
     "backgroundTasks": {
       "title_one": "Background task running ({{count}})",
@@ -295,7 +301,8 @@
       "workflow": "Workflow {{name}}",
       "agent": "Agent {{description}}",
       "command": "Command {{description}}",
-      "count": "{{count}} tasks"
+      "count": "{{count}} tasks",
+      "sendAnyway": "This session still has background work running:\n{{work}}\n\nA new message starts a new turn, which stops that work; anything it has not reported yet is lost. Send anyway?"
     },
     "controls": {
       "stopGeneration": "Stop Generation",
@@ -410,7 +417,12 @@
     "resetCardUnknown": "The reset request was not confirmed. Refresh the quota above to check whether it was applied — do not simply retry.",
     "resetCardUnavailable": "{{count}} used or expired",
     "resetCardRefreshing": "Refreshing quota…",
-    "resetCardWeeklyAlso5h": "Resetting the weekly allowance also refills the 5-hour pool, without spending a 5-hour card."
+    "resetCardWeeklyAlso5h": "Resetting the weekly allowance also refills the 5-hour pool, without spending a 5-hour card.",
+    "contextUsage": "Context usage",
+    "usedPercent": "{{percent}}% used",
+    "cumulativeTokens": "Cumulative tokens",
+    "compactedSummary": "Compaction summary",
+    "monthlyWindow": "Monthly Quota"
   },
   "misc": {
     "outputAssets": "Output attachments ({{count}})",
@@ -470,7 +482,19 @@
     "tokensLabel_one": "token",
     "tokensLabel_other": "tokens",
     "escClosesModal": "Esc closes the modal.",
-    "close": "Close"
+    "close": "Close",
+    "needsInput": "{{provider}} needs your input",
+    "selectAllThatApply": "Select all that apply",
+    "other": "Other...",
+    "back": "Back",
+    "next": "Next",
+    "submit": "Submit",
+    "contextUsedPercent": "{{percent}}% of the context window used",
+    "compactedSummarySize": "Compaction summary · {{size}}",
+    "compactNoSession": "Start a conversation before compacting its context.",
+    "commandDescriptions": {
+      "compact": "Summarize the conversation to free up context."
+    }
   },
   "localProxy": {
     "linkHint": "This address only exists on the server; CloudCLI opens it through its local proxy.",

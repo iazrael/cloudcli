@@ -383,3 +383,41 @@ test('providerMcpService blocks directory traversal on project scope writes acro
   }
 });
 
+/**
+ * Regression: agy leaves a 0-byte `~/.gemini/config/mcp_config.json` behind,
+ * and the user-scope read used to JSON.parse it and fail the whole
+ * registration (the managed scheduled-tasks bridge reported "failed" for
+ * antigravity while every other engine registered).
+ */
+test('antigravity registration succeeds over an empty user MCP config file', { concurrency: false }, async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'llm-mcp-antigravity-empty-'));
+  const restoreHomeDir = patchHomeDir(tempRoot);
+  try {
+    const configDir = path.join(tempRoot, '.gemini', 'config');
+    await fs.mkdir(configDir, { recursive: true });
+    const configPath = path.join(configDir, 'mcp_config.json');
+    await fs.writeFile(configPath, '');
+
+    const result = await providerMcpService.upsertProviderMcpServer('antigravity', {
+      name: 'cloudcli-scheduled-tasks',
+      scope: 'user',
+      transport: 'stdio',
+      command: process.execPath,
+      args: ['/tmp/scheduled-jobs-mcp.js'],
+      env: { CLOUDCLI_SCHEDULED_JOBS_PROVIDER: 'antigravity' },
+    });
+
+    assert.equal(result.name, 'cloudcli-scheduled-tasks');
+    const written = await readJson(configPath);
+    const servers = written.mcpServers as Record<string, Record<string, unknown>>;
+    assert.equal(servers['cloudcli-scheduled-tasks'].command, process.execPath);
+    assert.equal(
+      (servers['cloudcli-scheduled-tasks'].env as Record<string, string>).CLOUDCLI_SCHEDULED_JOBS_PROVIDER,
+      'antigravity',
+    );
+  } finally {
+    restoreHomeDir();
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+

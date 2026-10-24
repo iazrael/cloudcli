@@ -1,5 +1,7 @@
 import multer from 'multer';
 
+import { createByteLimitTransform } from '@/shared/utils.js';
+
 import { createVoiceRouter } from './voice.routes.js';
 import { createVoiceService } from './voice.service.js';
 
@@ -35,9 +37,56 @@ const voiceService = createVoiceService({
   },
 });
 
+/**
+ * In-memory storage for audio uploads that never buffers more than `maxBytes`.
+ *
+ * Mirrors `multer.memoryStorage` (same `{ buffer, size }` result and
+ * `_removeFile` contract) but caps the stream through
+ * `createByteLimitTransform`, because Multer's `fileSize + 1` Busboy limit
+ * lets one extra byte reach a built-in storage before the abort.
+ *
+ * Consumer: `audioUpload` below; exercised directly by
+ * `server/modules/voice/tests/voice-upload-storage.test.ts`.
+ */
+export function createBoundedMemoryStorage(maxBytes: number): multer.StorageEngine {
+  return {
+    _handleFile(_request, file, callback) {
+      const chunks: Buffer[] = [];
+      const gate = createByteLimitTransform(maxBytes);
+      let settled = false;
+      const finish = (error: Error | null, value?: { buffer: Buffer; size: number }) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        callback(error, value);
+      };
+
+      file.stream.once('error', (error) => {
+        gate.destroy();
+        finish(error);
+      });
+      gate.on('data', (chunk: Buffer) => chunks.push(chunk));
+      gate.once('error', (error) => finish(error));
+      gate.once('end', () => {
+        const buffer = Buffer.concat(chunks);
+        finish(null, { buffer, size: buffer.length });
+      });
+      file.stream.pipe(gate);
+    },
+
+    _removeFile(_request, file, callback) {
+      delete (file as { buffer?: Buffer }).buffer;
+      callback(null);
+    },
+  };
+}
+
+const VOICE_UPLOAD_MAXIMUM_SIZE_BYTES = 25 * 1024 * 1024;
+
 const audioUpload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 25 * 1024 * 1024 },
+  storage: createBoundedMemoryStorage(VOICE_UPLOAD_MAXIMUM_SIZE_BYTES),
+  limits: { fileSize: VOICE_UPLOAD_MAXIMUM_SIZE_BYTES },
 });
 
 /** Voice router assembled for the server entrypoint. */

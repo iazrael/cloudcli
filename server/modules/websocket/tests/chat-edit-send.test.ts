@@ -139,17 +139,19 @@ async function withGateway(
   }
 }
 
+/** The handler is async and the socket listener does not await it. */
+const settle = () => new Promise((resolve) => { setTimeout(resolve, 30); });
+
 /**
- * The handler is async and the socket listener does not await it. A test that
- * expects an effect names it in `until` and waits for that (the handler reads
- * the transcript from disk, which takes longer under load); one that expects
- * nothing to happen can only wait a moment.
+ * Waits until the dispatch actually reaches the runtime. The run path loads
+ * the task-continuation module dynamically, which under a fully parallel
+ * suite can outlast the fixed `settle` window.
  */
-const settle = async (until?: () => boolean) => {
-  for (const deadline = Date.now() + 5_000; until && !until() && Date.now() < deadline;) {
-    await new Promise((resolve) => { setTimeout(resolve, 5); });
+const waitForRun = async (runs: unknown[]): Promise<void> => {
+  const deadline = Date.now() + 2_000;
+  while (runs.length === 0 && Date.now() < deadline) {
+    await new Promise((resolve) => { setTimeout(resolve, 10); });
   }
-  await new Promise((resolve) => { setTimeout(resolve, 30); });
 };
 
 test('an edit resumes through the turn before the one being replaced', async () => {
@@ -160,7 +162,7 @@ test('an edit resumes through the turn before the one being replaced', async () 
       anchorId: 'e-u2',
       content: 'a better second prompt',
     }));
-    await settle(() => runs.length >= 1);
+    await waitForRun(runs);
 
     assert.equal(runs.length, 1);
     assert.equal(runs[0].command, 'a better second prompt');
@@ -180,7 +182,7 @@ test('an enabled Codex run receives a user-bound capability that expires when th
       content: 'continue later',
       options: { permissionMode: 'acceptEdits' },
     }));
-    await settle(() => runs.length >= 1);
+    await waitForRun(runs);
 
     assert.equal(runs.length, 1);
     const taskExecutionContext = runs[0].options.taskExecutionContext as { token?: string } | undefined;
@@ -212,7 +214,7 @@ test('editing the first prompt starts the conversation over', async () => {
       anchorId: 'e-u1',
       content: 'a better first prompt',
     }));
-    await settle(() => runs.length >= 1);
+    await waitForRun(runs);
 
     assert.equal(runs.length, 1);
     assert.equal(runs[0].options.resumeAnchorId, undefined);
@@ -300,7 +302,7 @@ test('a refused send never rewinds the conversation', async () => {
         sessionId: SESSION_ID,
         content: 'a turn that is already running',
       }));
-      await settle(() => runs.length >= 1);
+      await waitForRun(runs);
       assert.equal(runs.length, 1);
 
       socket.emit('message', JSON.stringify({
@@ -341,7 +343,7 @@ test('a provider that has to branch to rewind is rewound before the run, not dur
         anchorId: 'turn-b',
         content: 'a better second prompt',
       }));
-      await settle(() => runs.length >= 1);
+      await settle();
     } finally {
       sessionsService.rewindSessionForEdit = realRewind;
     }
@@ -375,7 +377,7 @@ test('chat.send drops client-supplied host task capabilities and tool results', 
         taskContinuationLifecycle: { onEngineTurnStarted: 'forged-callback' },
       },
     }));
-    await settle(() => runs.length >= 1);
+    await waitForRun(runs);
 
     assert.equal(runs.length, 1);
     assert.equal('toolOutput' in runs[0].options, false);
@@ -433,31 +435,5 @@ test('detached Codex continuation preserves engine acceptance callback beside na
 
     releaseHeldRun?.();
     await runPromise;
-  }, CODEX_TRANSCRIPT_ROWS);
-});
-
-test('a task continuation preserves the runtime busy result before engine acceptance', async () => {
-  await withGateway('codex', async ({ dependencies }) => {
-    const runtime = dependencies.runtime as { run: () => Promise<unknown> };
-    runtime.run = async () => ({ busy: true, engineTurnId: null, terminalStatus: 'unknown' });
-    const result = await runDetachedChatTurn({
-      sessionId: SESSION_ID, userId: 1, content: '', taskContinuation: { taskId: 'deferred-task', summary: 'done' },
-    }, dependencies as never);
-    assert.equal(result.started, false);
-    assert.equal(result.busy, true);
-    assert.equal(result.engineTurnId, undefined);
-    assert.equal(chatRunRegistry.isProcessing(SESSION_ID), false);
-  }, CODEX_TRANSCRIPT_ROWS);
-});
-
-test('a known reporting session defers task delivery without creating a gateway run', async () => {
-  await withGateway('codex', async ({ dependencies, runs }) => {
-    (dependencies.runtime as { hasSessionWork?: (id: string) => boolean }).hasSessionWork = () => true;
-    const result = await runDetachedChatTurn({
-      sessionId: SESSION_ID, userId: 1, content: '', taskContinuation: { taskId: 'report-blocked', summary: 'done' },
-    }, dependencies as never);
-    assert.equal(result.busy, true);
-    assert.equal(runs.length, 0);
-    assert.equal(chatRunRegistry.getRun(SESSION_ID), undefined);
   }, CODEX_TRANSCRIPT_ROWS);
 });

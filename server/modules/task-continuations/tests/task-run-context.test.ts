@@ -46,6 +46,11 @@ test('task run capability resolves only its trusted run context and expires on r
     else process.env.DATABASE_PATH = previousDatabasePath;
     if (previousJwtSecret === undefined) delete process.env.JWT_SECRET;
     else process.env.JWT_SECRET = previousJwtSecret;
-    await rm(temporaryDirectory, { recursive: true, force: true });
+    // The capability store opened the temp database lazily; Windows keeps the
+    // file busy until the connection closes, so close it before removing the
+    // directory (and retry the removal for slower file-handle release).
+    const database = await import('@/modules/database/index.js');
+    database.closeConnection();
+    await rm(temporaryDirectory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

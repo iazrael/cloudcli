@@ -234,6 +234,63 @@ test('a streaming row anchors its timestamp at segment start and finalizes in pl
   assert.equal(nextSegment!.content, 'Next');
 });
 
+test("a subagent's streamed text keeps its parent stamp and never becomes a top-level row", async () => {
+  const store = new SessionTimelineStore();
+
+  emit(store, {
+    kind: 'stream_delta',
+    sessionId: SESSION_ID,
+    content: 'Now the hooks',
+    parentToolUseId: 'call_subagent',
+    providerRowKey: 'opencode-part:msg_1_text_0',
+  });
+  await tickThrottle();
+
+  // The child scope streams under its own row, stamped with the spawn call;
+  // the session's own streaming row is untouched.
+  const rows = store.getSessionSlot(SESSION_ID)!.realtimeMessages;
+  const streaming = rows.find((row) => row.parentToolUseId === 'call_subagent');
+  assert.ok(streaming, 'the child segment must keep its parentToolUseId');
+  assert.equal(streaming!.content, 'Now the hooks');
+  assert.equal(rows.some((row) => row.id === `__streaming_${SESSION_ID}`), false);
+
+  emit(store, { kind: 'stream_end', sessionId: SESSION_ID, parentToolUseId: 'call_subagent' });
+
+  const finalized = store.getSessionSlot(SESSION_ID)!.realtimeMessages.find(
+    (row) => row.content === 'Now the hooks',
+  );
+  assert.ok(finalized);
+  assert.match(finalized!.id, /^__streamed_/);
+  assert.equal(finalized!.parentToolUseId, 'call_subagent');
+});
+
+test('concurrent subagents stream into separate segments without cutting each other off', async () => {
+  const store = new SessionTimelineStore();
+
+  emit(store, {
+    kind: 'stream_delta', sessionId: SESSION_ID, content: 'Child A part one. ',
+    parentToolUseId: 'call_a', providerRowKey: 'part:a_0',
+  });
+  emit(store, {
+    kind: 'stream_delta', sessionId: SESSION_ID, content: 'Child B text.',
+    parentToolUseId: 'call_b', providerRowKey: 'part:b_0',
+  });
+  emit(store, {
+    kind: 'stream_delta', sessionId: SESSION_ID, content: 'Child A part two.',
+    parentToolUseId: 'call_a', providerRowKey: 'part:a_0',
+  });
+  // A content frame from the session's own turn closes only the session's
+  // segment; it must not cut the children's sentences in half.
+  emit(store, {
+    kind: 'text', id: 'parent-text', role: 'assistant', sessionId: SESSION_ID, content: 'parent text',
+  });
+  await tickThrottle();
+
+  const rows = store.getSessionSlot(SESSION_ID)!.realtimeMessages;
+  assert.equal(rows.find((row) => row.parentToolUseId === 'call_a')?.content, 'Child A part one. Child A part two.');
+  assert.equal(rows.find((row) => row.parentToolUseId === 'call_b')?.content, 'Child B text.');
+});
+
 test('a realtime row an engine names twice stays one row', async () => {
   const store = new SessionTimelineStore();
 
@@ -1029,6 +1086,40 @@ test('tool cards without a provable user turn remain visible rather than cross-t
   );
 });
 
+// ─── Gateway frames that are not timeline rows ───────────────────────────────
+
+test('a sidebar-global session_removed frame never enters the timeline', async () => {
+  const fetchPage = scriptedFetcher([
+    { params: { limit: 20, offset: 0 }, page: { messages: [msg(1), msg(2)], total: 2, hasMore: false } },
+  ]);
+  const store = new SessionTimelineStore({ fetchPage });
+
+  await store.fetchFromServer(SESSION_ID, { limit: 20, offset: 0 });
+  const slot = store.getSessionSlot(SESSION_ID)!;
+  const mergedBefore = slot.merged;
+
+  store.applyServerEvent(
+    { kind: 'session_removed', sessionIds: ['sess-archived-elsewhere'] } as ServerEvent,
+    { fallbackSessionId: SESSION_ID, provider: 'claude' },
+  );
+
+  assert.equal(slot.realtimeMessages.length, 0, 'global frames must not become realtime rows');
+  assert.equal(slot.merged, mergedBefore, 'merged must not be recomputed');
+});
+
+test('appendRealtime drops a frame whose id is missing instead of poisoning the slot', () => {
+  const store = new SessionTimelineStore();
+
+  store.appendRealtime(SESSION_ID, { ...msg(1), id: undefined as unknown as string });
+  store.appendRealtime(SESSION_ID, msg(2));
+
+  assert.deepEqual(
+    store.getMessages(SESSION_ID).map((row) => row.id),
+    ['m2'],
+    'the id-less frame is ignored and the following append still works',
+  );
+});
+
 test('a repeated local user prompt cannot prove a stale server turn for tool reconciliation', async () => {
   const staleServerUser = msg(1, { id: 'server-old-user', content: '继续', role: 'user' });
   const staleServerTool = persistedWriteCard('server-old-tool');
@@ -1492,6 +1583,124 @@ test('a full reload that already holds the prompt still retires it', async () =>
   );
 });
 
+/** Drives one OpenCode frame: its live stream names the part, never the row. */
+function emitOpenCode(store: SessionTimelineStore, frame: Record<string, unknown>): void {
+  store.applyServerEvent(frame as ServerEvent, { provider: 'opencode' });
+}
+
+/**
+ * The reported OpenCode duplicate.
+ *
+ * OpenCode streams a reply as `session.text.delta` fragments and never sends
+ * the finished row, so the bubble the client assembles from them has no
+ * engine id its persisted copy could be recognised by. The engine's text-part
+ * coordinates — the message id plus the part's ordinal — are the one identity
+ * both transports carry; published as the row key they let the persisted row
+ * claim the stream. Without it the reply stood beside its own persisted copy
+ * until the session was reloaded.
+ */
+test('a streamed OpenCode reply is claimed by the persisted row for its part', async () => {
+  const providerRowKey = 'opencode-part:msg_reply_text_0';
+  const reply = 'No problem — say the word if the console flashes anywhere else.';
+  const prompt = msg(1, { provider: 'opencode', content: 'thanks, the flicker is gone' });
+  const persistedReply = msg(2, {
+    id: 'msg_turn_reply',
+    provider: 'opencode',
+    content: reply,
+    providerRowKey,
+  });
+  const fetchPage = scriptedFetcher([
+    {
+      params: { limit: SESSION_MESSAGES_PAGE_SIZE, offset: 0 },
+      page: { messages: [prompt], total: 1, hasMore: false },
+    },
+    {
+      params: { limit: SESSION_MESSAGES_PAGE_SIZE, offset: 0 },
+      page: { messages: [prompt, persistedReply], total: 2, hasMore: false },
+    },
+  ]);
+  const store = new SessionTimelineStore({ fetchPage });
+
+  await store.fetchFromServer(SESSION_ID, { limit: SESSION_MESSAGES_PAGE_SIZE, offset: 0 });
+  emitOpenCode(store, { kind: 'stream_delta', sessionId: SESSION_ID, content: reply.slice(0, 12), providerRowKey });
+  emitOpenCode(store, { kind: 'stream_delta', sessionId: SESSION_ID, content: reply.slice(12), providerRowKey });
+  emitOpenCode(store, { kind: 'stream_end', sessionId: SESSION_ID });
+  emitOpenCode(store, { kind: 'complete', sessionId: SESSION_ID });
+
+  await store.refreshLatestFromServer(SESSION_ID);
+
+  assert.deepEqual(
+    store.getMessages(SESSION_ID).filter((row) => row.content === reply).map((row) => row.id),
+    ['msg_turn_reply'],
+    'the reply must render once, as its persisted row',
+  );
+  assert.equal(store.getSessionSlot(SESSION_ID)!.realtimeMessages.length, 0);
+});
+
+/**
+ * One OpenCode turn that writes, calls a tool, then writes again persists two
+ * text rows, each under the message of its own step. Keying the stream per
+ * text part is what lets each persisted row claim its own segment: a key
+ * shared by both segments matches two rows, which is ambiguous, and an
+ * ambiguous key reconciles nothing — both streamed copies would stay on
+ * screen.
+ */
+test('two text parts of one OpenCode turn are each claimed by their own persisted row', async () => {
+  const first = 'Checking the runtime first.';
+  const second = 'Done — the console no longer flashes.';
+  const prompt = msg(1, { provider: 'opencode', content: 'fix the console flash' });
+  const persistedFirst = msg(2, {
+    id: 'msg_turn_first',
+    provider: 'opencode',
+    content: first,
+    providerRowKey: 'opencode-part:msg_first_text_0',
+  });
+  const persistedSecond = msg(4, {
+    id: 'msg_turn_second',
+    provider: 'opencode',
+    content: second,
+    providerRowKey: 'opencode-part:msg_second_text_0',
+  });
+  const fetchPage = scriptedFetcher([
+    {
+      params: { limit: SESSION_MESSAGES_PAGE_SIZE, offset: 0 },
+      page: { messages: [prompt], total: 1, hasMore: false },
+    },
+    {
+      params: { limit: SESSION_MESSAGES_PAGE_SIZE, offset: 0 },
+      page: { messages: [prompt, persistedFirst, persistedSecond], total: 3, hasMore: false },
+    },
+  ]);
+  const store = new SessionTimelineStore({ fetchPage });
+
+  await store.fetchFromServer(SESSION_ID, { limit: SESSION_MESSAGES_PAGE_SIZE, offset: 0 });
+  emitOpenCode(store, {
+    kind: 'stream_delta',
+    sessionId: SESSION_ID,
+    content: first,
+    providerRowKey: 'opencode-part:msg_first_text_0',
+  });
+  emitOpenCode(store, {
+    kind: 'stream_delta',
+    sessionId: SESSION_ID,
+    content: second,
+    providerRowKey: 'opencode-part:msg_second_text_0',
+  });
+  emitOpenCode(store, { kind: 'stream_end', sessionId: SESSION_ID });
+  emitOpenCode(store, { kind: 'complete', sessionId: SESSION_ID });
+
+  await store.refreshLatestFromServer(SESSION_ID);
+
+  assert.deepEqual(
+    store.getMessages(SESSION_ID)
+      .filter((row) => row.content === first || row.content === second)
+      .map((row) => row.id),
+    ['msg_turn_first', 'msg_turn_second'],
+    'each segment must render once, as its own persisted row',
+  );
+  assert.equal(store.getSessionSlot(SESSION_ID)!.realtimeMessages.length, 0);
+});
+
 test('updates backgroundTasks when chat_subscribed or status frame carries backgroundTasks', () => {
   const store = new SessionTimelineStore();
   assert.deepEqual(store.getBackgroundTasks(SESSION_ID), []);
@@ -1517,4 +1726,25 @@ test('updates backgroundTasks when chat_subscribed or status frame carries backg
     backgroundTasks: [],
   });
   assert.deepEqual(store.getBackgroundTasks(SESSION_ID), []);
+});
+
+test('a settled task_status retires its strip entry without waiting for the background_tasks frame', () => {
+  const store = new SessionTimelineStore();
+  emit(store, {
+    kind: 'status',
+    sessionId: SESSION_ID,
+    text: 'background_tasks',
+    backgroundTasks: [
+      { id: 'toolu_bash', toolName: 'Bash', command: 'npm test', startedAt: 1 },
+      { id: 'toolu_agent', toolName: 'Agent', command: 'Audit', startedAt: 2 },
+    ],
+  });
+
+  // Progress and task-id-only updates leave the strip alone.
+  emit(store, { id: 'ts_1', kind: 'task_status', sessionId: SESSION_ID, timestamp: '2026-01-01T00:00:00Z', provider: 'claude', event: 'progress', status: 'running', taskId: 't_bash', toolUseId: 'toolu_bash' });
+  emit(store, { id: 'ts_2', kind: 'task_status', sessionId: SESSION_ID, timestamp: '2026-01-01T00:00:01Z', provider: 'claude', event: 'updated', status: 'completed', taskId: 't_agent' });
+  assert.equal(store.getBackgroundTasks(SESSION_ID).length, 2);
+
+  emit(store, { id: 'ts_3', kind: 'task_status', sessionId: SESSION_ID, timestamp: '2026-01-01T00:00:02Z', provider: 'claude', event: 'notification', status: 'completed', taskId: 't_bash', toolUseId: 'toolu_bash' });
+  assert.deepEqual(store.getBackgroundTasks(SESSION_ID).map((task) => task.id), ['toolu_agent']);
 });

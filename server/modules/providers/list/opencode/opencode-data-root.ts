@@ -15,6 +15,20 @@ import path from 'node:path';
 
 import Database, { type Database as SqliteDatabase } from 'better-sqlite3';
 
+import type { AnyRecord } from '@/shared/types.js';
+import {
+  readJsonRecord,
+  readObjectRecord,
+  readOptionalString,
+} from '@/shared/utils.js';
+
+/**
+ * Resolves the OpenCode CLI data directory shared by all of its state files.
+ */
+function getOpenCodeDataDirectory(): string {
+  return path.join(os.homedir(), '.local', 'share', 'opencode');
+}
+
 /**
  * Resolves the OpenCode SQLite session database path.
  *
@@ -26,7 +40,83 @@ import Database, { type Database as SqliteDatabase } from 'better-sqlite3';
  * Consumers: opencode models, sessions, and session synchronizer providers.
  */
 export function getOpenCodeDatabasePath(): string {
-  return path.join(os.homedir(), '.local', 'share', 'opencode', 'opencode.db');
+  return path.join(getOpenCodeDataDirectory(), 'opencode.db');
+}
+
+/** One active credential row decoded from OpenCode's v2 SQLite store. */
+export type OpenCodeActiveCredential = {
+  /** Human-readable account label OpenCode wrote for the row. */
+  label: string;
+  /** Parsed `value` column (`{ type, key }` for API-key credentials). */
+  value: AnyRecord | null;
+};
+
+/**
+ * Reads the newest active row from OpenCode's v2 `credential` table.
+ *
+ * `integrationId` narrows the read to one connected provider (for example
+ * `opencode-go`); omitting it returns the most recently updated active
+ * credential, which is what the auth status check needs. A missing database,
+ * an older schema without the table, or an unreadable row resolves to null.
+ * The connection is read-only so it never blocks the CLI's WAL writes.
+ *
+ * Consumers: opencode auth (status label) and quota (OpenCode Go API key).
+ */
+export function readOpenCodeActiveCredential(
+  integrationId?: string,
+): OpenCodeActiveCredential | null {
+  let db: Database.Database;
+  try {
+    db = new Database(getOpenCodeDatabasePath(), { readonly: true, fileMustExist: true });
+  } catch {
+    return null;
+  }
+
+  try {
+    const selection = 'SELECT label, value FROM credential WHERE active = 1';
+    const ordering = 'ORDER BY time_updated DESC, time_created DESC LIMIT 1';
+    const row = integrationId
+      ? db.prepare(`${selection} AND integration_id = ? ${ordering}`).get(integrationId)
+      : db.prepare(`${selection} ${ordering}`).get();
+    const record = readObjectRecord(row);
+    const label = readOptionalString(record?.label);
+    if (!label) {
+      return null;
+    }
+    return { label, value: readJsonRecord(record?.value) };
+  } catch {
+    return null;
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * Resolves the OpenCode credential store path.
+ *
+ * v1 OpenCode kept every connected provider credential - including the
+ * `opencode-go` subscription API key - in one `auth.json` under its XDG data
+ * directory; v2 moved them to the `credential` table, so this file is only
+ * the legacy fallback.
+ *
+ * Consumers: opencode auth and quota providers.
+ */
+export function getOpenCodeAuthPath(): string {
+  return path.join(getOpenCodeDataDirectory(), 'auth.json');
+}
+
+/**
+ * Resolves OpenCode's own model-registry cache path.
+ *
+ * The file is models.dev data OpenCode refreshed for its registry; its
+ * `providerID.modelID.limit.context` entries are the only place this app can
+ * learn a model's context window without calling the gateway.
+ *
+ * Consumers: opencode context usage and runtime providers (context-window
+ * lookup for the composer badge's percentage).
+ */
+export function getOpenCodeModelsCachePath(): string {
+  return path.join(os.homedir(), '.cache', 'opencode', 'models.json');
 }
 
 /**
@@ -171,6 +261,107 @@ export function readOpenCodeSessionTokenTotals(
   `).get(sessionId) as OpenCodeSessionTokenTotals | undefined;
 
   return row ?? null;
+}
+
+/**
+ * Reads one session row's stored model selection, normalized to a
+ * `providerId/modelId` key (OpenCode's routing key and the models.json cache
+ * key). Both layouts store it as a JSON object on the `model` column
+ * (`{providerID, id}` or `{providerID, modelID}`); rows that predate the
+ * column, or a missing session table, answer null.
+ *
+ * Consumers: opencode context usage (context-window lookup) and runtime
+ * (fallback when a run carries no model reference).
+ */
+export function readOpenCodeSessionModelKey(
+  db: OpenCodeReadableDatabase,
+  sessionId: string,
+): string | null {
+  const table = resolveOpenCodeSessionTableName(db);
+  if (!table) {
+    return null;
+  }
+
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: string }>;
+  if (!columns.some((column) => column.name === 'model')) {
+    return null;
+  }
+
+  const row = db.prepare(`SELECT model FROM ${table} WHERE id = ?`).get(sessionId) as { model?: unknown } | undefined;
+  const model = readJsonRecord(row?.model);
+  if (!model) {
+    return null;
+  }
+
+  const providerId = readOptionalString(model.providerID) ?? readOptionalString(model.providerId);
+  const modelId = readOptionalString(model.id)
+    ?? readOptionalString(model.modelID)
+    ?? readOptionalString(model.modelId);
+  if (!modelId) {
+    return null;
+  }
+  // Some rows carry the routed id as `provider/model` with an optional
+  // `#variant` suffix; models.json keys are `provider/model` alone.
+  const [bare, inlineProvider] = modelId.includes('/')
+    ? [modelId.split('/').slice(1).join('/'), modelId.split('/')[0]]
+    : [modelId, null];
+  const resolvedProvider = providerId ?? inlineProvider;
+  return resolvedProvider ? `${resolvedProvider}/${bare}` : bare;
+}
+
+export type OpenCodeUsageMessageRecord = {
+  /** Message row id; identifies the newest compaction summary for the size reading. */
+  id: string;
+  /** Parsed message payload (raw row data can also be a plain string). */
+  data: AnyRecord | null;
+};
+
+/**
+ * Reads one session's usage-bearing message rows, newest first.
+ *
+ * Blind to the storage layout: v2 folds messages into `session_message` rows
+ * (with the payload inline), v1 splits them across `message` and `part`. Both
+ * carry per-message token usage on the assistant payload, which is what the
+ * context-usage reader needs; timeline rendering uses the layout-aware
+ * fetchers instead.
+ *
+ * v2 `compaction` rows ride along: they carry no usable occupancy (their
+ * tokens describe the whole pre-compaction conversation), but their position
+ * relative to the newest assistant message is what tells the reader the
+ * conversation was replaced. Returns an empty list when neither layout
+ * exists.
+ *
+ * Consumer: opencode context usage.
+ */
+export function readOpenCodeUsageMessageRows(
+  db: OpenCodeReadableDatabase,
+  sessionId: string,
+): OpenCodeUsageMessageRecord[] {
+  const layout = resolveOpenCodeMessageLayout(db);
+  if (layout === 'session_message') {
+    const rows = db.prepare(`
+      SELECT id, data
+      FROM session_message
+      WHERE session_id = ? AND type IN ('assistant', 'compaction')
+      ORDER BY seq DESC
+    `).all(sessionId) as Array<{ id: string; data: string }>;
+    return rows.map((row) => ({ id: row.id, data: readJsonRecord(row.data) }));
+  }
+
+  if (layout === 'message_part') {
+    // v1 stores the role on each message payload; the LIKE prefilter keeps the
+    // scan off user rows whose bodies can be far larger than their headers.
+    const rows = db.prepare(`
+      SELECT id, data
+      FROM message
+      WHERE session_id = ?
+        AND (data LIKE '%"role":"assistant"%' OR data LIKE '%"role": "assistant"%')
+      ORDER BY time_created DESC, id DESC
+    `).all(sessionId) as Array<{ id: string; data: string }>;
+    return rows.map((row) => ({ id: row.id, data: readJsonRecord(row.data) }));
+  }
+
+  return [];
 }
 
 /**

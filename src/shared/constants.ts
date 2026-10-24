@@ -54,12 +54,11 @@ export const BUILD_INFO: { commit: string; buildTime: string; describe: string }
     : { commit: '', buildTime: '', describe: '' };
 
 /**
- * GitHub repository this app is published to. Update checks
- * (`useVersionCheck`), release links and repo links must point here — this
- * fork is versioned and released independently of the upstream project, so
- * checking upstream's releases would report stale versions and fake updates.
+ * GitHub repository this fork lives in. Every repo link and the sidebar star
+ * badge point here; updates themselves come from the checkout's git upstream
+ * (`/api/system/update/status`), not from GitHub releases.
  */
-export const GITHUB_REPO_OWNER = 'iazrael';
+export const GITHUB_REPO_OWNER = 'flufy3d';
 export const GITHUB_REPO_NAME = 'cloudcli';
 
 /** Web URL of the repository above, for links that want the whole repo. */
@@ -225,3 +224,15 @@ export const PROVIDER_PERMISSION_PREFERENCE_KEYS: Record<LLMProvider, UserPrefer
   zcode: 'zcodePermissions',
   antigravity: 'antigravityPermissions',
 };
+
+// ---------------------------
+
+//----------------- SCHEDULED JOBS ------------
+
+/**
+ * Session-rotation periods (in days) offered for a scheduled task that reuses
+ * a session; `0` stands for "never rotate" and is sent to the API as `null`.
+ * Used by the scheduled-jobs edit form and the chat composer's task popover so
+ * both offer the same choices.
+ */
+export const SCHEDULED_JOB_ROTATE_AFTER_DAYS_OPTIONS = [0, 1, 3, 7, 14, 30];

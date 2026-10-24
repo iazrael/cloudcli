@@ -585,3 +585,80 @@ for (const provider of ['claude', 'codex', 'antigravity', 'zcode'] as const) {
     });
   });
 }
+
+test('an adopted engine run attaches the sockets already watching the session', async () => {
+  await withIsolatedDatabase(() => {
+    clearRunOutcomes();
+    sessionsDb.createAppSession('app-adopt', 'opencode', '/workspace/demo');
+    sessionsDb.assignProviderSessionId('app-adopt', 'ses_engine_1');
+
+    const watcher = new FakeConnection();
+    const forgotten = new FakeConnection();
+    const deadWatcher = new FakeConnection();
+    deadWatcher.readyState = 3; // CLOSED
+    chatRunRegistry.noteSessionSubscriber('app-adopt', watcher as never);
+    chatRunRegistry.noteSessionSubscriber('app-adopt', forgotten as never);
+    chatRunRegistry.noteSessionSubscriber('app-adopt', deadWatcher as never);
+    chatRunRegistry.forgetSessionSubscriber(forgotten as never);
+
+    const adopted = chatRunRegistry.adoptExternalRun({ provider: 'opencode', providerSessionId: 'ses_engine_1' });
+    assert.ok(adopted);
+    assert.equal(adopted.appSessionId, 'app-adopt');
+    assert.equal(chatRunRegistry.isProcessing('app-adopt'), true);
+
+    adopted.writer.send({ kind: 'stream_delta', provider: 'opencode', sessionId: 'ses_engine_1', content: 'live' });
+    assert.equal(watcher.frames.length, 1);
+    assert.equal(watcher.frames[0]?.sessionId, 'app-adopt');
+    assert.equal(watcher.frames[0]?.seq, 1);
+    assert.equal(forgotten.frames.length, 0, 'a forgotten socket is not attached');
+    assert.equal(deadWatcher.frames.length, 0, 'a closed socket is pruned, not attached');
+
+    adopted.writer.send({ kind: 'complete', provider: 'opencode', sessionId: 'ses_engine_1', exitCode: 0 });
+    assert.equal(chatRunRegistry.isProcessing('app-adopt'), false);
+    const [recorded] = readRunOutcomes();
+    assert.equal(recorded?.sessionId, 'app-adopt');
+    assert.equal(recorded?.reason, 'engine_completed');
+  });
+});
+
+test('adoption refuses unknown, mismatched, archived and busy sessions', async () => {
+  await withIsolatedDatabase(() => {
+    assert.equal(
+      chatRunRegistry.adoptExternalRun({ provider: 'opencode', providerSessionId: 'ses_unknown' }),
+      null,
+      'a provider session with no app row is not adoptable',
+    );
+
+    sessionsDb.createAppSession('app-open', 'opencode', '/workspace/demo');
+    sessionsDb.assignProviderSessionId('app-open', 'ses_engine_2');
+    assert.equal(
+      chatRunRegistry.adoptExternalRun({ provider: 'claude', providerSessionId: 'ses_engine_2' }),
+      null,
+      'a provider disagreement is not adoptable',
+    );
+
+    const active = chatRunRegistry.startRun({
+      appSessionId: 'app-open',
+      provider: 'opencode',
+      providerSessionId: 'ses_engine_2',
+      connection: null,
+      userId: null,
+    });
+    assert.ok(active);
+    assert.equal(
+      chatRunRegistry.adoptExternalRun({ provider: 'opencode', providerSessionId: 'ses_engine_2' }),
+      null,
+      'a session with a run in flight is not adoptable',
+    );
+
+    sessionsDb.archiveSessionsByIds(sessionsDb.listSessionsOlderThanCutoff('2999-01-01T00:00:00Z'));
+    sessionsDb.createAppSession('app-archived', 'opencode', '/workspace/demo');
+    sessionsDb.assignProviderSessionId('app-archived', 'ses_engine_3');
+    sessionsDb.archiveSessionsByIds(sessionsDb.listSessionsOlderThanCutoff('2999-01-01T00:00:00Z'));
+    assert.equal(
+      chatRunRegistry.adoptExternalRun({ provider: 'opencode', providerSessionId: 'ses_engine_3' }),
+      null,
+      'an archived session is not adoptable',
+    );
+  });
+});

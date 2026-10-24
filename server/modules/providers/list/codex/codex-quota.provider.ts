@@ -45,6 +45,7 @@ const defaultDependencies: CodexQuotaDependencies = {
   startAppServer: () => spawn('codex', ['app-server', '--stdio'], {
     env: { ...process.env },
     stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,
   }),
   now: () => Date.now(),
 };

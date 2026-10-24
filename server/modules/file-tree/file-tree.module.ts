@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import fs, { promises as fsPromises } from 'node:fs';
 import os from 'node:os';
+import path from 'node:path';
+import { pipeline } from 'node:stream';
 
 import mime from 'mime-types';
 import multer from 'multer';
@@ -21,7 +23,13 @@ import type {
   FileTreeProjectGateway,
   FileTreeWorkspaceGateway,
 } from '@/shared/types.js';
-import { WORKSPACES_ROOT, resolveReadOnlyRootPath, validateWorkspacePath } from '@/shared/utils.js';
+import {
+  WORKSPACES_ROOT,
+  createByteLimitTransform,
+  getAvailableWindowsDrives,
+  resolveReadOnlyRootPath,
+  validateWorkspacePath,
+} from '@/shared/utils.js';
 
 const MAXIMUM_UPLOAD_SIZE_MEGABYTES = 200;
 const MAXIMUM_UPLOAD_SIZE_BYTES = MAXIMUM_UPLOAD_SIZE_MEGABYTES * 1024 * 1024;
@@ -44,6 +52,30 @@ function readFileSystemConcurrency(): number {
  */
 function getExternalTempRoots(): string[] {
   return Array.from(new Set([os.tmpdir(), '/tmp']));
+}
+
+/**
+ * Operator-configured extra read-only roots from `CLOUDCLI_EXTRA_READ_ROOTS`,
+ * separated by the platform path delimiter (`;` on Windows, `:` elsewhere).
+ * Lets chat links to tool caches outside the workspace (for example a
+ * screenshot cache under the home directory) open in the editor. Relative
+ * entries are dropped because they would silently resolve against the server
+ * cwd; list narrow directories, never the whole home, since every file under
+ * a root becomes readable.
+ */
+function getConfiguredExtraReadRoots(): string[] {
+  const configuredRoots = (process.env.CLOUDCLI_EXTRA_READ_ROOTS ?? '')
+    .split(path.delimiter)
+    .map((rootPath) => rootPath.trim())
+    .filter(Boolean);
+
+  return configuredRoots.filter((rootPath) => {
+    if (path.isAbsolute(rootPath)) {
+      return true;
+    }
+    console.warn(`[file-tree] Ignoring non-absolute CLOUDCLI_EXTRA_READ_ROOTS entry: ${rootPath}`);
+    return false;
+  });
 }
 
 /**
@@ -91,7 +123,7 @@ const fileTreeProjects: FileTreeProjectGateway = {
  */
 const fileTreeWorkspace: FileTreeWorkspaceGateway = {
   rootPath: WORKSPACES_ROOT,
-  validatePath: (candidatePath) => validateWorkspacePath(candidatePath),
+  validatePath: (candidatePath, options) => validateWorkspacePath(candidatePath, options),
   resolveReadOnlyRootPath: (candidatePath) => resolveReadOnlyRootPath(candidatePath),
 };
 
@@ -106,29 +138,105 @@ const fileTreeServices = createFileTreeService({
   resolveMimeType: (filePath) => mime.lookup(filePath) || 'application/octet-stream',
   fileSystemConcurrency: readFileSystemConcurrency(),
   logger: fileTreeLogger,
+  getAvailableDrives: getAvailableWindowsDrives,
   // Providers store chat-referenced artifacts outside the active workspace:
   // Antigravity uses brain directories, Claude uses its per-project tree, and
   // ZCode uses narrow memory/skill/instruction paths. Attachments live in
   // ~/.cloudcli/assets, while provider runtimes stage temporary reports under
-  // OS temp directories. The editor may open these roots read-only without
-  // widening project-scoped write access.
+  // OS temp directories; operators may add more via CLOUDCLI_EXTRA_READ_ROOTS.
+  // The editor may open these roots read-only without widening project-scoped
+  // write access.
   externalReadOnlyRoots: [
     ...getAntigravityBrainRoots(),
     ...getClaudeExternalReadOnlyRoots(),
     getGlobalImageAssetsDir(),
     ...getExternalTempRoots(),
     ...getZcodeExternalReadOnlyRoots(),
+    ...getConfiguredExtraReadRoots(),
   ],
   resolveWorktreeRoots: (projectRoot) => getProjectWorktreeRoots(projectRoot),
 });
 
-const fileUploadMiddleware = multer({
-  storage: multer.diskStorage({
-    destination: os.tmpdir(),
-    filename: (_request, _file, callback) => {
-      callback(null, `cloudcli-file-upload-${randomUUID()}`);
+/**
+ * Disk storage for file uploads that never writes more than `maxBytes`.
+ *
+ * Mirrors `multer.diskStorage` (same temp destination and
+ * `cloudcli-file-upload-<uuid>` names) but routes the incoming stream through
+ * `createByteLimitTransform`, because Multer's `fileSize + 1` Busboy limit
+ * lets one extra byte reach a built-in storage before the abort. Open write
+ * streams are tracked so `_removeFile` can wait for the descriptor to close
+ * before unlinking (Windows refuses to unlink an open file), like Multer's
+ * own disk storage.
+ *
+ * Consumer: `fileUploadMiddleware` below; exercised directly by
+ * `server/modules/file-tree/tests/file-tree-upload-storage.test.ts`.
+ */
+export function createBoundedDiskStorage(maxBytes: number): multer.StorageEngine {
+  const openStreams = new WeakMap<Express.Multer.File, fs.WriteStream>();
+
+  return {
+    _handleFile(_request, file, callback) {
+      const destination = os.tmpdir();
+      const filename = `cloudcli-file-upload-${randomUUID()}`;
+      const finalPath = path.join(destination, filename);
+      const output = fs.createWriteStream(finalPath);
+      file.path = finalPath;
+      openStreams.set(file, output);
+      output.once('close', () => openStreams.delete(file));
+
+      pipeline(file.stream, createByteLimitTransform(maxBytes), output, (error) => {
+        if (error) {
+          callback(error);
+          return;
+        }
+        callback(null, {
+          destination,
+          filename,
+          path: finalPath,
+          size: output.bytesWritten,
+        });
+      });
     },
-  }),
+
+    _removeFile(_request, file, callback) {
+      const finalPath = file.path;
+      const mutableFile = file as { destination?: string; filename?: string; path?: string };
+
+      delete mutableFile.destination;
+      delete mutableFile.filename;
+      delete mutableFile.path;
+
+      if (!finalPath) {
+        callback(null);
+        return;
+      }
+
+      const unlink = () => {
+        fs.unlink(finalPath, (error) => callback(error?.code === 'ENOENT' ? null : error));
+      };
+
+      const output = openStreams.get(file);
+      if (!output || output.closed) {
+        unlink();
+        return;
+      }
+
+      // The descriptor is still open: wait for it to be released, whichever
+      // way it goes, then unlink.
+      function onReleased() {
+        output!.removeListener('close', onReleased);
+        output!.removeListener('error', onReleased);
+        unlink();
+      }
+      output.once('close', onReleased);
+      output.once('error', onReleased);
+      output.destroy();
+    },
+  };
+}
+
+const fileUploadMiddleware = multer({
+  storage: createBoundedDiskStorage(MAXIMUM_UPLOAD_SIZE_BYTES),
   limits: {
     fileSize: MAXIMUM_UPLOAD_SIZE_BYTES,
     files: MAXIMUM_UPLOAD_FILE_COUNT,

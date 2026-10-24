@@ -23,6 +23,7 @@ import enCodeEditor from '@/modules/i18n/locales/en/codeEditor.json';
 import enTasks from '@/modules/i18n/locales/en/tasks.json';
 // oxlint-disable-next-line importx/order
 import enGit from '@/modules/i18n/locales/en/git.json';
+import enScheduled from '@/modules/i18n/locales/en/scheduled.json';
 
 import frCommon from '@/modules/i18n/locales/fr/common.json';
 import frSettings from '@/modules/i18n/locales/fr/settings.json';
@@ -58,6 +59,7 @@ import zhSidebar from '@/modules/i18n/locales/zh-CN/sidebar.json';
 import zhChat from '@/modules/i18n/locales/zh-CN/chat.json';
 import zhCodeEditor from '@/modules/i18n/locales/zh-CN/codeEditor.json';
 import zhTasks from '@/modules/i18n/locales/zh-CN/tasks.json';
+import zhScheduled from '@/modules/i18n/locales/zh-CN/scheduled.json';
 import jaCommon from '@/modules/i18n/locales/ja/common.json';
 import jaSettings from '@/modules/i18n/locales/ja/settings.json';
 import jaAuth from '@/modules/i18n/locales/ja/auth.json';
@@ -142,6 +144,7 @@ import zhTWChat from '@/modules/i18n/locales/zh-TW/chat.json';
 import zhTWCodeEditor from '@/modules/i18n/locales/zh-TW/codeEditor.json';
 // oxlint-disable-next-line importx/order
 import zhTWTasks from '@/modules/i18n/locales/zh-TW/tasks.json';
+import zhTWScheduled from '@/modules/i18n/locales/zh-TW/scheduled.json';
 
 import ptBRCommon from '@/modules/i18n/locales/pt-BR/common.json';
 import ptBRSettings from '@/modules/i18n/locales/pt-BR/settings.json';
@@ -189,6 +192,7 @@ i18n
         codeEditor: enCodeEditor,
         tasks: enTasks,
         git: enGit,
+        scheduled: enScheduled,
       },
       fr: {
         common: frCommon,
@@ -225,6 +229,7 @@ i18n
         chat: zhChat,
         codeEditor: zhCodeEditor,
         tasks: zhTasks,
+        scheduled: zhScheduled,
       },
       ja: {
         common: jaCommon,
@@ -309,6 +314,7 @@ i18n
         chat: zhTWChat,
         codeEditor: zhTWCodeEditor,
         tasks: zhTWTasks,
+        scheduled: zhTWScheduled,
       },
       'pt-BR': {
         common: ptBRCommon,
@@ -332,7 +338,7 @@ i18n
     debug: false,
 
     // Namespaces - load only what's needed
-    ns: ['common', 'settings', 'auth', 'sidebar', 'chat', 'codeEditor', 'tasks', 'git'],
+    ns: ['common', 'settings', 'auth', 'sidebar', 'chat', 'codeEditor', 'tasks', 'git', 'scheduled'],
     defaultNS: 'common',
 
     // Key separator for nested keys (default: '.')

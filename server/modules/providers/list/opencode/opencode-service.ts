@@ -170,6 +170,9 @@ export class OpenCodeServiceSupervisor {
       // OPENCODE_PASSWORD cannot shadow the lease credential.
       env: { ...process.env, OPENCODE_PASSWORD: password },
       stdio: ['pipe', 'pipe', 'pipe'],
+      // The engine is a console binary on Windows: a console-less parent (pm2)
+      // would otherwise get a stray console window for the server's lifetime.
+      windowsHide: true,
     });
 
     const bootedAt = this.now();

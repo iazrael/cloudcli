@@ -80,7 +80,11 @@ test('a background agent output link resolves to its transcript under the Claude
   }
 });
 
-test('the temp directory stays read-only: it is still not a valid workspace location', async () => {
+// On Windows the temp directory sits under the home directory, which is the
+// default workspace root, so it is a valid workspace there by design.
+test('the temp directory stays read-only: it is still not a valid workspace location', {
+  skip: process.platform === 'win32' ? 'the Windows temp directory lives under the home workspace root' : false,
+}, async () => {
   const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), 'read-only-root-'));
 
   try {

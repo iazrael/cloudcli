@@ -22,7 +22,35 @@ let cachedCapabilities: Partial<Record<LLMProvider, ProviderCapabilities>> | nul
 let inFlightRequest: Promise<Partial<Record<LLMProvider, ProviderCapabilities>> | null> | null = null;
 
 /**
- * Resolves the capability map, or null when the request failed. A failure is
+ * Delays before re-asking for the matrix after a failed attempt. This request
+ * gates provider-only affordances (notably `/compact` in the slash menu), and a
+ * page that mounts inside a server-restart window would otherwise lose them
+ * until something remounts the hook — the same reason the model catalog retries.
+ * Exhausting the delays leaves the map null and the retry to the next mount.
+ */
+const CAPABILITIES_RETRY_DELAYS_MS = [2_000, 8_000];
+
+/** One attempt at the capability matrix; null on any failure (HTTP or transport). */
+async function fetchCapabilities(): Promise<Partial<Record<LLMProvider, ProviderCapabilities>> | null> {
+  try {
+    const response = await api.providers.capabilities();
+    const body = (await response.json()) as { success?: boolean; data?: { providers?: ProviderCapabilities[] } };
+    if (!body.success || !Array.isArray(body.data?.providers)) {
+      return null;
+    }
+    const byProvider: Partial<Record<LLMProvider, ProviderCapabilities>> = {};
+    for (const row of body.data.providers) {
+      byProvider[row.provider] = row;
+    }
+    return byProvider;
+  } catch (error) {
+    console.error('Error loading provider capabilities:', error);
+    return null;
+  }
+}
+
+/**
+ * Resolves the capability map, or null when every attempt failed. A failure is
  * deliberately not cached — a transient failure should not disable
  * affordances for the rest of the session — so the next mount retries.
  */
@@ -36,20 +64,19 @@ function loadCapabilities(): Promise<Partial<Record<LLMProvider, ProviderCapabil
 
   inFlightRequest = (async () => {
     try {
-      const response = await api.providers.capabilities();
-      const body = (await response.json()) as { success?: boolean; data?: { providers?: ProviderCapabilities[] } };
-      if (!body.success || !Array.isArray(body.data?.providers)) {
-        return null;
+      for (let attempt = 0; ; attempt += 1) {
+        const capabilities = await fetchCapabilities();
+        if (capabilities) {
+          cachedCapabilities = capabilities;
+          return capabilities;
+        }
+
+        const retryDelay = CAPABILITIES_RETRY_DELAYS_MS[attempt];
+        if (retryDelay === undefined) {
+          return null;
+        }
+        await new Promise((resolve) => setTimeout(resolve, retryDelay));
       }
-      const byProvider: Partial<Record<LLMProvider, ProviderCapabilities>> = {};
-      for (const row of body.data.providers) {
-        byProvider[row.provider] = row;
-      }
-      cachedCapabilities = byProvider;
-      return byProvider;
-    } catch (error) {
-      console.error('Error loading provider capabilities:', error);
-      return null;
     } finally {
       inFlightRequest = null;
     }

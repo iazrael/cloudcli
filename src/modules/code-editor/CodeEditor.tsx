@@ -9,9 +9,8 @@ import { useTheme } from '@/shared/context/ThemeContext';
 import { useCodeEditorDocument } from '@/modules/code-editor/hooks/useCodeEditorDocument';
 import { useCodeEditorSettings } from '@/modules/code-editor/hooks/useCodeEditorSettings';
 import { useEditorKeyboardShortcuts } from '@/modules/code-editor/hooks/useEditorKeyboardShortcuts';
-import type { CodeEditorFile, CodeEditorGotoTarget, MarkdownImageContext } from '@/shared/types';
+import type { CodeEditorFile, CodeEditorGotoTarget } from '@/shared/types';
 import { createMinimapExtension, createScrollToFirstChunkExtension, getLanguageExtensions } from '@/modules/code-editor/utils/editorExtensions';
-import { imageBaseDirFromFilePath } from '@/modules/code-editor/utils/markdownImagePath';
 import { getEditorStyles } from '@/modules/code-editor/utils/editorStyles';
 import { createEditorToolbarPanelExtension } from '@/modules/code-editor/utils/editorToolbarPanel';
 import CodeEditorFooter from '@/modules/code-editor/CodeEditorFooter';
@@ -123,17 +122,6 @@ export default function CodeEditor({
     const extension = file.name.split('.').pop()?.toLowerCase();
     return extension === 'md' || extension === 'markdown';
   }, [file.name]);
-
-  // A markdown document's relative image paths resolve from its own directory,
-  // so the preview needs the document's path, not just the project it is in.
-  const markdownImageContext = useMemo<MarkdownImageContext>(
-    () => ({
-      projectId: fileProjectId,
-      baseDir: imageBaseDirFromFilePath(file.path),
-      isExternal: Boolean(file.isReadOnlyExternal),
-    }),
-    [file.path, file.isReadOnlyExternal, fileProjectId],
-  );
 
   const isHtmlPreviewFile = useMemo(() => {
     const extension = file.name.split('.').pop()?.toLowerCase();
@@ -361,7 +349,6 @@ export default function CodeEditor({
               showLineNumbers={showLineNumbers}
               extensions={extensions}
               gotoTarget={gotoTarget}
-              markdownImageContext={markdownImageContext}
             />
           </div>
 

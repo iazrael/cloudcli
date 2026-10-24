@@ -116,7 +116,10 @@ test('resolution prefers env override, then PATH, then platform candidates', asy
     });
 
     try {
-      assert.equal(resolver.tryResolveEnginePath(), '/usr/local/bin/test-cli');
+      // The resolver goes through the host path module, which root-resolves
+      // these POSIX fixtures against the cwd drive on Windows; expecting the
+      // host-resolved form keeps the mocked platform meaningful everywhere.
+      assert.equal(resolver.tryResolveEnginePath(), path.resolve('/usr/local/bin/test-cli'));
       assert.deepEqual(calls, [{ command: 'which', args: ['test-cli'] }]);
 
       // Cached: no further subprocess calls on subsequent resolutions.
@@ -136,7 +139,7 @@ test('which failure falls through to the platform candidate table', async () => 
     });
 
     try {
-      assert.equal(resolver.tryResolveEnginePath(), '/usr/bin/test-cli');
+      assert.equal(resolver.tryResolveEnginePath(), path.resolve('/usr/bin/test-cli'));
     } finally {
       restore();
     }
@@ -234,7 +237,7 @@ test('an eager version probe runs asynchronously with the resolved path and cach
     });
 
     try {
-      assert.equal(resolver.tryResolveEnginePath(), '/opt/engines/test-cli');
+      assert.equal(resolver.tryResolveEnginePath(), path.resolve('/opt/engines/test-cli'));
 
       // The probe has not run yet: resolving never blocks on version detection.
       assert.deepEqual(calls, []);
@@ -242,7 +245,7 @@ test('an eager version probe runs asynchronously with the resolved path and cach
 
       await flushMicrotasks();
 
-      assert.deepEqual(calls, [{ command: 'probe-0', args: ['/opt/engines/test-cli'] }]);
+      assert.deepEqual(calls, [{ command: 'probe-0', args: [path.resolve('/opt/engines/test-cli')] }]);
       assert.equal(resolver.getEngineVersion(), '1.2.3');
 
       // Cached: repeated reads do not re-probe.
@@ -265,7 +268,7 @@ test('a lazy version probe runs synchronously inside getEngineVersion on demand'
     });
 
     try {
-      assert.equal(resolver.tryResolveEnginePath(), '/opt/engines/test-cli');
+      assert.equal(resolver.tryResolveEnginePath(), path.resolve('/opt/engines/test-cli'));
 
       // Resolving alone does not probe (no subprocess noise on request paths).
       assert.deepEqual(calls, []);
@@ -302,8 +305,8 @@ test('version probe falls back to the second invocation and warns on version mis
       assert.equal(resolver.getEngineVersion(), '9.9.9');
 
       assert.deepEqual(calls, [
-        { command: 'probe-0', args: ['/opt/engines/test-cli'] },
-        { command: 'probe-1', args: ['/opt/engines/test-cli'] },
+        { command: 'probe-0', args: [path.resolve('/opt/engines/test-cli')] },
+        { command: 'probe-1', args: [path.resolve('/opt/engines/test-cli')] },
       ]);
       assert.equal(warnings.length, 1);
       assert.match(warnings[0], /Version mismatch: expected 1\.0\.0, detected 9\.9\.9/);

@@ -1,0 +1,71 @@
+import type {
+  AgentProvider,
+  AuthStatus,
+  AgentCategory,
+  ClaudePermissionsState,
+  CursorPermissionsState,
+  CodexPermissionMode,
+  AntigravityPermissionMode,
+  ZcodePermissionMode,
+  OpenCodePermissionMode,
+  SettingsProject,
+} from '@/shared/types';
+
+export type AgentContext = {
+  authStatus: AuthStatus;
+  onLogin: () => void;
+};
+
+export type AgentContextByProvider = Record<AgentProvider, AgentContext>;
+export type ProviderAuthStatusByProvider = Record<AgentProvider, AuthStatus>;
+
+export type AgentsSettingsTabProps = {
+  providerAuthStatus: ProviderAuthStatusByProvider;
+  onProviderLogin: (provider: AgentProvider) => void;
+  claudePermissions: ClaudePermissionsState;
+  onClaudePermissionsChange: (value: ClaudePermissionsState) => void;
+  cursorPermissions: CursorPermissionsState;
+  onCursorPermissionsChange: (value: CursorPermissionsState) => void;
+  codexPermissionMode: CodexPermissionMode;
+  onCodexPermissionModeChange: (value: CodexPermissionMode) => void;
+  antigravityPermissionMode: AntigravityPermissionMode;
+  onAntigravityPermissionModeChange: (value: AntigravityPermissionMode) => void;
+  zcodePermissionMode: ZcodePermissionMode;
+  onZcodePermissionModeChange: (value: ZcodePermissionMode) => void;
+  opencodePermissionMode: OpenCodePermissionMode;
+  onOpenCodePermissionModeChange: (value: OpenCodePermissionMode) => void;
+  projects: SettingsProject[];
+};
+
+export type AgentCategoryTabsSectionProps = {
+  categories: AgentCategory[];
+  selectedAgent: AgentProvider;
+  selectedCategory: AgentCategory;
+  onSelectCategory: (category: AgentCategory) => void;
+};
+
+export type AgentSelectorSectionProps = {
+  agents: AgentProvider[];
+  selectedAgent: AgentProvider;
+  onSelectAgent: (agent: AgentProvider) => void;
+  agentContextById: AgentContextByProvider;
+};
+
+export type AgentCategoryContentSectionProps = {
+  selectedAgent: AgentProvider;
+  selectedCategory: AgentCategory;
+  agentContextById: AgentContextByProvider;
+  claudePermissions: ClaudePermissionsState;
+  onClaudePermissionsChange: (value: ClaudePermissionsState) => void;
+  cursorPermissions: CursorPermissionsState;
+  onCursorPermissionsChange: (value: CursorPermissionsState) => void;
+  codexPermissionMode: CodexPermissionMode;
+  onCodexPermissionModeChange: (value: CodexPermissionMode) => void;
+  antigravityPermissionMode: AntigravityPermissionMode;
+  onAntigravityPermissionModeChange: (value: AntigravityPermissionMode) => void;
+  zcodePermissionMode: ZcodePermissionMode;
+  onZcodePermissionModeChange: (value: ZcodePermissionMode) => void;
+  opencodePermissionMode: OpenCodePermissionMode;
+  onOpenCodePermissionModeChange: (value: OpenCodePermissionMode) => void;
+  projects: SettingsProject[];
+};

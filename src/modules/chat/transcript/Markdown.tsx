@@ -10,17 +10,17 @@ import { useTranslation } from 'react-i18next';
 import { SyntaxHighlighter, isRegisteredLanguage } from '@/modules/chat/composer/codeHighlightLanguages';
 import { MermaidDiagram } from '@/modules/code-editor';
 import { normalizeInlineCodeFences } from '@/modules/chat/utils/chatFormatting';
-import { normalizeLatexDelimiters } from '@/modules/chat/utils/latexDelimiters';
-import { api, readApiJson, readExternalFileContent } from '@/shared/api';
-import { MarkdownWorkspaceContext } from '@/modules/chat/context/MarkdownWorkspaceContext';
-import { shouldProxyLocalHref } from '@/modules/chat/utils/localProxyLink';
 import {
-  copyTextToClipboard,
   filePathFromFileUrl,
   fileReferenceFromMarkdownHref,
   isFileUrl,
   markdownUrlTransform,
-} from '@/shared/utils';
+} from '@/modules/chat/utils/fileLink';
+import { normalizeLatexDelimiters } from '@/modules/chat/utils/latexDelimiters';
+import { api, readApiJson, readExternalFileContent } from '@/shared/api';
+import { MarkdownWorkspaceContext } from '@/modules/chat/context/MarkdownWorkspaceContext';
+import { shouldProxyLocalHref } from '@/modules/chat/utils/localProxyLink';
+import { copyTextToClipboard, normalizeLatexMathDelimiters } from '@/shared/utils';
 import { UnifiedImageViewer } from '@/shared/ui';
 import { usePaletteOps } from '@/modules/command-palette';
 import { useTheme } from '@/shared/context/ThemeContext';
@@ -529,8 +529,13 @@ type MarkdownBodyProps = {
 export const MarkdownBody = memo(function MarkdownBody({ children, breaks = false }: MarkdownBodyProps) {
   const content = useMemo(
     // The LaTeX pass runs second because it reads the code spans the fence pass
-    // normalizes, and must leave the LaTeX inside them literal.
-    () => normalizeLatexDelimiters(normalizeInlineCodeFences(children)),
+    // normalizes, and must leave the LaTeX inside them literal. The shared pass
+    // runs last and only promotes the single-dollar `$x$` pairs that read as
+    // LaTeX; bracket pairs are left to the code-aware pass before it.
+    () => normalizeLatexMathDelimiters(
+      normalizeLatexDelimiters(normalizeInlineCodeFences(children)),
+      { brackets: false },
+    ),
     [children],
   );
   // Math support costs a remark tree pass plus a full KaTeX walk on every

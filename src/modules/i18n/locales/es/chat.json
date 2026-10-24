@@ -164,8 +164,17 @@
     "editing": {
       "title": "Reemplazando un mensaje anterior",
       "filesNotReverted": "los archivos ya modificados no se revierten",
+      "filesReverted": "los archivos ya modificados también se revierten",
       "cancel": "Cancelar"
     }
+  },
+  "misc": {
+    "needsInput": "{{provider}} necesita tu respuesta",
+    "selectAllThatApply": "Selecciona todo lo que corresponda",
+    "other": "Otro...",
+    "back": "Atrás",
+    "next": "Siguiente",
+    "submit": "Enviar"
   },
   "providerSelection": {
     "title": "Elige tu asistente de IA",

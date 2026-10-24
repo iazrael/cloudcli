@@ -2,9 +2,14 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  createContextWindowCapture,
   extractCumulativeTokenBudget,
   extractTokenBudget,
 } from '@/modules/providers/list/claude/claude-runtime.provider.js';
+
+// The fallback window is read from CONTEXT_WINDOW at call time; a developer's
+// .env value would otherwise stand in for the default these tests pin.
+delete process.env.CONTEXT_WINDOW;
 
 test('assistant usage produces a cumulative budget', () => {
   const budget = extractTokenBudget({
@@ -101,4 +106,150 @@ test('the cumulative reader ignores anything that is not a result', () => {
     }),
     null,
   );
+});
+
+test('the recorded window drives the live frames, with the model heuristic as fallback', () => {
+  // The frames a run streams have to report the same window the reload path
+  // resolves, or the badge changes the moment the turn ends.
+  const assistantMessage = {
+    type: 'assistant',
+    message: {
+      model: 'claude-opus-5',
+      usage: { input_tokens: 10, cache_read_input_tokens: 40_000, output_tokens: 100 },
+    },
+  };
+
+  const recorded = { recorded: 1_000_000, selectedModel: 'opus[1m]' };
+  assert.equal(extractTokenBudget(assistantMessage, recorded)?.total, 1_000_000);
+  assert.equal(extractTokenBudget(assistantMessage)?.total, 200_000);
+
+  // Never run here yet, but the user picked the 1M variant: the row's model
+  // still carries the tag the transcript's resolved id drops.
+  assert.equal(
+    extractTokenBudget(assistantMessage, { recorded: null, selectedModel: 'opus[1m]' })?.total,
+    1_000_000,
+  );
+  assert.equal(
+    extractTokenBudget(assistantMessage, { recorded: null, selectedModel: 'claude-opus-5' })?.total,
+    200_000,
+  );
+  assert.equal(
+    extractTokenBudget({
+      ...assistantMessage,
+      message: { ...assistantMessage.message, model: 'claude-opus-5[1m]' },
+    })?.total,
+    1_000_000,
+  );
+
+  assert.equal(
+    extractCumulativeTokenBudget(
+      { type: 'result', usage: { input_tokens: 18, output_tokens: 166 } },
+      recorded,
+    )?.total,
+    1_000_000,
+  );
+});
+
+test('no frame ever reports the legacy 160k window', () => {
+  const budget = extractTokenBudget({
+    type: 'assistant',
+    message: { usage: { input_tokens: 10, output_tokens: 2 } },
+  });
+
+  assert.ok(budget);
+  assert.notEqual(budget.total, 160_000);
+});
+
+/** The shape `fetchSdkContextBudget` hands the capture; only `total` is read. */
+const sdkBudget = (total: number) => ({
+  used: 1_000,
+  total,
+  inputTokens: 1_000,
+  outputTokens: 0,
+  breakdown: { input: 1_000, output: 0 },
+});
+
+test('the window capture spends one read once the query answers', async () => {
+  // Every read costs a control request, so a run that already learned its
+  // window must stop asking — the probe is called once per stream message.
+  let reads = 0;
+  const seen: number[] = [];
+  const capture = createContextWindowCapture(
+    async () => {
+      reads += 1;
+      return sdkBudget(1_000_000);
+    },
+    (total: number) => seen.push(total),
+  );
+
+  await capture();
+  await capture();
+  await capture();
+
+  assert.equal(reads, 1);
+  assert.deepEqual(seen, [1_000_000]);
+});
+
+test('a read with nothing to report yet is retried once, then left to the turn end', async () => {
+  // A brand-new session has no response to measure at the head of its stream;
+  // its first assistant reply is the retry that lands.
+  let reads = 0;
+  const seen: number[] = [];
+  const capture = createContextWindowCapture(
+    async () => {
+      reads += 1;
+      return reads === 1 ? null : sdkBudget(200_000);
+    },
+    (total: number) => seen.push(total),
+  );
+
+  await capture();
+  assert.deepEqual(seen, []);
+  await capture();
+  await capture();
+
+  assert.equal(reads, 2);
+  assert.deepEqual(seen, [200_000]);
+});
+
+test('the window capture gives up rather than retrying a read that keeps failing', async () => {
+  let reads = 0;
+  const capture = createContextWindowCapture(
+    async () => {
+      reads += 1;
+      throw new Error('control request unavailable');
+    },
+    () => assert.fail('a failed read must report no window'),
+  );
+
+  await capture();
+  await capture();
+  await capture();
+
+  assert.equal(reads, 2);
+});
+
+test('probes made while a read is in flight share it', async () => {
+  // The stream hands over messages faster than a control request answers; two
+  // reads for the same window would be pure waste.
+  let reads = 0;
+  let release: (budget: ReturnType<typeof sdkBudget>) => void = () => {};
+  const capture = createContextWindowCapture(
+    () => {
+      reads += 1;
+      return new Promise((resolve) => {
+        release = resolve;
+      });
+    },
+    () => {},
+  );
+
+  const first = capture();
+  const second = capture();
+  // The read is queued as a microtask, so let it start before answering it.
+  await new Promise((resolve) => { setTimeout(resolve, 0); });
+  release(sdkBudget(1_000_000));
+  await Promise.all([first, second]);
+
+  assert.equal(reads, 1);
 });

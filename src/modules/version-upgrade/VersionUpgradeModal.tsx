@@ -1,150 +1,135 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import { useTranslation } from "react-i18next";
 
 import { api } from "@/shared/api";
-import type { ReleaseInfo,InstallMode } from "@/shared/types";
-import { copyTextToClipboard,IS_PLATFORM } from "@/shared/utils";
+import { BUILD_INFO } from "@/shared/constants";
+import { useBusySessionIdSet } from "@/shared/context/SessionProtectionContext";
+import type { SystemUpdateRefusal, SystemUpdateStatus } from "@/shared/types";
 
 type VersionUpgradeModalProps = {
     isOpen: boolean;
     onClose: () => void;
-    releaseInfo: ReleaseInfo | null;
-    currentVersion: string;
-    latestVersion: string | null;
-    installMode: InstallMode;
-    /** Whether the version check found a release newer than the running one. Drives whether the upgrade flow renders at all. */
-    updateAvailable: boolean;
+    status: SystemUpdateStatus | null;
+    /** Re-reads the status; `true` forces a `git fetch`. */
+    reload: (refresh?: boolean) => Promise<SystemUpdateStatus | null>;
+    checkNow: () => Promise<SystemUpdateStatus | null>;
+    isChecking: boolean;
 };
 
-const RELOAD_COUNTDOWN_START = 120;
+/** Fast enough to follow build steps, slow enough to stay cheap while the server is down. */
+const JOB_POLL_MS = 2000;
+const MANUAL_UPDATE_COMMAND = 'git pull && npm install && npm run build && pm2 restart cloudcli';
 
-/** This module's only public export: rendered by the sidebar module's modal layer to show release notes and run the app upgrade. */
+const shortHash = (hash: string | null | undefined) => (hash ? hash.slice(0, 7) : '—');
+
+/** This module's only public export: rendered by the sidebar and settings modules to show the checkout's update status and run "update and restart". */
 export function VersionUpgradeModal({
     isOpen,
     onClose,
-    releaseInfo,
-    currentVersion,
-    latestVersion,
-    installMode,
-    updateAvailable
+    status,
+    reload,
+    checkNow,
+    isChecking,
 }: VersionUpgradeModalProps) {
     const { t } = useTranslation('common');
-    // The modal also opens as a plain "what version am I on" viewer from the
-    // sidebar footer, so everything upgrade-specific keys off this.
-    const hasUpdate = updateAvailable && Boolean(latestVersion);
-    const upgradeCommand = installMode === 'npm'
-        ? t('versionUpdate.npmUpgradeCommand')
-        : IS_PLATFORM
-            ? 'npm run update:platform'
-            : 'git checkout main && git pull && npm install';
-    const [isUpdating, setIsUpdating] = useState(false);
-    const [updateOutput, setUpdateOutput] = useState('');
-    const [updateError, setUpdateError] = useState('');
-    const [reloadCountdown, setReloadCountdown] = useState<number | null>(null);
+    const runningSessionCount = useBusySessionIdSet().size;
+    // Id of the job this modal started, so its outcome (and only its outcome)
+    // drives the success reload and the failure report.
+    const [startedJobId, setStartedJobId] = useState<string | null>(null);
+    // The POST is refused synchronously for reasons the status may not show yet.
+    const [startError, setStartError] = useState<string | null>(null);
+    // Disables the action between the click and the POST's answer.
+    const [isStarting, setIsStarting] = useState(false);
 
+    const job = status?.job ?? null;
+    const jobActive = job?.state === 'running' || job?.state === 'restarting';
+    const ownJob = job && startedJobId === job.id ? job : null;
+    const showJob = jobActive || ownJob !== null;
+
+    // Follow the job closely while it runs; the status request simply fails
+    // while PM2 restarts the server, and polling resumes once it answers.
     useEffect(() => {
-        if (!IS_PLATFORM || reloadCountdown === null) {
-            return;
-        }
+        if (!isOpen || !(jobActive || (startedJobId && !ownJob))) return;
+        const interval = window.setInterval(() => void reload(), JOB_POLL_MS);
+        return () => window.clearInterval(interval);
+    }, [isOpen, jobActive, startedJobId, ownJob, reload]);
 
-        if (reloadCountdown <= 0) {
-            // Force a hard reload (bypass cache) so stale assets from the
-            // previous version aren't served after the environment updates.
+    // The new server settled our job as succeeded: load the new bundle,
+    // bypassing any cached assets from the previous build.
+    useEffect(() => {
+        if (ownJob?.state !== 'succeeded') return;
+        const timeout = window.setTimeout(() => {
             const url = new URL(window.location.href);
             url.searchParams.set('_hardReload', Date.now().toString());
             window.location.replace(url.toString());
-            return;
-        }
+        }, 1500);
+        return () => window.clearTimeout(timeout);
+    }, [ownJob?.state]);
 
-        const timeoutId = window.setTimeout(() => {
-            setReloadCountdown((previousCountdown) => {
-                if (previousCountdown === null) {
-                    return null;
-                }
-
-                return Math.max(previousCountdown - 1, 0);
-            });
-        }, 1000);
-
-        return () => window.clearTimeout(timeoutId);
-    }, [reloadCountdown]);
-
-    const handleUpdateNow = useCallback(async () => {
-        setIsUpdating(true);
-        setUpdateOutput(t('versionUpdate.startingUpdate') + '\n');
-        setReloadCountdown(IS_PLATFORM ? RELOAD_COUNTDOWN_START : null);
-        setUpdateError('');
-
+    const handleStart = useCallback(async () => {
+        setIsStarting(true);
+        setStartError(null);
         try {
-            // Call the backend API to run the update command
             const response = await api.system.update();
-
-            // The server (or a proxy in front of it) can answer with an HTML
-            // page instead of JSON — e.g. while a hosted/Docker deployment
-            // restarts mid-update — so never parse the body blindly.
-            const rawBody = await response.text();
-            let data: { output?: string; error?: string } | null = null;
-            try {
-                data = JSON.parse(rawBody);
-            } catch {
-                data = null;
-            }
-
-            if (!data) {
-                if (IS_PLATFORM) {
-                    // On platform the update restarts the server, which often
-                    // cuts the response short. Treat it as in progress and let
-                    // the reload countdown pick up the new version.
-                    setUpdateOutput(prev => prev + '\n' + t('versionUpdate.updateStartedRestarting') + '\n');
-                } else {
-                    setReloadCountdown(null);
-                    const message = t('versionUpdate.unexpectedResponse', { status: response.status });
-                    setUpdateError(message);
-                    setUpdateOutput(prev => prev + '\n❌ ' + t('versionUpdate.updateFailed') + ': ' + message + '\n');
-                }
+            const body = await response.json().catch(() => null) as
+                | { jobId?: string; error?: { code?: SystemUpdateRefusal; message?: string } }
+                | null;
+            if (response.ok && body?.jobId) {
+                setStartedJobId(body.jobId);
+                await reload();
                 return;
             }
-
-            if (response.ok) {
-                setUpdateOutput(prev => prev + (data.output || '') + '\n');
-                setUpdateOutput(prev => prev + '\n✅ ' + t('versionUpdate.updateCompleted') + '\n');
-                if (!IS_PLATFORM) {
-                    setUpdateOutput(prev => prev + t('versionUpdate.restartServer') + '\n');
-                }
-            } else {
-                setReloadCountdown(null);
-                setUpdateError(data.error || t('versionUpdate.updateFailed'));
-                setUpdateOutput(prev => prev + '\n❌ ' + t('versionUpdate.updateFailed') + ': ' + (data.error || t('versionUpdate.unknownError')) + '\n');
-            }
-        } catch (error: any) {
-            if (IS_PLATFORM) {
-                // Connection dropped mid-request — expected when the platform
-                // update restarts the server. Keep the countdown running.
-                setUpdateOutput(prev => prev + '\n' + t('versionUpdate.connectionInterrupted') + '\n');
-            } else {
-                setReloadCountdown(null);
-                setUpdateError(error.message);
-                setUpdateOutput(prev => prev + '\n❌ ' + t('versionUpdate.updateFailed') + ': ' + error.message + '\n');
-            }
+            const code = body?.error?.code;
+            setStartError(code
+                ? t(`versionUpdate.refusal.${code}`, { defaultValue: body?.error?.message ?? code })
+                : t('versionUpdate.refusal.unknown', { status: response.status }));
+            await reload();
+        } catch (error) {
+            setStartError(error instanceof Error ? error.message : String(error));
         } finally {
-            setIsUpdating(false);
+            setIsStarting(false);
         }
-    }, [t]);
+    }, [reload, t]);
 
     if (!isOpen) return null;
 
+    const mode = status?.availableMode ?? null;
+    const blockedReason = !status
+        ? null
+        : !status.supported
+            ? status.reason
+            : status.dirtyFiles.length > 0
+                ? 'dirty'
+                : status.diverged
+                    ? 'diverged'
+                    : null;
+    const canStart = Boolean(status?.supported && mode && !blockedReason && !jobActive && !isStarting);
+
+    const title = showJob
+        ? job?.state === 'failed'
+            ? t('versionUpdate.failedTitle')
+            : job?.state === 'succeeded'
+                ? t('versionUpdate.succeededTitle')
+                : t('versionUpdate.updatingTitle')
+        : mode === 'pull'
+            ? t('versionUpdate.title')
+            : mode === 'rebuild'
+                ? t('versionUpdate.rebuildTitle')
+                : t('versionUpdate.upToDate');
+    const subtitle = mode === 'pull'
+        ? t('versionUpdate.commitsBehind', { count: status?.behind ?? 0, upstream: status?.upstream ?? '' })
+        : mode === 'rebuild'
+            ? t('versionUpdate.rebuildHint')
+            : status?.upstream ?? '';
+
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
-            {/* Backdrop */}
             <button
                 className="fixed inset-0 bg-black/50 backdrop-blur-sm"
                 onClick={onClose}
                 aria-label={t('versionUpdate.ariaLabels.closeModal')}
             />
 
-            {/* Modal */}
             <div className="relative mx-4 max-h-[90vh] w-full max-w-2xl space-y-4 overflow-y-auto rounded-lg border border-gray-200 bg-white p-6 shadow-xl dark:border-gray-700 dark:bg-gray-800">
                 {/* Header */}
                 <div className="flex items-center justify-between">
@@ -155,12 +140,8 @@ export function VersionUpgradeModal({
                             </svg>
                         </div>
                         <div>
-                            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
-                                {t(hasUpdate ? 'versionUpdate.title' : 'versionUpdate.upToDate')}
-                            </h2>
-                            <p className="text-sm text-gray-500 dark:text-gray-400">
-                                {releaseInfo?.title || (hasUpdate ? t('versionUpdate.newVersionReady') : currentVersion)}
-                            </p>
+                            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">{title}</h2>
+                            {subtitle && <p className="text-sm text-gray-500 dark:text-gray-400">{subtitle}</p>}
                         </div>
                     </div>
                     <button
@@ -173,94 +154,83 @@ export function VersionUpgradeModal({
                     </button>
                 </div>
 
-                {/* Version Info */}
-                <div className="space-y-3">
-                    <div className="flex items-center justify-between rounded-lg bg-gray-50 p-3 dark:bg-gray-700/50">
-                        <span className="text-sm font-medium text-gray-700 dark:text-gray-300">{t('versionUpdate.currentVersion')}</span>
-                        <span className="font-mono text-sm text-gray-900 dark:text-white">{currentVersion}</span>
-                    </div>
-                    <div className={hasUpdate
-                        ? 'flex items-center justify-between rounded-lg border border-blue-200 bg-blue-50 p-3 dark:border-blue-700 dark:bg-blue-900/20'
-                        : 'flex items-center justify-between rounded-lg bg-gray-50 p-3 dark:bg-gray-700/50'}
-                    >
-                        <span className={hasUpdate
-                            ? 'text-sm font-medium text-blue-700 dark:text-blue-300'
-                            : 'text-sm font-medium text-gray-700 dark:text-gray-300'}
-                        >
-                            {t('versionUpdate.latestVersion')}
-                        </span>
-                        <span className={hasUpdate
-                            ? 'font-mono text-sm text-blue-900 dark:text-blue-100'
-                            : 'font-mono text-sm text-gray-900 dark:text-white'}
-                        >
-                            {latestVersion}
-                        </span>
-                    </div>
+                {/* Build / checkout identity */}
+                <div className="space-y-2">
+                    <InfoRow label={t('versionUpdate.runningBuild')} value={BUILD_INFO.describe || shortHash(status?.builtCommit)} />
+                    <InfoRow label={t('versionUpdate.localHead')} value={`${status?.branch ?? '—'} @ ${shortHash(status?.headCommit)}`} />
+                    <InfoRow
+                        label={t('versionUpdate.remote')}
+                        value={`${status?.upstream ?? '—'} @ ${shortHash(status?.remoteCommit)}`}
+                        highlight={mode === 'pull'}
+                    />
+                    {status?.lastFetchedAt && (
+                        <p className="text-right text-[11px] text-gray-400">
+                            {t('versionUpdate.lastChecked', { time: new Date(status.lastFetchedAt).toLocaleString() })}
+                        </p>
+                    )}
                 </div>
 
-                {/* Changelog */}
-                {releaseInfo?.body && (
-                    <div className="space-y-3">
-                        <div className="flex items-center justify-between">
-                            <h3 className="text-sm font-medium text-gray-900 dark:text-white">{t('versionUpdate.whatsNew')}</h3>
-                            {releaseInfo?.htmlUrl && (
-                                <a
-                                    href={releaseInfo.htmlUrl}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-700 hover:underline dark:text-blue-400 dark:hover:text-blue-300"
-                                >
-                                    {t('versionUpdate.viewFullRelease')}
-                                    <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                                    </svg>
-                                </a>
-                            )}
-                        </div>
-                        <div className="max-h-64 overflow-y-auto rounded-lg border border-gray-200 bg-gray-50 p-4 dark:border-gray-600 dark:bg-gray-700/50">
-                            <div className="prose prose-sm max-w-none text-sm text-gray-700 dark:prose-invert dark:text-gray-300">
-                                <ReactMarkdown remarkPlugins={[remarkGfm]} components={changelogComponents}>
-                                    {cleanChangelog(releaseInfo.body)}
-                                </ReactMarkdown>
-                            </div>
-                        </div>
-                    </div>
+                {status?.fetchError && (
+                    <Notice tone="amber">{t('versionUpdate.fetchFailed', { error: status.fetchError })}</Notice>
                 )}
 
-                {/* Update Output */}
-                {(updateOutput || updateError) && (
+                {/* Incoming commits */}
+                {mode === 'pull' && status && status.commits.length > 0 && !showJob && (
                     <div className="space-y-2">
-                        <h3 className="text-sm font-medium text-gray-900 dark:text-white">{t('versionUpdate.updateProgress')}</h3>
-                        <div className="max-h-48 overflow-y-auto rounded-lg border border-gray-700 bg-gray-900 p-4 dark:bg-gray-950">
-                            <pre className="whitespace-pre-wrap font-mono text-xs text-green-400">{updateOutput}</pre>
-                        </div>
-                        {IS_PLATFORM && reloadCountdown !== null && (
-                            <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-700 dark:border-blue-900/40 dark:bg-blue-900/20 dark:text-blue-200">
-                                {reloadCountdown === 0
-                                    ? t('versionUpdate.refreshNow')
-                                    : t('versionUpdate.refreshIn', { count: reloadCountdown })}
-                            </div>
-                        )}
-                        {updateError && (
-                            <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-200">
-                                {updateError}
-                            </div>
-                        )}
+                        <h3 className="text-sm font-medium text-gray-900 dark:text-white">{t('versionUpdate.incomingCommits')}</h3>
+                        <ul className="max-h-56 space-y-1 overflow-y-auto rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-600 dark:bg-gray-700/50">
+                            {status.commits.map((commit) => (
+                                <li key={commit.hash} className="flex gap-2 text-sm text-gray-700 dark:text-gray-300">
+                                    <code className="flex-shrink-0 font-mono text-xs text-gray-400">{commit.hash}</code>
+                                    <span className="min-w-0 break-words">{commit.subject}</span>
+                                </li>
+                            ))}
+                        </ul>
                     </div>
                 )}
 
-                {/* Upgrade Instructions */}
-                {hasUpdate && !isUpdating && !updateOutput && (
-                    <div className="space-y-3">
-                        <h3 className="text-sm font-medium text-gray-900 dark:text-white">{t('versionUpdate.manualUpgrade')}</h3>
-                        <div className="rounded-lg border bg-gray-100 p-3 dark:bg-gray-800">
-                            <code className="font-mono text-sm text-gray-800 dark:text-gray-200">
-                                {upgradeCommand}
-                            </code>
+                {/* Why the update cannot run */}
+                {blockedReason && !showJob && (
+                    <Notice tone="red">
+                        <p>{t(`versionUpdate.blocked.${blockedReason}`, { upstream: status?.upstream ?? '' })}</p>
+                        {blockedReason === 'dirty' && status && (
+                            <ul className="mt-1 list-inside list-disc font-mono text-[11px]">
+                                {status.dirtyFiles.map((file) => <li key={file}>{file}</li>)}
+                            </ul>
+                        )}
+                        {blockedReason === 'not-pm2' && (
+                            <code className="mt-1 block font-mono text-[11px]">{MANUAL_UPDATE_COMMAND}</code>
+                        )}
+                    </Notice>
+                )}
+
+                {/* What pressing the button will do to live work */}
+                {canStart && (
+                    <Notice tone={runningSessionCount > 0 ? 'amber' : 'blue'}>
+                        {runningSessionCount > 0 && (
+                            <p className="font-medium">{t('versionUpdate.runningSessionsWarning', { count: runningSessionCount })}</p>
+                        )}
+                        <p>{t('versionUpdate.restartWarning')}</p>
+                    </Notice>
+                )}
+
+                {startError && <Notice tone="red">{startError}</Notice>}
+
+                {/* Job progress */}
+                {showJob && job && (
+                    <div className="space-y-2">
+                        <h3 className="text-sm font-medium text-gray-900 dark:text-white">
+                            {job.state === 'failed'
+                                ? t('versionUpdate.failedWith', { error: job.error ?? '' })
+                                : job.state === 'succeeded'
+                                    ? t('versionUpdate.updateSucceeded')
+                                    : job.state === 'restarting'
+                                        ? t('versionUpdate.waitingForServer')
+                                        : t(`versionUpdate.steps.${job.step ?? 'queued'}`, { defaultValue: job.step ?? '' })}
+                        </h3>
+                        <div className="max-h-56 overflow-y-auto rounded-lg border border-gray-700 bg-gray-900 p-3 dark:bg-gray-950">
+                            <pre className="whitespace-pre-wrap font-mono text-[11px] text-green-400">{job.logTail.join('\n') || '…'}</pre>
                         </div>
-                        <p className="text-xs text-gray-600 dark:text-gray-400">
-                            {t('versionUpdate.manualUpgradeHint')}
-                        </p>
                     </div>
                 )}
 
@@ -270,61 +240,55 @@ export function VersionUpgradeModal({
                         onClick={onClose}
                         className="flex-1 whitespace-nowrap rounded-md bg-gray-100 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
                     >
-                        {updateOutput || !hasUpdate ? t('versionUpdate.buttons.close') : t('versionUpdate.buttons.later')}
+                        {canStart ? t('versionUpdate.buttons.later') : t('versionUpdate.buttons.close')}
                     </button>
-                    {hasUpdate && !updateOutput && (
-                        <>
-                            <button
-                                onClick={() => copyTextToClipboard(upgradeCommand)}
-                                className="flex-1 whitespace-nowrap rounded-md bg-gray-100 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
-                            >
-                                {t('versionUpdate.buttons.copyCommand')}
-                            </button>
-                            <button
-                                onClick={handleUpdateNow}
-                                disabled={isUpdating}
-                                className="flex flex-1 items-center justify-center gap-2 whitespace-nowrap rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-400"
-                            >
-                                {isUpdating ? (
-                                    <>
-                                        <div className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
-                                        {t('versionUpdate.buttons.updating')}
-                                    </>
-                                ) : (
-                                    t('versionUpdate.buttons.updateNow')
-                                )}
-                            </button>
-                        </>
+                    {!jobActive && (
+                        <button
+                            onClick={() => void checkNow()}
+                            disabled={isChecking}
+                            className="flex-1 whitespace-nowrap rounded-md bg-gray-100 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-200 disabled:opacity-60 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+                        >
+                            {isChecking ? t('versionUpdate.buttons.checking') : t('versionUpdate.buttons.checkNow')}
+                        </button>
+                    )}
+                    {mode && !showJob && (
+                        <button
+                            onClick={() => void handleStart()}
+                            disabled={!canStart}
+                            className="flex flex-1 items-center justify-center gap-2 whitespace-nowrap rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-400"
+                        >
+                            {isStarting && <div className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />}
+                            {mode === 'pull' ? t('versionUpdate.buttons.pullAndRestart') : t('versionUpdate.buttons.rebuildAndRestart')}
+                        </button>
                     )}
                 </div>
             </div>
         </div>
     );
-};
+}
 
-const changelogComponents = {
-    a: ({ href, children }: { href?: string; children?: ReactNode }) => (
-        <a href={href} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline dark:text-blue-400">
-            {children}
-        </a>
-    ),
-};
+function InfoRow({ label, value, highlight = false }: { label: string; value: string; highlight?: boolean }) {
+    return (
+        <div className={highlight
+            ? 'flex items-center justify-between rounded-lg border border-blue-200 bg-blue-50 p-3 dark:border-blue-700 dark:bg-blue-900/20'
+            : 'flex items-center justify-between rounded-lg bg-gray-50 p-3 dark:bg-gray-700/50'}
+        >
+            <span className={highlight ? 'text-sm font-medium text-blue-700 dark:text-blue-300' : 'text-sm font-medium text-gray-700 dark:text-gray-300'}>
+                {label}
+            </span>
+            <span className={highlight ? 'font-mono text-sm text-blue-900 dark:text-blue-100' : 'font-mono text-sm text-gray-900 dark:text-white'}>
+                {value}
+            </span>
+        </div>
+    );
+}
 
-// Clean up changelog by removing GitHub-specific metadata
-const cleanChangelog = (body: string) => {
-    if (!body) return '';
+const NOTICE_TONES = {
+    red: 'border-red-200 bg-red-50 text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-200',
+    amber: 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900/40 dark:bg-amber-900/20 dark:text-amber-200',
+    blue: 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-900/40 dark:bg-blue-900/20 dark:text-blue-200',
+} as const;
 
-    return body
-        // Remove full commit hashes (40 character hex strings)
-        .replace(/\b[0-9a-f]{40}\b/gi, '')
-        // Remove short commit hashes (7-10 character hex strings at start of line or after dash/space)
-        .replace(/(?:^|\s|-)([0-9a-f]{7,10})\b/gi, '')
-        // Remove "Full Changelog" links
-        .replace(/\*\*Full Changelog\*\*:.*$/gim, '')
-        // Remove compare links (e.g., https://github.com/.../compare/v1.0.0...v1.0.1)
-        .replace(/https?:\/\/github\.com\/[^\/]+\/[^\/]+\/compare\/[^\s)]+/gi, '')
-        // Clean up multiple consecutive empty lines
-        .replace(/\n\s*\n\s*\n/g, '\n\n')
-        // Trim whitespace
-        .trim();
-};
+function Notice({ tone, children }: { tone: keyof typeof NOTICE_TONES; children: ReactNode }) {
+    return <div className={`space-y-1 rounded-md border px-3 py-2 text-xs ${NOTICE_TONES[tone]}`}>{children}</div>;
+}

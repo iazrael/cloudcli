@@ -17,11 +17,11 @@ import { AppError } from '@/shared/utils.js';
 export class ClaudeForkProvider implements IProviderFork {
   async forkSession(input: {
     providerSessionId: string;
-    jsonlPath: string;
+    jsonlPath: string | null;
     projectPath: string;
     upToAnchorId?: string;
     title?: string;
-  }): Promise<{ providerSessionId: string; jsonlPath: string }> {
+  }): Promise<{ providerSessionId: string; jsonlPath: string | null }> {
     // `dir` is the session's working directory, which the SDK encodes into the
     // `~/.claude/projects/<encoded>` folder name itself — passing that folder
     // makes it encode an already-encoded path and find nothing.
@@ -42,6 +42,12 @@ export class ClaudeForkProvider implements IProviderFork {
     // row claiming this file exists, and a half-created row would show up in
     // the sidebar as a session that can never be opened.
     // The fork lands beside the transcript it was copied from.
+    if (!input.jsonlPath) {
+      throw new AppError('Claude forking needs the source transcript file.', {
+        code: 'FORK_SOURCE_NOT_READY',
+        statusCode: 409,
+      });
+    }
     const forkedPath = path.join(path.dirname(input.jsonlPath), `${sessionId}.jsonl`);
     try {
       await stat(forkedPath);

@@ -5,24 +5,12 @@ import rehypeKatex from 'rehype-katex';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 
-import type { MarkdownImageContext } from '@/shared/types';
-import { markdownUrlTransform } from '@/shared/utils';
 import MarkdownCodeBlock from '@/modules/code-editor/markdown/MarkdownCodeBlock';
-import MarkdownPreviewImage from '@/modules/code-editor/markdown/MarkdownPreviewImage';
+import { normalizeLatexMathDelimiters } from '@/shared/utils';
 
 type MarkdownPreviewProps = {
   content: string;
-  /**
-   * Where the document's local image references resolve from. Callers with no
-   * workspace document to resolve against omit it; those images then show
-   * their alternative text.
-   */
-  imageContext?: MarkdownImageContext | null;
 };
-
-// Used when a caller renders markdown without a workspace document: web images
-// still load, local paths show their alternative text.
-const NO_IMAGE_CONTEXT: MarkdownImageContext = { isExternal: false };
 
 const markdownPreviewComponents: Components = {
   code: MarkdownCodeBlock,
@@ -54,27 +42,18 @@ const markdownPreviewComponents: Components = {
 };
 
 /** Used by the prd-editor module, and by CodeEditorSurface inside code-editor, to render markdown source as formatted preview output. */
-export default function MarkdownPreview({ content, imageContext = null }: MarkdownPreviewProps) {
+export default function MarkdownPreview({ content }: MarkdownPreviewProps) {
+  const markdown = useMemo(() => normalizeLatexMathDelimiters(content), [content]);
   const remarkPlugins = useMemo(() => [remarkGfm, [remarkMath, { singleDollarTextMath: false }]] as any, []);
   const rehypePlugins = useMemo(() => [rehypeKatex], []);
-  const components = useMemo<Components>(
-    () => ({
-      ...markdownPreviewComponents,
-      img: ({ node: _node, ...props }) => (
-        <MarkdownPreviewImage {...props} context={imageContext ?? NO_IMAGE_CONTEXT} />
-      ),
-    }),
-    [imageContext],
-  );
 
   return (
     <ReactMarkdown
       remarkPlugins={remarkPlugins}
       rehypePlugins={rehypePlugins}
-      components={components}
-      urlTransform={markdownUrlTransform}
+      components={markdownPreviewComponents}
     >
-      {content}
+      {markdown}
     </ReactMarkdown>
   );
 }

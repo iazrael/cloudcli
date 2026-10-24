@@ -161,7 +161,11 @@ function replayOneTurn(server: FakeServer): void {
   notify('thread/tokenUsage/updated', {
     threadId: THREAD_ID,
     turnId: TURN_ID,
-    tokenUsage: { total: { totalTokens: 15620, inputTokens: 15614, outputTokens: 6 }, modelContextWindow: 258400 },
+    tokenUsage: {
+      total: { totalTokens: 182000, inputTokens: 181000, outputTokens: 1000 },
+      last: { totalTokens: 15620, inputTokens: 15614, outputTokens: 6 },
+      modelContextWindow: 258400,
+    },
   });
   notify('turn/completed', { threadId: THREAD_ID, turn: { id: TURN_ID, status: 'completed', error: null } });
 }
@@ -486,6 +490,22 @@ test('the live reply carries the item id the rollout will record', async (t) => 
   const reply = messages.find((message) => message.type === 'assistant');
   assert.ok(reply, 'the turn must produce an assistant row');
   assert.equal(reply.uuid, 'msg_02c8dbf5b38a0554016ab15ce008f487d08eeca161bae5821c');
+});
+
+test('the live context budget is the last turn, not the cumulative spend', async (t) => {
+  installFakeAppServer(t);
+  const messages: any[] = [];
+
+  await codexRuntime.run('hey there', {
+    sessionId: 'app-session',
+    cwd: process.cwd(),
+  }, { isWebSocketWriter: true, send: (message) => messages.push(message) }, runtimeContext(true));
+
+  const budget = messages.find((message) => message.kind === 'status' && message.tokenBudget)?.tokenBudget;
+  assert.ok(budget, 'the turn must report a token budget');
+  assert.equal(budget.used, 15620);
+  assert.equal(budget.total, 258400);
+  assert.equal(budget.cumulative.used, 182000);
 });
 
 test('streamed prose rides stream_delta and lands as exactly one row', async (t) => {

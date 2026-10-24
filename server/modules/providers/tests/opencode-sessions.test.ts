@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync } from 'node:fs';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -8,8 +7,10 @@ import test from 'node:test';
 import Database from 'better-sqlite3';
 
 import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
-import { opencodeBackgroundWork } from '@/modules/providers/list/opencode/opencode-background-work.js';
-import { OpenCodeSessionEventTranslator } from '@/modules/providers/list/opencode/opencode-event-translator.js';
+import {
+  OpenCodeSessionEventTranslator,
+  buildOpenCodeTextRowKey,
+} from '@/modules/providers/list/opencode/opencode-event-translator.js';
 import { OpenCodeSessionSynchronizer } from '@/modules/providers/list/opencode/opencode-session-synchronizer.provider.js';
 import { OpenCodeSessionsProvider } from '@/modules/providers/list/opencode/opencode-sessions.provider.js';
 import { appendImagesInputTag } from '@/shared/image-attachments.js';
@@ -491,13 +492,20 @@ test('OpenCode sessions provider reads sqlite history and token usage', { concur
     assert.equal(history.messages[2]?.content, 'The provider is wired.');
     assert.equal(history.messages[3]?.kind, 'tool_use');
     assert.deepEqual(history.messages[3]?.toolResult, { content: 'ok', isError: false });
+    // Occupancy from message-assistant (input 10 + cache 3+2, output 20);
+    // the session row's lifetime columns surface only as `cumulative`.
     assert.deepEqual(history.tokenUsage, {
-      used: 42,
-      inputTokens: 13,
+      used: 35,
+      inputTokens: 15,
       outputTokens: 20,
       breakdown: {
-        input: 13,
+        input: 15,
         output: 20,
+      },
+      cumulative: {
+        used: 42,
+        inputTokens: 13,
+        outputTokens: 20,
       },
     });
 
@@ -527,8 +535,8 @@ const seedOpenCodeSession = async (
   const db = new Database(path.join(dataDir, 'opencode.db'));
   try {
     db.exec(`
-      CREATE TABLE IF NOT EXISTS project (id TEXT PRIMARY KEY, worktree TEXT);
-      CREATE TABLE IF NOT EXISTS session (
+      CREATE TABLE project (id TEXT PRIMARY KEY, worktree TEXT);
+      CREATE TABLE session (
         id TEXT PRIMARY KEY,
         project_id TEXT,
         parent_id TEXT,
@@ -538,21 +546,21 @@ const seedOpenCodeSession = async (
         time_updated INTEGER,
         time_archived INTEGER
       );
-      CREATE TABLE IF NOT EXISTS message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT);
-      CREATE TABLE IF NOT EXISTS part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, data TEXT);
+      CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT);
+      CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, data TEXT);
     `);
 
-    db.prepare('INSERT OR IGNORE INTO project (id, worktree) VALUES (?, ?)').run('project-1', workspacePath);
+    db.prepare('INSERT INTO project (id, worktree) VALUES (?, ?)').run('project-1', workspacePath);
     db.prepare(`
       INSERT INTO session (id, project_id, directory, title, time_created, time_updated, time_archived)
       VALUES (?, ?, ?, ?, ?, ?, NULL)
     `).run(options.sessionId, 'project-1', workspacePath, options.title, 1_700_000_000_000, 1_700_000_001_000);
     db.prepare('INSERT INTO message (id, session_id, time_created, data) VALUES (?, ?, ?, ?)')
-      .run(`message-user-${options.sessionId}`, options.sessionId, 1_700_000_001_000, JSON.stringify({ role: 'user' }));
+      .run('message-user', options.sessionId, 1_700_000_001_000, JSON.stringify({ role: 'user' }));
     db.prepare('INSERT INTO part (id, message_id, session_id, time_created, data) VALUES (?, ?, ?, ?, ?)')
       .run(
-        `part-user-${options.sessionId}`,
-        `message-user-${options.sessionId}`,
+        'part-user',
+        'message-user',
         options.sessionId,
         1_700_000_001_000,
         // OpenCode persists the prompt as a JSON string literal inside the text
@@ -564,7 +572,7 @@ const seedOpenCodeSession = async (
   }
 };
 
-test('OpenCode synchronizer follows the stored title unless the app session is user-locked', { concurrency: false }, async () => {
+test('the engine title outranks a first-sentence name, and a user rename outranks both', { concurrency: false }, async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-session-sync-app-'));
   const workspacePath = await createWorkspaceFixture();
   const restoreHomeDir = patchHomeDir(tempRoot);
@@ -577,24 +585,16 @@ test('OpenCode synchronizer follows the stored title unless the app session is u
       title: 'OpenCode generated title',
       firstUserText: 'OpenCode first user prompt',
     });
-    await seedOpenCodeSession(tempRoot, workspacePath, {
-      sessionId: 'oc-app-2',
-      title: 'OpenCode generated title',
-      firstUserText: 'OpenCode first user prompt',
-    });
     await withIsolatedDatabase(async () => {
       sessionsDb.createAppSession('app-1', 'opencode', workspacePath, 'Fix the checkout crash');
       sessionsDb.assignProviderSessionId('app-1', 'oc-app-1');
-      sessionsDb.createAppSession('app-2', 'opencode', workspacePath, 'Fix the checkout crash');
-      sessionsDb.assignProviderSessionId('app-2', 'oc-app-2');
-      sessionsDb.updateSessionCustomName('app-2', 'My rename', { lockName: true });
 
       await new OpenCodeSessionSynchronizer().synchronize();
 
-      // The engine's own title replaces the unlocked initial app name…
+      // The engine names its own sessions now; a name CloudCLI derived from
+      // the first sentence grows into the engine title, while a user rename
+      // (`name_locked`) is what no sync may overwrite.
       assert.equal(sessionsDb.getSessionById('app-1')?.custom_name, 'OpenCode generated title');
-      // …but never a user rename.
-      assert.equal(sessionsDb.getSessionById('app-2')?.custom_name, 'My rename');
     });
   } finally {
     restoreHomeDir();
@@ -624,7 +624,7 @@ test('OpenCode synchronizer keeps the stored title for indexed sessions', { conc
   }
 });
 
-test('getTokenUsage reads the token columns for the provider-native session', async () => {
+test('getTokenUsage reports the newest message occupancy, not the session lifetime totals', async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-token-usage-'));
   const workspacePath = await createWorkspaceFixture();
   const restoreHomeDir = patchHomeDir(tempRoot);
@@ -633,7 +633,9 @@ test('getTokenUsage reads the token columns for the provider-native session', as
     await createOpenCodeDatabase(tempRoot, workspacePath);
 
     const provider = new OpenCodeSessionsProvider();
-    // Seeded session row: tokens 10/20/7/3/2 → used 42, input incl. cache reads 13.
+    // Seeded message-assistant tokens: input 10 + cache read 3 + write 2 →
+    // prompt 15, output 20; the session row's lifetime columns (42 total leak
+    // into it) must only surface as `cumulative`, never as `used`.
     assert.deepEqual(
       await provider.getTokenUsage({
         appSessionId: 'app-1',
@@ -641,7 +643,37 @@ test('getTokenUsage reads the token columns for the provider-native session', as
         jsonlPath: null,
         projectPath: null,
       }),
-      { used: 42, inputTokens: 13, outputTokens: 20, breakdown: { input: 13, output: 20 } },
+      {
+        used: 35,
+        inputTokens: 15,
+        outputTokens: 20,
+        breakdown: { input: 15, output: 20 },
+        cumulative: { used: 42, inputTokens: 13, outputTokens: 20 },
+      },
+    );
+  } finally {
+    restoreHomeDir();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('getTokenUsage 404s an unknown session and reports unsupported for old schemas', async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-token-usage-'));
+  const workspacePath = await createWorkspaceFixture();
+  const restoreHomeDir = patchHomeDir(tempRoot);
+
+  try {
+    await createOpenCodeDatabase(tempRoot, workspacePath);
+    const provider = new OpenCodeSessionsProvider();
+
+    await assert.rejects(
+      () => provider.getTokenUsage({
+        appSessionId: 'app-1',
+        nativeSessionId: 'missing-session',
+        jsonlPath: null,
+        projectPath: null,
+      }),
+      /OpenCode session was not found/,
     );
   } finally {
     restoreHomeDir();
@@ -659,6 +691,17 @@ test('OpenCode sessions provider reads v2 session_message history and token colu
   try {
     const dataDir = path.join(tempRoot, '.local', 'share', 'opencode');
     await mkdir(dataDir, { recursive: true });
+    // The model cache is the only source of a model's context window; seed it
+    // so the reading carries the window (and with it, a percentage) the way a
+    // real install would.
+    const cacheDir = path.join(tempRoot, '.cache', 'opencode');
+    await mkdir(cacheDir, { recursive: true });
+    await writeFile(
+      path.join(cacheDir, 'models.json'),
+      JSON.stringify({
+        opencode: { models: { 'beam-free': { limit: { context: 200_000 } } } },
+      }),
+    );
     const db = new Database(path.join(dataDir, 'opencode.db'));
     try {
       db.exec(`
@@ -696,7 +739,7 @@ test('OpenCode sessions provider reads v2 session_message history and token colu
         );
         INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data) VALUES
           ('msg_u', 'ses_v2_hist', 'user', 1, 1000, 1000, '{"time":{"created":1000},"text":"Build it","files":[],"agents":[]}'),
-          ('msg_a', 'ses_v2_hist', 'assistant', 2, 1100, 1200, '{"time":{"created":1100},"model":{"id":"beam-free","providerID":"opencode","variant":"high"},"content":[{"type":"reasoning","text":"thinking"},{"type":"tool","id":"call_1","name":"write","state":{"status":"completed","input":{"path":"/tmp/x"},"output":"ok"}},{"type":"text","text":"done"}]}');
+          ('msg_a', 'ses_v2_hist', 'assistant', 2, 1100, 1200, '{"time":{"created":1100},"model":{"id":"beam-free","providerID":"opencode","variant":"high"},"tokens":{"input":30,"output":10,"reasoning":5,"cache":{"read":2000,"write":100}},"content":[{"type":"reasoning","text":"thinking"},{"type":"tool","id":"call_1","name":"write","state":{"status":"completed","input":{"path":"/tmp/x"},"output":"ok"}},{"type":"text","text":"done"}]}');
       `);
     } finally {
       db.close();
@@ -710,19 +753,20 @@ test('OpenCode sessions provider reads v2 session_message history and token colu
     assert.equal(history.messages[0]?.content, 'Build it');
     assert.equal(history.messages[1]?.kind, 'thinking');
     assert.equal(history.messages[1]?.content, 'thinking');
-    assert.equal(history.messages[1]?.id, 'msg_a_reasoning_0');
     assert.equal(history.messages[2]?.kind, 'tool_use');
     assert.equal(history.messages[2]?.toolName, 'write');
     assert.deepEqual(history.messages[2]?.toolInput, { path: '/tmp/x' });
     assert.deepEqual(history.messages[2]?.toolResult, { content: 'ok', isError: false });
     assert.equal(history.messages[3]?.content, 'done');
-    assert.equal(history.messages[3]?.id, 'msg_a_text_0');
-    // Totals come from the session_v2 token columns: 100+20+5+8+2.
+    // Occupancy comes from the newest message: prompt 30 + 2000 + 100, output
+    // 10 + 5 reasoning. The session_v2 columns (135 lifetime) are `cumulative`.
     assert.deepEqual(history.tokenUsage, {
-      used: 135,
-      inputTokens: 108,
-      outputTokens: 20,
-      breakdown: { input: 108, output: 20 },
+      used: 2145,
+      total: 200_000,
+      inputTokens: 2130,
+      outputTokens: 15,
+      breakdown: { input: 2130, output: 15 },
+      cumulative: { used: 135, inputTokens: 108, outputTokens: 20 },
     });
   } finally {
     restoreHomeDir();
@@ -730,11 +774,14 @@ test('OpenCode sessions provider reads v2 session_message history and token colu
   }
 });
 
-test('zero-width-space text and reasoning parts are skipped on history and live reads', { concurrency: false }, async () => {
-  // ses_eb34f87e3ffe (2026-10-18): DeepSeek ended every later segment with a
-  // single U+200B. `.trim()` passes it, so each persisted part surfaced as a
-  // transcript row whose only visible content was its copy control.
-  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-v2-zwsp-'));
+test('persisted OpenCode text parts carry the row key the live stream publishes', { concurrency: false }, async () => {
+  // A streamed bubble and its persisted row share no row id (the service
+  // streams fragments of a row it never announces), so the client retires the
+  // streamed copy through `providerRowKey`. Both paths must derive it from the
+  // same native coordinates — the message id plus the part's ordinal among
+  // that message's text parts — or every reply renders twice until the
+  // session is reloaded (the duplicate reported from a live session).
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-v2-text-keys-'));
   const restoreHomeDir = patchHomeDir(tempRoot);
 
   try {
@@ -772,426 +819,584 @@ test('zero-width-space text and reasoning parts are skipped on history and live 
           tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write,
           time_created, time_updated
         ) VALUES (
-          'ses_v2_zwsp', 'proj_1', 'v2-zwsp', '/tmp/proj', 'V2 zwsp', '2.0.31',
-          0, 0, 0, 0, 0, 1000, 2000
+          'ses_v2_text', 'proj_1', 'v2-text', '/tmp/proj', 'Text keys', '2.0.32',
+          0, 0, 0, 0, 0, 1000, 3000
         );
-      `);
-      const assistantData = JSON.stringify({
-        time: { created: 1100 },
-        model: { id: 'beam-free', providerID: 'opencode', variant: 'high' },
-        content: [
-          { type: 'text', text: '​' },
-          { type: 'reasoning', text: 'thinking' },
-          { type: 'tool', id: 'call_1', name: 'write', state: { status: 'completed', input: { path: '/tmp/x' }, output: 'ok' } },
-          { type: 'text', text: '​' },
-          { type: 'reasoning', text: '​' },
-        ],
-      });
-      db.prepare(`INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data)
-        VALUES ('msg_u', 'ses_v2_zwsp', 'user', 1, 1000, 1000, ?),
-               ('msg_a', 'ses_v2_zwsp', 'assistant', 2, 1100, 1200, ?)`)
-        .run(JSON.stringify({ time: { created: 1000 }, text: 'Build it' }), assistantData);    } finally {
-      db.close();
-    }
-
-    const provider = new OpenCodeSessionsProvider();
-    const history = await provider.fetchHistory('ses_v2_zwsp');
-
-    // Only the user prompt, the real reasoning block, and the tool call are
-    // user-visible; the three zero-width-space parts drop out entirely.
-    assert.equal(history.messages[0]?.role, 'user');
-    assert.equal(history.messages[0]?.content, 'Build it');
-    assert.deepEqual(history.messages.slice(1).map((message) => message.kind), ['thinking', 'tool_use']);
-
-    // The live `opencode run` normalizer shares the blank-text contract.
-    assert.deepEqual(provider.normalizeMessage({ type: 'text', text: '​' }, 'ses_v2_zwsp'), []);
-    assert.deepEqual(provider.normalizeMessage({ type: 'reasoning', text: '​' }, 'ses_v2_zwsp'), []);
-    const padded = provider.normalizeMessage({ type: 'text', text: '​ok' }, 'ses_v2_zwsp');
-    assert.equal(padded.length, 1);
-    assert.equal(padded[0]?.content, '​ok');
-  } finally {
-    restoreHomeDir();
-    await rm(tempRoot, { recursive: true, force: true });
-  }
-});
-
-test('v2 history rows carry the same ids the live translator produces for the same message', { concurrency: false }, async () => {
-  // The cross-transport identity contract: the SSE stream names a part
-  // `${assistantMessageID}_text_${ordinal}` / `${assistantMessageID}_reasoning_${ordinal}`,
-  // where ordinal counts that type's parts within the message (v2.0.31
-  // initializes the counter per message). The history reader flattens the
-  // same message's content blocks, so it must renumber by type the same way
-  // — otherwise the timeline renders the live copy beside its persisted copy.
-  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-v2-ids-'));
-  const restoreHomeDir = patchHomeDir(tempRoot);
-
-  try {
-    const dataDir = path.join(tempRoot, '.local', 'share', 'opencode');
-    await mkdir(dataDir, { recursive: true });
-    const db = new Database(path.join(dataDir, 'opencode.db'));
-    try {
-      db.exec(`
-        CREATE TABLE session_v2 (
-          id text PRIMARY KEY, project_id text NOT NULL, slug text NOT NULL,
-          directory text NOT NULL, title text, version text NOT NULL,
-          tokens_input integer DEFAULT 0 NOT NULL, tokens_output integer DEFAULT 0 NOT NULL,
-          tokens_reasoning integer DEFAULT 0 NOT NULL, tokens_cache_read integer DEFAULT 0 NOT NULL,
-          tokens_cache_write integer DEFAULT 0 NOT NULL, time_created integer NOT NULL,
-          time_updated integer NOT NULL
-        );
-        CREATE TABLE session_message (
-          id text PRIMARY KEY, session_id text NOT NULL, type text NOT NULL,
-          seq integer NOT NULL, time_created integer NOT NULL, time_updated integer NOT NULL,
-          data text NOT NULL
-        );
-        INSERT INTO session_v2 (id, project_id, slug, directory, title, version, time_created, time_updated)
-          VALUES ('ses_ids', 'proj_1', 's', '/tmp/proj', 'S', '2.0.31', 1000, 2000);
         INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data) VALUES
-          ('msg_a', 'ses_ids', 'assistant', 1, 1100, 1200,
-            '{"time":{"created":1100},"content":[{"type":"reasoning","text":"why"},{"type":"text","text":"first prose"},{"type":"tool","id":"call_9","name":"write","state":{"status":"completed","input":{},"output":"ok"}},{"type":"reasoning","text":"more why"},{"type":"text","text":"second prose"}]}');
+          ('msg_u', 'ses_v2_text', 'user', 1, 1000, 1000, '{"time":{"created":1000},"text":"Write it"}'),
+          ('msg_a', 'ses_v2_text', 'assistant', 2, 1100, 1200, '{"time":{"created":1100},"content":[{"type":"reasoning","text":"thinking"},{"type":"text","text":"first answer"}]}'),
+          ('msg_b', 'ses_v2_text', 'assistant', 3, 1300, 1400, '{"time":{"created":1300},"content":[{"type":"text","text":"before the tool"},{"type":"tool","id":"call_1","name":"write","state":{"status":"completed","input":{"path":"/tmp/x"},"output":"ok"}},{"type":"text","text":"after the tool"}]}');
       `);
     } finally {
       db.close();
     }
 
-    const provider = new OpenCodeSessionsProvider();
-    const history = await provider.fetchHistory('ses_ids');
-    const historyId = (kind: string, content: string) =>
-      history.messages.find((row) => row.kind === kind && row.content === content)?.id;
+    const history = await new OpenCodeSessionsProvider().fetchHistory('ses_v2_text');
 
-    // The live events the same message produces, normalized by the translator.
-    const translator = new OpenCodeSessionEventTranslator('app-session');
-    const liveId = (type: string, data: Record<string, unknown>) =>
-      translator.translate({
-        id: `evt_${type}`, created: 1792203579833, type,
-        location: { directory: '/tmp/proj' },
-        data: { sessionID: 'ses_ids', assistantMessageID: 'msg_a', ...data },
-      }).frames[0]?.id;
-
-    assert.equal(
-      historyId('thinking', 'why'),
-      liveId('session.reasoning.delta', { ordinal: 0, delta: 'why' }),
-      'first reasoning part must carry the same id on both transports',
-    );
-    assert.equal(
-      historyId('text', 'first prose'),
-      liveId('session.text.delta', { ordinal: 0, delta: 'first prose' }),
-      'first text part must carry the same id on both transports',
-    );
-    assert.equal(
-      historyId('thinking', 'more why'),
-      liveId('session.reasoning.delta', { ordinal: 1, delta: 'more why' }),
-      'the second reasoning part counts its own type, not the block index',
-    );
-    assert.equal(
-      historyId('text', 'second prose'),
-      liveId('session.text.delta', { ordinal: 1, delta: 'second prose' }),
-      'the second text part counts its own type, not the block index',
-    );
-
-    // Tool rows already reconcile through the native call id (toolId), which
-    // the history rows keep publishing.
-    const toolRow = history.messages.find((row) => row.kind === 'tool_use');
-    assert.equal(toolRow?.toolId, 'call_9');
-  } finally {
-    restoreHomeDir();
-    await rm(tempRoot, { recursive: true, force: true });
-  }
-});
-
-test('v2 compactions stay in history as the same rows the live stream showed', { concurrency: false }, async () => {
-  // A compaction persists as a `compaction` session_message whose id is the
-  // `inputID` its live events carry. The history reader must draw the same
-  // notice under the same id, or the row the user saw vanishes on reload.
-  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-v2-compaction-'));
-  const restoreHomeDir = patchHomeDir(tempRoot);
-
-  try {
-    const dataDir = path.join(tempRoot, '.local', 'share', 'opencode');
-    await mkdir(dataDir, { recursive: true });
-    const db = new Database(path.join(dataDir, 'opencode.db'));
-    try {
-      db.exec(`
-        CREATE TABLE session_v2 (
-          id text PRIMARY KEY, project_id text NOT NULL, slug text NOT NULL,
-          directory text NOT NULL, title text, version text NOT NULL,
-          tokens_input integer DEFAULT 0 NOT NULL, tokens_output integer DEFAULT 0 NOT NULL,
-          tokens_reasoning integer DEFAULT 0 NOT NULL, tokens_cache_read integer DEFAULT 0 NOT NULL,
-          tokens_cache_write integer DEFAULT 0 NOT NULL, time_created integer NOT NULL,
-          time_updated integer NOT NULL
-        );
-        CREATE TABLE session_message (
-          id text PRIMARY KEY, session_id text NOT NULL, type text NOT NULL,
-          seq integer NOT NULL, time_created integer NOT NULL, time_updated integer NOT NULL,
-          data text NOT NULL
-        );
-        INSERT INTO session_v2 (id, project_id, slug, directory, title, version, time_created, time_updated)
-          VALUES ('ses_cmp', 'proj_1', 's', '/tmp/proj', 'S', '2.0.31', 1000, 2000);
-        INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data) VALUES
-          ('msg_u', 'ses_cmp', 'user', 1, 1100, 1100, '{"text":"remember banana"}'),
-          ('msg_ok', 'ses_cmp', 'compaction', 2, 1200, 1300,
-            '{"time":{"created":1200},"status":"completed","reason":"manual","summary":"## Objective\\n- remember banana"}'),
-          ('msg_bad', 'ses_cmp', 'compaction', 3, 1400, 1400,
-            '{"time":{"created":1400},"status":"failed","reason":"manual","error":{"type":"provider.quota","message":"Free usage limit reached."}}'),
-          ('msg_run', 'ses_cmp', 'compaction', 4, 1500, 1500, '{"time":{"created":1500},"reason":"auto"}'),
-          ('msg_a', 'ses_cmp', 'assistant', 5, 1600, 1700, '{"time":{"created":1600},"content":[{"type":"text","text":"ok"}]}');
-      `);
-    } finally {
-      db.close();
-    }
-
-    const provider = new OpenCodeSessionsProvider();
-    const history = await provider.fetchHistory('ses_cmp');
     assert.deepEqual(
-      history.messages.map((row) => [row.kind, row.content, row.compact?.phase ?? null, row.isCompactSummary ?? false]),
+      history.messages
+        .filter((message) => message.kind === 'text' && message.role === 'assistant')
+        .map((row) => [row.content, row.providerRowKey]),
       [
-        ['text', 'remember banana', null, false],
-        ['text', 'Compacted · manual', 'done', false],
-        ['text', '## Objective\n- remember banana', null, true],
-        ['text', 'Compaction failed: Free usage limit reached.', 'failed', false],
-        ['text', 'ok', null, false],
+        ['first answer', buildOpenCodeTextRowKey('msg_a', 0)],
+        ['before the tool', buildOpenCodeTextRowKey('msg_b', 0)],
+        ['after the tool', buildOpenCodeTextRowKey('msg_b', 1)],
       ],
+      'the ordinal counts text parts within the message, never content blocks',
+    );
+    assert.equal(
+      history.messages.find((message) => message.role === 'user')?.providerRowKey,
+      undefined,
+      'a prompt is not a streamed part; the client pairs it through its own anchor',
     );
 
-    const translator = new OpenCodeSessionEventTranslator('app-session');
-    const live = (type: string, data: Record<string, unknown>) => translator.translate({
-      id: `evt_${type}`, created: 1792203579833, type,
-      location: { directory: '/tmp/proj' },
-      data: { sessionID: 'ses_cmp', reason: 'manual', ...data },
-    }).frames[0];
-    const ended = live('session.compaction.ended', { inputID: 'msg_ok' });
-    const failed = live('session.compaction.failed', { inputID: 'msg_bad', error: { type: 'provider.quota', message: 'Free usage limit reached.' } });
-    const historyDone = history.messages.find((row) => row.compact?.phase === 'done');
-    const historyFailed = history.messages.find((row) => row.compact?.phase === 'failed');
-    assert.equal(historyDone?.id, ended?.id);
-    assert.equal(historyDone?.content, ended?.content);
-    assert.equal(historyFailed?.id, failed?.id);
-    assert.equal(historyFailed?.content, failed?.content);
+    // The cross-path proof: the live frames for the same coordinates publish
+    // exactly the keys those persisted rows carry.
+    const translator = new OpenCodeSessionEventTranslator('app-session-1');
+    for (const [messageId, ordinal] of [['msg_a', 0], ['msg_b', 0], ['msg_b', 1]] as const) {
+      const frame = translator.translate({
+        type: 'session.text.delta',
+        data: { sessionID: 'ses_v2_text', assistantMessageID: messageId, ordinal, delta: 'x' },
+      }).frames[0];
+      assert.equal(
+        frame?.providerRowKey,
+        buildOpenCodeTextRowKey(messageId, ordinal),
+        `${messageId}/${ordinal}: the two transports disagree about the row key`,
+      );
+    }
   } finally {
     restoreHomeDir();
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
 
-// ---------------------------------------------------------------------------
-// Subagent cards: OpenCode's `subagent` tool is the client's `Agent` card.
-// ---------------------------------------------------------------------------
-
-type SeededSubagent = {
-  status: 'completed' | 'error' | 'running' | 'pending';
-  /** Whether the parent session still has a run in flight (`time_idle` unset). */
-  busy: boolean;
-  withChild?: boolean;
-  /** Launched with `background: true`: the call returned at once and the agent ran on. */
-  background?: boolean;
-  /** The `state` of the notice the engine persisted when the background agent ended; none when absent. */
-  notice?: 'completed' | 'cancelled' | 'error';
-  /** When that notice was written; after the call by default. */
-  noticeAt?: number;
-  /** When a second background call resumed the same agent; none by default. */
-  resumedAt?: number;
-};
-
-/** Seeds a v2 database whose parent session called the `subagent` tool once. */
-const seedSubagentSession = (homeDir: string, options: SeededSubagent): void => {
-  const dataDir = path.join(homeDir, '.local', 'share', 'opencode');
-  mkdirSync(dataDir, { recursive: true });
-  const db = new Database(path.join(dataDir, 'opencode.db'));
-  try {
-    db.exec(`
-      CREATE TABLE session_v2 (
-        id text PRIMARY KEY, project_id text NOT NULL, parent_id text, slug text NOT NULL,
-        directory text NOT NULL, title text, version text NOT NULL,
-        time_created integer NOT NULL, time_updated integer NOT NULL, time_idle integer
-      );
-      CREATE TABLE session_message (
-        id text PRIMARY KEY, session_id text NOT NULL, type text NOT NULL, seq integer NOT NULL,
-        time_created integer NOT NULL, time_updated integer NOT NULL, data text NOT NULL
-      );
-    `);
-    db.prepare(`INSERT INTO session_v2 (id, project_id, parent_id, slug, directory, title, version, time_created, time_updated, time_idle)
-      VALUES ('ses_parent', 'proj', NULL, 'p', '/tmp/proj', 'Parent', '2.0.31', 1000, 2000, ?)`)
-      .run(options.busy ? null : 5000);
-    db.prepare(`INSERT INTO session_v2 (id, project_id, parent_id, slug, directory, title, version, time_created, time_updated, time_idle)
-      VALUES ('ses_child', 'proj', 'ses_parent', 'c', '/tmp/proj', 'Child', '2.0.31', 1100, 1900, 1900)`).run();
-
-    const state: Record<string, unknown> = {
-      status: options.status,
-      input: { agent: 'general', description: 'Review the diff', prompt: 'Read the diff and report.' },
-    };
-    if (options.background) {
-      state.input = { ...(state.input as Record<string, unknown>), background: true };
-      state.content = [{ type: 'text', text: 'The subagent is working in the background (sessionID: ses_child).' }];
-      state.metadata = { sessionID: 'ses_child', status: 'running', truncated: false };
-    } else if (options.status === 'completed') {
-      state.content = [{ type: 'text', text: '<subagent sessionID="ses_child" state="completed">Found two problems.</subagent>' }];
-      state.metadata = { sessionID: 'ses_child', status: 'completed', truncated: false };
-    } else if (options.status === 'error') {
-      state.error = 'child crashed';
-    } else if (options.withChild) {
-      state.metadata = { sessionID: 'ses_child' };
-    }
-    const parentContent = [{ type: 'tool', id: 'call_sub', name: 'subagent', state }];
-    db.prepare("INSERT INTO session_message VALUES ('msg_p', 'ses_parent', 'assistant', 1, 1500, 1600, ?)")
-      .run(JSON.stringify({ content: parentContent }));
-    if (options.resumedAt !== undefined) {
-      const again = [{ type: 'tool', id: 'call_sub_again', name: 'subagent', state: { ...state, input: { ...(state.input as Record<string, unknown>), sessionID: 'ses_child' } } }];
-      db.prepare("INSERT INTO session_message VALUES ('msg_p2', 'ses_parent', 'assistant', 3, ?, ?, ?)")
-        .run(options.resumedAt, options.resumedAt, JSON.stringify({ content: again }));
-    }
-    if (options.notice) {
-      db.prepare("INSERT INTO session_message VALUES ('msg_notice', 'ses_parent', 'synthetic', 4, ?, ?, ?)")
-        .run(options.noticeAt ?? 3000, options.noticeAt ?? 3000, JSON.stringify({
-          metadata: { source: 'subagent', childID: 'ses_child', agent: 'General', state: options.notice },
-          text: `<subagent sessionID="ses_child" state="${options.notice}">Found two problems.</subagent>`,
-        }));
-    }
-
-    const childContent = [
-      { type: 'text', text: 'Reading the diff.' },
-      { type: 'tool', id: 'call_read', name: 'read', state: { status: 'completed', input: { path: '/tmp/a.ts' }, content: [{ type: 'text', text: 'file body' }] } },
-    ];
-    db.prepare("INSERT INTO session_message VALUES ('msg_c', 'ses_child', 'assistant', 1, 1200, 1800, ?)")
-      .run(JSON.stringify({ content: childContent }));
-  } finally {
-    db.close();
-  }
-};
-
-const readSubagentRow = async (homeDir: string, options: SeededSubagent) => {
-  seedSubagentSession(homeDir, options);
-  const history = await new OpenCodeSessionsProvider().fetchHistory('ses_parent');
-  return history.messages.find((message) => message.kind === 'tool_use' && message.toolId === 'call_sub');
-};
-
-const withSubagentHome = async (run: (homeDir: string) => Promise<void>): Promise<void> => {
-  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-subagent-'));
+test('a v2 compaction summary resets the reading to compacted with its byte size', { concurrency: false }, async () => {
+  // The summary's own tokens describe the summarization request (the whole
+  // pre-compaction conversation), so it must never be reported as occupancy;
+  // only the summary's text size is honest until the next turn runs.
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-v2-compacted-'));
   const restoreHomeDir = patchHomeDir(tempRoot);
+
   try {
-    await run(tempRoot);
-  } finally {
-    restoreHomeDir();
-    await rm(tempRoot, { recursive: true, force: true });
-  }
-};
-
-test('a finished subagent call is an Agent card carrying its result and its child session timeline', { concurrency: false }, async () => {
-  await withSubagentHome(async (homeDir) => {
-    const row = await readSubagentRow(homeDir, { status: 'completed', busy: false });
-
-    assert.ok(row, 'the subagent call must be in the history');
-    assert.equal(row.toolName, 'Agent');
-    assert.deepEqual(row.toolInput, {
-      subagent_type: 'general',
-      description: 'Review the diff',
-      prompt: 'Read the diff and report.',
-    });
-    assert.equal(row.toolResult?.content, '<subagent sessionID="ses_child" state="completed">Found two problems.</subagent>');
-    assert.deepEqual(row.subagent, {
-      id: 'ses_child', name: 'general', type: 'general', description: 'Review the diff', status: 'completed', activityCount: 2,
-    });
-    assert.equal(row.subagentTools?.length, 2);
-    assert.equal(row.subagentTools?.[0].kind, 'text');
-    assert.equal(row.subagentTools?.[1].toolName, 'read');
-    assert.equal(row.subagentTools?.[1].toolResult?.content, 'file body');
-  });
-});
-
-test('a subagent call that errored is a failed Agent card', { concurrency: false }, async () => {
-  await withSubagentHome(async (homeDir) => {
-    const row = await readSubagentRow(homeDir, { status: 'error', busy: false });
-    assert.equal(row?.toolName, 'Agent');
-    assert.equal(row?.subagent?.status, 'failed');
-    assert.equal(row?.toolResult?.isError, true);
-  });
-});
-
-test('a subagent call left running reads as running only while its session still has a run in flight', { concurrency: false }, async () => {
-  await withSubagentHome(async (homeDir) => {
-    const live = await readSubagentRow(homeDir, { status: 'running', busy: true, withChild: true });
-    assert.equal(live?.subagent?.status, 'running');
-  });
-  await withSubagentHome(async (homeDir) => {
-    const orphan = await readSubagentRow(homeDir, { status: 'running', busy: false, withChild: true });
-    assert.equal(orphan?.subagent?.status, 'stopped', 'the run that owned the call is gone, so it can never finish');
-  });
-  await withSubagentHome(async (homeDir) => {
-    const pending = await readSubagentRow(homeDir, { status: 'pending', busy: false });
-    assert.equal(pending?.subagent?.status, 'stopped');
-  });
-});
-
-test('a background agent reads from the notice the engine persisted when it ended', { concurrency: false }, async () => {
-  await withSubagentHome(async (homeDir) => {
-    const done = await readSubagentRow(homeDir, { status: 'completed', busy: false, background: true, notice: 'completed' });
-    assert.equal(done?.subagent?.status, 'completed');
-  });
-  await withSubagentHome(async (homeDir) => {
-    const cancelled = await readSubagentRow(homeDir, { status: 'completed', busy: false, background: true, notice: 'cancelled' });
-    assert.equal(cancelled?.subagent?.status, 'stopped');
-  });
-  await withSubagentHome(async (homeDir) => {
-    const failed = await readSubagentRow(homeDir, { status: 'completed', busy: false, background: true, notice: 'error' });
-    assert.equal(failed?.subagent?.status, 'failed');
-  });
-});
-
-test('a resumed background agent is not ended by the notice of its earlier run', { concurrency: false }, async () => {
-  await withSubagentHome(async (homeDir) => {
-    // The notice is stamped before the call (1500): it belongs to an earlier run of the same child.
-    seedSubagentSession(homeDir, { status: 'completed', busy: false, background: true, notice: 'completed', noticeAt: 1000 });
-    const history = await new OpenCodeSessionsProvider().fetchHistory('ses_parent');
-    const row = history.messages.find((message) => message.kind === 'tool_use' && message.toolId === 'call_sub');
-    assert.equal(row?.subagent?.status, 'stopped', 'no notice of its own and nothing runs it');
-  });
-});
-
-test('a background call does not take the notice of a later call on the same agent', { concurrency: false }, async () => {
-  await withSubagentHome(async (homeDir) => {
-    // call_sub at 1500 never got its notice; the agent was resumed at 2500 and that run's notice is at 3000.
-    seedSubagentSession(homeDir, { status: 'completed', busy: false, background: true, notice: 'completed', noticeAt: 3000, resumedAt: 2500 });
-    const history = await new OpenCodeSessionsProvider().fetchHistory('ses_parent');
-    const first = history.messages.find((message) => message.kind === 'tool_use' && message.toolId === 'call_sub');
-    const resumed = history.messages.find((message) => message.kind === 'tool_use' && message.toolId === 'call_sub_again');
-    assert.equal(first?.subagent?.status, 'stopped');
-    assert.equal(resumed?.subagent?.status, 'completed');
-  });
-});
-
-test('a background agent with no notice yet runs while the runtime tracks it, else it was lost', { concurrency: false }, async () => {
-  await withSubagentHome(async (homeDir) => {
-    opencodeBackgroundWork.start('app-history', {
-      taskId: 'ses_child', toolUseId: 'call_sub', taskType: 'local_agent', description: 'Review the diff',
-    });
+    const dataDir = path.join(tempRoot, '.local', 'share', 'opencode');
+    await mkdir(dataDir, { recursive: true });
+    const db = new Database(path.join(dataDir, 'opencode.db'));
     try {
-      const live = await readSubagentRow(homeDir, { status: 'completed', busy: false, background: true });
-      assert.equal(live?.subagent?.status, 'running', 'the launch acknowledgement is not the agent finishing');
-    } finally {
-      opencodeBackgroundWork.end('app-history', 'ses_child');
-    }
-  });
-  await withSubagentHome(async (homeDir) => {
-    const lost = await readSubagentRow(homeDir, { status: 'completed', busy: false, background: true });
-    assert.equal(lost?.subagent?.status, 'stopped', 'nothing runs it any more and no notice will come');
-  });
-});
-
-test('an agent part is an @-mention of an agent, not a spawned one, and draws no Agent card', { concurrency: false }, async () => {
-  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-agent-part-'));
-  const workspacePath = await createWorkspaceFixture();
-  const restoreHomeDir = patchHomeDir(tempRoot);
-  try {
-    await createOpenCodeDatabase(tempRoot, workspacePath);
-    const db = new Database(path.join(tempRoot, '.local', 'share', 'opencode', 'opencode.db'));
-    try {
-      db.prepare('INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?)')
-        .run('part-agent', 'message-user', 'open-session-1', 1_700_000_000_500, 1_700_000_000_500, JSON.stringify({ type: 'agent', name: 'general', source: { value: '@general', start: 0, end: 8 } }));
+      db.exec(`
+        CREATE TABLE session_v2 (
+          id text PRIMARY KEY,
+          project_id text NOT NULL,
+          slug text NOT NULL,
+          directory text NOT NULL,
+          title text,
+          version text NOT NULL,
+          tokens_input integer DEFAULT 0 NOT NULL,
+          tokens_output integer DEFAULT 0 NOT NULL,
+          tokens_reasoning integer DEFAULT 0 NOT NULL,
+          tokens_cache_read integer DEFAULT 0 NOT NULL,
+          tokens_cache_write integer DEFAULT 0 NOT NULL,
+          model text,
+          time_created integer NOT NULL,
+          time_updated integer NOT NULL
+        );
+        CREATE TABLE session_message (
+          id text PRIMARY KEY,
+          session_id text NOT NULL,
+          type text NOT NULL,
+          seq integer NOT NULL,
+          time_created integer NOT NULL,
+          time_updated integer NOT NULL,
+          data text NOT NULL
+        );
+        INSERT INTO session_v2 (
+          id, project_id, slug, directory, title, version,
+          tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write,
+          model, time_created, time_updated
+        ) VALUES (
+          'ses_v2_compacted', 'proj_1', 'v2-compacted', '/tmp/proj', 'Compacted session', '2.0.31',
+          500, 50, 10, 400000, 0,
+          '{"providerID":"opencode-go","id":"glm-5.3"}', 1000, 3000
+        );
+        INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data) VALUES
+          ('msg_a', 'ses_v2_compacted', 'assistant', 1, 1000, 1000, '{"time":{"created":1000},"tokens":{"input":10,"output":5,"reasoning":0,"cache":{"read":100,"write":0}},"content":[{"type":"text","text":"done"}]}'),
+          ('msg_summary', 'ses_v2_compacted', 'assistant', 2, 2000, 2000, '{"time":{"created":2000},"summary":true,"tokens":{"input":20,"output":10,"reasoning":0,"cache":{"read":400000,"write":0}},"content":[{"type":"text","text":"The conversation so far, summarized."}]}');
+      `);
     } finally {
       db.close();
     }
 
-    const history = await new OpenCodeSessionsProvider().fetchHistory('open-session-1');
-    assert.equal(history.messages.some((message) => message.toolName === 'Agent'), false);
+    const provider = new OpenCodeSessionsProvider();
+    const history = await provider.fetchHistory('ses_v2_compacted');
+    const summaryBytes = Buffer.byteLength('The conversation so far, summarized.', 'utf8');
+    assert.deepEqual(history.tokenUsage, {
+      used: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      breakdown: { input: 0, output: 0 },
+      compacted: true,
+      summaryBytes,
+      cumulative: { used: 400560, inputTokens: 400500, outputTokens: 50 },
+    });
+  } finally {
+    restoreHomeDir();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('a v2 compaction message renders as its own row with the summary flagged', { concurrency: false }, async () => {
+  // v2.0.32 keeps a compaction beside the conversation — a `compaction`
+  // message row (status completed/failed, the summary text in `summary`)
+  // instead of folding it into an assistant message — so the transcript
+  // reader turns it into what the other engines produce: a row saying what
+  // happened plus the summary itself, flagged for the client's disclosure.
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-v2-compaction-row-'));
+  const restoreHomeDir = patchHomeDir(tempRoot);
+
+  try {
+    const dataDir = path.join(tempRoot, '.local', 'share', 'opencode');
+    await mkdir(dataDir, { recursive: true });
+    const cacheDir = path.join(tempRoot, '.cache', 'opencode');
+    await mkdir(cacheDir, { recursive: true });
+    await writeFile(
+      path.join(cacheDir, 'models.json'),
+      JSON.stringify({ 'opencode-go': { models: { 'glm-5.3': { limit: { context: 200_000 } } } } }),
+    );
+    const db = new Database(path.join(dataDir, 'opencode.db'));
+    try {
+      db.exec(`
+        CREATE TABLE session_v2 (
+          id text PRIMARY KEY,
+          project_id text NOT NULL,
+          slug text NOT NULL,
+          directory text NOT NULL,
+          title text,
+          version text NOT NULL,
+          tokens_input integer DEFAULT 0 NOT NULL,
+          tokens_output integer DEFAULT 0 NOT NULL,
+          tokens_reasoning integer DEFAULT 0 NOT NULL,
+          tokens_cache_read integer DEFAULT 0 NOT NULL,
+          tokens_cache_write integer DEFAULT 0 NOT NULL,
+          model text,
+          time_created integer NOT NULL,
+          time_updated integer NOT NULL
+        );
+        CREATE TABLE session_message (
+          id text PRIMARY KEY,
+          session_id text NOT NULL,
+          type text NOT NULL,
+          seq integer NOT NULL,
+          time_created integer NOT NULL,
+          time_updated integer NOT NULL,
+          data text NOT NULL
+        );
+        INSERT INTO session_v2 (
+          id, project_id, slug, directory, title, version,
+          tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write,
+          model, time_created, time_updated
+        ) VALUES (
+          'ses_v2_compacted', 'proj_1', 'v2-compacted', '/tmp/proj', 'Compacted session', '2.0.32',
+          500, 50, 10, 400000, 0,
+          '{"providerID":"opencode-go","id":"glm-5.3"}', 1000, 3000
+        );
+        INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data) VALUES
+          ('msg_u', 'ses_v2_compacted', 'user', 1, 1000, 1000, '{"time":{"created":1000},"text":"Build it"}'),
+          ('msg_a', 'ses_v2_compacted', 'assistant', 2, 1100, 1200, '{"time":{"created":1100},"tokens":{"input":30,"output":10,"reasoning":5,"cache":{"read":2000,"write":0}},"content":[{"type":"text","text":"done"}]}'),
+          ('msg_c', 'ses_v2_compacted', 'compaction', 3, 2000, 2100, '{"time":{"created":2000},"status":"completed","reason":"manual","summary":"The conversation so far, summarized.","tokens":{"input":600,"output":90,"reasoning":50,"cache":{"read":6500,"write":0}}}');
+      `);
+    } finally {
+      db.close();
+    }
+
+    const provider = new OpenCodeSessionsProvider();
+    const history = await provider.fetchHistory('ses_v2_compacted');
+
+    const compactRow = history.messages.find((message) => message.compact);
+    assert.equal(compactRow?.role, 'assistant');
+    assert.equal(compactRow?.content, 'Compacted · manual');
+    assert.deepEqual(compactRow?.compact, { phase: 'done', trigger: 'manual' });
+
+    const summaryRow = history.messages.find((message) => message.isCompactSummary === true);
+    assert.equal(summaryRow?.role, 'assistant', 'the summary is assistant-authored, never a user bubble');
+    assert.equal(summaryRow?.content, 'The conversation so far, summarized.');
+    assert.equal(
+      summaryRow?.providerRowKey,
+      undefined,
+      'the summary is written by the engine, not streamed as a text part; it has no live copy to reconcile with',
+    );
+    assert.ok(
+      history.messages.indexOf(compactRow!) < history.messages.indexOf(summaryRow!),
+      'the row saying what happened comes before the summary itself',
+    );
+
+    // The compaction's own tokens describe the summarization request — the
+    // whole conversation that was just replaced — so the reading is
+    // `compacted` with the summary's byte size, never that occupancy.
+    assert.deepEqual(history.tokenUsage, {
+      used: 0,
+      total: 200_000,
+      inputTokens: 0,
+      outputTokens: 0,
+      breakdown: { input: 0, output: 0 },
+      compacted: true,
+      summaryBytes: Buffer.byteLength('The conversation so far, summarized.', 'utf8'),
+      cumulative: { used: 400560, inputTokens: 400500, outputTokens: 50 },
+    });
+  } finally {
+    restoreHomeDir();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('a v2 subagent launch carries the child session timeline, agent and settled status', { concurrency: false }, async () => {
+  // The parent's launch block names the child in `state.metadata.sessionID`
+  // but keeps `metadata.status: "running"` forever for a background spawn.
+  // The child session row is where the agent's name, title and final outcome
+  // live, and its own messages are the timeline the card shows.
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-v2-subagent-'));
+  const restoreHomeDir = patchHomeDir(tempRoot);
+
+  try {
+    const dataDir = path.join(tempRoot, '.local', 'share', 'opencode');
+    await mkdir(dataDir, { recursive: true });
+    const db = new Database(path.join(dataDir, 'opencode.db'));
+    try {
+      db.exec(`
+        CREATE TABLE session_v2 (
+          id text PRIMARY KEY,
+          project_id text NOT NULL,
+          parent_id text,
+          slug text NOT NULL,
+          directory text NOT NULL,
+          title text,
+          version text NOT NULL,
+          agent text,
+          model text,
+          idle_outcome text,
+          tokens_input integer DEFAULT 0 NOT NULL,
+          tokens_output integer DEFAULT 0 NOT NULL,
+          tokens_reasoning integer DEFAULT 0 NOT NULL,
+          tokens_cache_read integer DEFAULT 0 NOT NULL,
+          tokens_cache_write integer DEFAULT 0 NOT NULL,
+          time_created integer NOT NULL,
+          time_updated integer NOT NULL,
+          time_idle integer
+        );
+        CREATE TABLE session_message (
+          id text PRIMARY KEY,
+          session_id text NOT NULL,
+          type text NOT NULL,
+          seq integer NOT NULL,
+          time_created integer NOT NULL,
+          time_updated integer NOT NULL,
+          data text NOT NULL
+        );
+      `);
+      const insertSession = db.prepare(`
+        INSERT INTO session_v2 (
+          id, project_id, parent_id, slug, directory, title, version, agent, model,
+          idle_outcome, time_created, time_updated, time_idle
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      insertSession.run(
+        'ses_parent', 'proj_1', null, 'parent', '/tmp/proj', 'Parent', '2.0.32',
+        'build', null, null, 1000, 4000, null,
+      );
+      insertSession.run(
+        'ses_child', 'proj_1', 'ses_parent', 'child', '/tmp/proj', 'Echo the marker', '2.0.32',
+        'general', '{"providerID":"opencode-go","id":"glm-5.3"}', 'succeeded',
+        1100, 3500, 3400,
+      );
+
+      const insertMessage = db.prepare(`
+        INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `);
+      insertMessage.run('msg_parent', 'ses_parent', 'assistant', 1, 1200, 1300, JSON.stringify({
+        time: { created: 1200 },
+        content: [{
+          type: 'tool',
+          id: 'call_subagent',
+          name: 'subagent',
+          state: {
+            status: 'completed',
+            input: { agent: 'general', description: 'Echo the marker', background: true },
+            metadata: { sessionID: 'ses_child', status: 'running', truncated: false },
+            content: [{
+              type: 'text',
+              text: 'The subagent is working in the background (sessionID: ses_child). You will be notified automatically when it finishes.',
+            }],
+          },
+        }],
+      }));
+      insertMessage.run('msg_child_user', 'ses_child', 'user', 1, 1100, 1100, JSON.stringify({
+        time: { created: 1100 },
+        text: 'Run the echo tool',
+      }));
+      insertMessage.run('msg_child_assistant', 'ses_child', 'assistant', 2, 1200, 3400, JSON.stringify({
+        time: { created: 1200 },
+        model: { providerID: 'opencode-go', id: 'glm-5.3' },
+        content: [
+          { type: 'reasoning', text: 'The child is thinking' },
+          {
+            type: 'tool',
+            id: 'call_child_bash',
+            name: 'bash',
+            state: {
+              status: 'completed',
+              input: { command: 'echo SUBAGENT_OK' },
+              content: [{ type: 'text', text: 'SUBAGENT_OK\n' }],
+              metadata: { status: 'completed' },
+            },
+          },
+          { type: 'text', text: 'SUBAGENT_OK' },
+        ],
+      }));
+    } finally {
+      db.close();
+    }
+
+    const history = await new OpenCodeSessionsProvider().fetchHistory('ses_parent');
+    const task = history.messages.find((message) => message.toolId === 'call_subagent');
+
+    assert.equal(task?.kind, 'tool_use');
+    assert.equal(task?.toolName, 'subagent');
+    assert.equal(task?.subagent?.id, 'ses_child');
+    assert.equal(task?.subagent?.name, 'general');
+    assert.equal(task?.subagent?.type, 'general');
+    assert.equal(task?.subagent?.description, 'Echo the marker');
+    assert.equal(task?.subagent?.status, 'completed', 'the child row settles a background launch');
+    assert.equal(task?.subagent?.model, 'opencode-go/glm-5.3');
+    assert.equal(task?.subagent?.activityCount, 3);
+    assert.deepEqual(
+      task?.subagentTools?.map((entry) => entry.kind),
+      ['thinking', 'tool', 'text'],
+    );
+    assert.equal(task?.subagentTools?.[1].toolResult?.content, 'SUBAGENT_OK');
+    assert.equal(task?.toolResult?.content, 'SUBAGENT_OK', 'the launch acknowledgement is not the result');
+    assert.deepEqual(task?.toolResult, { content: 'SUBAGENT_OK', isError: false });
+  } finally {
+    restoreHomeDir();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('a resumed v2 child that is mid-turn reads as running, not as its last settle', { concurrency: false }, async () => {
+  // The engine does not clear a session's idle stamps when it is woken again:
+  // a child that settled once and was prompted a second time keeps the old
+  // `succeeded`/`time_idle` while it works, so the row's newer `time_updated`
+  // is what proves it is running. Reading the stamps blindly made a plainly
+  // alive background agent render as completed.
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-v2-subagent-resumed-'));
+  const restoreHomeDir = patchHomeDir(tempRoot);
+
+  try {
+    const dataDir = path.join(tempRoot, '.local', 'share', 'opencode');
+    await mkdir(dataDir, { recursive: true });
+    const db = new Database(path.join(dataDir, 'opencode.db'));
+    try {
+      db.exec(`
+        CREATE TABLE session_v2 (
+          id text PRIMARY KEY,
+          project_id text NOT NULL,
+          parent_id text,
+          slug text NOT NULL,
+          directory text NOT NULL,
+          title text,
+          version text NOT NULL,
+          agent text,
+          model text,
+          idle_outcome text,
+          time_created integer NOT NULL,
+          time_updated integer NOT NULL,
+          time_idle integer
+        );
+        CREATE TABLE session_message (
+          id text PRIMARY KEY,
+          session_id text NOT NULL,
+          type text NOT NULL,
+          seq integer NOT NULL,
+          time_created integer NOT NULL,
+          time_updated integer NOT NULL,
+          data text NOT NULL
+        );
+      `);
+      const insertSession = db.prepare(`
+        INSERT INTO session_v2 (
+          id, project_id, parent_id, slug, directory, title, version, agent, model,
+          idle_outcome, time_created, time_updated, time_idle
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      insertSession.run(
+        'ses_parent', 'proj_1', null, 'parent', '/tmp/proj', 'Parent', '2.0.32',
+        'build', null, 'succeeded', 1000, 9000, 9000,
+      );
+      // Settled once at t=3400, prompted again at t=5000, still working at t=9000.
+      insertSession.run(
+        'ses_child_resumed', 'proj_1', 'ses_parent', 'child-a', '/tmp/proj', 'Watch the batch', '2.0.32',
+        'general', '{"providerID":"opencode-go","id":"glm-5.3"}', 'succeeded',
+        1100, 9000, 3400,
+      );
+      // Settled at t=3400 and untouched since: genuinely completed.
+      insertSession.run(
+        'ses_child_settled', 'proj_1', 'ses_parent', 'child-b', '/tmp/proj', 'Echo the marker', '2.0.32',
+        'general', '{"providerID":"opencode-go","id":"glm-5.3"}', 'succeeded',
+        1100, 3400, 3400,
+      );
+
+      const insertMessage = db.prepare(`
+        INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `);
+      for (const [callId, childId, description] of [
+        ['call_resumed', 'ses_child_resumed', 'Watch the batch'],
+        ['call_settled', 'ses_child_settled', 'Echo the marker'],
+      ] as const) {
+        insertMessage.run(`msg_parent_${callId}`, 'ses_parent', 'assistant', 1, 1200, 1300, JSON.stringify({
+          time: { created: 1200 },
+          content: [{
+            type: 'tool',
+            id: callId,
+            name: 'subagent',
+            state: {
+              status: 'completed',
+              input: { agent: 'general', description, background: true },
+              metadata: { sessionID: childId, status: 'running', truncated: false },
+              content: [{
+                type: 'text',
+                text: `The subagent is working in the background (sessionID: ${childId}). You will be notified automatically when it finishes.`,
+              }],
+            },
+          }],
+        }));
+      }
+      insertMessage.run('msg_child_running', 'ses_child_resumed', 'assistant', 1, 5000, 9000, JSON.stringify({
+        time: { created: 5000 },
+        content: [
+          { type: 'text', text: 'Tools are ready. Now waiting for batch 23 to finish' },
+          {
+            type: 'tool',
+            id: 'call_child_wait',
+            name: 'bash',
+            state: { status: 'running', input: { command: 'while true; do grep -q DRIVE_OK drive23.log && break; sleep 30; done' } },
+          },
+        ],
+      }));
+      insertMessage.run('msg_child_settled', 'ses_child_settled', 'assistant', 1, 3000, 3400, JSON.stringify({
+        time: { created: 3000 },
+        content: [{ type: 'text', text: 'DONE' }],
+      }));
+    } finally {
+      db.close();
+    }
+
+    const history = await new OpenCodeSessionsProvider().fetchHistory('ses_parent');
+    const resumed = history.messages.find((message) => message.toolId === 'call_resumed');
+    const settled = history.messages.find((message) => message.toolId === 'call_settled');
+
+    assert.equal(
+      resumed?.subagent?.status,
+      'running',
+      'activity after the idle stamp means the child was resumed and is still working',
+    );
+    assert.equal(resumed?.subagent?.activityCount, 2);
+    assert.equal(
+      resumed?.subagentTools?.at(-1)?.toolName,
+      'bash',
+      'the running shell the agent is waiting on is part of its timeline',
+    );
+    assert.equal(
+      settled?.subagent?.status,
+      'completed',
+      'a child whose last write is its settle still reads as completed',
+    );
+  } finally {
+    restoreHomeDir();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('a failed v2 compaction says so and leaves the occupancy reading alone', { concurrency: false }, async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-v2-compaction-failed-'));
+  const restoreHomeDir = patchHomeDir(tempRoot);
+
+  try {
+    const dataDir = path.join(tempRoot, '.local', 'share', 'opencode');
+    await mkdir(dataDir, { recursive: true });
+    const cacheDir = path.join(tempRoot, '.cache', 'opencode');
+    await mkdir(cacheDir, { recursive: true });
+    await writeFile(
+      path.join(cacheDir, 'models.json'),
+      JSON.stringify({ 'opencode-go': { models: { 'glm-5.3': { limit: { context: 200_000 } } } } }),
+    );
+    const db = new Database(path.join(dataDir, 'opencode.db'));
+    try {
+      db.exec(`
+        CREATE TABLE session_v2 (
+          id text PRIMARY KEY,
+          project_id text NOT NULL,
+          slug text NOT NULL,
+          directory text NOT NULL,
+          title text,
+          version text NOT NULL,
+          tokens_input integer DEFAULT 0 NOT NULL,
+          tokens_output integer DEFAULT 0 NOT NULL,
+          tokens_reasoning integer DEFAULT 0 NOT NULL,
+          tokens_cache_read integer DEFAULT 0 NOT NULL,
+          tokens_cache_write integer DEFAULT 0 NOT NULL,
+          model text,
+          time_created integer NOT NULL,
+          time_updated integer NOT NULL
+        );
+        CREATE TABLE session_message (
+          id text PRIMARY KEY,
+          session_id text NOT NULL,
+          type text NOT NULL,
+          seq integer NOT NULL,
+          time_created integer NOT NULL,
+          time_updated integer NOT NULL,
+          data text NOT NULL
+        );
+        INSERT INTO session_v2 (
+          id, project_id, slug, directory, title, version,
+          tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write,
+          model, time_created, time_updated
+        ) VALUES (
+          'ses_v2_failed', 'proj_1', 'v2-failed', '/tmp/proj', 'Failed compaction', '2.0.32',
+          100, 20, 5, 8, 2,
+          '{"providerID":"opencode-go","id":"glm-5.3"}', 1000, 3000
+        );
+        INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data) VALUES
+          ('msg_a', 'ses_v2_failed', 'assistant', 1, 1100, 1200, '{"time":{"created":1100},"tokens":{"input":30,"output":10,"reasoning":5,"cache":{"read":2000,"write":0}},"content":[{"type":"text","text":"done"}]}'),
+          ('msg_c', 'ses_v2_failed', 'compaction', 2, 2000, 2000, '{"time":{"created":2000},"status":"failed","reason":"manual","error":{"type":"provider.no-route","message":"Model unavailable: opencode/gpt-5.6-terra"}}');
+      `);
+    } finally {
+      db.close();
+    }
+
+    const provider = new OpenCodeSessionsProvider();
+    const history = await provider.fetchHistory('ses_v2_failed');
+
+    const compactRow = history.messages.find((message) => message.compact);
+    assert.equal(compactRow?.content, 'Compaction failed: Model unavailable: opencode/gpt-5.6-terra');
+    assert.deepEqual(compactRow?.compact, {
+      phase: 'failed',
+      error: 'Model unavailable: opencode/gpt-5.6-terra',
+    });
+    assert.ok(
+      !history.messages.some((message) => message.isCompactSummary === true),
+      'a failed compaction replaced nothing, so there is no summary to fold',
+    );
+
+    // The conversation is untouched: the newest real turn still reports its
+    // occupancy instead of the `compacted` marker.
+    assert.deepEqual(history.tokenUsage, {
+      used: 2045,
+      total: 200_000,
+      inputTokens: 2030,
+      outputTokens: 15,
+      breakdown: { input: 2030, output: 15 },
+      cumulative: { used: 135, inputTokens: 108, outputTokens: 20 },
+    });
   } finally {
     restoreHomeDir();
     await rm(tempRoot, { recursive: true, force: true });

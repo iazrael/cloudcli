@@ -14,6 +14,21 @@
 
 import type { LLMProvider } from './chatEvents.js';
 
+/**
+ * How far into a busy session a new message can reach the engine without
+ * killing the work in flight. Anything the engine cannot take is held in the
+ * composer's queue until the session settles.
+ *
+ * - `queue`: neither a running turn nor background work takes input; sending
+ *   would restart the engine process.
+ * - `background`: once the turn has ended, a message goes straight into the
+ *   live process that still holds background work (Claude). A running turn
+ *   still queues.
+ * - `always`: a running turn absorbs the message at its next step, so it is
+ *   sent at once (OpenCode). Requires the runtime's `injectInput` primitive.
+ */
+export type ProviderInputWhileBusy = 'queue' | 'background' | 'always';
+
 /** Where a provider can install an MCP server. */
 export type McpScope = 'user' | 'local' | 'project';
 
@@ -81,10 +96,29 @@ export type ProviderCapabilities = {
   /** Whether a session's transcript can be branched into an independent one. */
   supportsSessionForking: boolean;
   /**
+  /**
    * Whether the `/compact` chat command summarizes the conversation and frees
    * up the engine's context window. The composer offers the command only when
-   * this is true.
+   * this is true; the runtimes that cannot parse the text themselves turn it
+   * into their engine's own compaction call.
    */
   supportsCompaction: boolean;
+  /**
+   * Whether the engine has its own session-scoped scheduling layer (Claude's
+   * CronCreate/ScheduleWakeup, which CloudCLI keeps alive by holding the CLI
+   * process open). CloudCLI's scheduled jobs work for every provider; this
+   * flag only drives the hint shown when a job is bound to a session whose
+   * engine already schedules inside itself.
+   */
+  supportsNativeScheduling: boolean;
+  /**
+   * Whether replacing an already-sent message also reverts the files the
+   * agent changed, so the composer warns about it. Static per provider: a
+   * transcript either has file side effects to undo (OpenCode's revert) or
+   * does not (Claude's resume, Codex's fork).
+   */
+  editRevertsFiles: boolean;
+  /** What happens to a message sent while the session is busy; see `ProviderInputWhileBusy`. */
+  inputWhileBusy: ProviderInputWhileBusy;
   mcp: ProviderMcpCapabilities;
 };

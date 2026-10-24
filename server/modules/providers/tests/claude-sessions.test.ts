@@ -333,6 +333,41 @@ test('an assistant reply sent as a plain string is cited the same way', () => {
   assert.deepEqual(message.memoryCitations, [{ source: 'notes.md' }]);
 });
 
+test('Claude history ignores the api-request log rows the CLI writes beside the conversation', { concurrency: false }, async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'claude-api-request-rows-'));
+  const sessionId = 'api-request-session';
+  const prompt = { role: 'user', content: '做一个网页 PPT' };
+  const reply = { role: 'assistant', content: [{ type: 'text', text: '好的，开始。' }] };
+
+  try {
+    const jsonlPath = path.join(tempRoot, `${sessionId}.jsonl`);
+    const rows = [
+      { type: 'user', uuid: 'u1', parentUuid: null, sessionId, timestamp: '2026-10-22T14:06:34.000Z', message: prompt },
+      { type: 'api-request-shape', sessionId, shapeHash: 'h', shape: '{}' },
+      // A blob is the request body re-logged: same message, real role, no uuid.
+      { type: 'api-request-blob', sessionId, hash: 'b1', message: prompt },
+      { type: 'api-request', sessionId, id: 'r1', tail: ['b1'] },
+      { type: 'assistant', uuid: 'a1', parentUuid: 'u1', sessionId, timestamp: '2026-10-22T14:06:40.000Z', message: { ...reply, id: 'msg_1' } },
+      { type: 'api-request-blob', sessionId, hash: 'b2', message: reply },
+    ];
+    await writeFile(jsonlPath, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`, 'utf8');
+
+    await withIsolatedDatabase(async () => {
+      const now = new Date().toISOString();
+      sessionsDb.createSession(sessionId, 'claude', tempRoot, 'Api request rows', now, now, jsonlPath);
+
+      const history = await new ClaudeSessionsProvider().fetchHistory(sessionId, { providerSessionId: sessionId });
+      const texts = history.messages
+        .filter((message) => message.kind === 'text')
+        .map((message) => message.content);
+
+      assert.deepEqual(texts, ['做一个网页 PPT', '好的，开始。']);
+    });
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test('Claude history attaches a subagent transcript stored under the session directory', { concurrency: false }, async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'claude-subagent-'));
 
@@ -2106,41 +2141,79 @@ test('claude: getTokenUsage reads the latest assistant usage snapshot', async ()
     await rm(tempDirectory, { recursive: true, force: true });
   }
 });
-test('claude: getTokenUsage skips subagent and synthetic all-zero rows like the history reader', async () => {
-  const tempDirectory = await mkdtemp(path.join(os.tmpdir(), 'claude-token-usage-skip-'));
-  const sessionFilePath = path.join(tempDirectory, 'provider-session.jsonl');
-  const usageRow = (
-    usage: Record<string, number>,
-    extra: { isSidechain?: boolean; model?: string } = {},
-  ) => JSON.stringify({
-    type: 'assistant',
-    ...(extra.isSidechain ? { isSidechain: true } : {}),
-    message: { ...(extra.model ? { model: extra.model } : {}), usage },
-  });
+
+test('claude: the recorded context window drives both usage paths identically', async () => {
+  // A 1M-context session records `claude-opus-5` in its transcript, never the
+  // `[1m]` variant, so the only way to know its window is the one the SDK
+  // reported while the session ran. Both readers must use it, and must agree:
+  // `/token-usage` used to answer 160000 for a session whose history page
+  // answered 200000.
+  const tempDirectory = await mkdtemp(path.join(os.tmpdir(), 'claude-context-window-'));
+  const sessionId = 'claude-1m-session';
+  const transcriptPath = path.join(tempDirectory, `${sessionId}.jsonl`);
+  const previousContextWindow = process.env.CONTEXT_WINDOW;
+  process.env.CONTEXT_WINDOW = '180000';
 
   try {
-    await writeFile(sessionFilePath, [
-      usageRow({ input_tokens: 100, cache_read_input_tokens: 20, cache_creation_input_tokens: 5, output_tokens: 30 }),
-      // A subagent turn reports the subagent's own context, not this conversation's.
-      usageRow({ input_tokens: 9_000, output_tokens: 900 }, { isSidechain: true }),
-      // An interrupt / API error row carries an all-zero usage block.
-      usageRow({ input_tokens: 0, output_tokens: 0 }, { model: '<synthetic>' }),
-    ].join('\n'));
+    await writeFile(transcriptPath, [
+      JSON.stringify({
+        type: 'user',
+        sessionId,
+        uuid: 'u1',
+        message: { role: 'user', content: 'hi' },
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        sessionId,
+        uuid: 'a1',
+        parentUuid: 'u1',
+        message: {
+          role: 'assistant',
+          model: 'claude-opus-5',
+          content: [{ type: 'text', text: 'hello' }],
+          usage: { input_tokens: 200, cache_read_input_tokens: 130_000, output_tokens: 26 },
+        },
+      }),
+    ].join('\n'), 'utf8');
 
-    const usage = await new ClaudeSessionsProvider().getTokenUsage({
-      appSessionId: 'app-session',
-      nativeSessionId: 'provider-session',
-      jsonlPath: sessionFilePath,
-      projectPath: null,
+    await withIsolatedDatabase(async () => {
+      const now = new Date().toISOString();
+      sessionsDb.createSession(sessionId, 'claude', tempDirectory, 'Opus 1M', now, now, transcriptPath);
+
+      const provider = new ClaudeSessionsProvider();
+      const usageInput = {
+        appSessionId: sessionId,
+        nativeSessionId: sessionId,
+        jsonlPath: transcriptPath,
+        projectPath: tempDirectory,
+      };
+
+      // Nothing recorded yet: CONTEXT_WINDOW is the only thing left to go on.
+      assert.equal((await provider.getTokenUsage(usageInput)).total, 180_000);
+
+      // The model the user picked for the session keeps the `[1m]` tag the
+      // transcript drops — but it is a heuristic, so CONTEXT_WINDOW still wins.
+      sessionsDb.setSessionModel(sessionId, 'opus[1m]');
+      assert.equal((await provider.getTokenUsage(usageInput)).total, 180_000);
+
+      sessionsDb.setSessionContextWindow(sessionId, 1_000_000);
+
+      const endpointUsage = await provider.getTokenUsage(usageInput);
+      assert.equal(endpointUsage.total, 1_000_000);
+      assert.equal(endpointUsage.used, 130_226);
+
+      const page = await provider.fetchHistory(sessionId, { limit: 10, offset: 0 });
+      assert.deepEqual(page.tokenUsage, endpointUsage);
     });
-    assert.equal(usage.used, 155);
-    assert.equal(usage.inputTokens, 125);
-    assert.equal(usage.outputTokens, 30);
   } finally {
+    if (previousContextWindow === undefined) {
+      delete process.env.CONTEXT_WINDOW;
+    } else {
+      process.env.CONTEXT_WINDOW = previousContextWindow;
+    }
     await rm(tempDirectory, { recursive: true, force: true });
   }
 });
-
 // ---------------------------------------------------------------------------
 // buildLookupMap
 // ---------------------------------------------------------------------------

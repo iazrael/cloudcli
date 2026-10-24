@@ -7,27 +7,24 @@ import { parseFilesInputTag, parseImagesInputTag } from '@/shared/image-attachme
 import type { IProviderSessions } from '@/shared/interfaces.js';
 import type {
   AnyRecord,
+  CompactionInfo,
   FetchHistoryOptions,
   FetchHistoryResult,
   NormalizedMessage,
-  SubagentActivity,
-  SubagentInfo,
   ProviderSessionUsageInput,
   ProviderTokenUsageResult,
+  SubagentActivity,
+  SubagentInfo,
 } from '@/shared/types.js';
 import {
-  ProviderDisplayAssetError,
-  compactProviderPayload,
   AppError,
   createNormalizedMessage,
   generateMessageId,
-  hasVisibleText,
   normalizeProjectPath,
   normalizeProviderTimestamp,
   readObjectRecord,
   readJsonRecord,
   readOptionalString,
-  readUsageNumber,
   removePathIfExists,
   sliceTailPage,
   truncateSubagentActivity,
@@ -35,34 +32,27 @@ import {
 } from '@/shared/utils.js';
 
 import {
-  opencodeBackgroundWork,
-  readBackgroundNotice,
-  type OpenCodeBackgroundOutcome,
-} from './opencode-background-work.js';
-import { createOpenCodeCompactionFrame, formatToolOutput } from './opencode-event-translator.js';
-import {
   getOpenCodeDatabasePath,
-  openOpenCodeDatabase,
-  readOpenCodeSessionIdleAt,
-  readOpenCodeSessionTokenTotals,
-  readOpenCodeSyntheticNoticeMetadata,
   resolveOpenCodeMessageLayout,
   resolveOpenCodeSessionTableName,
 } from './opencode-data-root.js';
-import {
-  isOpenCodeSubagentTool,
-  readSubagentChildSessionId,
-  toAgentCardInput,
-  toClientToolName,
-} from './opencode-subagent.js';
+import { readOpenCodeContextUsage } from './opencode-context-usage.js';
+import { buildOpenCodeTextRowKey } from './opencode-event-translator.js';
+import { formatOpenCodeToolBlock } from './opencode-tool-output.js';
 
 const PROVIDER = 'opencode';
 
-/** OpenCode's tool for spawning a subagent; it runs in a child session of the caller. */
-const SUBAGENT_TOOL_NAME = 'task';
-
-/** Upper bound on how much of a subagent's timeline is sent to the client, as for Claude and Codex. */
+/**
+ * Upper bound on how much of a subagent's timeline is sent to the client.
+ *
+ * The panel shows a preview of the agent's work, not the agent's full
+ * transcript, so both this reader and the Claude/Codex ones cap the list the
+ * same way and report the true length as `activityCount`.
+ */
 const MAX_TRANSMITTED_SUBAGENT_ACTIVITIES = 200;
+
+/** The tool names that spawn a subagent: v2 `subagent`, v1 `task`. */
+const SUBAGENT_TOOL_NAMES = new Set(['subagent', 'task']);
 
 type OpenCodeHistoryRow = {
   message_id: string;
@@ -73,40 +63,25 @@ type OpenCodeHistoryRow = {
   part_data: string | null;
 };
 
-/**
- * What the history normalizer needs beyond the rows themselves: the open
- * database (a spawn call's child session is read from it) and the layout
- * that tells how to read that child.
- */
-type OpenCodeHistoryContext = {
-  db: Database.Database;
-  layout: 'session_message' | 'message_part';
-  /** The session being read, whose idle time says whether a call left `running` can still finish. */
-  providerSessionId: string;
-  /**
-   * How each session's background work ended, by the engine's handle, read
-   * once per session from the notices it persisted. Shared by reference with
-   * the child sessions' contexts, so it is keyed by session.
-   */
-  backgroundOutcomes?: Map<string, OpenCodeSessionBackgroundRecord>;
+/** One child session row the parent's transcription refers to. */
+type OpenCodeChildSessionRow = {
+  id: string;
+  parent_id: string | null;
+  title: string | null;
+  agent: string | null;
+  model: string | null;
+  time_updated: number | null;
+  time_idle: number | null;
+  idle_outcome: string | null;
 };
 
-/**
- * One session's background work as persisted: the notices of work that ended,
- * and when each agent was launched in the background, both by the engine's
- * handle. A notice belongs to the launch it follows and not to a later one.
- */
-type OpenCodeSessionBackgroundRecord = {
-  notices: Map<string, Array<{ outcome: OpenCodeBackgroundOutcome; at: number | null }>>;
-  launches: Map<string, number[]>;
-};
+const openOpenCodeDatabase = (): Database.Database | null => {
+  const dbPath = getOpenCodeDatabasePath();
+  if (!fsSync.existsSync(dbPath)) {
+    return null;
+  }
 
-type OpenCodeTokenTotals = {
-  inputTokens: number;
-  outputTokens: number;
-  reasoningTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
+  return new Database(dbPath, { readonly: true, fileMustExist: true });
 };
 
 const formatToolContent = (value: unknown): string => {
@@ -142,31 +117,29 @@ const hasUserRole = (value: unknown): boolean => {
   return readOptionalString(record?.role) === 'user';
 };
 
-// `opencode run --format json` nests each event's payload under `part`; older builds sent it flat.
-const readEventPart = (raw: AnyRecord): AnyRecord => readObjectRecord(raw.part) ?? {};
-
-// Error events carry an object (`{ name, data }`), not a string.
-const readEventError = (value: unknown): string | undefined => {
+/**
+ * Reads the `compact` annotation a compaction's virtual text row carries
+ * (`{phase, trigger?, error?}`); malformed values are dropped rather than
+ * rendered as a half-empty row. Only the v2 flatten produces one.
+ */
+const readCompactionAnnotation = (value: unknown): CompactionInfo | undefined => {
   const record = readObjectRecord(value);
-  if (!record) {
-    return readOptionalString(value);
+  const phase = readOptionalString(record?.phase);
+  if (phase !== 'running' && phase !== 'done' && phase !== 'failed') {
+    return undefined;
   }
 
-  const data = readObjectRecord(record.data);
-  const message = readOptionalString(data?.message) ?? readOptionalString(record.message);
-  if (message) {
-    return message;
-  }
+  const rawTrigger = readOptionalString(record?.trigger);
+  const trigger = rawTrigger === 'auto' || rawTrigger === 'manual' ? rawTrigger : undefined;
+  const error = record?.error === null || record?.error === undefined
+    ? undefined
+    : readOptionalString(record.error) ?? null;
 
-  const name = readOptionalString(record.name);
-  const providerId = readOptionalString(data?.providerID) ?? readOptionalString(record.providerID);
-  const modelId = readOptionalString(data?.modelID) ?? readOptionalString(record.modelID);
-  if (providerId && modelId) {
-    return `${name ?? 'Error'}: ${providerId}/${modelId}`;
-  }
-
-  const details = data ? JSON.stringify(data).slice(0, 200) : '';
-  return [name, details].filter(Boolean).join(': ') || undefined;
+  return {
+    phase,
+    ...(trigger ? { trigger } : {}),
+    ...(error !== undefined ? { error } : {}),
+  };
 };
 
 const isUserTextEcho = (raw: AnyRecord): boolean => {
@@ -175,39 +148,75 @@ const isUserTextEcho = (raw: AnyRecord): boolean => {
     || hasUserRole(raw.part);
 };
 
-const buildTokenUsage = (totals: OpenCodeTokenTotals | undefined): AnyRecord | undefined => {
-  if (!totals) {
-    return undefined;
-  }
+// ---------------------------
 
-  const inputTokens = totals.inputTokens;
-  const displayInputTokens = inputTokens + totals.cacheReadTokens;
-  const outputTokens = totals.outputTokens;
-  const used = inputTokens
-    + outputTokens
-    + totals.reasoningTokens
-    + totals.cacheReadTokens
-    + totals.cacheWriteTokens;
-
-  if (used <= 0) {
-    return undefined;
-  }
-
-  return {
-    used,
-    inputTokens: displayInputTokens,
-    outputTokens,
-    breakdown: {
-      input: displayInputTokens,
-      output: outputTokens,
-    },
+/**
+ * Turns one v2 `compaction` message row into the transcript rows it stands
+ * for.
+ *
+ * v2.0.32 keeps a compaction beside the conversation instead of folding it
+ * into an assistant message: the row has `status` completed/failed, the
+ * summary text under `summary`, and the trigger under `reason`. It becomes
+ * the same pair the other engines produce — a row saying what happened, plus
+ * the summary itself flagged `isCompactSummary` so the client folds it behind
+ * a disclosure. Rows still running, or from a build that wrote no text, yield
+ * nothing.
+ */
+const buildOpenCodeV2CompactionRows = (messageRow: {
+  id: string;
+  time_created: number | null;
+  time_updated: number | null;
+  data: string;
+}): OpenCodeHistoryRow[] => {
+  const data = readJsonRecord(messageRow.data) ?? {};
+  const messageData = JSON.stringify({ role: 'assistant', error: null });
+  const base = {
+    message_id: messageRow.id,
+    message_time_created: messageRow.time_created,
+    message_data: messageData,
+    part_time_created: messageRow.time_updated ?? messageRow.time_created,
   };
-};
 
-const readOpenCodeSessionColumnTokenUsage = (
-  db: Database.Database,
-  sessionId: string,
-): AnyRecord | undefined => buildTokenUsage(readOpenCodeSessionTokenTotals(db, sessionId) ?? undefined);
+  if (readOptionalString(data.status) === 'failed') {
+    const errorRecord = readObjectRecord(data.error);
+    const detail = readOptionalString(errorRecord?.message) ?? readOptionalString(data.error) ?? null;
+    const compact: CompactionInfo = { phase: 'failed', error: detail };
+    return [{
+      ...base,
+      part_id: `${messageRow.id}_compaction`,
+      part_data: JSON.stringify({
+        type: 'text',
+        text: `Compaction failed${detail ? `: ${detail}` : ''}`,
+        compact,
+      }),
+    }];
+  }
+
+  if (readOptionalString(data.status) !== 'completed') {
+    return [];
+  }
+
+  const trigger: CompactionInfo['trigger'] = readOptionalString(data.reason) === 'auto' ? 'auto' : 'manual';
+  const rows: OpenCodeHistoryRow[] = [{
+    ...base,
+    part_id: `${messageRow.id}_compaction`,
+    part_data: JSON.stringify({
+      type: 'text',
+      text: `Compacted · ${trigger}`,
+      compact: { phase: 'done', trigger } satisfies CompactionInfo,
+    }),
+  }];
+
+  const summary = readOptionalString(data.summary);
+  if (summary) {
+    rows.push({
+      ...base,
+      part_id: `${messageRow.id}_summary`,
+      part_data: JSON.stringify({ type: 'text', text: summary, isCompactSummary: true }),
+    });
+  }
+  return rows;
+};
 
 /**
  * Flattens v2 `session_message` rows into the (message, part) row shape the
@@ -216,21 +225,20 @@ const readOpenCodeSessionColumnTokenUsage = (
  * v2 event-sources one row per message and carries its content blocks inline
  * (`user` rows hold the prompt text; `assistant` rows hold a `content` array
  * of text/reasoning/tool blocks), so each row expands into one virtual
- * message plus one virtual part per block. A finished compaction becomes one
- * `compaction` part, so the notice the live stream showed stays after a
- * reload; idle, system and other rows carry no user-visible transcript
- * content and are skipped.
+ * message plus one virtual part per block. Compaction rows are rendered (see
+ * `buildOpenCodeV2CompactionRows`); idle and system rows carry no
+ * user-visible transcript content and are skipped.
  */
-function* flattenOpenCodeV2HistoryRows(
+const flattenOpenCodeV2HistoryRows = (
   db: Database.Database,
   sessionId: string,
-): Generator<OpenCodeHistoryRow> {
+): OpenCodeHistoryRow[] => {
   const messageRows = db.prepare(`
     SELECT id, type, time_created, time_updated, data
     FROM session_message
     WHERE session_id = ?
     ORDER BY seq
-  `).iterate(sessionId) as Iterable<{
+  `).all(sessionId) as Array<{
     id: string;
     type: string;
     time_created: number | null;
@@ -238,80 +246,52 @@ function* flattenOpenCodeV2HistoryRows(
     data: string;
   }>;
 
+  const rows: OpenCodeHistoryRow[] = [];
   for (const messageRow of messageRows) {
     if (messageRow.type === 'compaction') {
-      // Only a finished compaction draws a row; one still running has none.
-      const compaction = readJsonRecord(messageRow.data);
-      const status = readOptionalString(compaction?.status);
-      if (status === 'completed' || status === 'failed') {
-        yield {
-          message_id: messageRow.id,
-          message_time_created: messageRow.time_created,
-          message_data: JSON.stringify({ role: 'compaction' }),
-          part_id: 'compaction',
-          part_time_created: messageRow.time_updated ?? messageRow.time_created,
-          part_data: JSON.stringify({
-            type: 'compaction',
-            status,
-            reason: compaction?.reason ?? null,
-            error: compaction?.error ?? null,
-            summary: typeof compaction?.summary === 'string' ? compaction.summary : null,
-          }),
-        };
-      }
+      rows.push(...buildOpenCodeV2CompactionRows(messageRow));
       continue;
     }
     if (messageRow.type !== 'user' && messageRow.type !== 'assistant') {
       continue;
     }
 
-    const data: AnyRecord = compactProviderPayload({ ...(readJsonRecord(messageRow.data) ?? {}), role: messageRow.type });
+    const data = readJsonRecord(messageRow.data) ?? {};
     // Part rows repeat the message payload (the v1 join did too) so the
     // normalizer can read the role off every row.
     const messageData = JSON.stringify({ role: messageRow.type, error: data.error ?? null });
-    yield {
+    rows.push({
       message_id: messageRow.id,
       message_time_created: messageRow.time_created,
       message_data: messageData,
       part_id: null,
       part_time_created: null,
       part_data: null,
-    };
+    });
 
     if (messageRow.type === 'user') {
-      yield {
+      rows.push({
         message_id: messageRow.id,
         message_time_created: messageRow.time_created,
         message_data: messageData,
         part_id: `${messageRow.id}_text`,
         part_time_created: messageRow.time_created,
         part_data: JSON.stringify({ type: 'text', text: readOptionalString(data.text) ?? '' }),
-      };
+      });
       continue;
     }
 
     const content = Array.isArray(data.content) ? data.content : [];
-    // The SSE stream names a part `${messageID}_text_${ordinal}` /
-    // `${messageID}_reasoning_${ordinal}`, where ordinal counts that type's
-    // parts within the message (the engine initializes the counter per
-    // message). Renumber blocks the same way so both transports name one
-    // record identically — the timeline deduplicates on that id.
-    let textOrdinal = 0;
-    let reasoningOrdinal = 0;
-    for (const [index, block] of content.entries()) {
+    content.forEach((block, index) => {
       const blockRecord = readObjectRecord(block);
       if (!blockRecord) {
-        continue;
+        return;
       }
 
       const blockType = readOptionalString(blockRecord.type);
       let partData: Record<string, unknown> | null = null;
-      let partId = `${messageRow.id}_${index}`;
       if (blockType === 'text' || blockType === 'reasoning') {
         partData = { type: blockType, text: readOptionalString(blockRecord.text) ?? '' };
-        partId = blockType === 'text'
-          ? `text_${textOrdinal++}`
-          : `reasoning_${reasoningOrdinal++}`;
       } else if (blockType === 'tool') {
         partData = {
           type: 'tool',
@@ -321,242 +301,239 @@ function* flattenOpenCodeV2HistoryRows(
         };
       }
       if (!partData) {
-        continue;
+        return;
       }
 
-      yield {
+      rows.push({
         message_id: messageRow.id,
         message_time_created: messageRow.time_created,
         message_data: messageData,
-        part_id: partId,
+        part_id: `${messageRow.id}_${index}`,
         part_time_created: messageRow.time_updated ?? messageRow.time_created,
         part_data: JSON.stringify(partData),
-      };
-    }
+      });
+    });
   }
-}
 
-/**
- * OpenCode stores per-message token counts on assistant `message.data` objects
- * (see MessageV2.Assistant). Older DBs also had session-level counters; this
- * matches current `opencode.db` layouts that only persist message JSON.
- */
-/**
- * When each agent of a v2 session was launched in the background, in order:
- * the assistant messages whose `subagent` call returned still running. The
- * message time is the call time the history reader uses for those calls.
- */
-const readBackgroundAgentLaunchTimes = (
-  db: Database.Database,
-  sessionId: string,
-): Array<{ childSessionId: string; at: number }> => {
-  const rows = db.prepare(`
-    SELECT time_created AS at, data FROM session_message
-    WHERE session_id = ? AND type = 'assistant' AND data LIKE '%"subagent"%'
-    ORDER BY seq
-  `).all(sessionId) as Array<{ at: number | null; data: string }>;
-  const launches: Array<{ childSessionId: string; at: number }> = [];
-  for (const row of rows) {
-    const content = readJsonRecord(row.data)?.content;
-    if (!Array.isArray(content) || typeof row.at !== 'number') {
-      continue;
-    }
-    for (const part of content) {
-      const record = readObjectRecord(part);
-      const state = readObjectRecord(record?.state);
-      const metadata = readObjectRecord(state?.metadata);
-      const childSessionId = readOptionalString(metadata?.sessionID);
-      if (record?.type === 'tool' && isOpenCodeSubagentTool(readOptionalString(record.name) ?? '')
-        && readOptionalString(metadata?.status) === 'running' && childSessionId) {
-        launches.push({ childSessionId, at: row.at });
-      }
-    }
-  }
-  return launches;
+  return rows;
 };
 
-const aggregateOpenCodeSessionTokenUsage = (
-  db: Database.Database,
-  sessionId: string,
-): AnyRecord | undefined => {
-  const sessionColumnUsage = readOpenCodeSessionColumnTokenUsage(db, sessionId);
-  if (sessionColumnUsage) {
-    return sessionColumnUsage;
-  }
-
-  const rows = db.prepare('SELECT data FROM message WHERE session_id = ?').iterate(sessionId) as Iterable<{ data: string }>;
-
-  let inputTokens = 0;
-  let outputTokens = 0;
-  let reasoningTokens = 0;
-  let cacheReadTokens = 0;
-  let cacheWriteTokens = 0;
-
-  for (const row of rows) {
-    const info = readJsonRecord(row.data);
-    if (readOptionalString(info?.role) !== 'assistant') {
-      continue;
+/**
+ * Reads one tool state's result text.
+ *
+ * v2 persists the result as a `content` block array on the tool state, while
+ * older rows and other engines put it under `output`/`error`. Error detail is
+ * preferred, then structured output, then the blocks, so a failed child tool
+ * shows why it failed rather than an empty result.
+ */
+const readOpenCodeToolResultContent = (state: AnyRecord): string => {
+  const formatValue = (value: unknown): string => {
+    if (typeof value === 'string') {
+      return value;
     }
-
-    const tokens = readObjectRecord(info?.tokens);
-    if (!tokens) {
-      continue;
+    if (Array.isArray(value)) {
+      return value
+        .map((block) => {
+          const record = readObjectRecord(block);
+          if (!record) {
+            return typeof block === 'string' ? block : '';
+          }
+          return readOptionalString(record.text) ?? (record.type === 'text' ? '' : formatOpenCodeToolBlock(record));
+        })
+        .filter((text) => text.length > 0)
+        .join('\n');
     }
-
-    inputTokens += Number(tokens.input ?? 0);
-    outputTokens += Number(tokens.output ?? 0);
-    reasoningTokens += Number(tokens.reasoning ?? 0);
-    const cache = readObjectRecord(tokens.cache);
-    cacheReadTokens += Number(cache?.read ?? 0);
-    cacheWriteTokens += Number(cache?.write ?? 0);
-  }
-
-  return buildTokenUsage({
-    inputTokens,
-    outputTokens,
-    reasoningTokens,
-    cacheReadTokens,
-    cacheWriteTokens,
-  });
-};
-
-const readToolResult = (state: AnyRecord): SubagentActivity['toolResult'] => {
-  const status = readOptionalString(state.status);
-  if (status !== 'completed' && status !== 'error') {
-    return null;
-  }
-
-  return {
-    content: formatToolContent(state.output ?? state.error),
-    isError: status === 'error',
+    return formatToolContent(value);
   };
+
+  if (state.error !== undefined && state.error !== null) {
+    return formatValue(state.error);
+  }
+  if (state.output !== undefined && state.output !== null) {
+    return formatValue(state.output);
+  }
+  return formatValue(state.content);
+};
+
+/** The provider-prefixed label a child session's stored model reference yields. */
+const readOpenCodeChildModelLabel = (model: unknown): string | undefined => {
+  const record = readJsonRecord(readOptionalString(model) ?? model);
+  const providerId = readOptionalString(record?.providerID);
+  const modelId = readOptionalString(record?.id) ?? readOptionalString(record?.modelID);
+  if (!modelId) {
+    return undefined;
+  }
+  return providerId ? `${providerId}/${modelId}` : modelId;
 };
 
 /**
- * Flattens the child session a `task` call spawned into the shared subagent
- * timeline. OpenCode keeps it in the same database as the parent.
+ * Turns a child session's persisted rows into the shared subagent timeline.
+ *
+ * The prompt echo is skipped (the parent's card already states the task), and
+ * `patch`/`agent` parts become tool entries the way the parent transcript
+ * renders them, so an agent-heavy child reads the same in both places.
  */
-const readOpenCodeSubagentActivity = (
-  db: Database.Database,
-  childSessionId: string,
-): SubagentActivity[] => {
-  const rows = db.prepare(`
-    SELECT p.data AS part_data, p.time_created AS part_time_created
-    FROM part p
-    INNER JOIN message m
-      ON m.id = p.message_id
-     AND m.session_id = p.session_id
-    WHERE p.session_id = ?
-      AND json_extract(m.data, '$.role') = 'assistant'
-    ORDER BY COALESCE(m.time_created, 0), m.id, COALESCE(p.time_created, 0), p.id
-  `).all(childSessionId) as { part_data: string | null; part_time_created: number | null }[];
-
+const toSubagentActivity = (rows: OpenCodeHistoryRow[]): SubagentActivity[] => {
   const activity: SubagentActivity[] = [];
   for (const row of rows) {
+    if (!row.part_id) {
+      continue;
+    }
+    const messageInfo = readJsonRecord(row.message_data);
+    const role = readOptionalString(messageInfo?.role);
     const partData = readJsonRecord(row.part_data) ?? {};
-    const timestamp = normalizeProviderTimestamp(row.part_time_created);
     const partType = readOptionalString(partData.type);
+    const timestamp = normalizeProviderTimestamp(row.part_time_created ?? row.message_time_created);
 
-    if (partType === 'tool') {
-      const state = readObjectRecord(partData.state) ?? {};
-      activity.push({
-        kind: 'tool',
-        toolId: readOptionalString(partData.callID) ?? readOptionalString(partData.id),
-        toolName: readOptionalString(partData.tool) ?? 'Tool',
-        toolInput: state.input ?? {},
-        toolResult: readToolResult(state),
-        timestamp,
-      });
+    if (partType === 'text') {
+      const content = extractText(partData);
+      if (role === 'assistant' && content.trim()) {
+        activity.push({ kind: 'text', content, timestamp });
+      }
       continue;
     }
 
-    if (partType === 'text' || partType === 'reasoning') {
+    if (partType === 'reasoning') {
       const content = extractText(partData);
       if (content.trim()) {
-        activity.push({ kind: partType === 'text' ? 'text' : 'thinking', content, timestamp });
+        activity.push({ kind: 'thinking', content, timestamp });
       }
+      continue;
+    }
+
+    if (partType === 'tool' || partType === 'patch' || partType === 'agent') {
+      const isEngineTool = partType === 'tool';
+      const state = isEngineTool ? readObjectRecord(partData.state) ?? {} : {};
+      const status = readOptionalString(state.status);
+      const tool: SubagentActivity = {
+        kind: 'tool',
+        timestamp,
+        toolId: readOptionalString(partData.callID) ?? row.part_id ?? undefined,
+        toolName: isEngineTool
+          ? readOptionalString(partData.tool) ?? 'Tool'
+          : partType === 'patch' ? 'Patch' : 'Agent',
+        toolInput: isEngineTool ? state.input ?? partData.input ?? {} : partData,
+      };
+      if (isEngineTool && (status === 'completed' || status === 'error')) {
+        tool.toolResult = {
+          content: readOpenCodeToolResultContent(state),
+          isError: status === 'error',
+        };
+      }
+      activity.push(tool);
     }
   }
-
   return activity;
 };
 
-// The task tool wraps the subagent's answer as `<task …><task_result>…</task_result></task>`.
-const TASK_OUTPUT_PATTERN = /<task_(result|error)>\n?([\s\S]*?)\n?<\/task_\1>/;
-
-const unwrapTaskOutput = (content: string): string => {
-  const match = TASK_OUTPUT_PATTERN.exec(content);
-  return match ? match[2] : content;
+/** The child session ids the transcript's subagent tool blocks name. */
+const collectSubagentSessionIds = (rows: OpenCodeHistoryRow[]): Set<string> => {
+  const ids = new Set<string>();
+  for (const row of rows) {
+    if (!row.part_id) {
+      continue;
+    }
+    const partData = readJsonRecord(row.part_data);
+    if (!partData || readOptionalString(partData.type) !== 'tool' || !SUBAGENT_TOOL_NAMES.has(readOptionalString(partData.tool) ?? '')) {
+      continue;
+    }
+    const state = readObjectRecord(partData.state);
+    const sessionId = readOptionalString(readObjectRecord(state?.metadata)?.sessionID);
+    if (sessionId) {
+      ids.add(sessionId);
+    }
+  }
+  return ids;
 };
 
 /**
- * Turns a `task` tool row into a subagent container, the way Claude's `Agent`
- * rows are: identity from the call, timeline from the child session.
+ * How long after its idle stamp a child row may still count as settled.
  *
- * `runIsLive` says whether a run of this session is still in progress: a task
- * without a result outside one was stopped and will never report.
+ * The engine writes the session row and the idle stamp in the same settle
+ * transaction (observed within a few milliseconds of each other), so any
+ * larger gap means the session was written to after it settled — work that
+ * began since, not noise from the settle itself.
  */
-const attachOpenCodeSubagent = (
-  message: NormalizedMessage,
-  state: AnyRecord,
-  db: Database.Database | null,
-  runIsLive: boolean,
-): void => {
-  if (message.toolName !== SUBAGENT_TOOL_NAME) {
-    return;
-  }
+const SUBAGENT_SETTLE_SLACK_MS = 1_000;
 
-  const input = readObjectRecord(state.input) ?? {};
-  const metadata = readObjectRecord(state.metadata) ?? {};
-  const childSessionId = readOptionalString(metadata.sessionId);
-  const toolResult = message.toolResult;
-  let status: SubagentInfo['status'] = runIsLive ? 'running' : 'stopped';
-  if (metadata.interrupted === true) {
-    status = 'stopped';
-  } else if (toolResult) {
-    status = toolResult.isError ? 'failed' : 'completed';
-  }
+/**
+ * The subagent status the child's own session row reports.
+ *
+ * The child row is authoritative — its `idle_outcome`/`time_idle` settle the
+ * agent even when the parent's launch block was never updated (a background
+ * launch keeps `metadata.status: "running"` in the parent transcript forever).
+ * The parent metadata is only the fallback for a child row an older database
+ * cannot describe.
+ *
+ * The idle stamps describe the child's LAST settle, and nothing clears them
+ * when the session is woken again: an agent that was prompted a second time
+ * and is mid-turn still carries the previous turn's `succeeded`/`time_idle`
+ * (reading those as the current state made a resumed, plainly-working agent
+ * render as completed while its processes ran). They are therefore only read
+ * while the session row shows no activity newer than the settle; a child
+ * written to after its idle stamp has been running since.
+ */
+const resolveSubagentStatus = (
+  child: OpenCodeChildSessionRow | undefined,
+  metadataStatus: string | undefined,
+  toolStatus: string | undefined,
+): SubagentInfo['status'] => {
+  const settledAt = child?.time_idle ?? null;
+  const hasActivityAfterSettle = settledAt !== null
+    && child?.time_updated != null
+    && child.time_updated > settledAt + SUBAGENT_SETTLE_SLACK_MS;
 
-  if (toolResult?.content) {
-    toolResult.content = unwrapTaskOutput(toolResult.content);
-  }
-
-  const subagent: SubagentInfo = {
-    id: childSessionId ?? message.toolId ?? message.id,
-    type: readOptionalString(input.subagent_type),
-    description: readOptionalString(input.description),
-    status,
-    model: readOptionalString(readObjectRecord(metadata.model)?.modelID),
-  };
-
-  if (db && childSessionId) {
-    try {
-      const activity = readOpenCodeSubagentActivity(db, childSessionId);
-      if (activity.length > 0) {
-        // Keep the latest steps: the timeline says the missing ones are the earlier ones.
-        message.subagentTools = activity
-          .slice(-MAX_TRANSMITTED_SUBAGENT_ACTIVITIES)
-          .map(truncateSubagentActivity);
-        subagent.activityCount = activity.length;
-      }
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      console.warn(`[OpenCodeProvider] Failed to read subagent session ${childSessionId}:`, reason);
+  if (!hasActivityAfterSettle) {
+    const outcome = readOptionalString(child?.idle_outcome);
+    if (outcome === 'succeeded' || outcome === 'completed') {
+      return 'completed';
     }
+    if (outcome === 'failed') {
+      return 'failed';
+    }
+    if (outcome === 'interrupted' || outcome === 'stopped') {
+      return 'stopped';
+    }
+    if (settledAt !== null) {
+      return 'completed';
+    }
+  } else if (child && child.time_idle !== null) {
+    // The child settled once, was resumed, and has been working since.
+    return 'running';
   }
 
-  message.subagent = subagent;
+  if (metadataStatus === 'completed') {
+    return 'completed';
+  }
+  if (metadataStatus === 'failed' || toolStatus === 'error') {
+    return 'failed';
+  }
+  if (metadataStatus === 'interrupted' || metadataStatus === 'stopped') {
+    return 'stopped';
+  }
+  return 'running';
 };
 
-/** Opens the shared database for a live event, or null when it cannot be read right now. */
-const openOpenCodeDatabaseForLiveEvent = (): Database.Database | null => {
-  try {
-    return openOpenCodeDatabase();
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    console.warn('[OpenCodeProvider] Failed to open opencode.db for a live event:', reason);
-    return null;
+/**
+ * The result text a subagent card shows under "Result".
+ *
+ * A foreground spawn wraps the child's final answer in a `<subagent>` tag; a
+ * background launch's tool content is only the launch acknowledgement. The
+ * acknowledgement must not be drawn as the agent's answer, so the timeline's
+ * last assistant text stands in for a background agent whose own result the
+ * parent transcript never records.
+ */
+const readSubagentResultText = (state: AnyRecord, activity: SubagentActivity[] | undefined): string => {
+  const raw = readOpenCodeToolResultContent(state).trim();
+  const wrapped = /^<subagent\b[^>]*>([\s\S]*?)<\/subagent>$/.exec(raw);
+  if (wrapped) {
+    return wrapped[1].trim();
   }
+  if (raw.includes('The subagent is working in the background')) {
+    const lastText = [...(activity ?? [])].reverse().find((entry) => entry.kind === 'text');
+    return lastText?.content?.trim() ?? '';
+  }
+  return raw;
 };
 
 export class OpenCodeSessionsProvider implements IProviderSessions {
@@ -568,7 +545,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
    * v1 carried the fields on the event itself; both shapes are read.
    */
   normalizeMessage(rawMessage: unknown, sessionId: string | null): NormalizedMessage[] {
-    const raw = readObjectRecord(compactProviderPayload(rawMessage));
+    const raw = readObjectRecord(rawMessage);
     if (!raw) {
       return [];
     }
@@ -578,11 +555,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
     const type = readOptionalString(raw.type) ?? readOptionalString(raw.event);
     const eventSessionId = readOptionalString(raw.sessionID) ?? readOptionalString(raw.sessionId) ?? sessionId;
     const timestamp = normalizeProviderTimestamp(raw.time ?? raw.timestamp);
-    const partMessageId = readOptionalString(part?.messageID);
-    const partId = readOptionalString(part?.id);
-    // Same id the history reader gives this part, so a reload does not duplicate it.
-    const baseId = (partMessageId && partId ? `${partMessageId}_${partId}` : undefined)
-      ?? readOptionalString(raw.id)
+    const baseId = readOptionalString(raw.id)
       ?? readOptionalString(raw.messageID)
       ?? readOptionalString(part?.id)
       ?? generateMessageId('opencode');
@@ -595,7 +568,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
       }
 
       const content = extractText(raw.text ?? raw.delta ?? raw.message ?? part?.text);
-      if (!hasVisibleText(content)) {
+      if (!content.trim()) {
         return [];
       }
 
@@ -611,7 +584,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
 
     if (type === 'reasoning') {
       const content = extractText(raw.text ?? raw.delta ?? raw.message ?? part?.text);
-      if (!hasVisibleText(content)) {
+      if (!content.trim()) {
         return [];
       }
 
@@ -636,9 +609,6 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
         ?? baseId;
       const output = raw.output ?? partState?.output;
       const error = raw.error ?? partState?.error;
-      // v2 reports the tool's lifecycle on `state.status`; a finished state
-      // carries the output/error the flat v1 fields would have had.
-      const toolStatus = readOptionalString(partState?.status);
       const toolMessage = createNormalizedMessage({
         id: baseId,
         sessionId: eventSessionId,
@@ -655,22 +625,6 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
           content: formatToolContent(output ?? error),
           isError: error !== undefined,
         };
-      } else if (toolStatus === 'completed' || toolStatus === 'error') {
-        toolMessage.toolResult = {
-          content: formatToolContent(partState?.output ?? partState?.error),
-          isError: toolStatus === 'error',
-        };
-      }
-
-      if (toolName === SUBAGENT_TOOL_NAME) {
-        // `opencode run` reports a task only once it has finished, so its
-        // child session is complete in the database by now.
-        const db = openOpenCodeDatabaseForLiveEvent();
-        try {
-          attachOpenCodeSubagent(toolMessage, partState ?? {}, db, true);
-        } finally {
-          db?.close();
-        }
       }
 
       return [toolMessage];
@@ -686,7 +640,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
         timestamp,
         provider: PROVIDER,
         kind: 'error',
-        content: readEventError(raw.error)
+        content: readOptionalString(raw.error)
           ?? readOptionalString(errorRecord?.message)
           ?? readOptionalString(raw.message)
           ?? 'Unknown OpenCode error',
@@ -728,30 +682,37 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
         return { messages: [], total: 0, hasMore: false, offset: 0, limit: null };
       }
 
-      // v2 keeps the per-session token totals on the session row; the v1
-      // layout aggregates them from per-message rows instead.
+      // v2 keeps the per-session token totals on the session row (read below
+      // as `cumulative`); the v1 layout aggregates them from per-message rows.
       const rows = layout === 'session_message'
         ? flattenOpenCodeV2HistoryRows(db, providerSessionId)
         : this.readV1HistoryRows(db, providerSessionId);
-      const tokenUsage = layout === 'session_message'
-        ? buildTokenUsage(readOpenCodeSessionTokenTotals(db, providerSessionId) ?? undefined)
-        : aggregateOpenCodeSessionTokenUsage(db, providerSessionId);
+      // Current occupancy (newest message) plus the model's window, so a
+      // reloaded transcript shows the same ratio the live frames pushed. The
+      // session-lifetime numbers ride along as `cumulative`.
+      const tokenUsage = readOpenCodeContextUsage(db, providerSessionId);
 
+      // Each spawn the transcript refers to gets the child session's own
+      // timeline attached, so a reload draws the same card the live fold did.
+      const childSessions = this.readChildSessions(db, providerSessionId);
+      const subagentActivityBySession = new Map<string, SubagentActivity[]>();
+      for (const childSessionId of collectSubagentSessionIds(rows)) {
+        if (!childSessions.has(childSessionId)) {
+          continue;
+        }
+        subagentActivityBySession.set(
+          childSessionId,
+          toSubagentActivity(layout === 'session_message'
+            ? flattenOpenCodeV2HistoryRows(db, childSessionId)
+            : this.readV1HistoryRows(db, childSessionId)),
+        );
+      }
+
+      const normalized = this.normalizeHistoryRows(rows, sessionId, childSessions, subagentActivityBySession);
       const normalizedOffset = Math.max(0, offset);
       const normalizedLimit = limit === null ? null : Math.max(0, limit);
-      const capacity = normalizedLimit === null ? Infinity : normalizedOffset + normalizedLimit;
-      const window: NormalizedMessage[] = [];
-      let total = 0;
-      let head = 0;
-      for (const message of this.normalizeHistoryRows(rows, sessionId, { db, layout, providerSessionId, backgroundOutcomes: new Map() })) {
-        total += 1;
-        if (capacity === 0) continue;
-        if (window.length < capacity) window.push(message);
-        else { window[head] = message; head = (head + 1) % capacity; }
-      }
-      const ordered = head === 0 ? window : [...window.slice(head), ...window.slice(0, head)];
-      const { page } = sliceTailPage(ordered, normalizedLimit, normalizedOffset);
-      const hasMore = normalizedLimit !== null && total > normalizedOffset + normalizedLimit;
+      const total = normalized.length;
+      const { page, hasMore } = sliceTailPage(normalized, normalizedLimit, normalizedOffset);
 
       return {
         messages: page,
@@ -762,7 +723,6 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
         tokenUsage,
       };
     } catch (error) {
-      if (error instanceof ProviderDisplayAssetError) throw error;
       const message = error instanceof Error ? error.message : String(error);
       console.warn(`[OpenCodeProvider] Failed to load session ${sessionId}:`, message);
       return { messages: [], total: 0, hasMore: false, offset: 0, limit: null };
@@ -772,7 +732,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
   }
 
   /** The v1 message+part layout query, kept for databases predating v2. */
-  private readV1HistoryRows(db: Database.Database, providerSessionId: string): Iterable<OpenCodeHistoryRow> {
+  private readV1HistoryRows(db: Database.Database, providerSessionId: string): OpenCodeHistoryRow[] {
     return db.prepare(`
       SELECT
         m.id AS message_id,
@@ -791,21 +751,79 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
         m.id,
         COALESCE(p.time_created, 0),
         p.id
-    `).iterate(providerSessionId) as Iterable<OpenCodeHistoryRow>;
+    `).all(providerSessionId) as OpenCodeHistoryRow[];
   }
 
-  private *normalizeHistoryRows(
-    rows: Iterable<OpenCodeHistoryRow>,
+  /**
+   * Reads the child sessions a parent session spawned, keyed by child id.
+   *
+   * Columns the running schema may not carry (`agent`, `time_idle`,
+   * `idle_outcome`) are selected as nulls, so a database predating them still
+   * answers with the rest of the row instead of failing the whole history.
+   */
+  private readChildSessions(
+    db: Database.Database,
+    parentProviderSessionId: string,
+  ): Map<string, OpenCodeChildSessionRow> {
+    const table = resolveOpenCodeSessionTableName(db);
+    if (!table) {
+      return new Map();
+    }
+    const columns = new Set(
+      (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: string }>)
+        .map((column) => column.name),
+    );
+    if (!columns.has('parent_id')) {
+      return new Map();
+    }
+    const column = (name: keyof OpenCodeChildSessionRow): string => (
+      columns.has(name) ? name : `NULL AS ${name}`
+    );
+    const rows = db.prepare(`
+      SELECT
+        id,
+        parent_id,
+        ${column('title')},
+        ${column('agent')},
+        ${column('model')},
+        ${column('time_updated')},
+        ${column('time_idle')},
+        ${column('idle_outcome')}
+      FROM ${table}
+      WHERE parent_id = ?
+    `).all(parentProviderSessionId) as OpenCodeChildSessionRow[];
+
+    const children = new Map<string, OpenCodeChildSessionRow>();
+    for (const row of rows) {
+      if (typeof row.id === 'string' && row.id) {
+        children.set(row.id, row);
+      }
+    }
+    return children;
+  }
+
+  private normalizeHistoryRows(
+    rows: OpenCodeHistoryRow[],
     sessionId: string,
-    context: OpenCodeHistoryContext,
-  ): Generator<NormalizedMessage> {
-    let rowOrdinal = 0;
+    childSessions: Map<string, OpenCodeChildSessionRow> = new Map(),
+    subagentActivityBySession: Map<string, SubagentActivity[]> = new Map(),
+  ): NormalizedMessage[] {
+    const normalized: NormalizedMessage[] = [];
     const emittedMessageErrors = new Set<string>();
+    /**
+     * How many text parts this walk has passed per message. The live events
+     * name a text part by its ordinal among the message's text parts, so the
+     * row key both paths publish derives from that same count — see
+     * `buildOpenCodeTextRowKey`, which the client reconciles the streamed
+     * reply against. Counted per part, not per emitted row: a part that
+     * renders nothing still occupies its ordinal.
+     */
+    const textPartCounts = new Map<string, number>();
 
     for (const row of rows) {
       const timestamp = normalizeProviderTimestamp(row.part_time_created ?? row.message_time_created);
-      const baseId = `${row.message_id}_${row.part_id ?? rowOrdinal++}`;
-      const messageInfo = compactProviderPayload(readJsonRecord(row.message_data));
+      const baseId = `${row.message_id}_${row.part_id ?? normalized.length}`;
+      const messageInfo = readJsonRecord(row.message_data);
       const messageRole = readOptionalString(messageInfo?.role);
 
       if (
@@ -815,28 +833,29 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
         && !emittedMessageErrors.has(row.message_id)
       ) {
         emittedMessageErrors.add(row.message_id);
-        yield createNormalizedMessage({
+        normalized.push(createNormalizedMessage({
           id: `${baseId}_error`,
           sessionId,
           timestamp,
           provider: PROVIDER,
           kind: 'error',
           content: formatToolContent(messageInfo.error),
-        });
+        }));
       }
 
       if (!row.part_id) {
         continue;
       }
 
-      const rawPartData = readJsonRecord(row.part_data);
-      const partData = compactProviderPayload(rawPartData && messageRole === 'user' ? { ...rawPartData, role: 'user' } : rawPartData) ?? {};
+      const partData = readJsonRecord(row.part_data) ?? {};
       const partType = readOptionalString(partData.type);
       if (!partType) {
         continue;
       }
 
       if (partType === 'text') {
+        const textPartOrdinal = textPartCounts.get(row.message_id) ?? 0;
+        textPartCounts.set(row.message_id, textPartOrdinal + 1);
         const rawContent = extractText(partData);
         // User prompts sent with attachments carry an <images_input> path
         // list; strip it for display and surface the paths as images.
@@ -846,12 +865,13 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
         const parsedFiles = messageRole === 'user'
           ? parseFilesInputTag(parsedImages.text)
           : { text: rawContent, attachments: [] };
+        const compactAnnotation = readCompactionAnnotation(partData.compact);
         if (
-          hasVisibleText(parsedFiles.text)
+          parsedFiles.text.trim()
           || parsedImages.attachments.length > 0
           || parsedFiles.attachments.length > 0
         ) {
-          yield createNormalizedMessage({
+          normalized.push(createNormalizedMessage({
             id: baseId,
             sessionId,
             timestamp,
@@ -861,22 +881,38 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
             content: parsedFiles.text,
             images: parsedImages.attachments.length > 0 ? parsedImages.attachments : undefined,
             files: parsedFiles.attachments.length > 0 ? parsedFiles.attachments : undefined,
-          });
+            // The live stream never announces this row — it sends fragments
+            // of it — so the part coordinates are the only identity the two
+            // paths share. A compaction's virtual rows have no live
+            // counterpart to reconcile with, so they stay unkeyed.
+            ...(
+              messageRole !== 'user'
+              && partData.isCompactSummary !== true
+              && compactAnnotation === undefined
+                ? { providerRowKey: buildOpenCodeTextRowKey(row.message_id, textPartOrdinal) }
+                : {}
+            ),
+            // A compaction's two virtual rows carry their annotations here:
+            // the summary is flagged so the client folds it behind a
+            // disclosure, and the row above it says what the compaction was.
+            ...(partData.isCompactSummary === true ? { isCompactSummary: true } : {}),
+            ...(compactAnnotation ? { compact: compactAnnotation } : {}),
+          }));
         }
         continue;
       }
 
       if (partType === 'reasoning') {
         const content = extractText(partData);
-        if (hasVisibleText(content)) {
-          yield createNormalizedMessage({
+        if (content.trim()) {
+          normalized.push(createNormalizedMessage({
             id: baseId,
             sessionId,
             timestamp,
             provider: PROVIDER,
             kind: 'thinking',
             content,
-          });
+          }));
         }
         continue;
       }
@@ -884,243 +920,102 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
       if (partType === 'tool') {
         const state = readObjectRecord(partData.state) ?? {};
         const status = readOptionalString(state.status);
-        const engineToolName = readOptionalString(partData.tool) ?? 'Tool';
-        const isSubagent = isOpenCodeSubagentTool(engineToolName);
-        const engineInput = state.input ?? partData.input ?? {};
+        const toolName = readOptionalString(partData.tool) ?? 'Tool';
+        const toolInput = state.input ?? partData.input ?? {};
         const toolMessage = createNormalizedMessage({
           id: baseId,
           sessionId,
           timestamp,
           provider: PROVIDER,
           kind: 'tool_use',
-          toolName: toClientToolName(engineToolName),
-          toolInput: isSubagent ? toAgentCardInput(engineInput) : engineInput,
+          toolName,
+          toolInput,
           toolId: readOptionalString(partData.callID) ?? row.part_id,
         });
 
         if (status === 'completed' || status === 'error') {
-          // v1 states carry the output as a string; v2 states carry result
-          // blocks under `content`.
-          const output = state.output ?? (state.content === undefined ? undefined : formatToolOutput(state.content));
           toolMessage.toolResult = {
-            content: formatToolContent(output ?? state.error),
+            content: readOpenCodeToolResultContent(state),
             isError: status === 'error',
           };
         }
 
-        if (isSubagent) {
-          this.attachSubagent(toolMessage, state, engineInput, row.part_time_created ?? row.message_time_created, context);
+        // A spawn names its child in `state.metadata.sessionID`. The child's
+        // own row and transcript are where its agent name, settled status and
+        // timeline live — the parent launch block keeps `status: "running"`
+        // forever for a background agent.
+        const metadata = readObjectRecord(state.metadata) ?? {};
+        const childSessionId = SUBAGENT_TOOL_NAMES.has(toolName)
+          ? readOptionalString(metadata.sessionID)
+          : undefined;
+        if (childSessionId) {
+          const child = childSessions.get(childSessionId);
+          const activity = subagentActivityBySession.get(childSessionId);
+          const input = readObjectRecord(toolInput) ?? {};
+          const agentName = readOptionalString(child?.agent) ?? readOptionalString(input.agent);
+          const model = readOpenCodeChildModelLabel(child?.model);
+          toolMessage.subagent = {
+            id: childSessionId,
+            ...(agentName ? { name: agentName, type: agentName } : {}),
+            description: readOptionalString(child?.title) ?? readOptionalString(input.description),
+            status: resolveSubagentStatus(child, readOptionalString(metadata.status), status),
+            ...(model ? { model } : {}),
+            ...(activity && activity.length > 0 ? { activityCount: activity.length } : {}),
+          };
+          if (activity && activity.length > 0) {
+            toolMessage.subagentTools = activity
+              .slice(-MAX_TRANSMITTED_SUBAGENT_ACTIVITIES)
+              .map(truncateSubagentActivity);
+          }
+          const result = readSubagentResultText(state, activity);
+          if (result || status === 'error') {
+            toolMessage.toolResult = {
+              content: result,
+              isError: status === 'error',
+            };
+          }
         }
 
-        yield toolMessage;
-        continue;
-      }
-
-      if (partType === 'compaction') {
-        yield createOpenCodeCompactionFrame({
-          inputId: row.message_id,
-          sessionId,
-          timestamp,
-          phase: partData.status === 'failed' ? 'failed' : 'done',
-          reason: partData.reason,
-          error: partData.error,
-        });
-        // The summary the compaction wrote, which the client folds into the row.
-        const summary = readOptionalString(partData.summary);
-        if (summary && hasVisibleText(summary)) {
-          yield createNormalizedMessage({
-            id: `${row.message_id}_summary`,
-            sessionId,
-            timestamp,
-            provider: PROVIDER,
-            kind: 'text',
-            role: 'assistant',
-            content: summary,
-            isCompactSummary: true,
-          });
-        }
+        normalized.push(toolMessage);
         continue;
       }
 
       if (partType === 'step-finish') {
-        yield createNormalizedMessage({
+        normalized.push(createNormalizedMessage({
           id: baseId,
           sessionId,
           timestamp,
           provider: PROVIDER,
           kind: 'stream_end',
-        });
+        }));
         continue;
       }
 
-      // An `agent` part is the user's @-mention of an agent, not a spawn (the
-      // prompt text already holds the mention), so it draws nothing.
-      if (partType === 'patch') {
-        yield createNormalizedMessage({
+      if (partType === 'patch' || partType === 'agent') {
+        normalized.push(createNormalizedMessage({
           id: baseId,
           sessionId,
           timestamp,
           provider: PROVIDER,
           kind: 'tool_use',
-          toolName: 'Patch',
+          toolName: partType === 'patch' ? 'Patch' : 'Agent',
           toolInput: partData,
           toolId: row.part_id,
-        });
+        }));
       }
     }
 
+    return normalized;
   }
 
   /**
-   * Publishes a spawn call's outcome and its child session's work on its
-   * `Agent` row.
+   * Reads the session's CURRENT context occupancy: the newest assistant
+   * message's own token usage plus the model's context window, with the
+   * session-lifetime columns preserved as `cumulative` for the cost breakdown.
    *
-   * The call's own status is the agent's outcome (`completed`, `error`). A
-   * call persisted as `pending` or `running` can only still be running while
-   * the session has a run in flight; once the session is idle the run that
-   * owned the call is gone and the agent can never finish, so it reads as
-   * `stopped`.
-   *
-   * A call launched in the background is persisted `completed` the moment it
-   * returns, with its metadata still saying `running`; that only says the
-   * agent started. Its outcome is the notice the engine persisted when the
-   * agent ended; with no notice yet it runs while the runtime still tracks
-   * it, and is `stopped` once nothing does.
-   */
-  private attachSubagent(
-    toolMessage: NormalizedMessage,
-    state: AnyRecord,
-    engineInput: unknown,
-    callTime: number | null,
-    context: OpenCodeHistoryContext,
-  ): void {
-    const input = readObjectRecord(engineInput);
-    const childSessionId = readSubagentChildSessionId(state.metadata)
-      ?? readOptionalString(input?.sessionID);
-    const agentType = readOptionalString(input?.agent);
-    const description = readOptionalString(input?.description);
-    const subagent: SubagentInfo = {
-      id: childSessionId ?? String(toolMessage.toolId),
-      name: agentType,
-      type: agentType,
-      description,
-      status: childSessionId && readOptionalString(readObjectRecord(state.metadata)?.status) === 'running'
-        && readOptionalString(state.status) === 'completed'
-        ? this.resolveBackgroundSubagentStatus(childSessionId, callTime, context)
-        : this.resolveSubagentStatus(readOptionalString(state.status), callTime, context),
-    };
-
-    if (childSessionId) {
-      const activity = this.readChildSessionActivity(childSessionId, context);
-      if (activity.length > 0) {
-        toolMessage.subagentTools = activity.map(truncateSubagentActivity);
-        subagent.activityCount = activity.length;
-      }
-    }
-    toolMessage.subagent = subagent;
-  }
-
-  /**
-   * A resumed agent keeps its child session id, so this call's outcome is the
-   * first notice written after it launched the agent and before the next
-   * call launched it again. Without one the agent runs while the runtime
-   * still tracks it (only the latest launch can be running), else it is lost.
-   */
-  private resolveBackgroundSubagentStatus(
-    childSessionId: string,
-    callTime: number | null,
-    context: OpenCodeHistoryContext,
-  ): SubagentInfo['status'] {
-    const record = this.readBackgroundRecord(context);
-    const nextLaunch = callTime === null
-      ? undefined
-      : (record.launches.get(childSessionId) ?? []).find((launchedAt) => launchedAt > callTime);
-    const notice = (record.notices.get(childSessionId) ?? []).find((entry) => entry.at === null || callTime === null
-      || (entry.at >= callTime && (nextLaunch === undefined || entry.at < nextLaunch)));
-    if (notice) {
-      return notice.outcome;
-    }
-    return nextLaunch === undefined && opencodeBackgroundWork.has(childSessionId) ? 'running' : 'stopped';
-  }
-
-  private readBackgroundRecord(context: OpenCodeHistoryContext): OpenCodeSessionBackgroundRecord {
-    const cache = context.backgroundOutcomes ?? new Map<string, OpenCodeSessionBackgroundRecord>();
-    context.backgroundOutcomes = cache;
-    const cached = cache.get(context.providerSessionId);
-    if (cached) {
-      return cached;
-    }
-    const record: OpenCodeSessionBackgroundRecord = { notices: new Map(), launches: new Map() };
-    for (const { metadata, createdAt } of readOpenCodeSyntheticNoticeMetadata(context.db, context.providerSessionId)) {
-      const notice = readBackgroundNotice(metadata);
-      if (notice) {
-        const list = record.notices.get(notice.taskId) ?? [];
-        list.push({ outcome: notice.outcome, at: createdAt });
-        record.notices.set(notice.taskId, list);
-      }
-    }
-    if (context.layout === 'session_message') {
-      for (const launch of readBackgroundAgentLaunchTimes(context.db, context.providerSessionId)) {
-        const list = record.launches.get(launch.childSessionId) ?? [];
-        list.push(launch.at);
-        record.launches.set(launch.childSessionId, list);
-      }
-    }
-    cache.set(context.providerSessionId, record);
-    return record;
-  }
-
-  private resolveSubagentStatus(
-    callStatus: string | undefined,
-    callTime: number | null,
-    context: OpenCodeHistoryContext,
-  ): SubagentInfo['status'] {
-    if (callStatus === 'completed') {
-      return 'completed';
-    }
-    if (callStatus === 'error') {
-      return 'failed';
-    }
-    const idleAt = readOpenCodeSessionIdleAt(context.db, context.providerSessionId);
-    // `undefined`: this database cannot say whether a run is in flight, so a
-    // call left unresolved is not claimed to be running. `null`: a run is
-    // still in flight. A number: the session went idle at that time, which
-    // ends every call begun before it.
-    const stillInFlight = idleAt === null || (idleAt !== undefined && (callTime ?? 0) > idleAt);
-    return stillInFlight ? 'running' : 'stopped';
-  }
-
-  /** The child session's text, reasoning and tool calls as a subagent timeline. */
-  private readChildSessionActivity(childSessionId: string, context: OpenCodeHistoryContext): SubagentActivity[] {
-    const rows = context.layout === 'session_message'
-      ? flattenOpenCodeV2HistoryRows(context.db, childSessionId)
-      : this.readV1HistoryRows(context.db, childSessionId);
-    const activity: SubagentActivity[] = [];
-    for (const message of this.normalizeHistoryRows(rows, childSessionId, { ...context, providerSessionId: childSessionId })) {
-      if (message.kind === 'tool_use') {
-        activity.push({
-          kind: 'tool',
-          timestamp: message.timestamp,
-          toolId: message.toolId,
-          toolName: message.toolName,
-          toolInput: message.toolInput,
-          toolResult: message.toolResult ?? null,
-        });
-      } else if (message.kind === 'text' && message.role !== 'user') {
-        activity.push({ kind: 'text', timestamp: message.timestamp, content: message.content });
-      } else if (message.kind === 'thinking') {
-        activity.push({ kind: 'thinking', timestamp: message.timestamp, content: message.content });
-      }
-    }
-    return activity;
-  }
-
-  /**
-   * Reads the token usage recorded on the session row's token columns.
-   *
-   * Consumer: the provider token-usage service. Databases predating the token
-   * columns answer with an explicit unsupported result; a database or session
-   * row that cannot be found is a 404.
+   * Consumer: the provider token-usage service (`GET .../token-usage` and the
+   * `/cost` fallback). Databases predating the token columns answer with an
+   * explicit unsupported result; an unknown session is a 404.
    */
   async getTokenUsage(input: ProviderSessionUsageInput): Promise<ProviderTokenUsageResult> {
     const databasePath = getOpenCodeDatabasePath();
@@ -1158,37 +1053,22 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
         };
       }
 
-      const row = database.prepare(`
-        SELECT
-          tokens_input AS inputTokens,
-          tokens_output AS outputTokens,
-          tokens_reasoning AS reasoningTokens,
-          tokens_cache_read AS cacheReadTokens,
-          tokens_cache_write AS cacheWriteTokens
-        FROM ${table}
-        WHERE id = ?
-      `).get(input.nativeSessionId) as OpenCodeTokenTotals | undefined;
-
-      if (!row) {
+      if (!database.prepare(`SELECT id FROM ${table} WHERE id = ?`).get(input.nativeSessionId)) {
         throw new AppError('OpenCode session was not found.', {
           code: 'OPENCODE_SESSION_NOT_FOUND',
           statusCode: 404,
         });
       }
 
-      const inputTokens = readUsageNumber(row.inputTokens) + readUsageNumber(row.cacheReadTokens);
-      const outputTokens = readUsageNumber(row.outputTokens);
-      const used = readUsageNumber(row.inputTokens)
-        + outputTokens
-        + readUsageNumber(row.reasoningTokens)
-        + readUsageNumber(row.cacheReadTokens)
-        + readUsageNumber(row.cacheWriteTokens);
-
-      return {
-        used,
-        inputTokens,
-        outputTokens,
-        breakdown: { input: inputTokens, output: outputTokens },
+      // A session with no usable per-message tokens yet reports no occupancy
+      // rather than its lifetime totals: those describe the session's spend
+      // and would read as a wildly overflowing window. The cumulative numbers
+      // are still attached whenever the session row has them.
+      return readOpenCodeContextUsage(database, input.nativeSessionId) ?? {
+        used: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        breakdown: { input: 0, output: 0 },
       };
     } finally {
       database.close();

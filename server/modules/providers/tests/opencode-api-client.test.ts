@@ -103,6 +103,7 @@ test('sends the verified wire shapes with Basic auth on every call', async () =>
     });
     assert.equal(prompted.messageId, 'msg_fake');
     assert.equal(await client.interrupt('ses_fake'), true);
+    assert.equal((await client.compactSession('ses_fake')).messageId, 'msg_compaction');
     await client.replyPermission('ses_fake', 'per_1', { decision: 'reject', message: 'nope' });
     await client.replyForm('ses_fake', 'frm_1', { q0: 'Blue', q1: ['a', 'b'] });
     await client.cancelForm('ses_fake', 'frm_2', 'skipped by user');
@@ -122,6 +123,7 @@ test('sends the verified wire shapes with Basic auth on every call', async () =>
       ['PATCH', '/api/session/ses_fake'],
       ['POST', '/api/session/ses_fake/prompt'],
       ['POST', '/api/session/ses_fake/interrupt'],
+      ['POST', '/api/session/ses_fake/compact'],
       ['POST', '/api/session/ses_fake/permission/per_1/reply'],
       ['POST', '/api/session/ses_fake/form/frm_1/reply'],
       ['DELETE', '/api/session/ses_fake/form/frm_2?message=skipped%20by%20user'],
@@ -141,10 +143,11 @@ test('sends the verified wire shapes with Basic auth on every call', async () =>
       files: [{ uri: 'data:text/plain;base64,aGk=', filename: 'note.txt', mime: 'text/plain' }],
     });
     assert.equal(requests[5].body, undefined);
-    assert.deepEqual(requests[6].body, { decision: 'reject', message: 'nope' });
-    assert.deepEqual(requests[7].body, { answer: { q0: 'Blue', q1: ['a', 'b'] } });
-    assert.equal(requests[8].body, undefined, 'the cancel message travels in the query string');
-    assert.equal(requests[9].body, undefined);
+    assert.deepEqual(requests[6].body, {}, 'the compaction request carries no prompt of its own');
+    assert.deepEqual(requests[7].body, { decision: 'reject', message: 'nope' });
+    assert.deepEqual(requests[8].body, { answer: { q0: 'Blue', q1: ['a', 'b'] } });
+    assert.equal(requests[9].body, undefined, 'the cancel message travels in the query string');
+    assert.equal(requests[10].body, undefined);
   });
 });
 
@@ -176,10 +179,10 @@ test('turns non-2xx answers into OpenCodeApiError carrying status and message', 
   });
 });
 
-test('compact posts to the session compaction endpoint and returns the queued input id', async () => {
+test('compact posts to the session compaction endpoint and returns the admitted message id', async () => {
   await withFakeService(async ({ client, requests }) => {
-    const result = await client.compact('ses_fake');
-    assert.deepEqual(result, { inputId: 'msg_compaction' });
+    const result = await client.compactSession('ses_fake');
+    assert.deepEqual(result, { messageId: 'msg_compaction' });
     const request = requests.at(-1);
     assert.equal(request?.method, 'POST');
     assert.equal(request?.path, '/api/session/ses_fake/compact');

@@ -73,6 +73,11 @@ export const Reasoning = React.memo<ReasoningProps>(
     const hasEverStreamedRef = React.useRef(isStreaming);
     const [hasAutoClosed, setHasAutoClosed] = React.useState(false);
     const startTimeRef = React.useRef<number | null>(null);
+    // Whether the reader folded/unfolded the block by hand. Once they did, the
+    // one-shot auto-close must not fire for it anymore: opening a finished
+    // thought used to re-arm that timer and snap the content shut a second
+    // later, so the first click never stuck.
+    const userToggledRef = React.useRef(false);
 
     // Sync external duration prop
     React.useEffect(() => {
@@ -101,7 +106,13 @@ export const Reasoning = React.memo<ReasoningProps>(
 
     // Auto-close after streaming ends
     React.useEffect(() => {
-      if (hasEverStreamedRef.current && !isStreaming && isOpen && !hasAutoClosed) {
+      if (
+        hasEverStreamedRef.current
+        && !isStreaming
+        && isOpen
+        && !hasAutoClosed
+        && !userToggledRef.current
+      ) {
         const timer = setTimeout(() => {
           setIsOpen(false);
           setHasAutoClosed(true);
@@ -109,6 +120,16 @@ export const Reasoning = React.memo<ReasoningProps>(
         return () => clearTimeout(timer);
       }
     }, [isStreaming, isOpen, setIsOpen, hasAutoClosed]);
+
+    // Programmatic opens (the streaming auto-open above) leave the ref alone;
+    // only the Collapsible's own trigger reaches this callback.
+    const handleUserOpenChange = React.useCallback(
+      (next: boolean) => {
+        userToggledRef.current = true;
+        setIsOpen(next);
+      },
+      [setIsOpen]
+    );
 
     const contextValue = React.useMemo(
       () => ({ duration, isOpen, isStreaming, setIsOpen }),
@@ -119,7 +140,7 @@ export const Reasoning = React.memo<ReasoningProps>(
       <ReasoningContext.Provider value={contextValue}>
         <Collapsible
           open={isOpen}
-          onOpenChange={setIsOpen}
+          onOpenChange={handleUserOpenChange}
           nativeDetails={nativeDetails}
           className={cn('not-prose', className)}
           {...props}

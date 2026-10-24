@@ -1,10 +1,12 @@
-import { Cloud, ExternalLink, MessageSquare, Star, Users } from 'lucide-react';
+import { useState } from 'react';
+import { ArrowUpCircle, Cloud, ExternalLink, MessageSquare, RefreshCw, Star, Users } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
-import { BUILD_INFO, CLOUDCLI_WORDMARK_FONT_FAMILY, GITHUB_REPO_NAME, GITHUB_REPO_OWNER, GITHUB_REPO_URL } from '@/shared/constants';
+import { APP_VERSION, BUILD_INFO, CLOUDCLI_WORDMARK_FONT_FAMILY, GITHUB_REPO_URL } from '@/shared/constants';
 import { IS_PLATFORM, formatBuildVersion } from '@/shared/utils';
-import { useVersionCheck } from '@/shared/hooks/useVersionCheck';
+import { useSystemUpdate } from '@/shared/hooks/useSystemUpdate';
 import PremiumFeatureCard from '@/modules/settings/PremiumFeatureCard';
+import { VersionUpgradeModal } from '@/modules/version-upgrade';
 
 const DISCORD_URL = 'https://discord.gg/buxwujPNRE';
 const DOCS_URL = 'https://cloudcli.ai/docs/plugin-overview';
@@ -29,8 +31,15 @@ function DiscordIcon({ className }: { className?: string }) {
 /** Rendered by Settings for the "about" tab, showing version, links and premium upsell cards. */
 export default function AboutTab() {
   const { t } = useTranslation('settings');
-  const { updateAvailable, latestVersion, currentVersion, releaseInfo } = useVersionCheck(GITHUB_REPO_OWNER, GITHUB_REPO_NAME);
-  const releasesUrl = releaseInfo?.htmlUrl || `${GITHUB_REPO_URL}/releases`;
+  const { status, updateAvailable, isUpdating, isChecking, checkNow, reload } = useSystemUpdate();
+  // The About tab opens its own copy of the version modal, so an update can be
+  // run from here without closing settings.
+  const [showUpdateModal, setShowUpdateModal] = useState(false);
+  const updateLabel = isUpdating
+    ? t('about.update.updating')
+    : status?.availableMode === 'pull'
+      ? t('about.update.commitsBehind', { count: status.behind })
+      : t('about.update.rebuildAvailable');
 
   return (
     <div className="space-y-6">
@@ -48,26 +57,15 @@ export default function AboutTab() {
               CloudCLI
             </span>
             <a
-              href={releasesUrl}
+              href={GITHUB_REPO_URL}
               target="_blank"
               rel="noopener noreferrer"
               className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground"
             >
-              {formatBuildVersion(currentVersion, BUILD_INFO.commit)}
+              {formatBuildVersion(APP_VERSION, BUILD_INFO.commit)}
             </a>
             {BUILD_INFO.buildTime && (
               <span className="text-[11px] text-muted-foreground/60">{BUILD_INFO.buildTime}</span>
-            )}
-            {updateAvailable && latestVersion && (
-              <a
-                href={releasesUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-1 rounded-full bg-green-500/10 px-2 py-0.5 text-[10px] font-medium text-green-600 transition-colors hover:bg-green-500/20 dark:text-green-400"
-              >
-                {t('apiKeys.version.updateAvailable', { version: latestVersion })}
-                <ExternalLink className="h-2.5 w-2.5" />
-              </a>
             )}
           </div>
           <p className="mt-0.5 text-sm text-muted-foreground">
@@ -75,6 +73,45 @@ export default function AboutTab() {
           </p>
         </div>
       </div>
+
+      {/* Self-update: only a git checkout under PM2 can run it, but every
+          install can see why not. */}
+      {!IS_PLATFORM && (
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => void checkNow()}
+            disabled={isChecking || isUpdating}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-border/60 bg-background px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground disabled:opacity-60"
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${isChecking ? 'animate-spin' : ''}`} />
+            {isChecking ? t('about.update.checking') : t('about.update.checkNow')}
+          </button>
+          {updateAvailable || isUpdating ? (
+            <button
+              onClick={() => setShowUpdateModal(true)}
+              className="inline-flex items-center gap-1.5 rounded-full bg-green-500/10 px-2.5 py-1 text-xs font-medium text-green-600 transition-colors hover:bg-green-500/20 dark:text-green-400"
+            >
+              <ArrowUpCircle className="h-3.5 w-3.5" />
+              {updateLabel}
+            </button>
+          ) : status && !status.supported && status.reason ? (
+            <span className="text-xs text-muted-foreground/70">{t(`about.update.unsupported.${status.reason}`)}</span>
+          ) : status ? (
+            <span className="text-xs text-muted-foreground/70">
+              {status.fetchError ? t('about.update.checkFailed') : t('about.update.upToDate')}
+            </span>
+          ) : null}
+        </div>
+      )}
+
+      <VersionUpgradeModal
+        isOpen={showUpdateModal}
+        onClose={() => setShowUpdateModal(false)}
+        status={status}
+        reload={reload}
+        checkNow={checkNow}
+        isChecking={isChecking}
+      />
 
       {/* Star on GitHub button */}
       <a

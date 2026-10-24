@@ -99,7 +99,7 @@ test('ZCodeProtocolClient sends provider/updateAccountConfig before first busine
     supervisor as unknown as EngineSupervisor,
     router as unknown as RequestRouter,
     {
-      findBuiltinConfig: () => '/fake/builtin_config.json',
+      findActiveBuiltinConfig: () => '/fake/builtin_config.json',
       buildZCodeAccountSyncPayload: () => fakePayload,
     },
   );
@@ -126,7 +126,7 @@ test('ZCodeProtocolClient skips sync when no payload is returned', async () => {
     supervisor as unknown as EngineSupervisor,
     router as unknown as RequestRouter,
     {
-      findBuiltinConfig: () => '/fake/builtin_config.json',
+      findActiveBuiltinConfig: () => '/fake/builtin_config.json',
       buildZCodeAccountSyncPayload: () => null,
     },
   );
@@ -150,7 +150,7 @@ test('ZCodeProtocolClient re-syncs after process crash and restart', async () =>
     supervisor as unknown as EngineSupervisor,
     router as unknown as RequestRouter,
     {
-      findBuiltinConfig: () => '/fake/builtin_config.json',
+      findActiveBuiltinConfig: () => '/fake/builtin_config.json',
       buildZCodeAccountSyncPayload: () => fakePayload,
     },
   );
@@ -184,7 +184,7 @@ test('ZCodeProtocolClient swallows sync error without blocking business request'
     supervisor as unknown as EngineSupervisor,
     router as unknown as RequestRouter,
     {
-      findBuiltinConfig: () => '/fake/builtin_config.json',
+      findActiveBuiltinConfig: () => '/fake/builtin_config.json',
       buildZCodeAccountSyncPayload: () => ({ revision: '1' }),
     },
   );

@@ -31,8 +31,7 @@ flowchart LR
 要点：
 
 - **服务端是引擎的宿主**，不是代理。引擎子进程/SDK 由服务端拉起，会话原件落盘在各引擎自己的数据目录，服务端只做索引、归一化与转发。
-- 入口 `server/index.ts`：组装 Express、挂全部 REST 路由、挂 WS（`server/modules/websocket`）、托管 `dist/`、SPA fallback、启动异步任务恢复与派发、优雅停机。异步任务 worker 是脱离宿主生命周期的子进程。优雅停机同时关掉常驻引擎进程（Codex 驻留会话、Claude 空闲常驻与为后台工作留着的进程、ZCode 协议客户端），不让引擎活过宿主。
-- 装配层把网关的事件发布入口交给 provider 运行时：常驻引擎在回合结束后自发汇报回合时，事件经 `chatRunRegistry` 的会话通道发出，运行时自己不发包、不编号。装配层也把任务桥接的登记入口与凭证的签发、作废交给运行时，并单独挂载桥接入口 `/api/tasks/mcp/invoke`（在通用 API Key 中间件之前，自行鉴权）。
+- 入口 `server/index.ts`：组装 Express、挂全部 REST 路由、挂 WS（`server/modules/websocket`）、托管 `dist/`、SPA fallback、启动异步任务恢复与派发、优雅停机。异步任务 worker 是脱离宿主生命周期的子进程。
 - 端口：`SERVER_PORT` 默认 **3001**，`HOST` 默认 `0.0.0.0`；开发模式 Vite 跑 5173 并把 API 代理到 3001（`vite.config.js`）。
 - HTTP 连接配置：`server/http-timeouts.ts` 在监听前配置 origin 的连接空闲时间；默认覆盖常见代理的默认空闲池时间，但自定义代理仍需保证其空闲池先于 origin 过期。`HTTP_KEEP_ALIVE_TIMEOUT_MS` 可覆盖默认值，单位为毫秒，必须是 Node 定时器范围内的正整数；非法配置使启动失败。请求头接收超时保持大于连接空闲超时。默认值与校验范围以实现为准，PM2 实例的覆盖值写在 `~/.pm2/ecosystem.config.cjs`。
 - 启动标记：`~/.cloudcli/local-server.json`（host/port/pid/appRoot），用于 CLI 与健康检查定位实例。
@@ -49,12 +48,14 @@ server/
     websocket/             ★ WS 网关（/ws 聊天、/shell 终端、通知、插件代理），见 chat.md
     task-continuations/    ★ 异步任务接续（任务登记、隔离 worker、事务型发件箱、状态机、非抢断派发器与崩溃恢复）
     auth/                  JWT 注册/登录/刷新 + authenticateToken 中间件
-    database/              better-sqlite3 连接、schema、migrations 与 repositories
+    database/              better-sqlite3 连接、schema、migrations、repositories（21 张表）
     assets/                聊天上传资产（~/.cloudcli/assets）的上传与读取
     agent/                 无头 Agent API（API key / 平台模式鉴权）
     notifications/         Web Push（VAPID）+ 桌面通知 WS
     plugins/               插件注册表、插件子进程、WS 代理
-    scheduled-messages/    定时消息（调度器 → 无附着 chat turn）
+    scheduled-messages/    定时消息（一次性：调度器 → 无附着 chat turn）
+    scheduled-jobs/        定时任务（cron 循环或 run_at 仅一次 + 运行历史；reuse/new 两种会话模式，reuse 可设 rotate_after_days 到龄换新会话并归档旧会话；永不打断在跑回合）
+                           含 agent 侧受管 MCP 桥 `cloudcli-scheduled-tasks`（Settings 全局开关 + 启动对账）
     browser-use/           浏览器自动化 service + 本地 MCP 桥接
     local-proxy/           把服务器本机端口上的服务转发给远程浏览器（票据 + 会话 cookie）
     voice/  cli/  git/  file-tree/  worktrees/  projects/  settings/  system/  user/
@@ -67,6 +68,7 @@ src/
     project-workspace/     工作区外壳（布局、标签页、项目/会话列表状态）
     sidebar/  settings/  auth/  provider-auth/  mcp/  skills/  git-panel/  file-tree/
     code-editor/  shell/  standalone-shell/  i18n/  plugins/  browser-use/
+    scheduled-jobs/        工作区 Scheduled 标签页 + composer 任务入口（循环/仅一次，见 chat.md / frontend.md）
     voice/  task-master/  command-palette/  onboarding/  quick-settings-panel/  …
   shared/                  api.ts（fetch 封装）、types.ts、context/（全局 Context）、ui/（通用组件 + 引擎 Logo）
   App.tsx                  路由：/ 与 /session/:sessionId 两个工作区路由
@@ -80,11 +82,11 @@ docs/
 
 | 数据 | 位置 | 说明 |
 | --- | --- | --- |
-| SQLite（账号/会话元数据/配置/任务） | `~/.cloudcli/auth.db`（`DATABASE_PATH` 可改） | 连接单例 `server/modules/database/connection.ts`，表定义 `schema.ts`，迁移 `migrations.ts` |
+| SQLite（账号/会话元数据/配置/任务） | `~/.cloudcli/auth.db`（`DATABASE_PATH` 可改） | 21 张表：users、api_keys、user_credentials、projects、sessions、app_config、provider_models、user_preferences、session_drafts、scheduled_messages、scheduled_jobs、scheduled_job_runs、async_tasks、task_continuation_events、task_continuation_manual_actions、notification 系列、vapid_keys、push_subscriptions、scan_state、superseded_provider_sessions。连接单例 `server/modules/database/connection.ts`，表定义 `schema.ts`，迁移 `migrations.ts` |
 | 异步任务目录与产物 | `~/.cloudcli/tasks/<taskId>` | 后台命令日志 `output.log` 与原子结果 `result.json`，支持宿主断电/崩溃重启后自动扫描补录入库 |
 | 聊天上传资产 | `~/.cloudcli/assets` | `server/modules/assets`；聊天发送只信任该目录**直接子文件**（`chat-websocket.service.ts` 过滤） |
 | 插件本体与启用状态 | `~/.cloudcli/plugins` + `~/.cloudcli/plugins.json` | `server/modules/plugins`（注册表扫描 + 子进程管理）；首次访问时从旧 `~/.claude-code-ui` 一次性自动迁移（`migrateLegacyPluginPaths`） |
-| 各引擎会话原件 | `~/.claude` / `~/.codex` / `~/.cursor` / `~/.local/share/opencode` / `~/.zcode` / `~/.gemini/antigravity*` | 云 CLI 不复制、不改写；同步器只读解析后把元数据 upsert进 SQLite（`sessions` 表含 `jsonl_path`）；会话名跟随引擎标题，用户在应用内改过名的行带 `name_locked=1` 永不被引擎覆盖 |
+| 各引擎会话原件 | `~/.claude` / `~/.codex` / `~/.cursor` / `~/.local/share/opencode` / `~/.zcode` / `~/.gemini/antigravity*` | 云 CLI 不复制、不改写；同步器只读解析后把元数据 upsert 进 SQLite（`sessions` 表含 `jsonl_path`）。`sessions` 还记会话的运行时事实：`model`、`effort`、`context_window`（引擎自报的真实上下文窗口，转录里推不出来；未跑过的会话为 NULL）、`name_locked`（用户在应用里改过名，引擎标题不得覆盖）、`worktree_path` / `worktree_branch`（引擎把会话绑到项目某个 git worktree 时的位置；主检出会话为 NULL） |
 | 运行结束记录 | 服务进程内存（有界，约百条） | `server/modules/diagnostics`：每个 run 为什么结束（见 [chat.md](./chat.md)）。刻意不入库——它服务于"刚刚出了什么事"，重启即弃；`GET /api/diagnostics/runs` 读出，前端诊断报告把它和浏览器侧证据合成一份文件 |
 | 前端构建产物 | `dist/`（vite build） | Express 静态托管 + SPA fallback |
 | 服务端构建产物 | `dist-server/` | `tsc + tsc-alias` 先产出 `dist-server.next`，`scripts/promote-dist-server.mjs` 原子晋升（保留 `dist-server.old`；`preserver` 钩子启动前自愈） |
@@ -94,10 +96,10 @@ docs/
 
 ## 认证与安全边界
 
-- **JWT**：`server/modules/auth/auth.middleware.ts`。密钥取 env `JWT_SECRET`，否则自动生成入库（`app_config.jwt_secret`）。token 7 天有效，半衰期自动刷新（响应头 `X-Refreshed-Token`）。WS 走 query string 或 Authorization 头鉴权（`websocket-auth.service.ts`）。
+- **JWT**：`server/modules/auth/auth.middleware.ts`。密钥取 env `JWT_SECRET`，否则自动生成入库（`app_config.jwt_secret`）。token 7 天有效，半衰期自动刷新（响应头 `X-Refreshed-Token`）。`/api/*` 一律 `Cache-Control: no-store` 且关闭 ETag——304 会让浏览器把缓存里旧 200 的过期刷新 token 交回前端；前端对响应头 token 也只接受未过期且不早于当前 token 的（`storeRefreshedAuthToken`）。WS 走 query string 或 Authorization 头鉴权（`websocket-auth.service.ts`）。
 - **可选 API key**：`validateApiKey` 作用于全部 `/api`；agent 模块另走 API key / 平台双模鉴权。
 - **上传白名单**：`chat.send` 的附件只放行 `~/.cloudcli/assets` 直接子文件，防止任意路径读。
-- **`file:` 链接白名单**：会话里引擎产出的本地文件链接走只读端点，目录白名单含各引擎数据根与系统临时目录（`server` 侧 fileLink 相关服务），防止越权读盘。
+- **`file:` 链接白名单**：会话里引擎产出的本地文件链接走只读端点，目录白名单含各引擎数据根与系统临时目录（`server/modules/file-tree/file-tree.module.ts` 的 `externalReadOnlyRoots`），防止越权读盘。运维可用环境变量 `CLOUDCLI_EXTRA_READ_ROOTS`（按 `path.delimiter` 分隔的绝对路径，Windows 为 `;`）追加只读根，只应列具体目录，勿放开整个 home。
 - **本机服务代理**（`server/modules/local-proxy`）：聊天里出现的 `http://localhost:<port>/…` 只在服务器那台机器上可达，远程浏览器打不开。前端（`src/modules/chat/utils/localProxyLink.ts`）在"链接指向本机、而页面自身不是本机地址"时改走代理：先用 JWT 换一张 60 秒一次性票据，首个文档请求用票据换 `HttpOnly` 会话 cookie（`Path=/api/local-proxy`，8 小时）并 302 把票据从地址栏抹掉，之后页面的子资源靠该 cookie 放行——浏览器不会给它们带 Authorization 头。转发只允许 GET/HEAD，目标 host 固定 `127.0.0.1`，禁服务自身端口；请求侧丢掉 `cookie`/`authorization`，响应侧剥掉 `set-cookie`/CSP/HSTS 并把 `Location` 改写回代理前缀。页面里写死的根绝对路径资源由 `localProxyAbsolutePathFallback` 按 `Referer` 送回对应端口，该中间件必须排在静态资源处理之前。
 - **代理的固有代价**：任何已登录用户都能读到服务器本机任意端口的 GET 内容；被代理页面运行在 cloudcli 同源下，其脚本能访问本源的 `localStorage`。代理的对象是用户自己机器上的本地服务，以此为前提接受这两点。
 
@@ -114,6 +116,7 @@ npm run typecheck    # 前后端双 tsconfig --noEmit
 ```
 
 - 本仓库生产实例用 **PM2** 托管，应用名为 `cloudcli`。`pnpm run deploy` 用部署锁串行执行，先构建 tarball，在独立的 `~/.cloudcli/runtime-next-<pid>` 完成生产依赖安装和原生依赖检查，再受控切换为 `~/.cloudcli/runtime`；服务入口固定为 `~/.cloudcli/runtime/node_modules/cloudcli/dist-server/server/index.js`，上一版保留在 `~/.cloudcli/runtime-previous`，启动或健康检查失败时自动恢复。首次从其他入口迁移时会重建 PM2 进程条目，固定入口生效后的部署只做原地重启。全局 `cloudcli` 命令稳定指向该运行目录。部署脚本启动时会把自己重新拉起成 detached 后台进程（日志 `~/.cloudcli/deploy.log`），调用方只跟读日志——终端关闭或 pm2 切换重启了托管调用方的服务，都不会让部署停在半路；中断时 exit 钩子清理暂存目录并明确告知线上未变更。PM2 配置在宿主机，不在仓库内；重启会切断在线 WebSocket（详见根目录 `AGENTS.md`）。
+- **UI 自更新**（仅"仓库目录安装 + PM2 托管"）：`server/modules/system` 定时 `git fetch` 当前分支的上游，与本地 HEAD、运行中构建（`dist/build-info.json`，vite 构建时写入完整 commit）比较——落后上游给「更新并重启」，HEAD 超前于运行构建（本机提交后没构建）给「构建并重启」。点击后服务端只写 `~/.cloudcli/update-state.json` 并拉起 `scripts/self-update.mjs`：它先二次 detach 脱离服务进程树（否则 PM2 的 tree-kill 会连带杀掉它），再 ff-only 拉取 → 依赖变了才停服务装依赖 → 前端构建到 `dist.next`、服务端照常原子晋升 → 替换 `dist` → `pm2 restart`，日志 `~/.cloudcli/update.log`。任一步失败则 `git reset --keep` 回原提交、丢弃暂存产物、拉起服务。脚本的最后一步是重启自己所在的服务，看不到结果，所以由新启动的服务按"启动的构建是否等于目标 commit"判定成功或失败。工作区有未提交改动、与上游分叉、非 git 安装或不在 PM2 下时拒绝执行，并在 UI 上说明原因。仓库链接与 star 角标统一指向 `src/shared/constants.ts` 的 `GITHUB_REPO_*`，不再查询任何 GitHub release。
 - 提交钩子：husky + lint-staged（oxlint）+ commitlint（Conventional Commits）+ 核心文档同步守卫（`scripts/hooks/check-doc-sync.mjs`）。
 
 ## 扩展检查单

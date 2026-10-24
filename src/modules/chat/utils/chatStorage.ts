@@ -114,3 +114,41 @@ export function clearQueuedMessage(sessionId: string): void {
 export type QueuedSendOptions = Record<string, unknown>;
 
 export const queuedMessageKey = (sessionId: string) => `queued_message_${sessionId}`;
+
+/**
+ * A `/compact` the user asked for while the session was still generating.
+ * Compaction starts its own run, and the gateway refuses one while a run holds
+ * the session, so the request is parked here and dispatched when that run ends
+ * — in this tab or, via the app-level auto-send, in another one.
+ */
+export type StoredQueuedCompact = {
+  /** Composer preferences snapshotted at request time, replayed with the frame. */
+  options?: QueuedSendOptions;
+};
+
+export function readQueuedCompact(sessionId: string): StoredQueuedCompact | null {
+  const raw = safeLocalStorage.getItem(queuedCompactKey(sessionId));
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed && typeof parsed === 'object'
+      ? { options: (parsed as StoredQueuedCompact).options }
+      : {};
+  } catch {
+    // A marker written by an older build carries no options, only the request.
+    return {};
+  }
+}
+
+export function writeQueuedCompact(sessionId: string, compact: StoredQueuedCompact = {}): void {
+  safeLocalStorage.setItem(queuedCompactKey(sessionId), JSON.stringify(compact));
+}
+
+export function clearQueuedCompact(sessionId: string): void {
+  safeLocalStorage.removeItem(queuedCompactKey(sessionId));
+}
+
+export const queuedCompactKey = (sessionId: string) => `queued_compact_${sessionId}`;

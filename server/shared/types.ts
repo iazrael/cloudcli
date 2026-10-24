@@ -73,6 +73,7 @@ import type {
 } from '../../shared/protocol/quota.js';
 import type {
   ActiveBackgroundTask,
+  BackgroundTaskStatus,
   BackgroundTaskSummary,
   CompactionInfo,
   GatewayEventKind,
@@ -81,6 +82,7 @@ import type {
   MessageKind,
   NormalizedMessage,
   ServerEventKind,
+  ScheduledJobsChangedEvent,
   SessionRemovedEvent,
   SessionUpsertedEvent,
   SessionUpsertedProject,
@@ -95,6 +97,7 @@ import type {
 
 export type {
   ActiveBackgroundTask,
+  BackgroundTaskStatus,
   BackgroundTaskSummary,
   CompactionInfo,
   GatewayEventKind,
@@ -103,6 +106,7 @@ export type {
   MessageKind,
   NormalizedMessage,
   ServerEventKind,
+  ScheduledJobsChangedEvent,
   SessionRemovedEvent,
   SessionUpsertedEvent,
   SessionUpsertedProject,
@@ -136,6 +140,7 @@ export type {
   McpScope,
   McpTransport,
   ProviderCapabilities,
+  ProviderInputWhileBusy,
   ProviderMcpCapabilities,
 } from '../../shared/protocol/capabilities.js';
 
@@ -178,6 +183,38 @@ export type ProviderTokenUsageResult = {
     input: number;
     output: number;
   };
+  /**
+   * Session-lifetime token totals. `used` above reports the CURRENT context
+   * occupancy for providers whose engines can tell the two apart (codex,
+   * opencode); this field preserves the cumulative spend those endpoints used
+   * to report, for the `/cost` breakdown.
+   */
+  cumulative?: {
+    used: number;
+    inputTokens: number;
+    outputTokens: number;
+  };
+  /**
+   * Context-window usage percent as reported by the engine itself (Claude's
+   * SDK context-usage twin). When present, consumers use it directly instead
+   * of computing `used / total`.
+   */
+  percentage?: number;
+  /**
+   * The session was compacted and the engine has not reported the resulting
+   * occupancy yet (OpenCode only learns it when the next turn runs, so its
+   * newest record still describes the PRE-compaction conversation). `used` is
+   * zero and carries no meaning; consumers show "unknown until the next turn"
+   * instead of the stale number.
+   */
+  compacted?: boolean;
+  /**
+   * UTF-8 size of the compaction summary text that now stands in for the
+   * conversation. Only present alongside `compacted` and only when the summary
+   * could be read; it is the one concrete "how big is the context now" reading
+   * available before the next turn reports real occupancy.
+   */
+  summaryBytes?: number;
   unsupported?: boolean;
   message?: string;
 };
@@ -411,9 +448,24 @@ export type ProviderPermissionDecision = {
   rememberEntry?: unknown;
 };
 
+/**
+ * Interactive-approval facet of a provider runtime: the cards the chat shows
+ * and the decisions that answer them.
+ *
+ * Consumers: the chat websocket through the provider runtime service, which
+ * fans every call out across the registered providers.
+ */
 export type ProviderRuntimePermissionGateway = {
   resolve(requestId: string, decision: ProviderPermissionDecision): void;
   listPending(sessionId: string): unknown[];
+  /**
+   * Re-reads the interactions the engine still holds for a session and
+   * announces the ones no card covers yet — the recovery path for an ask whose
+   * event was lost while the engine's event feed was down. Fire-and-forget and
+   * idempotent; runtimes whose pending set cannot be re-read leave it
+   * undefined, and callers must treat that as "nothing to reconcile".
+   */
+  reconcilePending?(sessionId: string): void;
 };
 
 //----------------- CODEX AUTOMATIC SESSION TITLES ------------
@@ -1278,7 +1330,10 @@ export type FileTreeProjectGateway = {
  */
 export type FileTreeWorkspaceGateway = {
   rootPath: string;
-  validatePath(candidatePath: string): Promise<WorkspacePathValidationResult>;
+  validatePath(
+    candidatePath: string,
+    options?: { allowDriveRoot?: boolean },
+  ): Promise<WorkspacePathValidationResult>;
   /**
    * Resolves a path readable outside the workspace root — the system temp
    * directory and the Claude projects directory — or `null` when it is not
@@ -1334,6 +1389,10 @@ export type FileTreeServiceDependencies = {
    */
   externalReadOnlyRoots: string[];
   /**
+   * Optional provider for available system drive roots (e.g. on Windows).
+   */
+  getAvailableDrives?: () => Promise<string[]>;
+  /**
    * Optional resolver that returns the absolute worktree root directories for
    * a given project root. Used to allow dynamic read-only access to files inside
    * linked Git worktrees without relaxing project write boundaries.
@@ -1352,6 +1411,7 @@ export type FileTreeServices = {
   browseWorkspace(inputPath: string | null): Promise<{
     path: string;
     suggestions: Array<{ path: string; name: string; type: 'directory' }>;
+    drives?: string[];
   }>;
   createWorkspaceFolder(folderPath: string): Promise<{ success: true; path: string }>;
   readTextFile(projectId: string, filePath: string): Promise<{ content: string; path: string }>;
@@ -1606,6 +1666,22 @@ export type RunOutcome = {
 };
 
 // ---------------------------
+//----------------- SYSTEM SELF-UPDATE ------------
+/**
+ * The self-update contract lives in `shared/protocol/system-update.ts` so the
+ * status route and the version UI read one definition. Used by the system
+ * module's service, module wiring, and routes.
+ */
+export type {
+  SystemUpdateCommit,
+  SystemUpdateJob,
+  SystemUpdateJobState,
+  SystemUpdateMode,
+  SystemUpdateRefusal,
+  SystemUpdateStatus,
+  SystemUpdateUnsupportedReason,
+} from '../../shared/protocol/system-update.js';
+
 //----------------- ASYNC TASK CONTINUATION TYPES ------------
 
 /**

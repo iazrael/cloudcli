@@ -35,9 +35,15 @@ export default defineConfig(({ mode }) => {
   // repeating the package version next to it.
   let buildCommit = 'unknown'
   let buildDescribe = buildCommit
+  // Full hash and dirty flag for dist/build-info.json, which the server reads at
+  // startup to tell whether the checkout's HEAD moved past the running build.
+  let buildFullCommit = null
+  let buildDirty = false
   try {
+    buildFullCommit = execSync('git rev-parse HEAD', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim()
     const gitHash = execSync('git rev-parse --short HEAD', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim()
     const isDirty = execSync('git status --porcelain', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim().length > 0 ? '-dirty' : ''
+    buildDirty = isDirty !== ''
     buildCommit = `${gitHash}${isDirty}`
     buildDescribe = `v${pkg.version}-${gitHash}${isDirty}`
   } catch {
@@ -48,7 +54,21 @@ export default defineConfig(({ mode }) => {
   const buildTime = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`
 
   return {
-    plugins: [react(), safariRegexCompatPlugin()],
+    plugins: [
+      react(),
+      safariRegexCompatPlugin(),
+      {
+        name: 'cloudcli-build-info',
+        apply: 'build',
+        generateBundle() {
+          this.emitFile({
+            type: 'asset',
+            fileName: 'build-info.json',
+            source: JSON.stringify({ commit: buildFullCommit, dirty: buildDirty, version: pkg.version, buildTime }),
+          })
+        },
+      },
+    ],
     define: {
       __APP_VERSION__: JSON.stringify(pkg.version),
       __BUILD_INFO__: JSON.stringify({ commit: buildCommit, buildTime, describe: buildDescribe })
@@ -157,8 +177,13 @@ export default defineConfig(({ mode }) => {
             if (id.includes('/src/modules/i18n/locales/')) {
               return 'i18n-locales';
             }
-            // settings and task-master cross-import each other; keep them in the same chunk to prevent cycle
-            if (id.includes('/src/modules/settings/') || id.includes('/src/modules/task-master/')) {
+            if (id.includes('/src/modules/settings/')) {
+              return 'module-settings';
+            }
+            // task-master shares the settings chunk: on its own it import-cycles
+            // with module-settings through the shared UI/helper modules Rollup
+            // hoists into whichever chunk claims them first (bundleNoCycles).
+            if (id.includes('/src/modules/task-master/')) {
               return 'module-settings';
             }
             if (id.includes('/src/modules/git-panel/')) {
