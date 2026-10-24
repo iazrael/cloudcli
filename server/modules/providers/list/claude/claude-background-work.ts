@@ -46,6 +46,23 @@ function content(message: Record<string, unknown>): Record<string, unknown>[] {
   }) : [];
 }
 
+// A main-thread call the CLI moved to the background on its own — a Bash past
+// its timeout — shows no sign of it in the call, only in its `task_started`.
+// It is the session's own work all the same, so it gets the card a call
+// launched in the background would have had. Returns whether a card was added.
+function cardFromTask(state: SessionWork, toolUseId: string, record: TaskRecord): boolean {
+  const toolName = state.ownCalls.get(toolUseId);
+  if (record.card || !record.summary || !toolName) return false;
+  record.card = {
+    id: toolUseId,
+    taskId: record.summary.taskId,
+    toolName: canonicalClaudeSubagentToolName(toolName),
+    ...(record.summary.description ? { command: record.summary.description } : {}),
+    startedAt: record.summary.startedAt,
+  };
+  return true;
+}
+
 // Crons and wakeups without an acknowledged time never report back on their
 // own; the turn they trigger is the only sign they ran.
 function lapsesAfterNextTurn(record: TaskRecord): boolean {
@@ -142,6 +159,10 @@ export function createBackgroundWorkTracker() {
             changed = true;
           }
         }
+        for (const block of content(message)) {
+          const record = typeof block.id === 'string' ? state.records.get(block.id) : undefined;
+          if (record) changed = cardFromTask(state, block.id as string, record) || changed;
+        }
       } else if (message.type === 'system' && typeof message.task_id === 'string') {
         const toolUseId = resolveCall(state, message);
         if (!toolUseId) return false;
@@ -159,6 +180,7 @@ export function createBackgroundWorkTracker() {
             ...(!state.ownCalls.has(toolUseId) ? { nested: true } : {}),
           };
           state.records.set(toolUseId, record);
+          changed = cardFromTask(state, toolUseId, record) || changed;
         } else if (message.subtype === 'task_notification'
           || (message.subtype === 'task_updated' && TERMINAL_TASK_STATUSES.has(String(object(message.patch)?.status)))) {
           changed = settle(state, toolUseId);
