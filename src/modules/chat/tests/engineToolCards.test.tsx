@@ -43,3 +43,21 @@ describe('engine-native tool cards', () => {
     expect(container.textContent).not.toContain('"workdir"');
   });
 });
+
+describe('engine-native card headers', () => {
+  it('labels agy write_file as Write, not its engine name', () => {
+    const { container } = render(
+      <I18nextProvider i18n={i18n}>
+        <ToolRenderer
+          toolName="write_file"
+          toolInput={{ Path: '/repo/build_tape.py', Content: 'print(1)\n' }}
+          toolId="agy-write"
+          mode="input"
+        />
+      </I18nextProvider>,
+    );
+
+    expect(container.textContent).toContain('Write');
+    expect(container.textContent).not.toContain('write_file');
+  });
+});

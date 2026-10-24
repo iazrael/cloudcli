@@ -109,9 +109,15 @@ const UNIFIED_TOOL_LABELS: Record<string, string> = {
 };
 
 export function formatToolDisplayName(toolName: string): string {
-  const unifiedLabel = UNIFIED_TOOL_LABELS[toolName];
+  // An engine alias (agy `write_file`, opencode `edit`) renders through its
+  // canonical config, so its header names that card too.
+  const canonical = canonicalToolName(toolName);
+  const unifiedLabel = UNIFIED_TOOL_LABELS[canonical];
   if (unifiedLabel) {
     return unifiedLabel;
+  }
+  if (canonical !== toolName) {
+    return canonical;
   }
 
   const mcpMatch = /^mcp__([^_]+(?:_[^_]+)*)__(.+)$/.exec(toolName);

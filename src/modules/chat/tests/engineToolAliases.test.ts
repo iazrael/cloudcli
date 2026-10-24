@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 
 import { test } from 'vitest';
 
-import { getToolConfig } from '@/modules/chat/tools/configs/toolConfigs';
+import { formatToolDisplayName, getToolConfig } from '@/modules/chat/tools/configs/toolConfigs';
 import {
   canonicalToolName,
   getToolDisplayCategory,
@@ -135,4 +135,16 @@ test('pickFilePath reads every engine path field', () => {
   assert.equal(pickFilePath({ filePath: '/f' }), '/f');
   assert.equal(pickFilePath({}), '');
   assert.equal(pickFilePath(null), '');
+});
+
+test('an aliased tool is labeled by its canonical name in card and group headers', () => {
+  assert.equal(formatToolDisplayName('write_file'), 'Write');
+  assert.equal(formatToolDisplayName('edit_file'), 'Edit');
+  assert.equal(formatToolDisplayName('replace_file_content'), 'Edit');
+  assert.equal(formatToolDisplayName('write'), 'Write');
+  assert.equal(formatToolDisplayName('edit'), 'Edit');
+  assert.equal(formatToolDisplayName('Write'), 'Write');
+  assert.equal(formatToolDisplayName('AskUserQuestion'), 'Question');
+  assert.equal(formatToolDisplayName('mcp__github__create_issue'), 'create_issue');
+  assert.equal(formatToolDisplayName('generate_image'), 'generate_image');
 });
