@@ -179,7 +179,7 @@ test('resolveZCodeBuiltinRevision returns null for missing or invalid config', a
   }
 });
 
-test('buildZCodeAccountSyncPayload produces the exact payload when token and builtin config are available', async () => {
+test('buildZCodeAccountSyncPayload entitles only the individual plan and ignores the trial JWT', async () => {
   await withEngineLayout(path.join('provider', 'zcode-builtin.json'), async (_enginePath, configPath) => {
     assert.ok(configPath);
     await writeFile(configPath, JSON.stringify({ revision: 30 }), 'utf8');
@@ -189,8 +189,12 @@ test('buildZCodeAccountSyncPayload produces the exact payload when token and bui
     process.env.ZCODE_STORAGE_DIR = storageDir;
     const v2Dir = path.join(storageDir, 'v2');
     await mkdir(v2Dir, { recursive: true });
-    // Write unencrypted plain jwtToken for test
-    await writeFile(path.join(v2Dir, 'credentials.json'), JSON.stringify({ zcodejwttoken: 'test-jwt-token' }), 'utf8');
+    // Both credentials present: the trial JWT must not resurrect the removed
+    // start-plan account, only the individual plan is entitled.
+    await writeFile(path.join(v2Dir, 'credentials.json'), JSON.stringify({
+      zcodejwttoken: 'test-jwt-token',
+      'account-provider:coding-plan:account:bigmodel-individual-coding-plan:account:123:api-key': 'individual-key',
+    }), 'utf8');
 
     try {
       const payload = buildZCodeAccountSyncPayload(configPath);
@@ -198,7 +202,7 @@ test('buildZCodeAccountSyncPayload produces the exact payload when token and bui
       assert.equal(payload.revision, '1');
       assert.ok((payload.basedOnZCodeBuiltinRevision as string).startsWith('zcode-builtin:30:'));
       assert.deepEqual(payload.providers, {
-        'account:bigmodel-start-plan': {
+        'account:bigmodel-individual-coding-plan': {
           access: {
             type: 'zhipu-account',
             entitled: true,
@@ -206,12 +210,34 @@ test('buildZCodeAccountSyncPayload produces the exact payload when token and bui
         },
       });
       assert.deepEqual(payload.states, {
-        'account:bigmodel-start-plan': {
+        'account:bigmodel-individual-coding-plan': {
           availability: 'available',
           entitled: true,
           current: true,
         },
       });
+    } finally {
+      if (previousStorage === undefined) delete process.env.ZCODE_STORAGE_DIR;
+      else process.env.ZCODE_STORAGE_DIR = previousStorage;
+    }
+  });
+});
+
+test('buildZCodeAccountSyncPayload returns null when only the trial JWT exists', async () => {
+  await withEngineLayout(path.join('provider', 'zcode-builtin.json'), async (_enginePath, configPath) => {
+    assert.ok(configPath);
+    await writeFile(configPath, JSON.stringify({ revision: 30 }), 'utf8');
+
+    const previousStorage = process.env.ZCODE_STORAGE_DIR;
+    const storageDir = await mkdtemp(path.join(os.tmpdir(), 'zcode-payload-storage-'));
+    process.env.ZCODE_STORAGE_DIR = storageDir;
+    const v2Dir = path.join(storageDir, 'v2');
+    await mkdir(v2Dir, { recursive: true });
+    await writeFile(path.join(v2Dir, 'credentials.json'), JSON.stringify({ zcodejwttoken: 'test-jwt-token' }), 'utf8');
+
+    try {
+      const payload = buildZCodeAccountSyncPayload(configPath);
+      assert.equal(payload, null);
     } finally {
       if (previousStorage === undefined) delete process.env.ZCODE_STORAGE_DIR;
       else process.env.ZCODE_STORAGE_DIR = previousStorage;
@@ -245,7 +271,7 @@ test('account sync activates the native individual provider when its plan key is
   });
 });
 
-test('buildZCodeAccountSyncPayload returns null when credentials have no jwtToken', async () => {
+test('buildZCodeAccountSyncPayload returns null when no individual key is stored', async () => {
   await withEngineLayout(path.join('provider', 'zcode-builtin.json'), async (_enginePath, configPath) => {
     assert.ok(configPath);
     await writeFile(configPath, JSON.stringify({ revision: 30 }), 'utf8');

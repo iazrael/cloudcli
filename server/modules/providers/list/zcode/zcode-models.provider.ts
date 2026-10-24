@@ -18,18 +18,18 @@ import {
   readTrimmedStringRecord,
 } from '@/shared/utils.js';
 
-import { readDecryptedZCodeIndividualPlanApiKey, readDecryptedZCodeJwtToken } from './zcode-credentials.js';
+import { readDecryptedZCodeIndividualPlanApiKey } from './zcode-credentials.js';
 import { getZCodeDatabasePath, getZCodeStorageDir } from './zcode-data-root.js';
-import { readZCodeStartPlanCatalog } from './zcode-start-plan-catalog.js';
 import { resolveZCodeProviderApiType } from './zcode-provider-config.js';
 
-export const ZCODE_START_PLAN_PROVIDER_ID = 'account:bigmodel-start-plan';
+/**
+ * Account id the removed start-plan (体验) group used to key its options by.
+ * Only kept as a send-resolver alias so sessions saved before the removal keep
+ * running on the individual plan; nothing reads it off the wire anymore.
+ */
+const LEGACY_START_PLAN_PROVIDER_ID = 'account:bigmodel-start-plan';
 /** Used by the send model resolver and runtime header bridge to keep account identity consistent. */
 export const ZCODE_INDIVIDUAL_PLAN_PROVIDER_ID = 'account:bigmodel-individual-coding-plan';
-/** Fallback start-plan entry for when the billing catalog cannot be read. */
-const ZCODE_START_PLAN_MODEL_ID = 'GLM-5.3-Flash';
-const ZCODE_GROUP_PERSONAL = 'BigModel (个人)';
-const ZCODE_GROUP_START_PLAN = 'BigModel (体验)';
 const ZCODE_PERSONAL_MODELS_WHITELIST = new Set(['GLM-5.3', 'GLM-5.3-Flash']);
 
 export const ZCODE_BUILTIN_MODELS: ProviderModelsDefinition = {
@@ -37,7 +37,6 @@ export const ZCODE_BUILTIN_MODELS: ProviderModelsDefinition = {
     {
       value: 'GLM-5.3',
       label: 'GLM-5.3',
-      group: ZCODE_GROUP_PERSONAL,
       description: 'ZCode default model with 1M context window and 128K output tokens',
       effort: {
         default: 'max',
@@ -64,41 +63,6 @@ const REASONING_EFFORT_ORDER: Record<string, number> = {
   high: 30,
   max: 40,
 };
-
-/**
- * Appends the start-plan (体验套餐) models granted by the account's billing
- * entitlements, so event plans surface exactly the models the server currently
- * allows. Falls back to the pinned Flash entry when the catalog cannot be read
- * (network failure, empty payload) so the group never disappears entirely.
- */
-async function appendStartPlanModelOptions(options: ProviderModelOption[]): Promise<ProviderModelOption[]> {
-  const jwtToken = readDecryptedZCodeJwtToken();
-  if (!jwtToken) {
-    return options;
-  }
-  const entitled = await readZCodeStartPlanCatalog();
-  const models = entitled && entitled.length > 0
-    ? entitled
-    : [{ modelId: ZCODE_START_PLAN_MODEL_ID, label: ZCODE_START_PLAN_MODEL_ID }];
-  const existingValues = new Set(options.map((option) => option.value));
-  const additions = models
-    .map((model) => ({ value: `${ZCODE_START_PLAN_PROVIDER_ID}/${model.modelId}`, label: model.label }))
-    .filter((option) => !existingValues.has(option.value))
-    .map((option) => ({
-      ...option,
-      group: ZCODE_GROUP_START_PLAN,
-      description: 'ZCode 体验套餐专享模型',
-      effort: {
-        default: 'max' as const,
-        values: [
-          { value: 'low', description: EFFORT_DESCRIPTIONS.low },
-          { value: 'high', description: EFFORT_DESCRIPTIONS.high },
-          { value: 'max', description: EFFORT_DESCRIPTIONS.max },
-        ],
-      },
-    }));
-  return [...options, ...additions];
-}
 
 /**
  * Reads ZCode's user-facing provider config to extract model definitions.
@@ -191,13 +155,13 @@ const readZCodeModelConfig = async (): Promise<ProviderModelsDefinition> => {
           }
 
           const group = isPersonalProvider
-            ? ZCODE_GROUP_PERSONAL
+            ? undefined
             : (readOptionalString(providerRecord?.name) || providerId);
 
           modelOptions.push({
             value: modelKey,
             label: modelKey,
-            group,
+            ...(group ? { group } : {}),
             description: readOptionalString(modelRecord.description) || description,
             effort: hasReasoning ? effort : undefined,
           });
@@ -215,16 +179,11 @@ const readZCodeModelConfig = async (): Promise<ProviderModelsDefinition> => {
     baseDefinition = ZCODE_BUILTIN_MODELS;
   }
 
-  const personalApiKey = readDecryptedZCodeIndividualPlanApiKey();
-  const personalOptions = personalApiKey
-    ? baseDefinition.OPTIONS.map((option) => option.group === ZCODE_GROUP_PERSONAL
-      ? { ...option, value: `${ZCODE_INDIVIDUAL_PLAN_PROVIDER_ID}/${option.value}` }
-      : option)
-    : baseDefinition.OPTIONS;
-  const optionsWithStartPlan = await appendStartPlanModelOptions(personalOptions);
+  // Model keys stay bare (`GLM-5.3`) so the picker reads like claude's and
+  // antigravity's; the account scoping is applied at send resolution instead.
   return {
-    OPTIONS: optionsWithStartPlan,
-    DEFAULT: optionsWithStartPlan[0]?.value ?? baseDefinition.DEFAULT,
+    OPTIONS: baseDefinition.OPTIONS,
+    DEFAULT: baseDefinition.OPTIONS[0]?.value ?? baseDefinition.DEFAULT,
   };
 };
 
@@ -267,20 +226,13 @@ export function readZCodeSessionModelInfoFromDb(providerSessionId: string): { mo
       return null;
     }
 
-    const providerId = readOptionalString(messageData?.providerID)
-      || readOptionalString(messageData?.providerId)
-      || readOptionalString(modelRecord?.providerID)
-      || readOptionalString(modelRecord?.providerId);
-
-    const modelId = providerId === ZCODE_START_PLAN_PROVIDER_ID || providerId === ZCODE_INDIVIDUAL_PLAN_PROVIDER_ID
-      ? `${providerId}/${rawModelId}`
-      : rawModelId;
-
+    // Account-scoped engine ids (start-plan/individual) map back onto the bare
+    // model keys the picker offers, so "current model" stays selectable there.
     const variant = readOptionalString(messageData?.variant)
       || readOptionalString(modelRecord?.variant);
 
     return {
-      modelId,
+      modelId: rawModelId,
       variant: variant || undefined,
     };
   } catch {
@@ -328,9 +280,11 @@ export function resolveZCodeModelRef(
     };
   }
 
-  if (requestedProviderId === ZCODE_START_PLAN_PROVIDER_ID || requestedProviderId === ZCODE_INDIVIDUAL_PLAN_PROVIDER_ID) {
+  if (requestedProviderId === LEGACY_START_PLAN_PROVIDER_ID || requestedProviderId === ZCODE_INDIVIDUAL_PLAN_PROVIDER_ID) {
+    // Legacy start-plan refs (sessions saved before that group was removed)
+    // alias onto the individual plan so they keep sending on personal quota.
     return {
-      providerId: requestedProviderId,
+      providerId: ZCODE_INDIVIDUAL_PLAN_PROVIDER_ID,
       modelId: requestedModelId,
       ...(normalizedReasoningLevel ? { options: { reasoningLevel: normalizedReasoningLevel } } : {}),
     };
@@ -422,13 +376,10 @@ export function buildZCodeSendModelParams(
 } | null {
   const explicitSelection = resolveZCodeModelRef(modelKey, reasoningLevel);
 
-  if (explicitSelection.providerId === ZCODE_START_PLAN_PROVIDER_ID
-      || explicitSelection.providerId === ZCODE_INDIVIDUAL_PLAN_PROVIDER_ID) {
-    const apiKey = explicitSelection.providerId === ZCODE_START_PLAN_PROVIDER_ID
-      ? readDecryptedZCodeJwtToken() : readDecryptedZCodeIndividualPlanApiKey();
+  if (explicitSelection.providerId === ZCODE_INDIVIDUAL_PLAN_PROVIDER_ID) {
+    const apiKey = readDecryptedZCodeIndividualPlanApiKey();
     if (!apiKey) {
-      const plan = explicitSelection.providerId === ZCODE_START_PLAN_PROVIDER_ID ? 'start' : 'individual';
-      throw new Error(`ZCode ${plan} plan credential is missing or ambiguous`);
+      throw new Error('ZCode individual plan credential is missing or ambiguous');
     }
     const selectedReasoningLevel = explicitSelection.options?.reasoningLevel ?? 'max';
     return {

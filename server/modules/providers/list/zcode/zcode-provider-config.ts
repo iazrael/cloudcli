@@ -21,7 +21,7 @@ import * as path from 'node:path';
 import { readObjectRecord, readOptionalString, readTrimmedStringRecord } from '@/shared/utils.js';
 import type { AnyRecord } from '@/shared/types.js';
 
-import { readDecryptedZCodeIndividualPlanApiKey, readDecryptedZCodeJwtToken } from './zcode-credentials.js';
+import { readDecryptedZCodeIndividualPlanApiKey } from './zcode-credentials.js';
 import { getZCodeStorageDir } from './zcode-data-root.js';
 
 /**
@@ -272,26 +272,24 @@ export function resolveZCodeBuiltinRevision(builtinConfigPath: string): string |
 }
 
 /**
- * Builds the `provider/updateAccountConfig` payload for available account plans.
+ * Builds the `provider/updateAccountConfig` payload for the individual plan.
  *
  * In app-server mode, the engine starts fail-closed by marking all account
- * providers as `entitled: false`. A trial JWT or an individual-plan API key
- * activates the matching provider in the engine's executable registry view.
+ * providers as `entitled: false`. The individual-plan API key activates that
+ * provider in the engine's executable registry view. The start-plan (体验)
+ * group was removed from the model menu, so the trial JWT no longer entitles
+ * anything here.
  *
- * Returns null when no eligible credential is stored or the built-in config is unavailable.
+ * Returns null when no individual-plan key is stored or the built-in config is unavailable.
  */
 export function buildZCodeAccountSyncPayload(builtinConfigPath: string): Record<string, unknown> | null {
-  const jwtToken = readDecryptedZCodeJwtToken();
   const individualApiKey = readDecryptedZCodeIndividualPlanApiKey();
-  if (!jwtToken && !individualApiKey) return null;
+  if (!individualApiKey) return null;
 
   const basedOnZCodeBuiltinRevision = resolveZCodeBuiltinRevision(builtinConfigPath);
   if (!basedOnZCodeBuiltinRevision) return null;
 
-  const entitledProviderIds = [
-    ...(jwtToken ? ['account:bigmodel-start-plan'] : []),
-    ...(individualApiKey ? ['account:bigmodel-individual-coding-plan'] : []),
-  ];
+  const entitledProviderIds = ['account:bigmodel-individual-coding-plan'];
   return {
     revision: '1',
     basedOnZCodeBuiltinRevision,

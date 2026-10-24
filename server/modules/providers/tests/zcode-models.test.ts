@@ -8,10 +8,6 @@ import Database from 'better-sqlite3';
 
 import { encryptZCodeCredentialValue } from '@/modules/providers/list/zcode/zcode-credentials.js';
 import {
-  readZCodeStartPlanCatalog,
-  resetZCodeStartPlanCatalogCache,
-} from '@/modules/providers/list/zcode/zcode-start-plan-catalog.js';
-import {
   ZCodeProviderModels,
   buildZCodeSendModelParams,
   resolveZCodeModelRef,
@@ -292,9 +288,8 @@ test('readZCodeSessionModelInfoFromDb returns model and variant from latest mess
   });
 });
 
-test('getSupportedModels includes BigModel (体验) start-plan model when zcodejwttoken is present', async () => {
+test('getSupportedModels stays personal-only with plain values even when a trial JWT exists', async () => {
   await withZCodeStorage(async (storageDir) => {
-    resetZCodeStartPlanCatalogCache();
     const cliDir = path.join(storageDir, 'cli');
     const v2Dir = path.join(storageDir, 'v2');
     await mkdir(cliDir, { recursive: true });
@@ -325,23 +320,14 @@ test('getSupportedModels includes BigModel (体验) start-plan model when zcodej
     const models = new ZCodeProviderModels();
     const definition = await models.getSupportedModels();
 
-    // Must strictly have exactly 3 models: 2 personal + 1 start-plan, no duplicates
-    assert.equal(definition.OPTIONS.length, 3);
-    assert.equal(definition.OPTIONS[0].value, 'GLM-5.3');
-    assert.equal(definition.OPTIONS[0].group, 'BigModel (个人)');
-
-    assert.equal(definition.OPTIONS[1].value, 'GLM-5.3-Flash');
-    assert.equal(definition.OPTIONS[1].group, 'BigModel (个人)');
-
-    const startPlan = definition.OPTIONS[2];
-    assert.equal(startPlan.value, 'account:bigmodel-start-plan/GLM-5.3-Flash');
-    assert.equal(startPlan.label, 'GLM-5.3-Flash');
-    assert.equal(startPlan.group, 'BigModel (体验)');
-    assert.equal(startPlan.effort?.default, 'max');
+    // Trial credentials no longer add a start-plan group: the menu is the
+    // personal plan only, keyed by bare model ids like claude/antigravity.
     assert.deepEqual(
-      startPlan.effort?.values.map((v) => v.value),
-      ['low', 'high', 'max']
+      definition.OPTIONS.map((opt) => opt.value),
+      ['GLM-5.3', 'GLM-5.3-Flash']
     );
+    assert.ok(definition.OPTIONS.every((opt) => opt.group === undefined));
+    assert.equal(definition.DEFAULT, 'GLM-5.3');
   });
 });
 
@@ -376,114 +362,31 @@ test('getSupportedModels falls back to the builtin catalog when only the legacy 
   });
 });
 
-test('getSupportedModels lists billing-entitled start-plan models', async () => {
+test('buildZCodeSendModelParams aliases legacy start-plan refs onto the individual plan', async () => {
   await withZCodeStorage(async (storageDir) => {
-    resetZCodeStartPlanCatalogCache();
-    const cliDir = path.join(storageDir, 'cli');
     const v2Dir = path.join(storageDir, 'v2');
-    await mkdir(cliDir, { recursive: true });
     await mkdir(v2Dir, { recursive: true });
-
     await writeFile(
-      path.join(cliDir, 'config.json'),
+      path.join(v2Dir, 'credentials.json'),
       JSON.stringify({
-        provider: {
-          'bigmodel-coding-plan': {
-            kind: 'anthropic',
-            models: {
-              'GLM-5.3': { reasoning: { variants: ['low', 'high', 'max'], defaultLevel: 'max' } },
-              'GLM-5.3-Flash': { reasoning: { variants: ['low', 'high', 'max'], defaultLevel: 'max' } },
-            },
-          },
-        },
+        'account-provider:coding-plan:account:bigmodel-individual-coding-plan:account:123:api-key':
+          encryptZCodeCredentialValue('personal-plan-key'),
       }),
       'utf8'
     );
 
-    await writeFile(
-      path.join(v2Dir, 'credentials.json'),
-      JSON.stringify({ zcodejwttoken: 'mock-jwt-token' }),
-      'utf8'
-    );
-
-    // Pre-warm the shared catalog cache with an entitlement-driven read; the
-    // models provider then consumes it through its default dependencies. The
-    // JWT-shaped override is required because the fixture credential above is
-    // a placeholder the real loader's shape guard would refuse.
-    await readZCodeStartPlanCatalog({
-      readJwtToken: () => 'header.payload.signature',
-      fetchImpl: (async () => new Response(JSON.stringify({
-        code: 0,
-        data: {
-          server_time: 1_800_000_000,
-          plans: [{
-            plan_id: 'zcode-v3-start-plan-1024',
-            status: 'active',
-            ends_at: 1_800_100_000,
-            entitlements: [
-              { show_name: 'GLM-5.3-Flash', capabilities: ['model:glm-5.3-flash'] },
-              { show_name: 'GLM-5.3', capabilities: ['model:glm-5.3'] },
-            ],
-          }],
-        },
-      }), { status: 200 })) as typeof fetch,
-    });
-
-    const models = new ZCodeProviderModels();
-    const definition = await models.getSupportedModels();
-
-    // 2 personal + 2 entitled start-plan models, no duplicates
-    assert.equal(definition.OPTIONS.length, 4);
-    assert.equal(definition.OPTIONS[0].value, 'GLM-5.3');
-    assert.equal(definition.OPTIONS[0].group, 'BigModel (个人)');
-    assert.equal(definition.OPTIONS[1].value, 'GLM-5.3-Flash');
-    assert.equal(definition.DEFAULT, 'GLM-5.3');
-
-    const startPlanOptions = definition.OPTIONS.slice(2);
-    assert.deepEqual(
-      startPlanOptions.map((opt) => opt.value),
-      [
-        'account:bigmodel-start-plan/GLM-5.3-Flash',
-        'account:bigmodel-start-plan/GLM-5.3',
-      ]
-    );
-    assert.ok(startPlanOptions.every((opt) => opt.group === 'BigModel (体验)'));
-    assert.equal(startPlanOptions[1].label, 'GLM-5.3');
-    assert.equal(startPlanOptions[1].effort?.default, 'max');
-    assert.deepEqual(
-      startPlanOptions[1].effort?.values.map((v) => v.value),
-      ['low', 'high', 'max']
-    );
-  });
-});
-
-test('buildZCodeSendModelParams resolves credentials for start-plan model from encrypted token', async () => {
-  await withZCodeStorage(async (storageDir) => {
-    const v2Dir = path.join(storageDir, 'v2');
-    await mkdir(v2Dir, { recursive: true });
-    // Simulate real ZCode encrypted token format (enc:v1:...)
-    const encryptedToken = encryptZCodeCredentialValue('mock-jwt-token-abc');
-    assert.match(encryptedToken, /^enc:v1:/);
-
-    await writeFile(
-      path.join(v2Dir, 'credentials.json'),
-      JSON.stringify({ zcodejwttoken: encryptedToken }),
-      'utf8'
-    );
-
+    // Sessions saved before the start-plan group was removed still carry the
+    // account-prefixed ref; it must keep sending on the personal plan.
     const params = buildZCodeSendModelParams('account:bigmodel-start-plan/GLM-5.3-Flash', 'high');
     assert.ok(params);
     assert.deepEqual(params.modelSelection, {
-      providerId: 'account:bigmodel-start-plan',
+      providerId: 'account:bigmodel-individual-coding-plan',
       modelId: 'GLM-5.3-Flash',
       options: { reasoningLevel: 'high' },
     });
-    // Decrypted plain token must be passed, NEVER raw ciphertext
     assert.deepEqual(params.modelExecution, {
       selectionScope: 'execution',
-      requestAuth: {
-        apiKey: 'mock-jwt-token-abc',
-      },
+      requestAuth: { apiKey: 'personal-plan-key' },
     });
   });
 });
@@ -510,8 +413,18 @@ test('personal plan uses the native account provider and its own credential', as
     }), 'utf8');
 
     const catalog = await new ZCodeProviderModels().getSupportedModels();
-    assert.equal(catalog.OPTIONS.find((option) => option.group === 'BigModel (个人)')?.value,
-      'account:bigmodel-individual-coding-plan/GLM-5.3-Flash');
+    assert.equal(catalog.OPTIONS.find((option) => option.value === 'GLM-5.3-Flash')?.group,
+      undefined);
+    // Bare model ids resolve to the native account provider at send time.
+    assert.deepEqual(buildZCodeSendModelParams('GLM-5.3-Flash', 'high'), {
+      modelSelection: {
+        providerId: 'account:bigmodel-individual-coding-plan',
+        modelId: 'GLM-5.3-Flash',
+        options: { reasoningLevel: 'high' },
+      },
+      modelExecution: { selectionScope: 'execution', requestAuth: { apiKey: 'personal-plan-key' } },
+    });
+    // Saved account-prefixed selections keep working.
     assert.deepEqual(buildZCodeSendModelParams('account:bigmodel-individual-coding-plan/GLM-5.3-Flash', 'high'), {
       modelSelection: {
         providerId: 'account:bigmodel-individual-coding-plan',
@@ -538,7 +451,7 @@ test('native individual plan remains selectable without a legacy provider config
       'account-provider:coding-plan:account:bigmodel-individual-coding-plan:account:123:api-key': 'personal-key',
     }), 'utf8');
     const catalog = await new ZCodeProviderModels().getSupportedModels();
-    assert.equal(catalog.DEFAULT, 'account:bigmodel-individual-coding-plan/GLM-5.3');
+    assert.equal(catalog.DEFAULT, 'GLM-5.3');
     assert.deepEqual(buildZCodeSendModelParams('GLM-5.3-Flash')?.modelSelection, {
       providerId: 'account:bigmodel-individual-coding-plan', modelId: 'GLM-5.3-Flash',
       options: { reasoningLevel: 'max' },
@@ -550,8 +463,10 @@ test('account plan selection fails when its credential is missing', async () => 
   await withZCodeStorage(async () => {
     assert.throws(() => buildZCodeSendModelParams('account:bigmodel-individual-coding-plan/GLM-5.3-Flash'),
       /individual.*credential/i);
+    // Legacy start-plan refs alias onto the individual plan, so the missing
+    // credential they hit is the individual one.
     assert.throws(() => buildZCodeSendModelParams('account:bigmodel-start-plan/GLM-5.3-Flash'),
-      /start.*credential/i);
+      /individual.*credential/i);
   });
 });
 
@@ -579,7 +494,7 @@ test('a same-name custom model keeps its provider when an individual-plan key ex
   });
 });
 
-test('readZCodeSessionModelInfoFromDb preserves providerId when session ran on start-plan with providerID', async () => {
+test('readZCodeSessionModelInfoFromDb reports the bare model id regardless of the account plan', async () => {
   await withZCodeStorage(async (storageDir) => {
     const dbDir = path.join(storageDir, 'cli', 'db');
     await mkdir(dbDir, { recursive: true });
@@ -614,7 +529,7 @@ test('readZCodeSessionModelInfoFromDb preserves providerId when session ran on s
 
     const { readZCodeSessionModelInfoFromDb } = await import('@/modules/providers/list/zcode/zcode-models.provider.js');
     assert.deepEqual(readZCodeSessionModelInfoFromDb('sess_start_plan'), {
-      modelId: 'account:bigmodel-start-plan/GLM-5.3-Flash',
+      modelId: 'GLM-5.3-Flash',
       variant: 'max',
     });
   });
@@ -653,8 +568,9 @@ test('getSupportedModels enforces personal whitelist and keeps custom provider g
     const models = new ZCodeProviderModels();
     const definition = await models.getSupportedModels();
 
-    // Whitelist blocks GLM-4.7 and OBSOLETE-MODEL from personal provider
-    const personalModels = definition.OPTIONS.filter((opt) => opt.group === 'BigModel (个人)');
+    // Whitelist blocks GLM-4.7 and OBSOLETE-MODEL from personal provider; the
+    // personal plan itself stays ungrouped so the menu reads like a flat list.
+    const personalModels = definition.OPTIONS.filter((opt) => opt.group === undefined);
     assert.deepEqual(
       personalModels.map((opt) => opt.value),
       ['GLM-5.3', 'GLM-5.3-Flash']
