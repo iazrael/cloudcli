@@ -19,5 +19,7 @@ export {
   isEditTool,
   isFilePreviewTool,
   pickCommandField,
+  pickEditSides,
+  pickWriteContent,
   unwrapNestedCommand,
 } from '@/modules/chat/tools/toolTaxonomy';

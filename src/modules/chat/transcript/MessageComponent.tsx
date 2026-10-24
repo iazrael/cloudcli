@@ -13,7 +13,7 @@ import type {
 } from '@/shared/types';
 import { formatUsageLimitText } from '@/modules/chat/utils/chatFormatting';
 import { parseErrorCardContent } from '@/modules/chat/utils/errorCardContent';
-import { getToolConfig, isCommandTool, SubagentPanel, ToolRenderer, ToolErrorDisplay, WorkflowPanel, shouldHideToolResult } from '@/modules/chat/tools';
+import { canonicalToolName, getToolConfig, isCommandTool, SubagentPanel, ToolRenderer, ToolErrorDisplay, WorkflowPanel, shouldHideToolResult } from '@/modules/chat/tools';
 import { useIsExportingTranscript } from '@/modules/chat/context/TranscriptRenderContext';
 import { Reasoning, ReasoningTrigger, ReasoningContent } from '@/shared/ui/ReasoningFork';
 import ChatMessageImages from '@/modules/chat/transcript/ChatMessageImages';
@@ -56,7 +56,7 @@ type InteractiveOption = {
   isSelected: boolean;
 };
 
-const COPY_HIDDEN_TOOL_NAMES = new Set(['Bash', 'Edit', 'Write', 'ApplyPatch']);
+const COPY_HIDDEN_TOOL_NAMES = new Set(['Bash', 'Edit', 'Write']);
 
 const MessageComponent = memo(({ message, prevMessage, turnAnchorMessage, isTurnFinalAssistant = true, createDiff, onFileOpen, showRawParameters, showThinking, isThinkingStreaming, selectedProject, provider, onEditMessage, onForkFromMessage }: MessageComponentProps) => {
   const { t } = useTranslation('chat');
@@ -81,7 +81,7 @@ const MessageComponent = memo(({ message, prevMessage, turnAnchorMessage, isTurn
     ? String(message.displayText || message.content || '')
     : formattedMessageContent;
   const isCommandOrFileEditToolResponse = Boolean(
-    message.isToolUse && COPY_HIDDEN_TOOL_NAMES.has(String(message.toolName || ''))
+    message.isToolUse && COPY_HIDDEN_TOOL_NAMES.has(canonicalToolName(String(message.toolName || '')))
   );
   const shouldShowUserCopyControl = message.type === 'user' && userCopyContent.trim().length > 0;
   const shouldShowAssistantCopyControl = message.type === 'assistant' &&
@@ -306,7 +306,7 @@ const MessageComponent = memo(({ message, prevMessage, turnAnchorMessage, isTurn
                   // Bash draws its output inside this row rather than in the
                   // result section below, so for a backgrounded command this is
                   // the row the background-tasks strip scrolls to.
-                  <div id={message.toolName === 'Bash' ? `tool-result-${message.toolId}` : undefined} className="scroll-mt-4">
+                  <div id={isCommandTool(message.toolName || '') ? `tool-result-${message.toolId}` : undefined} className="scroll-mt-4">
                     <ToolRenderer
                       toolName={message.toolName || 'UnknownTool'}
                       toolInput={message.toolInput}

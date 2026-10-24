@@ -1,4 +1,4 @@
-import { canonicalToolName, isEditTool } from '@/modules/chat/tools/toolTaxonomy';
+import { canonicalToolName, isEditTool, pickFilePath } from '@/modules/chat/tools/toolTaxonomy';
 import type { NormalizedMessage } from '@/shared/types';
 
 /**
@@ -59,9 +59,8 @@ function editPathFingerprint(message: NormalizedMessage): string | null {
   }
   const input = parsedToolInput(message);
   if (!input || typeof input !== 'object') return null;
-  const record = input as Record<string, unknown>;
-  const path = record.file_path ?? record.TargetFile ?? record.path ?? record.filePath ?? record.AbsolutePath;
-  return typeof path === 'string' && path.trim()
+  const path = pickFilePath(input);
+  return path.trim()
     ? JSON.stringify([canonicalToolName(message.toolName), path.trim().replace(/\\/g, '/')])
     : null;
 }

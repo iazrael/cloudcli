@@ -12,15 +12,29 @@
  * ToolGroupContainer, toolGrouping); `toolTaxonomy.test.ts` pins the map.
  */
 
+// Engines without a server-side name mapping (agy, opencode) send their
+// native names; any name missing here renders as the generic JSON dump.
 const TOOL_ALIASES: Record<string, string> = {
   run_command: 'Bash',
   exec: 'Bash',
   command_execution: 'Bash',
+  shell: 'Bash',
+  bash: 'Bash',
   view_file: 'Read',
+  read_file: 'Read',
+  read: 'Read',
   replace_file_content: 'Edit',
+  edit_file: 'Edit',
+  edit: 'Edit',
   ApplyPatch: 'Edit',
   apply_patch: 'Edit',
   write_to_file: 'Write',
+  write_file: 'Write',
+  write: 'Write',
+  grep: 'Grep',
+  glob: 'Glob',
+  webfetch: 'WebFetch',
+  websearch: 'WebSearch',
   find_by_name: 'Glob',
   grep_search: 'Grep',
   list_dir: 'LS',
@@ -61,14 +75,19 @@ export function isFilePreviewTool(toolName: string): boolean {
 }
 
 /**
- * Display category for the collapsible card. Explicit and ordered — the
- * categories cross alias families (`manage_task` is 'task' while `Agent` is
- * 'agent'), so this must not be derived from the canonical name.
+ * Display category for the collapsible card. The file, search and command
+ * families follow the canonical name, so a new alias joins them for free.
+ * The rest are explicit by raw name: they cross alias families (`manage_task`
+ * is 'task' while `Agent` is 'agent'), so they must not be derived from it.
  */
-const DISPLAY_CATEGORIES: ReadonlyArray<readonly [string, ReadonlySet<string>]> = [
-  ['edit', new Set(['Edit', 'Write', 'ApplyPatch', 'replace_file_content', 'write_to_file'])],
-  ['search', new Set(['Grep', 'Glob', 'grep_search', 'find_by_name', 'list_dir'])],
-  ['bash', new Set(['Bash', 'run_command'])],
+const CANONICAL_DISPLAY_CATEGORIES: ReadonlyArray<readonly [string, ReadonlySet<string>]> = [
+  ['edit', new Set(['Edit', 'Write'])],
+  ['search', new Set(['Grep', 'Glob'])],
+  ['bash', new Set(['Bash'])],
+];
+
+const RAW_DISPLAY_CATEGORIES: ReadonlyArray<readonly [string, ReadonlySet<string>]> = [
+  ['search', new Set(['list_dir'])],
   ['todo', new Set(['TodoWrite', 'TodoRead'])],
   ['task', new Set(['TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet', 'manage_task'])],
   ['agent', new Set(['Agent', 'manage_subagents', 'send_message'])],
@@ -77,12 +96,53 @@ const DISPLAY_CATEGORIES: ReadonlyArray<readonly [string, ReadonlySet<string>]> 
 ];
 
 export function getToolDisplayCategory(toolName: string): string {
-  for (const [category, names] of DISPLAY_CATEGORIES) {
+  const canonical = canonicalToolName(toolName);
+  for (const [category, names] of CANONICAL_DISPLAY_CATEGORIES) {
+    if (names.has(canonical)) {
+      return category;
+    }
+  }
+  for (const [category, names] of RAW_DISPLAY_CATEGORIES) {
     if (names.has(toolName)) {
       return category;
     }
   }
   return 'default';
+}
+
+const asRecord = (input: unknown): Record<string, unknown> =>
+  input && typeof input === 'object' ? input as Record<string, unknown> : {};
+
+const firstString = (...values: unknown[]): string | undefined =>
+  values.find((value): value is string => typeof value === 'string');
+
+/**
+ * The file a tool input targets, across every engine's field name: Claude
+ * `file_path`, agy `TargetFile`/`AbsolutePath`/`Path`, opencode `path`.
+ */
+export function pickFilePath(input: unknown): string {
+  const record = asRecord(input);
+  return firstString(
+    record.file_path, record.TargetFile, record.AbsolutePath, record.Path, record.path, record.filePath,
+  ) ?? '';
+}
+
+/** Both sides of an edit's replacement, across every engine's field names. */
+export function pickEditSides(input: unknown): { oldContent: string; newContent: string } {
+  const record = asRecord(input);
+  return {
+    oldContent: firstString(record.old_string, record.oldString, record.TargetContent, record.Target) ?? '',
+    newContent: firstString(record.new_string, record.newString, record.ReplacementContent, record.Replacement) ?? '',
+  };
+}
+
+/**
+ * A file write's full content. Codex normalizes writes to `new_string` (no
+ * `content`), so it is read last.
+ */
+export function pickWriteContent(input: unknown): string {
+  const record = asRecord(input);
+  return firstString(record.content, record.Content, record.CodeContent, record.new_string) ?? '';
 }
 
 /** The command field of a parsed tool input, or '' when there is none. */
