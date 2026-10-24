@@ -402,6 +402,26 @@ export type ProviderSessionModel = {
 
 
 /**
+ * Announces that a runtime's new provider session id *replaces* the session the
+ * run started on, rather than being that session's first mapping.
+ *
+ * Consumers: `ChatSessionWriter` forwards it to the chat run registry, which
+ * moves the app session row onto the replacement provider session and
+ * transcript. The only producer today is Claude's runtime: editing the first
+ * prompt starts a fresh SDK session (the run carries `resumeFromScratch`), so
+ * the conversation's transcript moves to a new file while the app session id
+ * must stay the same.
+ */
+export type ProviderSessionIdReplacement = {
+  /**
+   * Transcript the replacement session writes. Null when the superseded
+   * transcript was unknown; the row's path is then cleared and the filesystem
+   * watcher fills it in once the new file appears.
+   */
+  transcriptPath: string | null;
+};
+
+/**
  * Output gateway shared by WebSocket and SSE provider runs.
  *
  * Runtime adapters only depend on this structural surface, which keeps them
@@ -409,7 +429,14 @@ export type ProviderSessionModel = {
  */
 export type ProviderRuntimeWriter = {
   send(data: unknown): void;
-  setSessionId?(sessionId: string): void;
+  /**
+   * Records the provider-native session id the run is using.
+   *
+   * `replacement` is present only when the engine abandoned the session the
+   * run resumed and started another one (Claude, after its first prompt was
+   * edited); a plain announcement omits it.
+   */
+  setSessionId?(sessionId: string, replacement?: ProviderSessionIdReplacement): void;
   userId?: string | number | null;
   isWebSocketWriter?: boolean;
 };

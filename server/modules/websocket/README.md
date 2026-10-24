@@ -121,7 +121,7 @@ provider-native id (JSONL file name, CLI resume id) stays inside the backend:
 
 1. `chat.send` resolves the app id to `{ provider, project_path }` from the sessions DB and passes the **app session id** to the provider runtime.
 2. The provider runtime resolves the provider-native id from the sessions DB itself (`sessionsService.resolveProviderSessionId`) at the exact points its CLI/SDK needs it (resume flags, provider-owned databases). Runtimes key their process maps by the app session id, so abort and pending-approval lookups use app ids too.
-3. The `ChatSessionWriter` remaps every outbound event back to the app id, and turns `session_created` announcements into a DB mapping update instead of forwarding them.
+3. The `ChatSessionWriter` remaps every outbound event back to the app id, and turns `session_created` announcements into a DB mapping update instead of forwarding them. A `setSessionId(id, { transcriptPath })` call is a **replacement** (Claude after an edited first prompt): the run registry moves the app row onto the new provider id and transcript, retires the old transcript, and merges a watcher-created row for the new id.
 
 ### Chat Message Dispatch
 

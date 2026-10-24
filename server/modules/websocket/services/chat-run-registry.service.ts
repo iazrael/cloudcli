@@ -8,6 +8,7 @@ import { broadcastSessionUpserted } from '@/modules/websocket/services/session-u
 import type {
   LLMProvider,
   NormalizedMessage,
+  ProviderSessionIdReplacement,
   RealtimeClientConnection,
   RunOutcomeReason,
 } from '@/shared/types.js';
@@ -329,8 +330,18 @@ function readExitCode(message: NormalizedMessage): number {
  * Called from the gateway writer when the runtime either calls
  * `setSessionId(...)` or emits its `session_created` event — whichever
  * happens first wins; later calls with the same id are no-ops.
+ *
+ * A `replacement` descriptor means the engine started a different session than
+ * the one this run resumed (Claude, after its first prompt was edited). The app
+ * row must then move to the replacement transcript — `assignProviderSessionId`
+ * would keep the old `jsonl_path` — and the transcript it leaves behind must be
+ * retired so the indexer never offers it back as its own conversation.
  */
-function recordProviderSessionId(run: ChatRun, providerSessionId: string): void {
+function recordProviderSessionId(
+  run: ChatRun,
+  providerSessionId: string,
+  replacement?: ProviderSessionIdReplacement,
+): void {
   if (!providerSessionId || run.providerSessionId === providerSessionId) {
     return;
   }
@@ -338,7 +349,15 @@ function recordProviderSessionId(run: ChatRun, providerSessionId: string): void 
   run.providerSessionId = providerSessionId;
 
   try {
-    sessionsDb.assignProviderSessionId(run.appSessionId, providerSessionId);
+    if (replacement) {
+      sessionsDb.repointSessionToProviderSession(run.appSessionId, {
+        providerSessionId,
+        jsonlPath: replacement.transcriptPath,
+        supersedePrevious: true,
+      });
+    } else {
+      sessionsDb.assignProviderSessionId(run.appSessionId, providerSessionId);
+    }
     void broadcastSessionUpserted(run.appSessionId).catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
       console.error('[ChatRunRegistry] Failed to broadcast canonical session mapping', {
@@ -498,8 +517,8 @@ export const chatRunRegistry = {
       sessionName: input.sessionName,
       provider: input.provider,
       providerSessionId: input.providerSessionId,
-      onProviderSessionId: (providerSessionId) => {
-        recordProviderSessionId(run, providerSessionId);
+      onProviderSessionId: (providerSessionId, replacement) => {
+        recordProviderSessionId(run, providerSessionId, replacement);
       },
       decorateOutboundEvent: (message) => decorateAndRecordEvent(run, message),
     });

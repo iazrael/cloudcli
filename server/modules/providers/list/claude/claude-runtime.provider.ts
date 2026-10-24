@@ -1474,6 +1474,29 @@ function refusedByClosedAdmission(options: ClaudeRunOptions, ws: ClaudeWriter): 
 }
 
 /**
+ * The transcript a session that just restarted will write.
+ *
+ * Claude keeps every session of one project as `<projectDir>/<sessionId>.jsonl`,
+ * and a session restarted because its first prompt was edited runs in the same
+ * cwd as the transcript it supersedes — so the project directory is the one
+ * that transcript already lives in. Null when the row has no transcript yet;
+ * the filesystem watcher then fills the path in once the file appears.
+ */
+function replacementTranscriptPath(
+  context: ProviderRuntimeContext,
+  sessionId: string | undefined,
+  providerSessionId: string,
+): string | null {
+  const currentPath = sessionId ? context.resolveTranscriptPath?.(sessionId) : null;
+  if (!currentPath) {
+    return null;
+  }
+
+  const projectDirectory = path.dirname(currentPath);
+  return projectDirectory && projectDirectory !== '.' ? path.join(projectDirectory, `${providerSessionId}.jsonl`) : null;
+}
+
+/**
  * Runs one turn on a new CLI process, or hands it to the session's held one,
  * and keeps that process going for as long as it is held or resident.
  */
@@ -2240,18 +2263,39 @@ async function runClaudeProcess(
         if (Array.isArray(message.slash_commands)) slashCommands = new Set(message.slash_commands);
         requestSessionTitle();
       }
-      // Capture session ID from first message
-      if (message.session_id && !capturedSessionId) {
-
+      // Capture the provider session id from the stream.
+      //
+      // A first-prompt edit runs with `resumeFromScratch`, so the SDK starts a
+      // brand-new session instead of resuming. The id in the stream is then a
+      // *replacement* for the one the session row still holds: Claude writes a
+      // new transcript, and the app row has to move with it (the gateway
+      // repoints the row from the replacement descriptor). Without this the
+      // run kept labelling its events with the old id and the new transcript
+      // was indexed as an unrelated sidebar session.
+      const replacesProviderSession = Boolean(
+        options.resumeFromScratch && providerSessionId && capturedSessionId === providerSessionId,
+      );
+      if (message.session_id && (!capturedSessionId || replacesProviderSession)) {
+        const previousSessionId = capturedSessionId;
         capturedSessionId = message.session_id;
         const capturedKey = sessionKey();
         if (capturedKey) {
           addSession(capturedKey, queryInstance, ws, releasePromptStream, turnHooks);
         }
 
+        const replacement =
+          previousSessionId && previousSessionId !== capturedSessionId
+            ? { transcriptPath: replacementTranscriptPath(context, sessionId, capturedSessionId) }
+            : undefined;
+
         // Set session ID on writer
         if (ws.setSessionId && typeof ws.setSessionId === 'function') {
-          ws.setSessionId(capturedSessionId);
+          ws.setSessionId(capturedSessionId, replacement);
+        }
+        if (replacement) {
+          console.log(
+            `[Claude SDK] Session ${sessionId || '(none)'} moved from ${previousSessionId} to ${capturedSessionId} for the edited first prompt`,
+          );
         }
 
         // Send session-created event only once for sessions with nothing to resume

@@ -375,23 +375,61 @@ export const sessionsDb = {
   /**
    * Moves one session onto a different provider session and transcript.
    *
-   * Only editing a message on a provider that has to branch to rewind (Codex)
-   * does this — an ordinary run keeps the same provider session for its whole
-   * life. `assignProviderSessionId` cannot be used for it: that one keeps the
-   * existing `jsonl_path` on purpose, so a session repointed with it would
-   * claim the new thread while still reading the old transcript.
+   * Two providers use this. Codex has to branch to rewind, so it repoints after
+   * forking the kept part of the conversation; Claude starts a fresh session
+   * when the first prompt was edited and repoints when the new native id
+   * arrives. `assignProviderSessionId` cannot be used for either: that one
+   * keeps the existing `jsonl_path` on purpose, so a session repointed with it
+   * would claim the new thread while still reading the old transcript.
    *
    * The watcher may already have indexed the new transcript under its own id.
    * That row is the same conversation this one is about to become, so it is
    * replaced rather than left behind as a second sidebar entry.
+   *
+   * `supersedePrevious` records the session being left behind in
+   * `superseded_provider_sessions`, so a later indexer pass does not resurrect
+   * its transcript as an unrelated conversation. Codex records that itself
+   * (it also knows the abandoned artifact); Claude supplies it here because
+   * this move is the only place its old transcript leaves the row.
    */
   repointSessionToProviderSession(
     sessionId: string,
-    input: { providerSessionId: string; jsonlPath: string },
+    input: {
+      providerSessionId: string;
+      jsonlPath: string | null;
+      supersedePrevious?: boolean;
+    },
   ): void {
     const db = getConnection();
 
     db.transaction(() => {
+      if (input.supersedePrevious) {
+        const previous = db
+          .prepare(
+            `SELECT provider_session_id, provider, jsonl_path FROM sessions
+             WHERE session_id = ?`
+          )
+          .get(sessionId) as
+            | { provider_session_id: string | null; provider: string; jsonl_path: string | null }
+            | undefined;
+
+        if (previous?.provider_session_id && previous.provider_session_id !== input.providerSessionId) {
+          db.prepare(
+            `INSERT INTO superseded_provider_sessions (provider_session_id, provider, session_id, jsonl_path)
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT(provider_session_id, provider) DO UPDATE SET
+               session_id = excluded.session_id,
+               jsonl_path = excluded.jsonl_path,
+               created_at = CURRENT_TIMESTAMP`
+          ).run(
+            previous.provider_session_id,
+            previous.provider,
+            sessionId,
+            previous.jsonl_path,
+          );
+        }
+      }
+
       db.prepare('DELETE FROM sessions WHERE session_id = ? AND session_id <> ?')
         .run(input.providerSessionId, sessionId);
       db.prepare(

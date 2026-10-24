@@ -2253,6 +2253,36 @@ test('buildLookupMap skips rows with non-string key or value', async () => {
 // extractSessionTitle — tested via synchronizeFile
 // ---------------------------------------------------------------------------
 
+test('synchronizeFile skips a transcript a session was edited away from', { concurrency: false }, async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'claude-sync-superseded-'));
+  const workspacePath = await createWorkspaceFixture();
+  const restoreHomeDir = patchHomeDir(tmp);
+
+  try {
+    const transcriptPath = await writeSessionJsonl(workspacePath, 'test-session-1.jsonl', []);
+
+    await withIsolatedDatabase(async () => {
+      // Editing the first prompt moved the session (app id `app-edited`) onto
+      // a newer transcript; this one stays on disk but belongs to nobody.
+      sessionsDb.markProviderSessionSuperseded({
+        providerSessionId: 'test-session-1',
+        provider: 'claude',
+        sessionId: 'app-edited',
+        jsonlPath: transcriptPath,
+      });
+
+      const synchronizer = new ClaudeSessionSynchronizer();
+      assert.equal(await synchronizer.synchronizeFile(transcriptPath), null);
+      // A full rescan must not resurrect it as its own sidebar session.
+      assert.equal(sessionsDb.getSessionByProviderSessionId('test-session-1'), null);
+      assert.equal(sessionsDb.getAllSessions().length, 0);
+    });
+  } finally {
+    restoreHomeDir();
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test('synchronizeFile uses ai-title from JSONL when no DB custom_name exists', { concurrency: false }, async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'claude-sync-aititle-'));
   const workspacePath = await createWorkspaceFixture();
