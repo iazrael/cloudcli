@@ -46,24 +46,23 @@ const execFileAsync = promisify(execFile);
  * family carries a description; it becomes the base model's description.
  */
 const ANTIGRAVITY_BUILTIN_RAW_MODELS: AntigravityRawModelEntry[] = [
-  { value: 'gemini-3.8-flash-high', label: 'Gemini 3.8 Flash (High)', description: 'Google Gemini 3.8 Flash' },
-  { value: 'gemini-3.8-flash-medium', label: 'Gemini 3.8 Flash (Medium)' },
-  { value: 'gemini-3.8-flash-low', label: 'Gemini 3.8 Flash (Low)' },
-  { value: 'gemini-3.7-flash-high', label: 'Gemini 3.7 Flash (High)', description: 'Google Gemini 3.7 Flash' },
-  { value: 'gemini-3.7-flash-medium', label: 'Gemini 3.7 Flash (Medium)' },
-  { value: 'gemini-3.7-flash-low', label: 'Gemini 3.7 Flash (Low)' },
-  { value: 'gemini-3.6-flash-high', label: 'Gemini 3.6 Flash (High)', description: 'Google Gemini 3.6 Flash' },
-  { value: 'gemini-3.6-flash-medium', label: 'Gemini 3.6 Flash (Medium)' },
-  { value: 'gemini-3.6-flash-low', label: 'Gemini 3.6 Flash (Low)' },
-  { value: 'gemini-3.1-pro-high', label: 'Gemini 3.1 Pro (High)', description: 'Google Gemini 3.1 Pro for complex architecture and deep reasoning' },
-  { value: 'gemini-3.1-pro-low', label: 'Gemini 3.1 Pro (Low)' },
-  { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6 (Thinking)', description: 'Anthropic Claude Sonnet 4.6 with extended thinking' },
-  { value: 'claude-opus-4-6-thinking', label: 'Claude Opus 4.6 (Thinking)', description: 'Anthropic Claude Opus 4.6 with maximum reasoning capability' },
-  { value: 'gpt-oss-120b-medium', label: 'GPT-OSS 120B (Medium)', description: 'Open-weight 120B foundation model' },
+  { value: "gemini-4-argon-high", label: "Gemini 4 Argon (High)", description: "Google Gemini 4 Argon" },
+  { value: "gemini-4-argon-medium", label: "Gemini 4 Argon (Medium)" },
+  { value: "gemini-4-argon-low", label: "Gemini 4 Argon (Low)" },
+  { value: "gemini-3.8-flash-high", label: "Gemini 3.8 Flash (High)", description: "Google Gemini 3.8 Flash" },
+  { value: "gemini-3.8-flash-medium", label: "Gemini 3.8 Flash (Medium)" },
+  { value: "gemini-3.8-flash-low", label: "Gemini 3.8 Flash (Low)" },
+  { value: "claude-opus-5-5-high", label: "Claude Opus 5.5 (High)", description: "Anthropic Claude Opus 5.5 with maximum reasoning capability" },
+  { value: "claude-opus-5-5-medium", label: "Claude Opus 5.5 (Medium)" },
+  { value: "claude-opus-5-5-low", label: "Claude Opus 5.5 (Low)" },
+  { value: "claude-sonnet-5-5-high", label: "Claude Sonnet 5.5 (High)", description: "Anthropic Claude Sonnet 5.5 with extended thinking" },
+  { value: "claude-sonnet-5-5-medium", label: "Claude Sonnet 5.5 (Medium)" },
+  { value: "claude-sonnet-5-5-low", label: "Claude Sonnet 5.5 (Low)" },
+  { value: "gpt-oss-120b-medium", label: "GPT-OSS 120B (Medium)" },
 ];
 
 /** Catalog default, kept identical in the builtin and dynamic paths. */
-const DEFAULT_BASE_MODEL = 'gemini-3.7-flash';
+const DEFAULT_BASE_MODEL = 'gemini-4-argon';
 
 /**
  * Builtin fallback model definitions when `agy models` cannot be queried.

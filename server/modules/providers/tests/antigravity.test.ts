@@ -139,7 +139,7 @@ test('AntigravityProviderModels returns builtin models fallback', async () => {
     const definition = await models.getSupportedModels();
     assert.ok(definition.OPTIONS.length > 0);
     assert.ok(definition.DEFAULT);
-    assert.ok(definition.OPTIONS.some((m) => m.value === 'gemini-3.7-flash'));
+    assert.ok(definition.OPTIONS.some((m) => m.value === 'gemini-4-argon'));
   } finally {
     restoreAgyPath();
     clearEnginePathCache();
@@ -160,7 +160,7 @@ test('AntigravityProviderModels retries the CLI once the fallback cache expires'
   try {
     const models = new AntigravityProviderModels(0);
     const fallback = await models.getSupportedModels();
-    assert.ok(fallback.OPTIONS.some((m) => m.value === 'gemini-3.7-flash'));
+    assert.ok(fallback.OPTIONS.some((m) => m.value === 'gemini-4-argon'));
 
     // A healthy CLI output replaces the dead stub; with the (zero) TTL
     // elapsed the next call must re-query instead of serving the fallback.
@@ -219,48 +219,43 @@ test('AntigravityProviderModels keeps caching a healthy CLI catalog', async () =
 });
 
 test('ANTIGRAVITY_BUILTIN_MODELS collapses multi-tier families and keeps fixed models', () => {
-  assert.equal(ANTIGRAVITY_BUILTIN_MODELS.DEFAULT, 'gemini-3.7-flash');
+  assert.equal(ANTIGRAVITY_BUILTIN_MODELS.DEFAULT, 'gemini-4-argon');
 
   const values = ANTIGRAVITY_BUILTIN_MODELS.OPTIONS.map((option) => option.value);
   for (const expected of [
+    'gemini-4-argon',
     'gemini-3.8-flash',
-    'gemini-3.7-flash',
-    'gemini-3.6-flash',
-    'gemini-3.1-pro',
-    'claude-sonnet-4-6',
-    'claude-opus-4-6-thinking',
+    'claude-opus-5-5',
+    'claude-sonnet-5-5',
     'gpt-oss-120b-medium',
   ]) {
     assert.ok(values.includes(expected), `${expected} must be listed`);
   }
-  // Multi-tier gemini families collapse; the fixed-tier gpt-oss row keeps
-  // its real agy id.
+  // Multi-tier families collapse to base ids; the single-variant gpt-oss
+  // row keeps its real agy id.
   assert.equal(
-    values.filter((value) => value.startsWith('gemini-') && /-(low|medium|high)$/.test(value)).length,
+    values.filter((value) => value !== 'gpt-oss-120b-medium' && /-(low|medium|high)$/?.test(value)).length,
     0,
-    `no gemini suffixed ids may survive: ${JSON.stringify(values)}`,
+    `no suffixed ids may survive: ${JSON.stringify(values)}`,
   );
 
-  const flash = ANTIGRAVITY_BUILTIN_MODELS.OPTIONS.find((o) => o.value === 'gemini-3.7-flash');
-  assert.equal(flash?.label, 'Gemini 3.7 Flash');
-  assert.equal(flash?.description, 'Google Gemini 3.7 Flash');
-  assert.equal(flash?.effort?.encoding, 'model-suffix');
-  assert.deepEqual(flash?.effort?.values.map((v) => v.value), ['low', 'medium', 'high']);
-  assert.equal(flash?.effort?.default, 'high');
+  const argon = ANTIGRAVITY_BUILTIN_MODELS.OPTIONS.find((o) => o.value === 'gemini-4-argon');
+  assert.equal(argon?.label, 'Gemini 4 Argon');
+  assert.equal(argon?.description, 'Google Gemini 4 Argon');
+  assert.equal(argon?.effort?.encoding, 'model-suffix');
+  assert.deepEqual(argon?.effort?.values.map((v) => v.value), ['low', 'medium', 'high']);
+  assert.equal(argon?.effort?.default, 'high');
 
-  // Tiers mirror what agy actually offers: 3.1 Pro has no medium variant.
-  const pro = ANTIGRAVITY_BUILTIN_MODELS.OPTIONS.find((o) => o.value === 'gemini-3.1-pro');
-  assert.deepEqual(pro?.effort?.values.map((v) => v.value), ['low', 'high']);
+  // Claude tiers became adjustable in the current agy catalog, unlike
+  // older releases where sonnet was a passthrough.
+  const opus = ANTIGRAVITY_BUILTIN_MODELS.OPTIONS.find((o) => o.value === 'claude-opus-5-5');
+  assert.deepEqual(opus?.effort?.values.map((v) => v.value), ['low', 'medium', 'high']);
 
   // Models without adjustable tiers carry no effort config at all, so the
   // WebUI hides the Reasoning menu for them.
   const gptOss = ANTIGRAVITY_BUILTIN_MODELS.OPTIONS.find((o) => o.value === 'gpt-oss-120b-medium');
   assert.equal(gptOss?.label, 'GPT-OSS 120B (Medium)');
   assert.equal(gptOss?.effort, undefined);
-
-  const claude = ANTIGRAVITY_BUILTIN_MODELS.OPTIONS.find((o) => o.value === 'claude-sonnet-4-6');
-  assert.equal(claude?.label, 'Claude Sonnet 4.6 (Thinking)');
-  assert.equal(claude?.effort, undefined);
 });
 
 test('dedupeAntigravityVariantModels merges CLI variant rows into base models', () => {
