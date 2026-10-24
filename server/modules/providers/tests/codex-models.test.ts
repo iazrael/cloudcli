@@ -50,6 +50,8 @@ test('bundles a Codex CLI new enough to know the GPT-6.1 Sol model', () => {
 });
 
 
+const settle = () => new Promise((resolve) => setImmediate(resolve));
+
 test('shares concurrent discovery, caches for five minutes, and replaces models after expiry', async (t) => {
   let now = 1_000;
   let calls = 0;
@@ -74,6 +76,11 @@ test('shares concurrent discovery, caches for five minutes, and replaces models 
   assert.equal((await provider.getSupportedModels()).DEFAULT, 'old');
   assert.equal(calls, 1);
   now += 1;
+  // Expired: served at once while the listing runs behind the caller, so a
+  // turn never waits on the app server.
+  assert.equal((await provider.getSupportedModels()).DEFAULT, 'old');
+  assert.equal(calls, 2);
+  await settle();
   assert.equal((await provider.getSupportedModels()).DEFAULT, 'new');
   assert.equal(calls, 2);
 });
@@ -98,12 +105,16 @@ test('retains last successful models on refresh failure, logs it, and recovers a
   now += 300_000;
   fail = true;
   assert.deepEqual(await provider.getSupportedModels(), first);
+  await settle();
   assert.equal(log.mock.callCount(), 1);
   assert.equal(closed, 2);
-  await provider.getSupportedModels();
+  // Inside the back-off the last catalog serves without another listing.
+  assert.deepEqual(await provider.getSupportedModels(), first);
   assert.equal(calls, 2);
   now += 10_000;
   fail = false;
+  assert.deepEqual(await provider.getSupportedModels(), first);
+  await settle();
   assert.equal((await provider.getSupportedModels()).DEFAULT, 'available-3');
 });
 

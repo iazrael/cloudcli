@@ -1695,6 +1695,107 @@ export function readUsageNumber(value: unknown): number {
 
 // ---------------------------
 
+//----------------- STALE-WHILE-REFRESH VALUE ------------
+
+/** Options for `createStaleWhileRefreshValue`. */
+export type StaleWhileRefreshOptions<T> = {
+  /** Produces a fresh value. May reject; see `failureRetryMs`. */
+  load: () => Promise<T>;
+  /** How long a loaded value stays fresh; may depend on the value (a fallback can expire sooner). */
+  ttlMs: (value: T) => number;
+  /** After a failed refresh, how long the previous value keeps serving before the next try. */
+  failureRetryMs: number;
+  /** Told about every failed refresh, including ones nobody was waiting on. */
+  onRefreshError?: (error: unknown) => void;
+  /** Clock override for tests. */
+  now?: () => number;
+};
+
+/** A value that is read on hot paths but slow to produce. */
+export type StaleWhileRefreshValue<T> = {
+  get(): Promise<T>;
+  /** Forgets the value; the next read loads again and waits for it. */
+  clear(): void;
+};
+
+/**
+ * Creates a value that callers never wait on once it has been loaded.
+ *
+ * Only the first read (and the first after `clear`) waits for `load`. After
+ * that an expired value is returned at once while one shared refresh replaces
+ * it behind the caller. Provider model catalogs use this: every turn reads the
+ * catalog before starting the engine, and the CLI query behind it (`agy
+ * models`, `opencode models`, Codex's app-server listing) can take seconds or
+ * hang to its timeout, which must not be added to every turn.
+ *
+ * A failed refresh keeps serving the previous value and waits
+ * `failureRetryMs` before trying again. A first read whose load fails rejects,
+ * and the next read tries again.
+ */
+export function createStaleWhileRefreshValue<T>(
+  options: StaleWhileRefreshOptions<T>,
+): StaleWhileRefreshValue<T> {
+  const now = options.now ?? Date.now;
+  let current: { value: T } | null = null;
+  let expiresAt = 0;
+  let refreshing: Promise<T> | null = null;
+  // Bumped by `clear`, so a load that was running across it is not kept.
+  let generation = 0;
+
+  const refresh = (): Promise<T> => {
+    if (refreshing) {
+      return refreshing;
+    }
+    const startedIn = generation;
+    const pending = options.load()
+      .then((value) => {
+        if (startedIn === generation) {
+          current = { value };
+          expiresAt = now() + options.ttlMs(value);
+        }
+        return value;
+      })
+      .catch((error: unknown) => {
+        options.onRefreshError?.(error);
+        if (startedIn !== generation || !current) {
+          throw error;
+        }
+        expiresAt = now() + options.failureRetryMs;
+        return current.value;
+      })
+      .finally(() => {
+        if (refreshing === pending) {
+          refreshing = null;
+        }
+      });
+    refreshing = pending;
+    return pending;
+  };
+
+  return {
+    async get(): Promise<T> {
+      if (current && now() < expiresAt) {
+        return current.value;
+      }
+      if (current) {
+        // Nobody waits on this refresh; a failure was already reported.
+        void refresh().catch(() => undefined);
+        return current.value;
+      }
+      return refresh();
+    },
+
+    clear(): void {
+      generation += 1;
+      current = null;
+      expiresAt = 0;
+      refreshing = null;
+    },
+  };
+}
+
+// ---------------------------
+
 /**
  * Decodes an OpenCode text payload that was persisted as a JSON string literal.
  *

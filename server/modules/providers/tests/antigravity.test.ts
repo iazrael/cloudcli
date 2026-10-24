@@ -170,11 +170,59 @@ test('AntigravityProviderModels retries the CLI once the fallback cache expires'
       { mode: 0o755 },
     );
     clearEnginePathCache();
-    const refreshed = await models.getSupportedModels();
+    // The expired fallback is served at once while the CLI is re-queried
+    // behind it; the call after that refresh gets the real catalog.
+    const stale = await models.getSupportedModels();
+    assert.ok(stale.OPTIONS.some((m) => m.value === 'gemini-4-argon'));
+    let refreshed = stale;
+    for (let i = 0; i < 100 && !refreshed.OPTIONS.some((m) => m.value === 'gemini-4-argon-medium'); i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      refreshed = await models.getSupportedModels();
+    }
     assert.ok(
       refreshed.OPTIONS.some((m) => m.value === 'gemini-4-argon-medium'),
       `expected CLI catalog, got: ${JSON.stringify(refreshed.OPTIONS.map((m) => m.value))}`,
     );
+  } finally {
+    restoreAgyPath();
+    clearEnginePathCache();
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('AntigravityProviderModels never holds a caller behind a hung CLI once it has a catalog', async () => {
+  // Every turn reads the catalog before spawning agy. A CLI whose `models`
+  // query hangs (offline token refresh) must not delay each turn by the
+  // query's timeout: the expired catalog is served while the refresh runs.
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'antigravity-models-swr-'));
+  const stubPath = path.join(tempRoot, 'agy');
+  const countPath = path.join(tempRoot, 'count');
+  const restoreAgyPath = withEnvValue('CLOUDCLI_AGY_PATH', stubPath);
+  await fs.writeFile(stubPath, '#!/bin/sh\n', { mode: 0o755 });
+  clearEnginePathCache();
+  try {
+    const models = new AntigravityProviderModels(0);
+    await models.getSupportedModels();
+
+    // `models` hangs for longer than the assertion below allows, and counts
+    // its runs; other invocations (the `--version` probe) return at once.
+    await fs.writeFile(
+      stubPath,
+      `#!/bin/sh\n[ "$1" = models ] || exit 0\necho run >> '${countPath}'\nsleep 2\n`,
+      { mode: 0o755 },
+    );
+    clearEnginePathCache();
+
+    const startedAt = Date.now();
+    const [first, second] = await Promise.all([models.getSupportedModels(), models.getSupportedModels()]);
+    assert.ok(Date.now() - startedAt < 1_000, 'an expired catalog must be served without waiting on the CLI');
+    assert.ok(first.OPTIONS.some((m) => m.value === 'gemini-4-argon'));
+    assert.equal(second, first);
+
+    // Concurrent callers share one refresh.
+    await new Promise((resolve) => setTimeout(resolve, 2_500));
+    const runs = (await fs.readFile(countPath, 'utf8')).trim().split('\n');
+    assert.equal(runs.length, 1);
   } finally {
     restoreAgyPath();
     clearEnginePathCache();

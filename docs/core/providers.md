@@ -1,6 +1,6 @@
 # Provider 架构与接入指南
 
-> 基准：2.12.0 / 2026-10-23
+> 基准：2.13.0 / 2026-10-24
 > **核心文档**：改动 `server/modules/providers/**` 或 `server/shared/{types,interfaces}.ts` 时**必须同步更新本文**。
 > 普通 bug 修复不动架构的不需要更新（提交时走 `--no-verify`，见 `AGENTS.md`）。
 > 引用一律给"文件路径 + 符号名"，不用行号。
@@ -180,7 +180,7 @@ Codex、ZCode、Antigravity、OpenCode 共用 `shared/background-work/background
 | 切面 | 职责 | 关键成员 / 消费服务 |
 | --- | --- | --- |
 | `runtime` | 拉起/中止引擎执行 | `run(command, options, writer, context)`、`abort(sessionId)`；可选 `permissions`（权限批准网关）、`backgroundTasks`（输入框任务条列表；`isPending` 含汇报回复阶段；`canInterrupt` 为 false 表示这批工作 `abort` 已停不了，运行中会话轮询里只剩后台工作的条目也取它）→ `providerRuntimeService` |
-| `models` | 模型目录 | `getSupportedModels()`（引擎目录或预置目录）、`getCurrentActiveModel()`（只读兜底）→ `providerModelsService` |
+| `models` | 模型目录 | `getSupportedModels()`（引擎目录或预置目录）、`getCurrentActiveModel()`（只读兜底）→ `providerModelsService`。每轮起跑前都会读目录，所以要查 CLI 的目录（antigravity、opencode、codex）用 `createStaleWhileRefreshValue`（`server/shared/utils.ts`）：只有首次读取等查询，过期后先用旧目录、后台刷新；Claude 自带同样的处理 |
 | `auth` | 安装/登录状态 | `getStatus()`（"未安装/未登录"是数据不是异常）；可选 `getQuota()`（配额）→ `providerAuthService` |
 | `mcp` | 引擎原生 MCP 配置读写 | `McpProvider` 基类（scope/transport 校验）→ `providerMcpService` |
 | `skills` | 技能发现/写入 | `SkillsProvider` 基类（SKILL.md 扫描）→ `providerSkillsService` |

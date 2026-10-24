@@ -19,8 +19,10 @@ import type {
   ProviderCurrentActiveModel,
   ProviderModelsDefinition,
 } from '@/shared/types.js';
+import type { StaleWhileRefreshValue } from '@/shared/utils.js';
 import {
   buildDefaultProviderCurrentActiveModel,
+  createStaleWhileRefreshValue,
   readObjectRecord,
   readOptionalString,
 } from '@/shared/utils.js';
@@ -151,33 +153,34 @@ function readDefaultModelFromSettings(): string | null {
 }
 
 export class AntigravityProviderModels implements IProviderModels {
-  private cachedModels: ProviderModelsDefinition | null = null;
-  private cacheExpiry: number = 0;
+  /**
+   * Every turn reads the catalog before spawning agy, and `agy models` takes
+   * seconds (or hangs to its timeout), so only the first read waits on it; an
+   * expired catalog keeps serving while it is re-queried.
+   */
+  private readonly catalog: StaleWhileRefreshValue<ProviderModelsDefinition>;
 
   /**
-   * TTL for the builtin fallback catalog. Unlike a healthy CLI result it
-   * expires fast: the builtin list is a stopgap that goes stale, so the
-   * next call re-queries `agy models` instead of serving the stale list
-   * for the full five-minute window.
+   * @param fallbackTtlMs How long the builtin fallback stays fresh. Unlike a
+   *   healthy CLI result it expires fast: the builtin list is a stopgap that
+   *   goes stale, so `agy models` is asked again soon instead of after the
+   *   full five-minute window.
    */
-  constructor(private readonly fallbackTtlMs: number = 10_000) {}
+  constructor(fallbackTtlMs: number = 10_000) {
+    this.catalog = createStaleWhileRefreshValue<ProviderModelsDefinition>({
+      load: async () => (await fetchModelsFromCli()) ?? ANTIGRAVITY_BUILTIN_MODELS,
+      ttlMs: (models) => (models === ANTIGRAVITY_BUILTIN_MODELS ? fallbackTtlMs : 5 * 60 * 1000),
+      // The load falls back instead of rejecting; this only covers a bug in it.
+      failureRetryMs: fallbackTtlMs,
+      onRefreshError: (error) => console.error('[Antigravity] Model catalog refresh failed:', error),
+    });
+  }
 
   /**
    * Returns supported Antigravity models, dynamically loaded or from builtin defaults.
    */
   async getSupportedModels(): Promise<ProviderModelsDefinition> {
-    const now = Date.now();
-    if (this.cachedModels && now < this.cacheExpiry) {
-      return this.cachedModels;
-    }
-
-    const cliModels = await fetchModelsFromCli();
-    this.cachedModels = cliModels ?? ANTIGRAVITY_BUILTIN_MODELS;
-    // A healthy catalog is stable for minutes; the builtin fallback is
-    // only served briefly so a later call picks up the real CLI output.
-    this.cacheExpiry = now + (cliModels ? 5 * 60 * 1000 : this.fallbackTtlMs);
-
-    return this.cachedModels;
+    return this.catalog.get();
   }
 
   /**
@@ -211,7 +214,6 @@ export class AntigravityProviderModels implements IProviderModels {
    * Clears the models cache.
    */
   clearCache(): void {
-    this.cachedModels = null;
-    this.cacheExpiry = 0;
+    this.catalog.clear();
   }
 }

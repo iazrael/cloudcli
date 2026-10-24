@@ -13,8 +13,10 @@ import type {
   ProviderModelOption,
   ProviderModelsDefinition,
 } from '@/shared/types.js';
+import type { StaleWhileRefreshValue } from '@/shared/utils.js';
 import {
   buildDefaultProviderCurrentActiveModel,
+  createStaleWhileRefreshValue,
   readJsonRecord,
   readObjectRecord,
   readOptionalString,
@@ -422,21 +424,42 @@ const parseOpenCodeSessionModelValue = (rawModel: unknown): string | null => {
   return modelId;
 };
 
+/** Reads the account-scoped catalog, or the anchor fallback when the CLI reports nothing. */
+const loadOpenCodeCatalog = async (): Promise<{ models: ProviderModelsDefinition; fromCli: boolean }> => {
+  // `opencode models` reports exactly the models the logged-in account can
+  // route — narrower and fresher than the anchor catalog, which only
+  // covers the fallback path (CLI missing, failing, or answering empty).
+  const cliModelIds = await readOpenCodeCliModelIds();
+  if (cliModelIds.length > 0) {
+    return { models: buildAccountScopedOpenCodeCatalog(cliModelIds, readOpenCodeCatalogEntries()), fromCli: true };
+  }
+
+  return {
+    models: filterOpenCodeModelsByProvider(OPENCODE_PREDEFINED_MODELS, await readConnectedOpenCodeProviderIds()),
+    fromCli: false,
+  };
+};
+
 /** Provider registry model adapter for OpenCode account models and session metadata. */
 export class OpenCodeProviderModels implements IProviderModels {
-  async getSupportedModels(): Promise<ProviderModelsDefinition> {
-    // `opencode models` reports exactly the models the logged-in account can
-    // route — narrower and fresher than the anchor catalog, which only
-    // covers the fallback path (CLI missing, failing, or answering empty).
-    const cliModelIds = await readOpenCodeCliModelIds();
-    if (cliModelIds.length > 0) {
-      return buildAccountScopedOpenCodeCatalog(cliModelIds, readOpenCodeCatalogEntries());
-    }
+  /**
+   * Every turn reads the catalog before starting, and `opencode models` takes
+   * a second or more, so only the first read waits on it; an expired catalog
+   * keeps serving while it is re-read. Kept fresh for a minute, so a provider
+   * connected to the account shows up soon; the anchor fallback for ten
+   * seconds, so a CLI that was briefly unavailable is asked again quickly.
+   */
+  private readonly catalog: StaleWhileRefreshValue<{ models: ProviderModelsDefinition; fromCli: boolean }> =
+    createStaleWhileRefreshValue({
+      load: loadOpenCodeCatalog,
+      ttlMs: (loaded) => (loaded.fromCli ? 60_000 : 10_000),
+      // The load falls back instead of rejecting; this only covers a bug in it.
+      failureRetryMs: 10_000,
+      onRefreshError: (error) => console.error('[OpenCode] Model catalog refresh failed:', error),
+    });
 
-    return filterOpenCodeModelsByProvider(
-      OPENCODE_PREDEFINED_MODELS,
-      await readConnectedOpenCodeProviderIds(),
-    );
+  async getSupportedModels(): Promise<ProviderModelsDefinition> {
+    return (await this.catalog.get()).models;
   }
 
   async getCurrentActiveModel(sessionId?: string): Promise<ProviderCurrentActiveModel> {

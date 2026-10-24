@@ -132,7 +132,7 @@ export const PROVIDER_CATALOG = {
   antigravity: {
     permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
     defaultPermissionMode: 'default',
-    defaultModel: 'gemini-3.7-flash',
+    defaultModel: 'gemini-4-argon',
     supportsImages: true,
     supportsFiles: true,
     supportsAbort: true,
