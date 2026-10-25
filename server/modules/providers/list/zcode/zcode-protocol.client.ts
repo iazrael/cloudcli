@@ -32,6 +32,7 @@ import {
   buildZCodeAccountSyncPayload,
   findBuiltinConfig,
 } from './zcode-provider-config.js';
+import { readZCodeStartPlanCatalog } from './zcode-start-plan-catalog.js';
 
 export {
   parseProtocolLine,
@@ -140,7 +141,12 @@ export class ZCodeProtocolClient {
           return;
         }
 
-        const syncPayload = this.buildAccountSyncPayloadFn(builtinConfigPath);
+        const syncPayload = this.buildAccountSyncPayloadFn(builtinConfigPath, {
+          // The engine cannot derive a plan's model list on its own: without
+          // these ids the provider registers entitled but model-less, and
+          // GLM-5.3 is rejected even though the billing catalog grants it.
+          startPlanModelIds: (await readZCodeStartPlanCatalog())?.map((model) => model.modelId),
+        });
         if (!syncPayload) {
           if (pid !== null) this.syncedProcessId = pid;
           return;
