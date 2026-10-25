@@ -278,9 +278,30 @@ export function resolveZCodeBuiltinRevision(builtinConfigPath: string): string |
  * providers as `entitled: false`. A trial JWT or an individual-plan API key
  * activates the matching provider in the engine's executable registry view.
  *
+ * Entitlement alone does not give the provider any models: the engine's
+ * registry takes an account provider's model list from `builtinModelIds`,
+ * which the App ships in this same payload (captured from its log:
+ * `{"access":{"type":"zhipu-account","entitled":true},
+ *   "builtinModelIds":["GLM-5.3-Flash","GLM-5.3"]}`). Omitting it registers the
+ * provider with an empty model list, and every turn for a model the plan
+ * grants but the static builtin config does not list (GLM-5.3 on the start
+ * plan) fails with "Provider Registry 中不存在 Model".
+ *
  * Returns null when no eligible credential is stored or the built-in config is unavailable.
  */
-export function buildZCodeAccountSyncPayload(builtinConfigPath: string): Record<string, unknown> | null {
+export type ZCodeAccountSyncOptions = {
+  /**
+   * Engine-facing model ids the start plan is entitled to, as reported by the
+   * billing catalog (`GLM-5.3-Flash`, `GLM-5.3`, …). Omitted when the catalog
+   * could not be read, which keeps today's behaviour for the provider.
+   */
+  startPlanModelIds?: readonly string[];
+};
+
+export function buildZCodeAccountSyncPayload(
+  builtinConfigPath: string,
+  options: ZCodeAccountSyncOptions = {},
+): Record<string, unknown> | null {
   const jwtToken = readDecryptedZCodeJwtToken();
   const individualApiKey = readDecryptedZCodeIndividualPlanApiKey();
   if (!jwtToken && !individualApiKey) return null;
@@ -292,11 +313,17 @@ export function buildZCodeAccountSyncPayload(builtinConfigPath: string): Record<
     ...(jwtToken ? ['account:bigmodel-start-plan'] : []),
     ...(individualApiKey ? ['account:bigmodel-individual-coding-plan'] : []),
   ];
+  const startPlanModelIds = [...new Set(
+    (options.startPlanModelIds ?? []).map((modelId) => modelId.trim()).filter(Boolean),
+  )];
   return {
     revision: '1',
     basedOnZCodeBuiltinRevision,
     providers: Object.fromEntries(entitledProviderIds.map((providerId) => [providerId, {
       access: { type: 'zhipu-account', entitled: true },
+      ...(providerId === 'account:bigmodel-start-plan' && startPlanModelIds.length > 0
+        ? { builtinModelIds: startPlanModelIds }
+        : {}),
     }])),
     states: Object.fromEntries(entitledProviderIds.map((providerId) => [providerId, {
       availability: 'available', entitled: true, current: true,

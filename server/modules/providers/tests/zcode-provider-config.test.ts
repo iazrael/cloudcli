@@ -219,6 +219,41 @@ test('buildZCodeAccountSyncPayload produces the exact payload when token and bui
   });
 });
 
+test('account sync carries the start-plan model ids the engine registry needs', async () => {
+  await withEngineLayout(path.join('provider', 'zcode-builtin.json'), async (_enginePath, configPath) => {
+    assert.ok(configPath);
+    await writeFile(configPath, JSON.stringify({ revision: 30 }), 'utf8');
+
+    const previousStorage = process.env.ZCODE_STORAGE_DIR;
+    const storageDir = await mkdtemp(path.join(os.tmpdir(), 'zcode-payload-models-'));
+    process.env.ZCODE_STORAGE_DIR = storageDir;
+    const v2Dir = path.join(storageDir, 'v2');
+    await mkdir(v2Dir, { recursive: true });
+    await writeFile(path.join(v2Dir, 'credentials.json'), JSON.stringify({ zcodejwttoken: 'test-jwt-token' }), 'utf8');
+
+    try {
+      const payload = buildZCodeAccountSyncPayload(configPath, {
+        // Duplicates and blanks come from the billing payload; only unique,
+        // non-empty engine ids may reach the registry.
+        startPlanModelIds: ['GLM-5.3-Flash', 'GLM-5.3', 'GLM-5.3', ' '],
+      });
+      assert.ok(payload);
+      const providers = payload.providers as Record<string, {
+        access?: Record<string, unknown>;
+        builtinModelIds?: string[];
+      }>;
+      assert.deepEqual(providers['account:bigmodel-start-plan']?.builtinModelIds, ['GLM-5.3-Flash', 'GLM-5.3']);
+      assert.deepEqual(providers['account:bigmodel-start-plan']?.access, {
+        type: 'zhipu-account',
+        entitled: true,
+      });
+    } finally {
+      if (previousStorage === undefined) delete process.env.ZCODE_STORAGE_DIR;
+      else process.env.ZCODE_STORAGE_DIR = previousStorage;
+    }
+  });
+});
+
 test('account sync activates the native individual provider when its plan key is available', async () => {
   await withEngineLayout(path.join('provider', 'zcode-builtin.json'), async (_enginePath, configPath) => {
     assert.ok(configPath);
