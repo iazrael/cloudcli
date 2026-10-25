@@ -87,6 +87,12 @@ Codex app-server（0.159.2+）在协议层面支持脱离父回合的工具结�
 ```
 引擎以工具结果为契机唤醒新回合汇报。`codex-thread-items.ts` 只把名称为 `cloudcli_task_result` 的孤立 `FunctionCallOutput` / `functionCallOutput` 归一化为纯说明性质的 `status_note`，不生成缺失前置调用的残缺工具卡，也不伪造用户提问。其他工具的输出不会被误认成异步任务通知。其他引擎（Claude 等）保持其原生的输入流保持机制，第一版异步任务外部接续由 Codex 首发支持。
 
+**宿主任务的任务条卡片与停止**：`cloudcli_task_run` 的命令跑在宿主起的独立 worker 里，引擎不知道它，所以卡片由宿主出。任务模块的 `task-host-cards.service.ts` 列出卡片：状态为 `running`、没有记录异常、且 worker 心跳新鲜的任务，才画一张 `Bash` 卡。心跳是任务目录里的 `worker.alive`：worker 在启动命令前写好、运行中每 5 秒刷新一次修改时间，超过 60 秒没刷新就当 worker 已死；卡片 id 和停止句柄都是任务 id。装配层通过 `setCodexHostTaskSource` 把列表和停止交给 Codex 运行时：运行时的任务条列表是引擎 agent 在前、宿主任务在后，所有任务条帧（包括进程回收时结算 agent 的那一帧）都由同一个函数组装、带全量，agent 的帧不会抹掉宿主卡；`stopBackgroundTask` 转给宿主。任务开始、结束、worker 异常退出或从磁盘补录结果时，任务模块通知装配层，由它在会话通道上重发整张任务条。
+
+宿主任务不算引擎后台工作，不进 `listBackgroundWork`：续接派发、排队消息和定时消息都不等它，任务 A 的汇报不会被还在跑的任务 B 挡住。只剩宿主任务时，Codex 运行时回答 `queuesInput: false`（可直接发消息）和 `canInterrupt: false`（没有引擎运行可取消，只按卡片逐个停）；还有 agent 或引擎自发汇报时沿用引擎原规则。
+
+停止走任务目录，不走信号：宿主只对显示着卡片的任务受理，在任务目录里建空文件 `stop`；worker 每 500 毫秒查一次，看到后对自己连接上的命令发 `command/exec/terminate`（实测会连同子进程一起结束，`command/exec` 随即以 137 返回）。terminate 失败（比如命令还没在 app-server 登记）时每 500 毫秒重试，20 次仍失败就关闭这条连接，app-server 退出时带走命令。被停下的命令记为 `cancelled`；结果进入任务记录前（实时回调和磁盘恢复两条路径），任务目录里有宿主写的 `stop` 请求的 `cancelled` 结果会先取消续接通知，卡片随结果收掉、不续开汇报轮。别处报来的 `cancelled`（没有 `stop` 请求）照常汇报。worker 按退出码判定：停止后命令以非 0 结束记 `cancelled`（停止前已经自行失败的命令也会这样记），以 0 结束记 `completed` 并照常汇报（包括捕获终止信号后以 0 退出的命令）。terminate 重试用尽、只能关连接时，结果同样记 `cancelled`，但写明停止未确认、命令可能还在运行（关连接只结束 app-server，不保证它起的命令一起退出）。宿主在线时 worker 退出会立刻收卡；宿主离线期间 worker 死掉，重启后最多再显示 60 秒旧卡，这期间点中止会被受理但没人执行。用文件和心跳，是为了宿主重启后照样能停、能判断 worker 死活，不依赖 pid，也就不会被复用了 pid 的别的进程骗过。升级前起的任务没有心跳，不显示卡片。
+
 ## Claude 转录记录边界
 
 Claude JSONL 同时保存真实对话和模型请求诊断快照。例如，`api-request-blob` 的 `message.role` 可以是 `user`，正文也可以完整复制原提问。快照不代表用户又发送了一次消息。

@@ -19,6 +19,8 @@ import {
     setSessionWorktreeHomeResolver,
     closeClaudeResidentSessions,
     closeCodexResidentSessions,
+    createBackgroundTasksStatusMessage,
+    setCodexHostTaskSource,
     shutdownZCodeRuntime,
 } from '@/modules/providers/index.js';
 import { chatRunRegistry, createWebSocketServer } from '@/modules/websocket/index.js';
@@ -68,7 +70,10 @@ import { initializeDatabase, sessionsDb } from './modules/database/index.js';
 import { configureWebPush } from './modules/notifications/index.js';
 import {
     createTaskBridgeCredential,
+    listRunningHostTasks,
     registerTaskBridgeCall,
+    requestHostTaskStop,
+    setTaskActivityListener,
     revokeTaskBridgeCredential,
     startTaskContinuationRuntime,
     taskBridgeRouter,
@@ -148,6 +153,20 @@ providerRuntimeService.setEngineToolCallRegistrar((call) => {
 });
 providerRuntimeService.setBridgeCredentialRevoker((token) => {
     revokeTaskBridgeCredential(token);
+});
+
+// A command a Codex chat hands to `cloudcli_task_run` runs in a host worker,
+// so the engine never reports it. Its card on the composer strip comes from
+// the task records, its stop goes back to the host, and every start or end
+// re-sends the chat's whole strip (agents included) on the session channel.
+setCodexHostTaskSource({ list: listRunningHostTasks, stop: requestHostTaskStop });
+setTaskActivityListener((sessionId) => {
+    chatRunRegistry.publishSessionEvent(sessionId, createBackgroundTasksStatusMessage(
+        { provider: 'codex', sessionId },
+        providerRuntimeService.getBackgroundTasksForSession(sessionId),
+        providerRuntimeService.canInterruptBackgroundWork(sessionId),
+        providerRuntimeService.backgroundWorkQueuesInput('codex', sessionId),
+    ));
 });
 
 createWebSocketServer(server, {

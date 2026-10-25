@@ -32,7 +32,12 @@ import {
   codexAppServerTransport,
   type CodexAppServerConnection,
 } from '@/modules/providers/list/codex/codex-app-server.client.js';
-import { CODEX_BACKGROUND_TASK_TYPE, codexBackgroundWork } from '@/modules/providers/list/codex/codex-background-work.js';
+import {
+  CODEX_BACKGROUND_TASK_TYPE,
+  codexBackgroundWork,
+  listCodexHostTasks,
+  stopCodexHostTask,
+} from '@/modules/providers/list/codex/codex-background-work.js';
 import {
   acquireCodexResidentSession,
   closeCodexResidentSessionAdmission,
@@ -84,7 +89,7 @@ import type {
   ProviderRuntimeContext,
   ProviderRuntimeWriter,
 } from '@/shared/index.js';
-import type { BackgroundTaskSummary, NormalizedMessage, SessionBackgroundWork } from '@/shared/types.js';
+import type { ActiveBackgroundTask, BackgroundTaskSummary, NormalizedMessage, SessionBackgroundWork } from '@/shared/types.js';
 
 const TASK_MCP_NAME = CODEX_TASK_MCP_NAME;
 const TASK_API_URL_ENV = 'CLOUDCLI_TASK_API_URL';
@@ -185,6 +190,10 @@ const DETACHED_COMMAND_ENV_ALLOWLIST = [
 ] as const;
 const TASK_CREDENTIAL_ENV_NAMES = CODEX_HOST_CREDENTIAL_ENV_NAMES;
 const DETACHED_COMMAND_TIMEOUT_MS = 24 * 60 * 60 * 1000;
+/** How long a failed task-command terminate waits before it tries again. */
+const TERMINATE_RETRY_MS = 500;
+/** Terminate attempts before the stop closes the connection instead. */
+const TERMINATE_MAX_ATTEMPTS = 20;
 
 /**
  * One approval Codex is blocked on, waiting for a human.
@@ -380,11 +389,45 @@ function codexTaskStatus(
  * turn.
  */
 function broadcastCodexBackgroundTasks(target: CodexEventTarget, backgroundWorkKey: string): void {
-  target.deliver(createBackgroundTasksStatusMessage(
-    { provider: 'codex', sessionId: target.threadId() || target.appSessionId || null },
-    codexBackgroundWork.listStripTasks(backgroundWorkKey),
-    true,
-  ));
+  target.deliver(createCodexStripMessage(target.threadId() || target.appSessionId || null, backgroundWorkKey));
+}
+
+/**
+ * The strip frame for a chat. Every Codex strip frame goes through here, so
+ * none of them drops the host's cards or disagrees on the input rules.
+ */
+function createCodexStripMessage(subjectSessionId: string | null, appSessionId: string): NormalizedMessage {
+  const engineWork = !hasOnlyCodexHostTasks(appSessionId);
+  return createBackgroundTasksStatusMessage(
+    { provider: 'codex', sessionId: subjectSessionId },
+    listCodexStripTasks(appSessionId),
+    engineWork,
+    engineWork,
+  );
+}
+
+/**
+ * The composer strip's list for a chat: the engine's agents, then the
+ * commands the host runs for it through `cloudcli_task_run`. Every frame
+ * replaces the whole list, so an agent's frame has to carry the host's
+ * cards too or it would wipe them.
+ */
+function listCodexStripTasks(appSessionId: string): ActiveBackgroundTask[] {
+  return [...codexBackgroundWork.listStripTasks(appSessionId), ...listCodexHostTasks(appSessionId)];
+}
+
+/**
+ * Whether host tasks are all the chat has outstanding.
+ *
+ * A host task runs in its own worker: a new message does not disturb it, so
+ * the chat takes input at once, and there is no engine run for the session's
+ * stop to cancel — each card stops through its own handle instead. An agent
+ * or a report the engine is running keeps the engine's rules.
+ */
+function hasOnlyCodexHostTasks(appSessionId: string): boolean {
+  return !codexBackgroundWork.hasSession(appSessionId)
+    && !readCodexResidentSessionActivity(appSessionId)?.reporting
+    && listCodexHostTasks(appSessionId).length > 0;
 }
 
 /**
@@ -773,11 +816,7 @@ function settleCodexSessionAgents(
     return;
   }
   for (const task of outstanding) retireCodexAgent(appSessionId, task);
-  deliver(createBackgroundTasksStatusMessage(
-    { provider: 'codex', sessionId: appSessionId },
-    codexBackgroundWork.listStripTasks(appSessionId),
-    true,
-  ));
+  deliver(createCodexStripMessage(appSessionId, appSessionId));
   for (const task of outstanding) {
     deliver(codexTaskStatus(appSessionId, task.taskId, task.toolUseId, {
       event: 'notification',
@@ -1978,7 +2017,16 @@ export const codexRuntime = {
   },
   /** What the composer's strip shows for a session that subscribes mid-turn. */
   backgroundTasks: {
-    list: (sessionId: string) => codexBackgroundWork.listStripTasks(sessionId),
+    list: (sessionId: string) => listCodexStripTasks(sessionId),
+    queuesInput: (sessionId: string) => !hasOnlyCodexHostTasks(sessionId),
+    canInterrupt: (sessionId: string) => !hasOnlyCodexHostTasks(sessionId),
+  },
+  /**
+   * Stops one host task of the chat. The engine's agents carry no stop
+   * handle on the strip, so a task id here always names a host task.
+   */
+  stopBackgroundTask(sessionId: string, taskId: string): Promise<boolean> {
+    return stopCodexHostTask(sessionId, taskId);
   },
 };
 
@@ -1993,6 +2041,12 @@ export async function executeCodexSandboxCommand(input: {
   cwd: string;
   sandboxPolicy: { type: 'workspaceWrite' | 'dangerFullAccess'; networkAccess: boolean };
   onStarted?: () => void;
+  /**
+   * Ends the command early. Aborting asks the app-server to terminate it
+   * (`command/exec/terminate`, which takes its whole process tree down); the
+   * call still resolves with the exit code the command ended with.
+   */
+  signal?: AbortSignal;
 }): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   if (!input.command.length || input.command.some((argument) => typeof argument !== 'string' || argument.includes('\0'))
     || !path.isAbsolute(input.cwd)) {
@@ -2007,15 +2061,52 @@ export async function executeCodexSandboxCommand(input: {
   }
 
   const connection = await codexAppServerTransport.open({}, { inheritEnv: false, env: workerEnv });
+  // Connection-scoped: this connection runs exactly one command.
+  const processId = 'cloudcli-task';
+  let settled = false;
+  let retry: NodeJS.Timeout | undefined;
+  let attempts = 0;
+  // The terminate can arrive before the app-server registered the command,
+  // or fail for a reason of its own; either way the command is still
+  // running, so the stop is tried again. After TERMINATE_MAX_ATTEMPTS the
+  // stop closes the connection: the app-server exits and takes the command
+  // with it, and command/exec rejects.
+  const terminate = () => {
+    if (settled) return;
+    attempts += 1;
+    connection.call('command/exec/terminate', { processId }).catch((error: unknown) => {
+      if (settled) return;
+      const reason = error instanceof Error ? error.message : String(error);
+      if (attempts >= TERMINATE_MAX_ATTEMPTS) {
+        console.error(`[Codex] The task command did not terminate after ${attempts} attempts (${reason}); closing its app-server.`);
+        connection.close();
+        return;
+      }
+      if (attempts === 1) {
+        console.warn(`[Codex] Could not terminate the task command yet (${reason}); retrying.`);
+      }
+      retry = setTimeout(terminate, TERMINATE_RETRY_MS);
+    });
+  };
   try {
     input.onStarted?.();
-    const response = readObjectRecord(await connection.call('command/exec', {
+    const execution = connection.call('command/exec', {
       command: input.command,
       cwd: input.cwd,
       sandboxPolicy: input.sandboxPolicy,
       env: Object.fromEntries(TASK_CREDENTIAL_ENV_NAMES.map((name) => [name, null])),
       timeoutMs: DETACHED_COMMAND_TIMEOUT_MS,
-    }, { timeoutMs: DETACHED_COMMAND_TIMEOUT_MS }));
+      processId,
+    }, { timeoutMs: DETACHED_COMMAND_TIMEOUT_MS });
+    // Awaited below; the handler only keeps a rejection from going unhandled
+    // if something between here and the await throws.
+    execution.catch(() => {});
+    // Listened to only once the command is on its way, so the terminate
+    // always names a command that exists or is about to; a stop that came
+    // earlier is acted on at once.
+    if (input.signal?.aborted) terminate();
+    else input.signal?.addEventListener('abort', terminate, { once: true });
+    const response = readObjectRecord(await execution);
     const exitCode = response?.exitCode;
     if (!Number.isSafeInteger(exitCode)) {
       throw new Error('Codex command/exec returned no valid exit code.');
@@ -2026,6 +2117,9 @@ export async function executeCodexSandboxCommand(input: {
       stderr: typeof response?.stderr === 'string' ? response.stderr : '',
     };
   } finally {
+    settled = true;
+    clearTimeout(retry);
+    input.signal?.removeEventListener('abort', terminate);
     connection.close();
   }
 }

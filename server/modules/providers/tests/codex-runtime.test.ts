@@ -20,6 +20,7 @@ import {
   codexRuntime,
   executeCodexSandboxCommand,
 } from '@/modules/providers/list/codex/codex-runtime.provider.js';
+import { setCodexHostTaskSource } from '@/modules/providers/list/codex/codex-background-work.js';
 import { closeCodexResidentSessions, listCodexResidentSessions } from '@/modules/providers/list/codex/codex-session-manager.js';
 import type { ProviderRuntimeContext } from '@/shared/index.js';
 
@@ -1158,6 +1159,8 @@ test('detached Codex command execution keeps the original sandbox and strips tas
         JWT_SECRET: null,
       },
       timeoutMs: 24 * 60 * 60 * 1000,
+      // The id a host stop names in `command/exec/terminate`.
+      processId: 'cloudcli-task',
     });
     assert.equal(server.openOptions?.inheritEnv, false);
     assert.equal(server.openOptions?.env?.CLOUDCLI_TASK_RUN_CONTEXT, undefined);
@@ -1569,6 +1572,45 @@ test('a stop with no round in flight closes the process that still holds agents 
     const stopped = published.filter((message) => message.kind === 'task_status' && message.event === 'notification');
     assert.deepEqual(stopped.map((message) => [message.taskId, message.status]), [['thread_child_1', 'stopped']]);
     assert.equal(await codexRuntime.abort('stop-held-agents'), false, 'a second stop has nothing left to stop');
+  } finally {
+    closeCodexResidentSessions();
+    if (previous === undefined) process.env.CLOUDCLI_CODEX_RESIDENT = '0';
+    else process.env.CLOUDCLI_CODEX_RESIDENT = previous;
+  }
+});
+
+test('settling the agents of a closed process keeps the host task cards on the strip', async (t) => {
+  // An agent and a host command share the strip. The process that ran the
+  // agent closes; the frame that settles the agent replaces the whole list,
+  // so it must still carry the host's card and its input rules.
+  const hostTask = { id: 'task_host-kept', taskId: 'task_host-kept', toolName: 'Bash', command: 'sleep 120', description: 'kept', startedAt: 1 };
+  setCodexHostTaskSource({
+    list: (sessionId) => (sessionId === 'settle-host-tasks' ? [hostTask] : []),
+    stop: async () => false,
+  });
+  t.after(() => setCodexHostTaskSource(null));
+  installFakeAppServer(t, (fake) => {
+    const notify = (method: string, params: unknown) => fake.handlers.onNotification?.(method, params as any);
+    notify('turn/started', { threadId: THREAD_ID, turn: { id: TURN_ID, status: 'inProgress' } });
+    notify('item/completed', { threadId: THREAD_ID, turnId: TURN_ID, item: spawnActivity });
+    notify('turn/completed', {
+      threadId: THREAD_ID,
+      turn: { id: TURN_ID, status: 'failed', error: { message: 'You’ve hit your usage limit.' } },
+    });
+  });
+  const previous = process.env.CLOUDCLI_CODEX_RESIDENT;
+  process.env.CLOUDCLI_CODEX_RESIDENT = '1';
+  const published: any[] = [];
+  const context = { ...runtimeContext(false), publishSessionEvent: (_sessionId: string, message: any) => published.push(message) };
+  try {
+    await codexRuntime.run('go', { sessionId: 'settle-host-tasks' }, { send() {} }, context);
+    assert.equal(await codexRuntime.abort('settle-host-tasks'), true);
+
+    const strips = published.filter((message) => message.kind === 'status' && message.text === 'background_tasks');
+    const last = strips.at(-1);
+    assert.deepEqual(last?.backgroundTasks, [hostTask]);
+    assert.equal(last?.canInterrupt, false);
+    assert.equal(last?.backgroundWorkQueuesInput, false);
   } finally {
     closeCodexResidentSessions();
     if (previous === undefined) process.env.CLOUDCLI_CODEX_RESIDENT = '0';

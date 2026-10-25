@@ -32,7 +32,7 @@ flowchart LR
 
 - **服务端是引擎的宿主**，不是代理。引擎子进程/SDK 由服务端拉起，会话原件落盘在各引擎自己的数据目录，服务端只做索引、归一化与转发。
 - 入口 `server/index.ts`：组装 Express、挂全部 REST 路由、挂 WS（`server/modules/websocket`）、托管 `dist/`、SPA fallback、启动异步任务恢复与派发、优雅停机。异步任务 worker 是脱离宿主生命周期的子进程。优雅停机同时关掉常驻引擎进程（Codex 驻留会话、Claude 空闲常驻与为后台工作留着的进程、ZCode 协议客户端），不让引擎活过宿主。
-- 装配层把网关的事件发布入口交给 provider 运行时：常驻引擎在回合结束后自发汇报回合时，事件经 `chatRunRegistry` 的会话通道发出，运行时自己不发包、不编号。装配层也把任务桥接的登记入口与凭证的签发、作废交给运行时，并单独挂载桥接入口 `/api/tasks/mcp/invoke`（在通用 API Key 中间件之前，自行鉴权）。
+- 装配层把网关的事件发布入口交给 provider 运行时：常驻引擎在回合结束后自发汇报回合时，事件经 `chatRunRegistry` 的会话通道发出，运行时自己不发包、不编号。装配层也把任务桥接的登记入口与凭证的签发、作废交给运行时，并单独挂载桥接入口 `/api/tasks/mcp/invoke`（在通用 API Key 中间件之前，自行鉴权）。宿主任务的任务条也在这里接线：`setCodexHostTaskSource` 把任务模块的卡片列表和停止交给 Codex 运行时，`setTaskActivityListener` 在任务开始或结束时经会话通道重发整张任务条（机制见 providers.md「Codex 异步任务结果续开」）。
 - 端口：`SERVER_PORT` 默认 **3001**，`HOST` 默认 `0.0.0.0`；开发模式 Vite 跑 5173 并把 API 代理到 3001（`vite.config.js`）。
 - HTTP 连接配置：`server/http-timeouts.ts` 在监听前配置 origin 的连接空闲时间；默认覆盖常见代理的默认空闲池时间，但自定义代理仍需保证其空闲池先于 origin 过期。`HTTP_KEEP_ALIVE_TIMEOUT_MS` 可覆盖默认值，单位为毫秒，必须是 Node 定时器范围内的正整数；非法配置使启动失败。请求头接收超时保持大于连接空闲超时。默认值与校验范围以实现为准，PM2 实例的覆盖值写在 `~/.pm2/ecosystem.config.cjs`。
 - 启动标记：`~/.cloudcli/local-server.json`（host/port/pid/appRoot），用于 CLI 与健康检查定位实例。

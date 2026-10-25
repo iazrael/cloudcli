@@ -75,6 +75,12 @@ export {
 } from '@/modules/task-continuations/task-continuations.routes.js';
 
 export {
+  listRunningHostTasks,
+  requestHostTaskStop,
+  setTaskActivityListener,
+} from '@/modules/task-continuations/services/task-host-cards.service.js';
+
+export {
   handleTaskRegisterForRun,
   readTaskOutputForScope,
   registerAndStartTaskFromRun,

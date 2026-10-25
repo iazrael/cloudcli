@@ -11,6 +11,7 @@ import {
   handleTaskFinishRequest,
   handleTaskRegisterRequest,
 } from '@/modules/task-continuations/task-continuations.service.js';
+import { notifyTaskActivity, suppressReportOfStoppedTask } from '@/modules/task-continuations/services/task-host-cards.service.js';
 import { readAndNormalizeTaskResultFromDisk } from '@/modules/task-continuations/services/task-result.service.js';
 import { getTaskContinuationTasksRoot } from '@/modules/task-continuations/services/task-storage.service.js';
 import { areTaskContinuationsEnabled } from '@/modules/task-continuations/task-continuations.config.js';
@@ -94,6 +95,7 @@ async function finishResultFile(taskId: string, taskToken: string, taskDirectory
     tasksRootDir: path.dirname(taskDirectory),
     resultFilePath: expectedPath,
   });
+  suppressReportOfStoppedTask(taskId, result.status);
   await handleTaskFinishRequest({
     taskId,
     taskToken,
@@ -277,15 +279,18 @@ export async function registerAndStartTaskFromRun(input: {
         taskId: task.taskId,
         error: `Worker exited after startup without a verified result (code ${code ?? 'null'}, signal ${signal ?? 'null'}). The command outcome is unknown; no automatic retry was started. ${stderr.trim()}`.slice(0, 4000),
       });
+      notifyTaskActivity(input.context.sessionId);
     }
   });
 
   const startupTimer = setTimeout(() => rejectReady(new Error('Worker startup outcome is unknown.')), STARTUP_TIMEOUT_MS);
   try {
+    // The worker writes its heartbeat before it reports ready, so the card
+    // is drawable by the time the start is announced.
     await readyPromise;
     const running = taskContinuationDb.getTaskById(task.taskId);
-    if (running?.status === 'registered') {
-      taskContinuationDb.markTaskRunning(task.taskId);
+    if (running?.status === 'registered' && taskContinuationDb.markTaskRunning(task.taskId)) {
+      notifyTaskActivity(input.context.sessionId);
     }
     const current = taskContinuationDb.getTaskById(task.taskId);
     return { taskId: task.taskId, title: task.title, status: toRunReceiptStatus(current?.status), duplicate: false };

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -58,6 +58,50 @@ test('real Codex command/exec writes a bounded result and task output without ho
     else process.env.JWT_SECRET = previousJwtSecret;
     if (previousApiKey === undefined) delete process.env.API_KEY;
     else process.env.API_KEY = previousApiKey;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('a stop request in the task directory terminates the command and records it as cancelled', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'task-worker-stop-'));
+  const stdin = new PassThrough();
+  const stdout = new PassThrough();
+  const output: string[] = [];
+  let resolveReady!: () => void;
+  const ready = new Promise<void>((resolve) => { resolveReady = resolve; });
+  stdout.on('data', (chunk) => {
+    output.push(String(chunk));
+    if (output.join('').includes('"type":"ready"')) resolveReady();
+  });
+
+  try {
+    const startedAt = Date.now();
+    const running = runTaskContinuationWorker({ stdin, stdout });
+    stdin.end(JSON.stringify({
+      taskId: 'task_stop_worker',
+      title: 'stoppable command',
+      command: ['/bin/sh', '-c', 'echo STOP_TEST_STARTED; sleep 60; echo STOP_TEST_NEVER'],
+      cwd: directory,
+      taskDirectory: directory,
+      sandboxPolicy: { type: 'workspaceWrite', networkAccess: false },
+    }));
+    await ready;
+    // The worker beats while the command runs; the host draws its card from it.
+    const heartbeat = JSON.parse(await readFile(path.join(directory, 'worker.alive'), 'utf8'));
+    assert.ok(Number.isFinite(heartbeat.startedAt));
+    // Give the command a moment to start before asking it to stop.
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    await writeFile(path.join(directory, 'stop'), '');
+    await running;
+
+    assert.ok(Date.now() - startedAt < 20_000, 'the command must end on the stop request, not on its own');
+    const messages = output.join('').trim().split('\n').map((line) => JSON.parse(line));
+    assert.equal(messages.at(-1).type, 'result');
+    const result = JSON.parse(await readFile(path.join(directory, 'result.json'), 'utf8'));
+    assert.equal(result.status, 'cancelled', result.summary);
+    assert.match(result.summary, /stopped/);
+    assert.doesNotMatch(result.summary, /STOP_TEST_NEVER/);
+  } finally {
     await rm(directory, { recursive: true, force: true });
   }
 });
