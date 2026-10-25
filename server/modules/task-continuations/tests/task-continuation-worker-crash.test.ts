@@ -1,12 +1,39 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { pathToFileURL } from 'node:url';
 
-test('a detached Codex worker survives host exit and its result is recovered from disk', async () => {
+import { isCodexCommandSandboxAvailable } from './helpers/codex-sandbox-availability.js';
+
+/**
+ * Builds the specifier the generated harnesses use for `import()`. Windows
+ * absolute paths are not valid ESM specifiers (`D:\...` parses as a `d:`
+ * scheme), while file URLs work on every platform.
+ */
+const moduleSpecifier = (filePath: string): string => pathToFileURL(filePath).href;
+
+/** Kills a detached worker and everything it spawned on the current platform. */
+const killWorkerTree = (pid: number): void => {
+  if (process.platform === 'win32') {
+    // Windows has no process groups, so SIGKILL on -pid cannot work; taskkill
+    // walks the tree instead.
+    spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore' });
+    return;
+  }
+  process.kill(-pid, 'SIGKILL');
+};
+
+test('a detached Codex worker survives host exit and its result is recovered from disk', async (t) => {
+  // The worker executes its command through Codex's own sandbox, so the test
+  // only runs where that sandbox can start.
+  if (!await isCodexCommandSandboxAvailable()) {
+    t.skip('Codex command sandbox is unavailable on this machine; see the helper for the Windows requirements.');
+    return;
+  }
   const directory = await mkdtemp(path.join(os.tmpdir(), 'task-worker-host-crash-'));
   const databasePath = path.join(directory, 'auth.db');
   const tasksRoot = path.join(directory, 'tasks');
@@ -14,9 +41,9 @@ test('a detached Codex worker survives host exit and its result is recovered fro
   await writeFile(databasePath, '');
   await mkdir(workspace);
   const harnessPath = path.join(directory, 'host-harness.mts');
-  const databaseModule = path.join(process.cwd(), 'server/modules/database/index.ts');
-  const capabilityModule = path.join(process.cwd(), 'server/modules/task-continuations/services/task-run-context.service.ts');
-  const managerModule = path.join(process.cwd(), 'server/modules/task-continuations/services/task-continuation-worker-manager.service.ts');
+  const databaseModule = moduleSpecifier(path.join(process.cwd(), 'server/modules/database/index.ts'));
+  const capabilityModule = moduleSpecifier(path.join(process.cwd(), 'server/modules/task-continuations/services/task-run-context.service.ts'));
+  const managerModule = moduleSpecifier(path.join(process.cwd(), 'server/modules/task-continuations/services/task-continuation-worker-manager.service.ts'));
   const harness = `
 process.env.DATABASE_PATH = ${JSON.stringify(databasePath)};
 process.env.CLOUDCLI_TASKS_DIR = ${JSON.stringify(tasksRoot)};
@@ -24,7 +51,7 @@ process.env.JWT_SECRET = 'isolated-host-crash-jwt';
 process.env.API_KEY = 'FAKE_HOST_API_KEY';
 const db = await import(${JSON.stringify(databaseModule)});
 await db.initializeDatabase();
-const taskConfig = await import(${JSON.stringify(path.join(process.cwd(), 'server/modules/task-continuations/task-continuations.config.ts'))});
+const taskConfig = await import(${JSON.stringify(moduleSpecifier(path.join(process.cwd(), 'server/modules/task-continuations/task-continuations.config.ts')))});
 taskConfig.setTaskContinuationsEnabled(true);
 db.userDb.createUser('crash-host-user', 'hashed-password');
 db.sessionsDb.createSession('crash-host-session', 'codex', ${JSON.stringify(workspace)}, 'Crash host session');
@@ -123,7 +150,7 @@ process.stdout.write(JSON.stringify(receipt) + '\\n', () => process.exit(0));
     if (child.exitCode === null) child.kill('SIGKILL');
     const database = await import('@/modules/database/index.js');
     database.closeConnection();
-    await rm(directory, { recursive: true, force: true });
+    await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -148,7 +175,7 @@ test('a new process recovers each persisted continuation crash checkpoint withou
       const harnessPath = path.join(directory, 'checkpoint-harness.mts');
       await writeFile(databasePath, '');
       await mkdir(workspace);
-      const databaseModule = path.join(process.cwd(), 'server/modules/database/index.ts');
+      const databaseModule = moduleSpecifier(path.join(process.cwd(), 'server/modules/database/index.ts'));
       const taskId = `task_${checkpoint}`;
       const harness = `
 process.env.DATABASE_PATH = ${JSON.stringify(databasePath)};
@@ -260,7 +287,7 @@ process.exit(73);
         if (child.exitCode === null) child.kill('SIGKILL');
         const database = await import('@/modules/database/index.js');
         database.closeConnection();
-        await rm(directory, { recursive: true, force: true });
+        await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
       }
     });
   }
@@ -276,8 +303,8 @@ test('dispatcher acceptance crash checkpoints use one persisted fake-engine turn
       const harnessPath = path.join(directory, 'dispatcher-host.mts');
       await writeFile(databasePath, '');
       await mkdir(workspace);
-      const databaseModule = path.join(process.cwd(), 'server/modules/database/index.ts');
-      const dispatcherModule = path.join(process.cwd(), 'server/modules/task-continuations/services/task-continuation-dispatcher.service.ts');
+      const databaseModule = moduleSpecifier(path.join(process.cwd(), 'server/modules/database/index.ts'));
+      const dispatcherModule = moduleSpecifier(path.join(process.cwd(), 'server/modules/task-continuations/services/task-continuation-dispatcher.service.ts'));
       const taskId = `task_dispatcher_${checkpoint}`;
       const harness = `
 process.env.DATABASE_PATH = ${JSON.stringify(databasePath)};
@@ -343,7 +370,7 @@ process.exit(75);
         if (child.exitCode === null) child.kill('SIGKILL');
         const database = await import('@/modules/database/index.js');
         database.closeConnection();
-        await rm(directory, { recursive: true, force: true });
+        await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
       }
     });
   }
@@ -357,16 +384,16 @@ test('a ready worker killed before its result leaves the task explicitly unknown
   const harnessPath = path.join(directory, 'worker-exit-host.mts');
   await writeFile(databasePath, '');
   await mkdir(workspace);
-  const databaseModule = path.join(process.cwd(), 'server/modules/database/index.ts');
-  const capabilityModule = path.join(process.cwd(), 'server/modules/task-continuations/services/task-run-context.service.ts');
-  const managerModule = path.join(process.cwd(), 'server/modules/task-continuations/services/task-continuation-worker-manager.service.ts');
+  const databaseModule = moduleSpecifier(path.join(process.cwd(), 'server/modules/database/index.ts'));
+  const capabilityModule = moduleSpecifier(path.join(process.cwd(), 'server/modules/task-continuations/services/task-run-context.service.ts'));
+  const managerModule = moduleSpecifier(path.join(process.cwd(), 'server/modules/task-continuations/services/task-continuation-worker-manager.service.ts'));
   const harness = `
 process.env.DATABASE_PATH = ${JSON.stringify(databasePath)};
 process.env.CLOUDCLI_TASKS_DIR = ${JSON.stringify(tasksRoot)};
 process.env.JWT_SECRET = 'isolated-worker-exit-jwt';
 const db = await import(${JSON.stringify(databaseModule)});
 await db.initializeDatabase();
-const taskConfig = await import(${JSON.stringify(path.join(process.cwd(), 'server/modules/task-continuations/task-continuations.config.ts'))});
+const taskConfig = await import(${JSON.stringify(moduleSpecifier(path.join(process.cwd(), 'server/modules/task-continuations/task-continuations.config.ts')))});
 taskConfig.setTaskContinuationsEnabled(true);
 db.userDb.createUser('worker-exit-user', 'hashed-password');
 db.sessionsDb.createSession('worker-exit-session', 'codex', ${JSON.stringify(workspace)}, 'Worker exit session');
@@ -436,7 +463,7 @@ process.exit(0);
     assert.match(receipt.taskId, /^task_/);
 
     assert.ok(Number.isInteger(receipt.workerPid) && receipt.workerPid > 0, 'the isolated host did not record the worker PID it spawned');
-    process.kill(-receipt.workerPid, 'SIGKILL');
+    killWorkerTree(receipt.workerPid);
 
     const [exitCode] = await once(host, 'exit') as [number | null, NodeJS.Signals | null];
     assert.equal(exitCode, 0, stderr);
@@ -448,6 +475,6 @@ process.exit(0);
     assert.equal(await import('node:fs/promises').then(({ access }) => access(path.join(tasksRoot, receipt.taskId, 'result.json')).then(() => true).catch(() => false)), false);
   } finally {
     if (host.exitCode === null) host.kill('SIGKILL');
-    await rm(directory, { recursive: true, force: true });
+    await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

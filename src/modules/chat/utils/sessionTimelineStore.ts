@@ -22,9 +22,7 @@
  * Ordering contracts that live INSIDE this module (each was a past bug):
  * - `applyServerEvent` flushes the buffered stream segment before applying any
  *   content-bearing frame (the routing table owns the gate), or a whole
- *   turn's text landed in one streaming bubble. A subagent's step
- *   (`parentToolUseId`) passes without flushing, or the parent's reply was
- *   cut into one fragment per step.
+ *   turn's text landed in one streaming bubble.
  * - `pruneRealtimeSupersededByServer` runs before the content-level bail-out
  *   of a latest refresh, or a delayed ws replay row survives forever.
  * - A drifting tail-relative offset during an older-page fetch is realigned
@@ -41,7 +39,6 @@
  * through `applyServerEvent`, history through the fetch methods.
  */
 
-import { SessionEventReplay } from '@/modules/chat/utils/sessionEventReplay';
 import { isVolatileMessageId } from '@shared/protocol/messageKinds';
 import { authenticatedFetch } from '@/shared/api';
 import type { ActiveBackgroundTask, LLMProvider, NormalizedMessage, ServerEvent } from '@/shared/types';
@@ -104,11 +101,12 @@ export type SessionSlot = {
   retiredOptimisticUserAnchors: Map<string, string>;
   /**
    * The placeholder row holding streamed text that no engine row has claimed
-   * yet, or `null`. Every engine follows a streamed segment with a real row
-   * carrying its own id; until that row arrives the placeholder is all the
-   * reply the transcript has.
+   * yet, keyed by parent scope (a subagent spawn call's id, or the empty
+   * string for the session's own text). Every engine follows a streamed
+   * segment with a real row carrying its own id; until that row arrives the
+   * placeholder is all the reply the transcript has.
    */
-  streamingPlaceholderId: string | null;
+  streamingPlaceholderIds: Map<string, string>;
   /** Counts streamed segments so their placeholders get distinct ids. */
   streamedSegmentCount: number;
   /**
@@ -145,17 +143,6 @@ export type SessionSlot = {
   backgroundWorkPending?: boolean;
   /** Client clock when the session last entered background waiting; set exactly while it waits. */
   backgroundWorkSince?: number;
-  /**
-   * False when the server said `chat.abort` can no longer stop this work (a
-   * ZCode agent outliving its turn); undefined means stoppable.
-   */
-  backgroundCanInterrupt?: boolean;
-  /**
-   * False when the server said a message sent during this work does not
-   * disturb it (Claude takes it as a turn of the held process); undefined
-   * means the message waits for the work.
-   */
-  backgroundWorkQueuesInput?: boolean;
 }
 
 const EMPTY: NormalizedMessage[] = [];
@@ -173,7 +160,7 @@ function createEmptySlot(): SessionSlot {
     realtimeMessages: EMPTY,
     pendingPrompts: new Map(),
     retiredOptimisticUserAnchors: new Map(),
-    streamingPlaceholderId: null,
+    streamingPlaceholderIds: new Map(),
     streamedSegmentCount: 0,
     runEnded: false,
     realtimeArrivalAnchors: new Map(),
@@ -301,15 +288,42 @@ function buildStreamedTextPlaceholderId(sessionId: string, segment: number): str
   return `__streamed_${sessionId}_${segment}`;
 }
 
-/** Whether a frame is a subagent's step, shown inside its `Agent` card. */
-function isSubagentStep(message: NormalizedMessage | null): boolean {
-  return Boolean(message?.parentToolUseId);
-}
-
 /** Whether a row is streamed text still waiting for the engine's own row. */
 function isStreamedTextPlaceholder(message: NormalizedMessage): boolean {
   return message.id.startsWith('__streamed_');
 }
+
+/**
+ * The scope a streamed segment belongs to: the session's own text, or the
+ * spawn call of the subagent whose text streams inside that container.
+ *
+ * Segments of different scopes must never share a buffer or a row. A subagent
+ * outlives the turn that spawned it and several subagents stream at once, so a
+ * per-session buffer lets one child's content frame close another child's
+ * segment mid-sentence and stamps the fragments with whichever parent
+ * happened to write last — the leak that renders subagent prose as the
+ * session's own messages.
+ */
+type StreamScope = string | null;
+
+/** The map key of one stream scope (parentToolUseId, or the empty string for the session's own text). */
+function streamScopeKey(sessionId: string, scope: StreamScope): string {
+  return `${sessionId}\u0000${scope ?? ''}`;
+}
+
+/** The row id that holds one scope's streaming text. */
+function buildStreamingRowId(sessionId: string, scope: StreamScope): string {
+  return scope === null ? `__streaming_${sessionId}` : `__streaming_${sessionId}::${scope}`;
+}
+
+/** One open streamed segment: its accumulated body, scope and cross-transport identity. */
+type AccumulatedStream = {
+  sessionId: string;
+  scope: StreamScope;
+  content: string;
+  provider: LLMProvider;
+  providerRowKey?: string;
+};
 
 /**
  * After a server refresh, drop the realtime rows the persisted transcript
@@ -352,7 +366,6 @@ function pruneRealtimeSupersededByServer(
     realtimeMessages,
     slot.pendingPrompts,
     slot.runEnded,
-    slot.retiredOptimisticUserAnchors,
   );
   for (const [localId, serverId] of retiredAnchors) {
     slot.retiredOptimisticUserAnchors.set(localId, serverId);
@@ -598,7 +611,6 @@ function computeMerged(
     realtime,
     slot.pendingPrompts,
     slot.runEnded,
-    slot.retiredOptimisticUserAnchors,
   );
   for (const [localId, serverId] of retiredAnchors) {
     slot.retiredOptimisticUserAnchors.set(localId, serverId);
@@ -780,8 +792,13 @@ const SERVER_EVENT_ROUTES: Record<string, { flushesStream: boolean; action: Serv
   permission_request: { flushesStream: false, action: 'permissionRequest' },
   permission_resolved: { flushesStream: false, action: 'permissionResolved' },
   permission_cancelled: { flushesStream: false, action: 'permissionCancelled' },
-  // Sidebar/global events — owned by useProjectsState.
+  // Sidebar/global events — owned by useProjectsState. `session_removed` is a
+  // batch frame with no id/sessionId; without this row the unknown-kind
+  // fallback appended it to the viewed session's timeline.
   session_upserted: { flushesStream: false, action: 'none' },
+  session_removed: { flushesStream: false, action: 'none' },
+  // Owned by useScheduledJobs; a job-list signal, never a timeline row.
+  scheduled_jobs_changed: { flushesStream: false, action: 'none' },
   loading_progress: { flushesStream: false, action: 'none' },
 };
 
@@ -818,8 +835,6 @@ type ServerEventAction =
  * the seam between the two.
  */
 export type ServerEventDirective =
-  | { effect: 'replay_request'; sessionId: string }
-  | { effect: 'recover_stream'; sessionId: string; recoveryId: number }
   | {
       effect: 'chat_subscribed';
       sessionId: string;
@@ -837,7 +852,6 @@ export type ServerEventDirective =
       canInterrupt: boolean;
       tokenBudget: unknown;
       backgroundTasks?: ActiveBackgroundTask[];
-      activityState?: { queued?: boolean; reporting?: boolean };
     }
   | {
       effect: 'permission_request';
@@ -851,8 +865,6 @@ export type ServerEventDirective =
   | { effect: 'permission_cancelled'; sessionId: string | null; requestId: string | null };
 
 export type ApplyServerEventOptions = {
-  /** Production receivers execute each directive before the next buffered event. */
-  onDirective?: (directive: ServerEventDirective) => void;
   /** Where frames without a sessionId attach (the actively viewed session). */
   fallbackSessionId?: string | null;
   /**
@@ -879,20 +891,13 @@ export class SessionTimelineStore {
   private readonly fetchPage: SessionPageFetcher;
   private readonly notifyListener: (sessionId: string) => void;
 
-  // Per-session stream-segment buffers with their 100ms throttle timers, and
-  // the per-session reconnect resume seq. Timeline state, store-owned.
+  // Per-stream-segment buffers with their 100ms throttle timers, keyed by
+  // session and parent scope, and the per-session reconnect resume seq.
+  // Timeline state, store-owned.
   private readonly streamTimers = new Map<string, number>();
-  /** Retains the open text segment's body and cross-transport identity until it is finalized. */
-  private readonly accumulatedStreams = new Map<string, {
-    content: string;
-    provider: LLMProvider;
-    providerRowKey?: string;
-  }>();
+  /** Retains each open text segment's body and cross-transport identity until it is finalized. */
+  private readonly accumulatedStreams = new Map<string, AccumulatedStream>();
   private readonly resumeSeqs = new Map<string, number>();
-  // The transport ledger separates server watermarks from successfully applied events.
-  private readonly eventReplay = new SessionEventReplay();
-  // Observer notifications wait until the event's state and cursor commit.
-  private stagedNotifications: Set<string> | null = null;
 
   constructor(options: SessionTimelineStoreOptions = {}) {
     this.fetchPage = options.fetchPage ?? requestSessionHistoryPage;
@@ -900,10 +905,6 @@ export class SessionTimelineStore {
   }
 
   private notify(sessionId: string): void {
-    if (this.stagedNotifications) {
-      this.stagedNotifications.add(sessionId);
-      return;
-    }
     if (sessionId === this.activeSessionId) {
       this.notifyListener(sessionId);
     }
@@ -928,129 +929,19 @@ export class SessionTimelineStore {
    * The one entry point for server frames. Applies the frame's timeline state
    * — flush gate, upserts, appends, truncation, stream lifecycle, resume seq,
    * in the order this module's contracts require — and returns the side
-   * effects the handler owes the rest of the app. The transport ledger orders
-   * sequenced frames and calls onDirective between buffered events. The return
-   * value is the first directive; production receivers must use onDirective.
+   * effects the handler owes the rest of the app. Frame ordering is the
+   * caller's responsibility: frames must arrive in server order.
    */
   applyServerEvent(
     msg: ServerEvent,
     options: ApplyServerEventOptions = {},
   ): ServerEventDirective | null {
     const sid = readFrameSessionId(msg) || options.fallbackSessionId || null;
-    let first: ServerEventDirective | null = null;
-    const emit = (directive: ServerEventDirective | null) => {
-      if (!directive) return;
-      first ??= directive;
-      options.onDirective?.(directive);
-    };
-    const apply = (event: ServerEvent) => this.stageEventState(event, options, emit);
-    if (sid) {
-      try {
-        if (this.eventReplay.receive(sid, msg, {
-          apply,
-          replay: () => emit({ effect: 'replay_request', sessionId: sid }),
-          recover: (recoveryId) => emit({ effect: 'recover_stream', sessionId: sid, recoveryId }),
-          resetStream: () => this.closeTransportStream(sid),
-        })) return first;
-      } catch (error) {
-        console.error(`[SessionStore] event processing failed for ${sid}:`, error);
-        throw error;
-      }
-    }
-    apply(msg)();
-    return first;
-  }
-
-  private stageEventState(msg: ServerEvent, options: ApplyServerEventOptions, emit: (directive: ServerEventDirective | null) => void): () => void {
-    const previous = this.stagedNotifications;
-    const notifications = new Set<string>();
-    this.stagedNotifications = notifications;
-    let directive: ServerEventDirective | null;
-    try {
-      directive = this.applyEventState(msg, options);
-    } finally {
-      this.stagedNotifications = previous;
-    }
-    return () => {
-      try {
-        for (const sessionId of notifications) this.notify(sessionId);
-      } finally {
-        emit(directive);
-      }
-    };
-  }
-
-  /** Recovery retry callbacks use this to avoid reviving an obsolete request. */
-  isEventRecoveryCurrent(sessionId: string, recoveryId: number): boolean {
-    return this.eventReplay.recovery(sessionId, recoveryId);
-  }
-
-  /** A local error card explains why later events are waiting; it is not engine history. */
-  setEventRecoveryError(sessionId: string, content: string | null, provider?: LLMProvider): void {
-    const id = `__replay_recovery_error_${sessionId}`;
-    if (content !== null) {
-      this.appendRealtime(sessionId, { id, sessionId, provider: this.slots.get(sessionId)?.realtimeMessages.at(-1)?.provider
-        ?? this.slots.get(sessionId)?.serverMessages.at(-1)?.provider ?? provider ?? 'claude',
-        timestamp: new Date().toISOString(), kind: 'error', content });
-      return;
-    }
-    const slot = this.slots.get(sessionId);
-    if (!slot || !slot.realtimeMessages.some(row => row.id === id)) return;
-    slot.realtimeMessages = slot.realtimeMessages.filter(row => row.id !== id);
-    recomputeMergedIfNeeded(slot);
-    this.notify(sessionId);
-  }
-
-  /** A new socket must establish its epoch through a fresh subscription ack. */
-  beginConnection(): void { this.eventReplay.beginConnection(); }
-
-  /** The chat subscription carries the namespace of its proven replay cursor. */
-  getStreamEpoch(sessionId: string): string | undefined { return this.eventReplay.epoch(sessionId); }
-
-  /** Shared by initial subscription, reconnect and gap recovery. */
-  getSubscriptionCursor(sessionId: string) {
-    const streamEpoch = this.getStreamEpoch(sessionId);
-    return { sessionId, lastSeq: this.getResumeSeq(sessionId), ...(streamEpoch ? { streamEpoch } : {}) };
-  }
-
-  /** Reconnect subscribes cached background conversations as well as the visible one. */
-  getKnownSessionIds(): string[] { return [...new Set([...this.slots.keys(), ...this.eventReplay.sessionIds()])]; }
-
-  private closeTransportStream(sessionId: string): void {
-    this.flushStream(sessionId);
-    this.finalizeStreaming(sessionId);
-    // The closed segment remains visible, but a later epoch/recovery segment
-    // cannot claim it solely because it was the most recent placeholder.
-    const slot = this.slots.get(sessionId);
-    if (slot) slot.streamingPlaceholderId = null;
-    this.accumulatedStreams.delete(sessionId);
-    const timer = this.streamTimers.get(sessionId);
-    if (timer !== undefined) clearTimeout(timer);
-    this.streamTimers.delete(sessionId);
-  }
-
-  /** Restores an unreplayable gap from history before advancing its baseline. */
-  async recoverEventStream(sessionId: string, recoveryId: number, options: ApplyServerEventOptions = {}): Promise<void> {
-    if (!this.eventReplay.recovery(sessionId, recoveryId)) return;
-    const result = await this.refreshLatestFromServer(sessionId);
-    if (!this.eventReplay.recovery(sessionId, recoveryId)) return;
-    if (!result.applied) {
-      this.eventReplay.failRecovery(sessionId, recoveryId);
-      throw new Error(`History recovery failed for ${sessionId}`);
-    }
-    this.setEventRecoveryError(sessionId, null);
-    this.eventReplay.finishRecovery(sessionId, recoveryId,
-      (event) => this.stageEventState(event, options, (directive) => { if (directive) options.onDirective?.(directive); }),
-      () => options.onDirective?.({ effect: 'replay_request', sessionId }));
-  }
-
-  private applyEventState(msg: ServerEvent, options: ApplyServerEventOptions): ServerEventDirective | null {
-    const sid = readFrameSessionId(msg) || options.fallbackSessionId || null;
-    const provider = isNormalizedMessageEvent(msg) ? msg.provider ?? options.provider ?? 'claude' : options.provider ?? 'claude';
+    const provider = options.provider ?? 'claude';
 
     // Replay progress first — before any routing (order-sensitive contract).
     const frameSeq = readFrameSeq(msg);
-    if (sid && frameSeq !== null && !('streamEpoch' in msg)) {
+    if (sid && frameSeq !== null) {
       this.noteSeq(sid, frameSeq);
     }
 
@@ -1059,21 +950,20 @@ export class SessionTimelineStore {
     // a provider message; narrowing once here is what lets those branches read
     // message fields at all.
     const message = isNormalizedMessageEvent(msg) ? msg : null;
-    if (sid && route.flushesStream && !isSubagentStep(message)) {
+    if (sid && route.flushesStream) {
       // Any content-bearing frame ends the current text segment: once the
       // model moves from prose to a tool call or its next thinking block, the
       // buffered text must finalize as its own message instead of absorbing
       // whatever comes after it. zcode's engine never emits text-boundary
       // events, so without this flush a whole turn's text landed in one
-      // streaming bubble.
-      //
-      // A subagent's step is not the parent model moving on: it is another
-      // agent's work, drawn inside its card, arriving on the same stream while
-      // the parent may still be writing. Every engine forwards those steps
-      // live, so letting them flush cut one reply into a fragment per step —
-      // and the reply's own row could adopt only the last fragment, leaving
-      // the rest beside it as a duplicate.
-      this.flushStream(sid);
+      // streaming bubble. Only the writer's own scope is flushed: a subagent's
+      // card and the session's transcript stream independently, and one
+      // child's tool call must not cut another child's sentence in half.
+      this.flushStream(sid, message?.parentToolUseId ?? null);
+    }
+
+    if (sid && message?.kind === 'task_status') {
+      this.retireSettledBackgroundTask(sid, message);
     }
 
     switch (route.action) {
@@ -1107,19 +997,19 @@ export class SessionTimelineStore {
 
       case 'ack': {
         if (!sid || !isChatSubscribedEvent(msg)) return null;
-        // Only legacy connections merge the ack watermark into their cursor.
-        // The epoch ledger advances through applied events or history recovery.
-        if (!('streamEpoch' in msg) && msg.lastSeq > 0) {
+        // The ack's `lastSeq` is the server's per-session watermark (max-
+        // merged in, so the client's replay cursor can only move forward).
+        if (msg.lastSeq > 0) {
           this.noteSeq(sid, msg.lastSeq);
         }
         const ackBgTasks = Array.isArray(msg.backgroundTasks) ? msg.backgroundTasks : undefined;
         if (ackBgTasks) {
-          this.setBackgroundState(sid, ackBgTasks, msg.backgroundWorkPending, msg.backgroundCanInterrupt, msg.backgroundWorkQueuesInput);
+          this.setBackgroundState(sid, ackBgTasks, msg.backgroundWorkPending);
         }
         return {
           effect: 'chat_subscribed',
           sessionId: sid,
-          stale: !('streamEpoch' in msg) && msg.stale,
+          stale: msg.stale,
           isProcessing: msg.isProcessing,
           pendingPermissions: Array.isArray(msg.pendingPermissions)
             ? msg.pendingPermissions
@@ -1137,11 +1027,13 @@ export class SessionTimelineStore {
 
       case 'streamEnd': {
         if (!sid) return null;
-        // Flushes the buffered text (finalizing its row when any existed),
-        // then closes the synthetic streaming row even when nothing was
-        // buffered — finalizeStreaming is a no-op when none exists.
-        this.flushStream(sid);
-        this.finalizeStreaming(sid);
+        // Flushes the scope's buffered text (finalizing its row when any
+        // existed), then closes that scope's synthetic streaming row even
+        // when nothing was buffered — finalizeStreaming is a no-op when none
+        // exists.
+        const scope = message?.parentToolUseId ?? null;
+        this.flushStream(sid, scope);
+        this.finalizeStreaming(sid, scope);
         return null;
       }
 
@@ -1179,7 +1071,7 @@ export class SessionTimelineStore {
       case 'status': {
         const statusBgTasks = Array.isArray(message?.backgroundTasks) ? message.backgroundTasks : undefined;
         if (sid && statusBgTasks) {
-          this.setBackgroundState(sid, statusBgTasks, message?.backgroundWorkPending, message?.canInterrupt, message?.backgroundWorkQueuesInput);
+          this.setBackgroundState(sid, statusBgTasks, message?.backgroundWorkPending);
         }
         return {
           effect: 'status',
@@ -1188,9 +1080,6 @@ export class SessionTimelineStore {
           canInterrupt: message?.canInterrupt !== false,
           tokenBudget: message?.tokenBudget,
           backgroundTasks: statusBgTasks,
-          // What the engine is doing with the round, so the caller can tell
-          // "waiting for the engine" from "the engine is working on it".
-          activityState: message?.activityState,
         };
       }
 
@@ -1531,6 +1420,12 @@ export class SessionTimelineStore {
    * This works regardless of which session is actively viewed.
    */
   appendRealtime(sessionId: string, msg: NormalizedMessage): void {
+    // A frame with no id is not a renderable timeline row — gateway frames
+    // such as `session_removed` carry only their own payload. Admitting one
+    // used to crash every later recompute of the merged view.
+    if (typeof msg.id !== 'string' || msg.id.length === 0) {
+      return;
+    }
     const slot = this.getSlot(sessionId);
     const message =
       msg.sessionId === sessionId
@@ -1609,17 +1504,25 @@ export class SessionTimelineStore {
     slot: SessionSlot,
     message: NormalizedMessage,
   ): NormalizedMessage[] | null {
-    // Both stand-ins hold the parent session's rows; a subagent's row is drawn
-    // in its card and stands in for neither.
-    if (message.kind !== 'text' || isSubagentStep(message)) {
+    if (message.kind !== 'text') {
       return null;
     }
 
-    if (message.role === 'assistant' && slot.streamingPlaceholderId !== null) {
+    // A stand-in is only replaceable by a row from the same scope: a
+    // subagent's row must never take over the session's streaming placeholder
+    // (or its prompt echo), and vice versa.
+    const scope = message.parentToolUseId ?? null;
+    const scopeKey = scope ?? '';
+
+    if (message.role === 'assistant') {
+      const placeholderId = slot.streamingPlaceholderIds.get(scopeKey);
+      if (placeholderId === undefined) {
+        return null;
+      }
       const index = slot.realtimeMessages.findIndex(
-        (row) => row.id === slot.streamingPlaceholderId,
+        (row) => row.id === placeholderId,
       );
-      slot.streamingPlaceholderId = null;
+      slot.streamingPlaceholderIds.delete(scopeKey);
       if (index < 0) {
         return null;
       }
@@ -1633,8 +1536,9 @@ export class SessionTimelineStore {
     // Some engines echo the prompt back on the live stream (codex does, claude
     // does not). The echo is the engine's own row for the send the optimistic
     // prompt stands in for, so it takes that row's place rather than being
-    // appended beside it.
-    if (message.role === 'user' && !message.id.startsWith('local_')) {
+    // appended beside it. A subagent's prompt echo belongs to its container and
+    // must not retire the session's own optimistic prompt.
+    if (message.role === 'user' && !scope && !message.id.startsWith('local_')) {
       const index = slot.realtimeMessages.findIndex(
         (row) => isOptimisticPromptRow(row) && !slot.retiredOptimisticUserAnchors.has(row.id),
       );
@@ -1693,8 +1597,8 @@ export class SessionTimelineStore {
   }
 
   /**
-   * Update or create the session's streaming message (accumulated text so
-   * far) under a well-known id, so subsequent calls replace the same row.
+   * Update or create one scope's streaming message (accumulated text so far)
+   * under a well-known id, so subsequent calls replace the same row.
    *
    * The row's timestamp anchors to when the segment *started* streaming and
    * never refreshes afterwards: the finalized text must sort ahead of the
@@ -1703,10 +1607,10 @@ export class SessionTimelineStore {
    */
   private updateStreaming(
     sessionId: string,
-    accumulatedStream: { content: string; provider: LLMProvider; providerRowKey?: string },
+    accumulatedStream: AccumulatedStream,
   ): void {
     const slot = this.getSlot(sessionId);
-    const streamId = `__streaming_${sessionId}`;
+    const streamId = buildStreamingRowId(sessionId, accumulatedStream.scope);
     const existing = slot.realtimeMessages.find((m) => m.id === streamId);
     const msg: NormalizedMessage = {
       id: streamId,
@@ -1716,6 +1620,9 @@ export class SessionTimelineStore {
       kind: 'stream_delta',
       content: accumulatedStream.content,
       providerRowKey: accumulatedStream.providerRowKey,
+      ...(accumulatedStream.scope === null
+        ? {}
+        : { parentToolUseId: accumulatedStream.scope }),
     };
     const idx = slot.realtimeMessages.findIndex(m => m.id === streamId);
     if (idx >= 0) {
@@ -1729,15 +1636,15 @@ export class SessionTimelineStore {
   }
 
   /**
-   * Closes the streamed segment: the accumulating `__streaming_` row becomes
-   * a placeholder assistant row that holds the text until the engine's own
-   * row for that segment arrives and takes its place. A no-op when no
-   * streaming row exists.
+   * Closes one scope's streamed segment: the accumulating `__streaming_` row
+   * becomes a placeholder assistant row that holds the text until the engine's
+   * own row for that segment arrives and takes its place. A no-op when no
+   * streaming row exists for the scope.
    */
-  private finalizeStreaming(sessionId: string): void {
+  private finalizeStreaming(sessionId: string, scope: StreamScope): void {
     const slot = this.slots.get(sessionId);
     if (!slot) return;
-    const streamId = `__streaming_${sessionId}`;
+    const streamId = buildStreamingRowId(sessionId, scope);
     const idx = slot.realtimeMessages.findIndex(m => m.id === streamId);
     if (idx >= 0) {
       const stream = slot.realtimeMessages[idx];
@@ -1750,7 +1657,7 @@ export class SessionTimelineStore {
         kind: 'text',
         role: 'assistant',
       };
-      slot.streamingPlaceholderId = placeholderId;
+      slot.streamingPlaceholderIds.set(scope ?? '', placeholderId);
       recomputeMergedIfNeeded(slot);
       this.notify(sessionId);
     }
@@ -1806,9 +1713,9 @@ export class SessionTimelineStore {
   }
 
   /**
-   * Buffers one `stream_delta` text fragment and (re)arms the session's 100ms
-   * throttle that pushes the accumulated text into its `__streaming_` row.
-   * Consumer: `applyServerEvent`'s stream_delta route.
+   * Buffers one `stream_delta` text fragment in its parent scope and (re)arms
+   * that scope's 100ms throttle, which pushes the accumulated text into its
+   * `__streaming_` row. Consumer: `applyServerEvent`'s stream_delta route.
    */
   private appendStreamDelta(
     sessionId: string,
@@ -1816,7 +1723,9 @@ export class SessionTimelineStore {
     fallbackProvider: LLMProvider,
   ): void {
     const text = message.content || '';
-    const existing = this.accumulatedStreams.get(sessionId);
+    const scope = message.parentToolUseId ?? null;
+    const scopeKey = streamScopeKey(sessionId, scope);
+    const existing = this.accumulatedStreams.get(scopeKey);
     if (
       existing
       && existing.providerRowKey !== message.providerRowKey
@@ -1826,31 +1735,33 @@ export class SessionTimelineStore {
       // current segment when the provider changes keys or crosses between a
       // keyed row and an unkeyed stdout/notice frame; otherwise unrelated text
       // inherits a key and prevents the persisted answer from reconciling.
-      this.flushStream(sessionId);
+      this.flushStream(sessionId, scope);
     }
 
-    const current = this.accumulatedStreams.get(sessionId);
-    this.accumulatedStreams.set(sessionId, {
+    const current = this.accumulatedStreams.get(scopeKey);
+    this.accumulatedStreams.set(scopeKey, {
+      sessionId,
+      scope,
       content: (current?.content ?? '') + text,
       provider: message.provider ?? current?.provider ?? fallbackProvider,
       providerRowKey: message.providerRowKey ?? current?.providerRowKey,
     });
-    if (!this.streamTimers.has(sessionId)) {
+    if (!this.streamTimers.has(scopeKey)) {
       const timer = window.setTimeout(() => {
-        this.streamTimers.delete(sessionId);
-        const accumulatedStream = this.accumulatedStreams.get(sessionId);
+        this.streamTimers.delete(scopeKey);
+        const accumulatedStream = this.accumulatedStreams.get(scopeKey);
         if (accumulatedStream) {
           this.updateStreaming(sessionId, accumulatedStream);
         }
       }, 100);
-      this.streamTimers.set(sessionId, timer);
+      this.streamTimers.set(scopeKey, timer);
     }
   }
 
   /**
-   * Drops the session's pending stream buffer and throttle timer when a
-   * refresh pruned the streaming row as a transcript echo. The server now owns
-   * that text, so the buffer must die with its row: a later flush (replayed
+   * Drops a pending stream buffer and its throttle timer when a refresh pruned
+   * that scope's streaming row as a transcript echo. The server now owns that
+   * text, so the buffer must die with its row: a later flush (replayed
    * `stream_end`, a content frame) would otherwise re-append the stale
    * accumulated text as a brand-new bubble — the duplicate reply seen after
    * leaving the PWA mid-stream and coming back.
@@ -1860,38 +1771,44 @@ export class SessionTimelineStore {
     realtimeBefore: NormalizedMessage[],
     realtimeAfter: NormalizedMessage[],
   ): void {
-    const streamId = `__streaming_${sessionId}`;
-    if (!realtimeBefore.some((message) => message.id === streamId)) {
-      return;
+    for (const [scopeKey, buffer] of [...this.accumulatedStreams]) {
+      if (buffer.sessionId !== sessionId) {
+        continue;
+      }
+      const streamId = buildStreamingRowId(sessionId, buffer.scope);
+      if (
+        !realtimeBefore.some((message) => message.id === streamId)
+        || realtimeAfter.some((message) => message.id === streamId)
+      ) {
+        continue;
+      }
+      const timer = this.streamTimers.get(scopeKey);
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        this.streamTimers.delete(scopeKey);
+      }
+      this.accumulatedStreams.delete(scopeKey);
     }
-    if (realtimeAfter.some((message) => message.id === streamId)) {
-      return;
-    }
-    const timer = this.streamTimers.get(sessionId);
-    if (timer !== undefined) {
-      clearTimeout(timer);
-      this.streamTimers.delete(sessionId);
-    }
-    this.accumulatedStreams.delete(sessionId);
   }
 
   /**
-   * Drains the session's buffered stream text into its `__streaming_` row and
+   * Drains one scope's buffered stream text into its `__streaming_` row and
    * finalizes that row as a regular assistant text message. A no-op when
    * nothing was buffered (the timer, if armed, is still cancelled). Consumer:
    * `applyServerEvent`'s flush gate, stream_end and complete routes.
    */
-  private flushStream(sessionId: string): void {
-    const timer = this.streamTimers.get(sessionId);
+  private flushStream(sessionId: string, scope: StreamScope): void {
+    const scopeKey = streamScopeKey(sessionId, scope);
+    const timer = this.streamTimers.get(scopeKey);
     if (timer !== undefined) {
       clearTimeout(timer);
-      this.streamTimers.delete(sessionId);
+      this.streamTimers.delete(scopeKey);
     }
-    const accumulatedStream = this.accumulatedStreams.get(sessionId);
+    const accumulatedStream = this.accumulatedStreams.get(scopeKey);
     if (accumulatedStream?.content) {
-      this.accumulatedStreams.delete(sessionId);
+      this.accumulatedStreams.delete(scopeKey);
       this.updateStreaming(sessionId, accumulatedStream);
-      this.finalizeStreaming(sessionId);
+      this.finalizeStreaming(sessionId, scope);
     }
   }
 
@@ -1911,7 +1828,7 @@ export class SessionTimelineStore {
 
   /** The `lastSeq` a `chat.subscribe` for this session should resume from. */
   getResumeSeq(sessionId: string): number {
-    return this.getStreamEpoch(sessionId) ? this.eventReplay.cursor(sessionId) : this.resumeSeqs.get(sessionId) ?? 0;
+    return this.resumeSeqs.get(sessionId) ?? 0;
   }
 
   /**
@@ -1996,23 +1913,30 @@ export class SessionTimelineStore {
     return Math.min(...slot.backgroundTasks.map((task) => task.startedAt));
   }
 
-  /** Used by the viewed session's activity indicator to decide whether its background phase offers Stop. */
-  canInterruptBackgroundWork(sessionId: string): boolean {
-    return this.slots.get(sessionId)?.backgroundCanInterrupt !== false;
+  /**
+   * A task the live stream reports settled leaves the strip at once. The
+   * strip otherwise changes only on the runtime's `background_tasks` frame,
+   * and one lost on the way (a socket the run's writer no longer reached)
+   * left a finished task listed until a reload re-read the subscribe ack.
+   * The card and the strip entry share the launching call's id.
+   */
+  private retireSettledBackgroundTask(sid: string, message: NormalizedMessage): void {
+    const { toolUseId, status } = message;
+    if (!toolUseId || !status || status === 'running') return;
+    const slot = this.slots.get(sid);
+    if (!slot?.backgroundTasks.some((task) => task.id === toolUseId)) return;
+    this.setBackgroundState(
+      sid,
+      slot.backgroundTasks.filter((task) => task.id !== toolUseId),
+      slot.backgroundWorkPending,
+    );
   }
 
-  /** Used by the composer: whether a message sent during this session's background work has to wait for it. */
-  backgroundWorkQueuesInput(sessionId: string): boolean {
-    return this.slots.get(sessionId)?.backgroundWorkQueuesInput !== false;
-  }
-
-  private setBackgroundState(sid: string, tasks: ActiveBackgroundTask[], pending: unknown, canInterrupt: unknown, queuesInput: unknown): void {
+  private setBackgroundState(sid: string, tasks: ActiveBackgroundTask[], pending: unknown): void {
     const slot = this.getSlot(sid);
     const wasPending = this.hasPendingBackgroundWork(sid);
     slot.backgroundTasks = tasks;
     slot.backgroundWorkPending = typeof pending === 'boolean' ? pending : undefined;
-    slot.backgroundCanInterrupt = typeof canInterrupt === 'boolean' ? canInterrupt : undefined;
-    slot.backgroundWorkQueuesInput = typeof queuesInput === 'boolean' ? queuesInput : undefined;
     if (!this.hasPendingBackgroundWork(sid)) {
       slot.backgroundWorkSince = undefined;
     } else if (!wasPending) {

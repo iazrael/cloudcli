@@ -115,7 +115,9 @@ export const SubagentPanel = memo(({
   const toolCount = entries.filter((entry) => entry.kind === 'tool').length;
   // Claude names its agent presets (Explore, Plan); Codex has none, so the
   // neutral label carries and the assigned nickname shows alongside it.
-  const label = subagent?.type ?? String(parsedInput.subagent_type ?? '');
+  // Claude names its agent presets in `subagent_type`; OpenCode's spawn tool
+  // spells the same idea `agent`.
+  const label = subagent?.type ?? String(parsedInput.subagent_type ?? parsedInput.agent ?? '');
   const nickname = subagent?.name && subagent.name !== subagent.type ? subagent.name : '';
   const description = subagent?.description ?? String(parsedInput.description ?? '');
   const prompt = String(parsedInput.prompt ?? '');

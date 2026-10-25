@@ -299,19 +299,35 @@ function resolveCodexTerminalStatus(
 /** Reads the context budget out of a `thread/tokenUsage/updated` notification. */
 function readCodexTokenBudget(params: AnyRecord) {
   const usage = readObjectRecord(params.tokenUsage);
-  const total = readObjectRecord(usage?.total);
-  if (!total) {
+  // `last` is the turn that just ran — what the context window holds.
+  // `total` is the session's cumulative spend; using it as `used` made the
+  // live percentage climb every turn until a reload re-read the rollout.
+  const last = readObjectRecord(usage?.last);
+  const cumulative = readObjectRecord(usage?.total);
+  const current = last ?? cumulative;
+  if (!current) {
     return null;
   }
 
-  const inputTokens = Number(total.inputTokens) || 0;
-  const outputTokens = Number(total.outputTokens) || 0;
+  const inputTokens = Number(current.inputTokens) || 0;
+  const outputTokens = Number(current.outputTokens) || 0;
+  const cumulativeInputTokens = Number(cumulative?.inputTokens) || 0;
+  const cumulativeOutputTokens = Number(cumulative?.outputTokens) || 0;
   return {
-    used: Number(total.totalTokens) || inputTokens + outputTokens,
+    used: Number(current.totalTokens) || inputTokens + outputTokens,
     total: Number(usage?.modelContextWindow) || DEFAULT_CODEX_CONTEXT_WINDOW,
     inputTokens,
     outputTokens,
     breakdown: { input: inputTokens, output: outputTokens },
+    ...(cumulative
+      ? {
+          cumulative: {
+            used: Number(cumulative.totalTokens) || cumulativeInputTokens + cumulativeOutputTokens,
+            inputTokens: cumulativeInputTokens,
+            outputTokens: cumulativeOutputTokens,
+          },
+        }
+      : {}),
   };
 }
 
@@ -1901,6 +1917,31 @@ async function abortCodexSession(sessionId: string): Promise<boolean> {
 export const codexRuntime = {
   run: queryCodex,
   abort: abortCodexSession,
+  /**
+   * Compacts the thread through the app-server primitive the Codex IDE clients
+   * use: `thread/compact/start`, waited out until the summary lands.
+   */
+  async compact(
+    options: AnyRecord,
+    writer: ProviderRuntimeWriter,
+    context: ProviderRuntimeContext,
+  ): Promise<unknown> {
+    const appSessionId = typeof options.sessionId === 'string' ? options.sessionId : null;
+    const providerSessionId = context.resolveProviderSessionId(appSessionId);
+    if (!providerSessionId) {
+      throw new Error('This Codex session has no stored conversation to compact yet.');
+    }
+
+    sendMessage(writer, createNormalizedMessage({
+      kind: 'status',
+      text: 'Compacting context…',
+      sessionId: appSessionId,
+      provider: 'codex',
+    }));
+
+    await codexAppServer.compactThread({ threadId: providerSessionId });
+    return undefined;
+  },
   permissions: {
     /**
      * Answers one approval. The gateway fans a decision out to every

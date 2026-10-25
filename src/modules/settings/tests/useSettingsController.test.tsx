@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, test, vi } from 'vitest';
 
+import * as userSettings from '@/shared/userSettings';
+import { useSettingsController } from '@/modules/settings/hooks/useSettingsController';
 import type * as ChatModule from '@/modules/chat';
 
 /**
@@ -61,18 +63,14 @@ vi.mock('@/shared/context/ThemeContext', () => ({
   }),
 }));
 
-const load = async () => {
-  const [hooks, userSettings] = await Promise.all([
-    import('@/modules/settings/hooks/useSettingsController'),
-    import('@/shared/userSettings'),
-  ]);
+// The controller's module graph is heavy (the chat barrel drags in xterm,
+// mermaid and friends), so it is imported statically: the cost is paid when
+// the file is collected, never inside a test's 5s timeout.
+const load = () => {
   // One store instance backs the whole file; drop any writes a previous test
   // left behind so each test starts from an empty account.
   userSettings.resetUserPreferences();
-  return {
-    useSettingsController: hooks.useSettingsController,
-    userSettings,
-  };
+  return { useSettingsController, userSettings };
 };
 
 beforeEach(() => {
@@ -80,7 +78,7 @@ beforeEach(() => {
 });
 
 test('loads permissions from the preference store', async () => {
-  const { useSettingsController, userSettings } = await load();
+  const { useSettingsController, userSettings } = load();
 
   userSettings.writeUserPreference('claudePermissions', {
     permissionMode: 'acceptEdits',
@@ -101,7 +99,7 @@ test('loads permissions from the preference store', async () => {
 });
 
 test('a stale legacy localStorage blob no longer feeds the dialog', async () => {
-  const { useSettingsController, userSettings } = await load();
+  const { useSettingsController, userSettings } = load();
 
   localStorage.setItem('claude-settings', JSON.stringify({
     allowedTools: ['LegacyTool'],
@@ -120,7 +118,7 @@ test('a stale legacy localStorage blob no longer feeds the dialog', async () => 
 });
 
 test('auto-save writes the preference store and leaves legacy keys untouched', async () => {
-  const { useSettingsController, userSettings } = await load();
+  const { useSettingsController, userSettings } = load();
 
   const { result } = renderHook(() => useSettingsController({ isOpen: true, initialTab: 'agents' }));
   await waitFor(() => assert.equal(result.current.projectSortOrder, 'name'));
@@ -132,7 +130,7 @@ test('auto-save writes the preference store and leaves legacy keys untouched', a
       disallowedTools: [],
     });
     result.current.setCodexPermissionMode('bypassPermissions');
-    result.current.setOpencodePermissionMode('acceptEdits');
+    result.current.setOpenCodePermissionMode('acceptEdits');
     result.current.setProjectSortOrder('date');
   });
 
@@ -158,7 +156,7 @@ test('auto-save writes the preference store and leaves legacy keys untouched', a
 });
 
 test('editor setting changes land in the preference store, not legacy keys', async () => {
-  const { useSettingsController, userSettings } = await load();
+  const { useSettingsController, userSettings } = load();
 
   const { result } = renderHook(() => useSettingsController({ isOpen: true, initialTab: 'appearance' }));
   await waitFor(() => assert.equal(result.current.projectSortOrder, 'name'));

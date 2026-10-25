@@ -78,6 +78,14 @@ export type ProviderRuntimeGateway = {
     options: AnyRecord,
     writer: ProviderRuntimeWriter,
   ): Promise<unknown>;
+  compact(
+    provider: LLMProvider,
+    options: AnyRecord,
+    writer: ProviderRuntimeWriter,
+  ): Promise<unknown>;
+  supportsCompaction(provider: string): boolean;
+  /** Feeds a message into the session's running turn; false when the runtime cannot take it. */
+  injectInput(provider: LLMProvider, command: string, options: AnyRecord): Promise<boolean>;
   abort(provider: LLMProvider, sessionId: string): Promise<boolean>;
   stopBackgroundTask(provider: LLMProvider, sessionId: string, taskId: string): Promise<boolean>;
   /** Whether a provider runtime still holds background work for the session after its turn ended. */
@@ -86,8 +94,17 @@ export type ProviderRuntimeGateway = {
   hasSessionWork?(sessionId: string): boolean;
   /** Narrower than `hasBackgroundWork`: only work whose end the runtime broadcasts, including the reply after it. */
   isBackgroundWorkPending(sessionId: string): boolean;
+  /** Wider than `hasBackgroundWork`: also while the composer strip still lists a task, whose clearing frame the run's writer carries. */
+  hasLiveBackgroundState?(sessionId: string): boolean;
   resolveToolApproval(requestId: string, payload: ProviderPermissionDecision): void;
   getPendingApprovalsForSession(sessionId: string): unknown[];
+  /**
+   * Asks the provider to re-read the interactions it still holds for a running
+   * session and announce the ones no card covers — the recovery path for an
+   * ask whose event was lost while the provider's event feed was down.
+   * Fire-and-forget; providers without a re-readable pending set omit it.
+   */
+  reconcilePendingInteractions?(sessionId: string): void;
   getBackgroundTasksForSession?(sessionId: string): ActiveBackgroundTask[];
   /** False when the session's background work is held by a runtime that can no longer stop it. */
   canInterruptBackgroundWork?(sessionId: string): boolean;
@@ -238,7 +255,60 @@ async function handleChatSend(
     return;
   }
 
+  // A turn already running may take the message itself; when it cannot, the
+  // send starts a run, which the registry refuses while that turn lasts.
+  if (
+    chatRunRegistry.isProcessing(resolved.sessionId)
+    && await injectIntoRunningTurn(ws, resolved, data, dependencies)
+  ) {
+    return;
+  }
+
   await dispatchRun(ws, userId, resolved.sessionId, resolved.session, data, dependencies);
+}
+
+/**
+ * Handles `chat.compact`: asks the session's engine to compact its carried
+ * conversation into a summary, in place.
+ *
+ * Registered and dispatched exactly like a turn — same run reservation,
+ * streaming writer, and terminal `complete` — but the provider-side execution
+ * goes through the runtime's optional `compact` primitive instead of `run`.
+ * That is what lets the frontend omit an optimistic user bubble while the
+ * transcript still refreshes when the summary lands.
+ */
+async function handleChatCompact(
+  ws: WebSocket,
+  userId: string | number | null,
+  data: AnyRecord,
+  dependencies: ChatWebSocketDependencies
+): Promise<void> {
+  const resolved = resolveSendTarget(ws, data, dependencies, 'chat.compact');
+  if (!resolved) {
+    return;
+  }
+
+  if (!dependencies.runtime.supportsCompaction(resolved.provider)) {
+    sendProtocolError(
+      ws,
+      'COMPACTION_UNSUPPORTED',
+      `Provider "${resolved.provider}" cannot compact conversations.`,
+      resolved.sessionId
+    );
+    return;
+  }
+
+  await dispatchRun(
+    ws,
+    userId,
+    resolved.sessionId,
+    resolved.session,
+    data,
+    dependencies,
+    {},
+    undefined,
+    'compact',
+  );
 }
 
 type ResolvedSendTarget = {
@@ -284,6 +354,91 @@ function resolveSendTarget(
 }
 
 /**
+ * The options a provider runtime receives with one message: the client's
+ * composer preferences, the session's working directory, and attachments
+ * re-validated against the upload store.
+ */
+function buildRuntimeOptions(
+  sessionId: string,
+  session: NonNullable<ReturnType<typeof sessionsDb.getSessionById>>,
+  clientOptions: AnyRecord,
+  extraRuntimeOptions: AnyRecord = {},
+): AnyRecord {
+  const attachmentCandidates = [
+    ...normalizeAttachmentDescriptors(clientOptions.images),
+    ...normalizeAttachmentDescriptors(clientOptions.files),
+    ...normalizeAttachmentDescriptors(clientOptions.attachments),
+  ];
+  const verifiedAttachments = filterAttachmentsToUploadStore(attachmentCandidates);
+  const uniqueAttachments = verifiedAttachments.filter(
+    (descriptor, index, all) => all.findIndex((candidate) => candidate.path === descriptor.path) === index,
+  );
+
+  // The provider runtimes receive the stable app session id. When their
+  // CLI/SDK needs the provider-native id for resume, they resolve it from the
+  // session row themselves (sessionsService.resolveProviderSessionId).
+  // Brand-new sessions have no provider id yet, so the runtime starts fresh
+  // and announces one, which the gateway writer captures and maps back to the
+  // app session id.
+  return {
+    ...clientOptions,
+    ...extraRuntimeOptions,
+    // Attachments are re-validated server-side: only direct children of the
+    // global upload store may reach provider runtimes or their file tools.
+    attachments: uniqueAttachments,
+    images: uniqueAttachments.filter(isImageAttachmentDescriptor),
+    files: uniqueAttachments.filter((descriptor) => !isImageAttachmentDescriptor(descriptor)),
+    sessionId,
+    cwd: clientOptions.cwd ?? session.project_path ?? undefined,
+    projectPath: session.project_path ?? clientOptions.projectPath,
+    // The conversation's later turns come through here too, so a runtime may
+    // keep its engine process alive for them (Claude's idle residency).
+    residentBetweenTurns: true,
+  };
+}
+
+/**
+ * Hands a `chat.send` to the session's running turn when its engine absorbs
+ * mid-turn input (`inputWhileBusy: 'always'`). The message rides the existing
+ * run — its writer streams the answer and its `complete` ends both — so no
+ * run is registered for it. Returns false when the runtime cannot take it
+ * (no primitive, or the turn already ended), leaving the caller to start a
+ * run as usual.
+ */
+async function injectIntoRunningTurn(
+  ws: WebSocket,
+  target: ResolvedSendTarget,
+  data: AnyRecord,
+  dependencies: ChatWebSocketDependencies,
+): Promise<boolean> {
+  const clientOptions = (data.options ?? {}) as AnyRecord;
+  const command = typeof data.content === 'string' ? data.content : '';
+
+  let injected = false;
+  try {
+    injected = await dependencies.runtime.injectInput(
+      target.provider,
+      command,
+      buildRuntimeOptions(target.sessionId, target.session, clientOptions),
+    );
+  } catch (error) {
+    console.error(`[Chat] Provider runtime "${target.provider}" could not take mid-turn input`, {
+      sessionId: target.sessionId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  }
+
+  if (injected) {
+    // The sender may not have been attached to the run yet (a second tab, or
+    // a socket that reconnected mid-turn); it should see the answer stream.
+    chatRunRegistry.attachConnection(target.sessionId, ws);
+    sessionsDb.touchSession(target.sessionId);
+  }
+  return injected;
+}
+
+/**
  * Registers the run and hands the turn to the provider runtime.
  *
  * `extraRuntimeOptions` is how an edited message asks the provider to resume
@@ -298,6 +453,7 @@ async function dispatchRun(
   dependencies: ChatWebSocketDependencies,
   extraRuntimeOptions: AnyRecord = {},
   beforeRun?: (run: NonNullable<ReturnType<typeof chatRunRegistry.startRun>>) => void | Promise<void>,
+  execution: 'run' | 'compact' = 'run',
 ): Promise<{
   started: boolean;
   busy?: boolean;
@@ -344,37 +500,7 @@ async function dispatchRun(
     providerModelsService.setSessionEffort(provider, sessionId, clientOptions.effort);
   }
 
-  const attachmentCandidates = [
-    ...normalizeAttachmentDescriptors(clientOptions.images),
-    ...normalizeAttachmentDescriptors(clientOptions.files),
-    ...normalizeAttachmentDescriptors(clientOptions.attachments),
-  ];
-  const verifiedAttachments = filterAttachmentsToUploadStore(attachmentCandidates);
-  const uniqueAttachments = verifiedAttachments.filter(
-    (descriptor, index, all) => all.findIndex((candidate) => candidate.path === descriptor.path) === index,
-  );
-
-  // The provider runtimes receive the stable app session id. When their
-  // CLI/SDK needs the provider-native id for resume, they resolve it from the
-  // session row themselves (sessionsService.resolveProviderSessionId).
-  // Brand-new sessions have no provider id yet, so the runtime starts fresh
-  // and announces one, which the gateway writer captures and maps back to the
-  // app session id.
-  const runtimeOptions: AnyRecord = {
-    ...clientOptions,
-    ...extraRuntimeOptions,
-    // Attachments are re-validated server-side: only direct children of the
-    // global upload store may reach provider runtimes or their file tools.
-    attachments: uniqueAttachments,
-    images: uniqueAttachments.filter(isImageAttachmentDescriptor),
-    files: uniqueAttachments.filter((descriptor) => !isImageAttachmentDescriptor(descriptor)),
-    sessionId,
-    cwd: clientOptions.cwd ?? session.project_path ?? undefined,
-    projectPath: session.project_path ?? clientOptions.projectPath,
-    // The conversation's later turns come through here too, so a runtime may
-    // keep its engine process alive for them (Claude's idle residency).
-    residentBetweenTurns: true,
-  };
+  const runtimeOptions = buildRuntimeOptions(sessionId, session, clientOptions, extraRuntimeOptions);
 
   let failure: string | null = null;
   let runtimeOutcome: unknown;
@@ -387,42 +513,46 @@ async function dispatchRun(
     // run instead of leaving the session processing forever.
     await beforeRun?.(run);
 
-    if (provider === 'codex') {
-      const taskContinuationModule = await import('@/modules/task-continuations/index.js');
-      if (taskContinuationModule.areTaskContinuationsEnabled()) {
-      const ownerId = readTaskOwnerId(userId);
-      if (ownerId !== null) {
-        const permissionMode = typeof runtimeOptions.permissionMode === 'string'
-          ? runtimeOptions.permissionMode
-          : 'default';
-        const executionPolicy = resolveCodexExecutionPolicy(permissionMode);
-        const capability = taskContinuationModule.createTaskRunCapability({
-          userId: ownerId,
-          sessionId,
-          runId: randomUUID(),
-          providerThreadId: session.provider_session_id,
-          sessionProjectPath: path.resolve(session.project_path || runtimeOptions.cwd || process.cwd()),
-          cwd: path.resolve(typeof runtimeOptions.cwd === 'string' ? runtimeOptions.cwd : process.cwd()),
-          sandboxPolicy: executionPolicy.sandboxPolicy,
-          approvalPolicy: executionPolicy.approvalPolicy,
-        });
-        taskRunToken = capability.token;
-        revokeTaskCapability = taskContinuationModule.revokeTaskRunCapability;
-        runtimeOptions.taskExecutionContext = { token: taskRunToken };
-        const trustedLifecycle = readObjectRecord(runtimeOptions.taskContinuationLifecycle);
-        const onEngineTurnStarted = typeof trustedLifecycle?.onEngineTurnStarted === 'function'
-          ? trustedLifecycle.onEngineTurnStarted as (engineTurnId: string) => boolean
-          : undefined;
-        runtimeOptions.taskContinuationLifecycle = {
-          onNativeThreadResolved: (providerThreadId: string) =>
-            taskContinuationModule.setTaskRunProviderThreadId(taskRunToken!, providerThreadId),
-          ...(onEngineTurnStarted ? { onEngineTurnStarted } : {}),
-        };
+    if (execution === 'compact') {
+      await dependencies.runtime.compact(provider, runtimeOptions, run.writer);
+    } else {
+      if (provider === 'codex') {
+        const taskContinuationModule = await import('@/modules/task-continuations/index.js');
+        if (taskContinuationModule.areTaskContinuationsEnabled()) {
+          const ownerId = readTaskOwnerId(userId);
+          if (ownerId !== null) {
+            const permissionMode = typeof runtimeOptions.permissionMode === 'string'
+              ? runtimeOptions.permissionMode
+              : 'default';
+            const executionPolicy = resolveCodexExecutionPolicy(permissionMode);
+            const capability = taskContinuationModule.createTaskRunCapability({
+              userId: ownerId,
+              sessionId,
+              runId: randomUUID(),
+              providerThreadId: session.provider_session_id,
+              sessionProjectPath: path.resolve(session.project_path || runtimeOptions.cwd || process.cwd()),
+              cwd: path.resolve(typeof runtimeOptions.cwd === 'string' ? runtimeOptions.cwd : process.cwd()),
+              sandboxPolicy: executionPolicy.sandboxPolicy,
+              approvalPolicy: executionPolicy.approvalPolicy,
+            });
+            taskRunToken = capability.token;
+            revokeTaskCapability = taskContinuationModule.revokeTaskRunCapability;
+            runtimeOptions.taskExecutionContext = { token: taskRunToken };
+            const trustedLifecycle = readObjectRecord(runtimeOptions.taskContinuationLifecycle);
+            const onEngineTurnStarted = typeof trustedLifecycle?.onEngineTurnStarted === 'function'
+              ? trustedLifecycle.onEngineTurnStarted as (engineTurnId: string) => boolean
+              : undefined;
+            runtimeOptions.taskContinuationLifecycle = {
+              onNativeThreadResolved: (providerThreadId: string) =>
+                taskContinuationModule.setTaskRunProviderThreadId(taskRunToken!, providerThreadId),
+              ...(onEngineTurnStarted ? { onEngineTurnStarted } : {}),
+            };
+          }
+        }
       }
-      }
-    }
 
-    runtimeOutcome = await dependencies.runtime.run(provider, command, runtimeOptions, run.writer);
+      runtimeOutcome = await dependencies.runtime.run(provider, command, runtimeOptions, run.writer);
+    }
   } catch (error) {
     failure = error instanceof Error ? error.message : String(error);
     console.error(`[Chat] Provider runtime "${provider}" failed`, { sessionId, error: failure });
@@ -579,10 +709,15 @@ async function handleChatAbort(
 
   const run = chatRunRegistry.getRun(sessionId);
   if (!run || run.status !== 'running') {
-    // A turn's complete does not end the held process that relays background
-    // results. There is no task id during that reply, so stop the runtime.
-    const session = sessionsDb.getSessionById(sessionId);
-    if (session && dependencies.runtime.hasBackgroundWork(sessionId)) {
+    // The turn has ended but its process is held open for background work,
+    // and a finished task wakes the model with a follow-up turn of its own.
+    // The provider interrupts that turn; the tasks themselves are stopped one
+    // by one through `chat.stop-task`.
+    const session = dependencies.runtime.hasBackgroundWork(sessionId)
+      ? sessionsDb.getSessionById(sessionId)
+      : null;
+    if (session) {
+      console.log(`[ChatWebSocket] chat.abort received for session ${sessionId} (${session.provider}) with only background work running`);
       const success = await dependencies.runtime.abort(session.provider as LLMProvider, sessionId);
       if (!success) {
         sendProtocolError(ws, 'ABORT_FAILED', `Could not stop background work for session "${sessionId}".`, sessionId);
@@ -717,6 +852,21 @@ function handleChatSubscribe(
       includeRun: isProcessing || dependencies.runtime.hasBackgroundWork(sessionId),
     });
 
+    // Remembered even while idle: an engine-initiated run that starts later
+    // (opencode resuming the session on its own) attaches this socket through
+    // `adoptExternalRun`, so the tab watching now sees it live.
+    chatRunRegistry.noteSessionSubscriber(sessionId, ws);
+
+    // A running session may be waiting on an ask whose event never reached the
+    // gateway (the provider's event feed is volatile: a drop loses what
+    // happened during the gap, and the model then waits on a card nobody can
+    // see). Opening the conversation re-reads the provider's pending set, so
+    // the panel comes back; idempotent, and a runtime without a re-readable
+    // pending set simply does not implement the hook.
+    if (isProcessing) {
+      dependencies.runtime.reconcilePendingInteractions?.(sessionId);
+    }
+
     // Pending approvals are tracked under the app session id inside the
     // Claude runtime, so they can be looked up directly.
     const pendingPermissions = dependencies.runtime.getPendingApprovalsForSession(sessionId);
@@ -780,6 +930,7 @@ function handlePermissionResponse(data: AnyRecord, dependencies: ChatWebSocketDe
  *
  * Inbound protocol (client to server):
  * - `chat.send`                { sessionId, content, options? }
+ * - `chat.compact`             { sessionId, options? }
  * - `chat.abort`               { sessionId }
  * - `chat.stop-task`           { sessionId, taskId }
  * - `chat.subscribe`           { sessions: [{ sessionId, lastSeq? }] }
@@ -913,12 +1064,15 @@ export function handleChatConnection(
       data = parsed as AnyRecord;
       const messageType = typeof data.type === 'string' ? data.type : '';
 
-      switch (messageType) {
+       switch (messageType) {
         case 'chat.edit-send':
           await handleChatEditSend(ws, userId, data, dependencies);
           return;
         case 'chat.send':
           await handleChatSend(ws, userId, data, dependencies);
+          return;
+        case 'chat.compact':
+          await handleChatCompact(ws, userId, data, dependencies);
           return;
         case 'chat.abort':
           await handleChatAbort(ws, data, dependencies);
@@ -951,5 +1105,6 @@ export function handleChatConnection(
   ws.on('close', () => {
     console.log('[INFO] Chat client disconnected');
     connectedClients.delete(ws);
+    chatRunRegistry.forgetSessionSubscriber(ws);
   });
 }

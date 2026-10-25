@@ -2,6 +2,7 @@ import { WS_OPEN_STATE } from '@/modules/websocket/services/websocket-state.serv
 import type {
   LLMProvider,
   NormalizedMessage,
+  ProviderSessionIdReplacement,
   RealtimeClientConnection,
 } from '@/shared/types.js';
 import { notifyPermissionRequired } from '@/modules/notifications/index.js';
@@ -28,9 +29,14 @@ type ChatSessionWriterOptions = {
   /**
    * Invoked the moment the provider runtime reveals its native session id
    * (either via `setSessionId` or a `session_created` event). The registry
-   * persists the app-id-to-provider-id mapping from this callback.
+   * persists the app-id-to-provider-id mapping from this callback. A
+   * replacement descriptor means the engine abandoned the session the run
+   * started on, so the registry repoints the row instead of only mapping it.
    */
-  onProviderSessionId: (providerSessionId: string) => void;
+  onProviderSessionId: (
+    providerSessionId: string,
+    replacement?: ProviderSessionIdReplacement,
+  ) => void;
   /**
    * Remaps/sequences/buffers one outbound live event. Implemented by the chat
    * run registry; the writer never forwards a provider event untouched.
@@ -71,7 +77,9 @@ type ChatSessionWriterOptions = {
  * - every other event gets `sessionId` remapped to the app session id and a
  *   per-run `seq` assigned before being forwarded.
  * - `setSessionId(...)` calls (used by runtimes to label captured ids) are
- *   intercepted and recorded as the provider-id mapping as well.
+ *   intercepted and recorded as the provider-id mapping as well. A call that
+ *   carries a replacement descriptor (the engine abandoned the run's session)
+ *   also repoints the app row onto the new transcript.
  */
 export class ChatSessionWriter {
   userId: string | number | null;
@@ -201,21 +209,24 @@ export class ChatSessionWriter {
     this.connections.add(newConnection);
   }
 
-  setSessionId(sessionId: string): void {
-    this.captureProviderSessionId(sessionId);
+  setSessionId(sessionId: string, replacement?: ProviderSessionIdReplacement): void {
+    this.captureProviderSessionId(sessionId, replacement);
   }
 
   getSessionId(): string | null {
     return this.providerSessionId;
   }
 
-  private captureProviderSessionId(providerSessionId: string): void {
+  private captureProviderSessionId(
+    providerSessionId: string,
+    replacement?: ProviderSessionIdReplacement,
+  ): void {
     if (!providerSessionId || this.providerSessionId === providerSessionId) {
       return;
     }
 
     this.providerSessionId = providerSessionId;
-    this.options.onProviderSessionId(providerSessionId);
+    this.options.onProviderSessionId(providerSessionId, replacement);
   }
 
   private forward(message: NormalizedMessage): void {

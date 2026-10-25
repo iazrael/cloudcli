@@ -1,4 +1,4 @@
-import type { LLMProvider } from '@/shared/types.js';
+import type { LLMProvider, ProviderInputWhileBusy } from '@/shared/types.js';
 
 /**
  * Static provider capability catalog: the declaration point for everything
@@ -47,6 +47,31 @@ export type ProviderCatalogEntry = {
   /** Whether the provider runtime can accept model-level reasoning effort. */
   supportsEffort: boolean;
   /**
+   * Whether the engine schedules deferred work inside a session on its own
+   * (Claude's CronCreate/ScheduleWakeup). Informational: CloudCLI's scheduled
+   * jobs are offered for every provider, and this only decides whether the
+   * job form warns that the engine already has a session-scoped scheduler
+   * whose wake-ups a job's run would supersede.
+   */
+  supportsNativeScheduling: boolean;
+  /**
+   * Whether replacing an already-sent message also reverts the files the
+   * agent changed. Claude resumes a transcript partway and Codex forks one,
+   * so neither touches files; OpenCode's `rewindSession` marks a server-side
+   * revert that restores the snapshot files along with the conversation.
+   */
+  editRevertsFiles: boolean;
+  /**
+   * How far into a busy session a new message reaches the engine without
+   * killing the work in flight (see `ProviderInputWhileBusy`). Claude feeds a
+   * turn into the live CLI process that holds background work; OpenCode's
+   * server absorbs a message into the running turn at its next step; the
+   * others would restart their process, so the composer queues instead.
+   * `always` must be backed by the runtime's `injectInput` primitive (pinned
+   * by the capability tests).
+   */
+  inputWhileBusy: ProviderInputWhileBusy;
+  /**
    * Reasoning-effort levels the runtime can pass on, weakest first, and so the
    * levels a custom model-library entry may declare. Empty exactly when
    * `supportsEffort` is false.
@@ -69,6 +94,11 @@ export const PROVIDER_CATALOG = {
     supportsFiles: true,
     supportsAbort: true,
     supportsEffort: true,
+    // Claude's CronCreate/ScheduleWakeup schedule work inside the running CLI
+    // process; CloudCLI holds that process open so the wake-ups can fire.
+    supportsNativeScheduling: true,
+    editRevertsFiles: false,
+    inputWhileBusy: 'background',
     effortLevels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
     supportsCompaction: true,
   },
@@ -80,6 +110,9 @@ export const PROVIDER_CATALOG = {
     supportsFiles: true,
     supportsAbort: true,
     supportsEffort: false,
+    supportsNativeScheduling: false,
+    editRevertsFiles: false,
+    inputWhileBusy: 'queue',
     effortLevels: [],
     supportsCompaction: false,
   },
@@ -91,6 +124,9 @@ export const PROVIDER_CATALOG = {
     supportsFiles: true,
     supportsAbort: true,
     supportsEffort: true,
+    supportsNativeScheduling: false,
+    editRevertsFiles: false,
+    inputWhileBusy: 'queue',
     effortLevels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
     supportsCompaction: true,
   },
@@ -106,6 +142,11 @@ export const PROVIDER_CATALOG = {
     supportsFiles: true,
     supportsAbort: true,
     supportsEffort: true,
+    supportsNativeScheduling: false,
+    // The service-client runtime has no message edit/rewind path yet, so the
+    // composer never opens the edit flow for this provider.
+    editRevertsFiles: false,
+    inputWhileBusy: 'queue',
     // Passed on as OpenCode's `--variant`. `thinking` (MiniMax's on/off
     // variant, paired with `none`) is not a strength, so it sorts last.
     effortLevels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'thinking'],
@@ -126,6 +167,9 @@ export const PROVIDER_CATALOG = {
     supportsFiles: true,
     supportsAbort: true,
     supportsEffort: true,
+    supportsNativeScheduling: false,
+    editRevertsFiles: false,
+    inputWhileBusy: 'queue',
     effortLevels: ['low', 'high', 'max'],
     supportsCompaction: true,
   },
@@ -137,6 +181,9 @@ export const PROVIDER_CATALOG = {
     supportsFiles: true,
     supportsAbort: true,
     supportsEffort: true,
+    supportsNativeScheduling: false,
+    editRevertsFiles: false,
+    inputWhileBusy: 'queue',
     effortLevels: ['low', 'medium', 'high'],
     supportsCompaction: true,
   },

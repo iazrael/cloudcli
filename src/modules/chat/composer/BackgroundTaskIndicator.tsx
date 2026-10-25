@@ -1,16 +1,14 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { TerminalIcon, Square } from 'lucide-react';
-
 import type { ActiveBackgroundTask } from '@/shared/types';
 
 type BackgroundTaskIndicatorProps = {
   tasks: ActiveBackgroundTask[];
-  onAbort?: () => void;
-  /** A message sent now is queued; without it the strip says a message can go out at once. */
-  queuesInput?: boolean;
-  /** A reply is streaming, so a queued message goes out when this turn ends. */
-  isReplyInFlight?: boolean;
+  /** Stops the task launched by `toolUseId`, or every task when omitted. */
+  onStopTasks?: (toolUseId?: string) => void;
+  /** Reveals the task's card in the transcript; omitted rows stay inert. */
+  onRevealTask?: (task: ActiveBackgroundTask) => void;
 };
 
 function formatElapsed(elapsedSeconds: number): string {
@@ -23,7 +21,7 @@ function formatElapsed(elapsedSeconds: number): string {
 }
 
 /** Used by ChatComposer to display running background tasks. */
-export default function BackgroundTaskIndicator({ tasks, onAbort, queuesInput = true, isReplyInFlight = false }: BackgroundTaskIndicatorProps) {
+export default function BackgroundTaskIndicator({ tasks, onStopTasks, onRevealTask }: BackgroundTaskIndicatorProps) {
   const { t } = useTranslation('chat');
   const [, setTick] = useState(0);
 
@@ -46,7 +44,7 @@ export default function BackgroundTaskIndicator({ tasks, onAbort, queuesInput = 
       role="status"
       aria-live="polite"
     >
-      <div className="flex items-center justify-between gap-2 border-b border-sky-500/15 pb-1.5">
+      <div className="flex items-center justify-between gap-2 pb-1.5 border-b border-sky-500/15">
         <div className="flex items-center gap-2">
           <span className="relative flex h-2 w-2">
             <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-sky-400 opacity-75" />
@@ -62,27 +60,23 @@ export default function BackgroundTaskIndicator({ tasks, onAbort, queuesInput = 
         <div className="flex items-center gap-2">
           <span className="text-[11px] text-muted-foreground/80">
             <span className="hidden sm:inline">
-              {isReplyInFlight
-                ? t('composer.backgroundTasks.hintTurn', { defaultValue: 'Messages are queued and sent when this turn ends' })
-                : queuesInput
-                  ? t('composer.backgroundTasks.hint', { defaultValue: 'Messages are queued and sent when the tasks finish' })
-                  : t('composer.backgroundTasks.hintContinue', { defaultValue: 'Send anytime; background tasks keep running' })}
+              {t('composer.backgroundTasks.hint', {
+                defaultValue: '发送消息将排队，任务完成后自动发送',
+              })}
             </span>
             <span className="sm:hidden">
-              {isReplyInFlight
-                ? t('composer.backgroundTasks.hintTurnShort', { defaultValue: 'Sent after this turn' })
-                : queuesInput
-                  ? t('composer.backgroundTasks.hintShort', { defaultValue: 'Sending queues' })
-                  : t('composer.backgroundTasks.hintContinueShort', { defaultValue: 'Send anytime' })}
+              {t('composer.backgroundTasks.hintShort', {
+                defaultValue: '发送将排队',
+              })}
             </span>
           </span>
-          {onAbort && (
+          {onStopTasks && (
             <button
               type="button"
-              onClick={onAbort}
+              onClick={() => onStopTasks()}
               aria-label={t('composer.backgroundTasks.abort', { defaultValue: '中止后台任务' })}
               title={t('composer.backgroundTasks.abort', { defaultValue: '中止后台任务' })}
-              className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded px-1.5 py-0.5 text-[11px] font-medium text-destructive transition-colors hover:bg-destructive/10"
+              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-destructive hover:bg-destructive/10 transition-colors"
             >
               <Square className="h-2.5 w-2.5 fill-current" />
               <span>{t('composer.backgroundTasks.abortButton', { defaultValue: '中止' })}</span>
@@ -91,7 +85,7 @@ export default function BackgroundTaskIndicator({ tasks, onAbort, queuesInput = 
         </div>
       </div>
 
-      <div className="mt-1.5 max-h-36 space-y-1 overflow-y-auto">
+      <div className="mt-1.5 space-y-1 max-h-36 overflow-y-auto">
         {tasks.map((task) => {
           const elapsedSeconds = Math.max(
             0,
@@ -99,23 +93,52 @@ export default function BackgroundTaskIndicator({ tasks, onAbort, queuesInput = 
           );
           const taskDetail = task.command || task.description || task.id;
 
+          // The label region is its own control so the row can both reveal the
+          // card and keep the stop button beside it (a button inside a button
+          // is not a thing). A task with nothing to reveal stays a plain div.
+          const labelContent = (
+            <>
+              <TerminalIcon className="h-3 w-3 shrink-0 text-sky-500/80" />
+              <span className="shrink-0 font-medium text-sky-600 dark:text-sky-400">
+                {task.toolName}:
+              </span>
+              <span className="truncate font-mono text-muted-foreground" title={taskDetail}>
+                {taskDetail}
+              </span>
+            </>
+          );
+
           return (
             <div
               key={task.id}
               className="flex items-center justify-between gap-2 rounded-md bg-background/50 px-2 py-1 text-[11px]"
             >
-              <div className="flex min-w-0 flex-1 items-center gap-1.5">
-                <TerminalIcon className="h-3 w-3 shrink-0 text-sky-500/80" />
-                <span className="shrink-0 font-medium text-sky-600 dark:text-sky-400">
-                  {task.toolName}:
-                </span>
-                <span className="truncate font-mono text-muted-foreground" title={taskDetail}>
-                  {taskDetail}
-                </span>
-              </div>
+              {onRevealTask ? (
+                <button
+                  type="button"
+                  onClick={() => onRevealTask(task)}
+                  title={t('composer.backgroundTasks.reveal', { defaultValue: '定位到对应卡片' })}
+                  className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 text-left transition-colors hover:text-foreground"
+                >
+                  {labelContent}
+                </button>
+              ) : (
+                <div className="flex min-w-0 flex-1 items-center gap-1.5">{labelContent}</div>
+              )}
               <span className="shrink-0 tabular-nums text-muted-foreground/70">
                 {formatElapsed(elapsedSeconds)}
               </span>
+              {onStopTasks && (
+                <button
+                  type="button"
+                  onClick={() => onStopTasks(task.id)}
+                  aria-label={t('composer.backgroundTasks.stopOne', { defaultValue: '停止此任务' })}
+                  title={t('composer.backgroundTasks.stopOne', { defaultValue: '停止此任务' })}
+                  className="shrink-0 rounded p-0.5 text-muted-foreground/70 transition-colors hover:bg-destructive/10 hover:text-destructive"
+                >
+                  <Square className="h-2.5 w-2.5 fill-current" />
+                </button>
+              )}
             </div>
           );
         })}

@@ -1,5 +1,4 @@
 import fsSync from 'node:fs';
-import fsp from 'node:fs/promises';
 import path from 'node:path';
 
 import Database from 'better-sqlite3';
@@ -12,12 +11,8 @@ import type {
   NormalizedMessage,
   ProviderSessionUsageInput,
   ProviderTokenUsageResult,
-  SubagentActivity,
-  SubagentInfo,
 } from '@/shared/types.js';
 import {
-  ProviderDisplayAssetError,
-  compactProviderPayload,
   AppError,
   createNormalizedMessage,
   generateMessageId,
@@ -28,25 +23,13 @@ import {
   readOptionalString,
   removePathIfExists,
   sliceTailPage,
-  SUBAGENT_TOOL_NAME,
-  MAX_TRANSMITTED_SUBAGENT_ACTIVITIES,
-  truncateSubagentActivity,
 } from '@/shared/utils.js';
 import { getGlobalImageAssetsDir } from '@/shared/image-attachments.js';
 import { resolveAttachmentAssetFile } from '@/modules/assets/index.js';
 
-import { zcodeBackgroundWork } from './zcode-background-work.js';
-import { getZCodeAgentSidecarDir, getZCodeDatabasePath, getZCodeStorageDir } from './zcode-data-root.js';
-import {
-  buildZCodeTextRowKey,
-  createZCodeCompactionMessage,
-  createZCodeCompactSummaryMessage,
-  isZCodeCancelledEngineError,
-  readZCodeTokenUsedCount,
-  ZCodeLiveEventNormalizer,
-  ZCODE_CANCELLED_NOTICE,
-  ZCODE_CANCELLED_NOTICE_KEY,
-} from './zcode-live-event-normalizer.js';
+import { readZCodeContextUsage } from './zcode-context-usage.js';
+import { getZCodeDatabasePath, getZCodeStorageDir } from './zcode-data-root.js';
+import { buildZCodeTextRowKey, isZCodeCancelledEngineError, readZCodeTokenUsedCount, ZCodeLiveEventNormalizer, ZCODE_CANCELLED_NOTICE, ZCODE_CANCELLED_NOTICE_KEY } from './zcode-live-event-normalizer.js';
 
 const PROVIDER = 'zcode';
 
@@ -63,7 +46,6 @@ function openZCodeDatabase(): Database.Database | null {
   try {
     return new Database(dbPath, { readonly: true, fileMustExist: true });
   } catch (error) {
-      if (error instanceof ProviderDisplayAssetError) throw error;
     const message = error instanceof Error ? error.message : String(error);
     console.warn('[ZCodeProvider] Failed to open database:', message);
     return null;
@@ -79,64 +61,6 @@ type ZCodeHistoryRow = {
   part_time_created: number | null;
   part_data: string | null;
 };
-
-/**
- * Token usage totals in ZCode's internal vocabulary.
- */
-type ZCodeTokenTotals = {
-  input: number;
-  output: number;
-  reasoning: number;
-  cache: number;
-};
-
-/**
- * Reads token usage from either the streaming shape
- * (`{inputTokens, outputTokens, reasoningTokens, cacheReadTokens, cacheWriteTokens}`)
- * or the SQLite `message.data.tokens` shape
- * (`{input, output, reasoning, cache: {read, write}}`).
- * Returns null when no positive count is present in either shape.
- */
-function readTokenTotals(value: unknown): ZCodeTokenTotals | null {
-  const record = readObjectRecord(value);
-  if (!record) {
-    return null;
-  }
-
-  const cacheRecord = readObjectRecord(record.cache);
-  const totals: ZCodeTokenTotals = {
-    input: Number(record.inputTokens ?? record.input ?? 0),
-    output: Number(record.outputTokens ?? record.output ?? 0),
-    reasoning: Number(record.reasoningTokens ?? record.reasoning ?? 0),
-    cache: cacheRecord
-      ? Number(cacheRecord.read ?? 0) + Number(cacheRecord.write ?? 0)
-      : Number(record.cacheReadTokens ?? 0) + Number(record.cacheWriteTokens ?? 0),
-  };
-
-  const used = totals.input + totals.output + totals.reasoning + totals.cache;
-  return used > 0 ? totals : null;
-}
-
-/**
- * Builds the shared token usage summary from ZCode token totals.
- * Shape matches the `token_budget` summaries other providers report
- * (`used` plus input/output breakdown).
- */
-function buildTokenUsage(totals: ZCodeTokenTotals | null): ProviderTokenUsageResult | undefined {
-  if (!totals) {
-    return undefined;
-  }
-
-  return {
-    used: totals.input + totals.output + totals.reasoning + totals.cache,
-    inputTokens: totals.input,
-    outputTokens: totals.output,
-    breakdown: {
-      input: totals.input,
-      output: totals.output,
-    },
-  };
-}
 
 /**
  * Extract and format tool call content for display.
@@ -328,131 +252,6 @@ function isEngineHiddenUserMessage(messageInfo: Record<string, unknown> | null):
 }
 
 /**
- * Aggregate token usage from all messages in a session.
- */
-function aggregateZCodeSessionTokenUsage(
-  db: Database.Database,
-  sessionId: string,
-): ProviderTokenUsageResult | undefined {
-  const rows = db.prepare('SELECT data FROM message WHERE session_id = ?').iterate(sessionId) as Iterable<{ data: string }>;
-
-  const totals: ZCodeTokenTotals = { input: 0, output: 0, reasoning: 0, cache: 0 };
-  let hasAnyUsage = false;
-
-  for (const row of rows) {
-    const info = readJsonRecord(row.data);
-    const messageTotals = readTokenTotals(info?.tokens);
-    if (!messageTotals) {
-      continue;
-    }
-
-    hasAnyUsage = true;
-    totals.input += messageTotals.input;
-    totals.output += messageTotals.output;
-    totals.reasoning += messageTotals.reasoning;
-    totals.cache += messageTotals.cache;
-  }
-
-  return hasAnyUsage ? buildTokenUsage(totals) : undefined;
-}
-
-/**
- * What the engine's per-agent sidecar (`metadata.json`) says about one
- * spawned agent, reduced to the fields an Agent card reads.
- */
-type ZCodeAgentSidecar = {
-  agentId: string;
-  childSessionId?: string;
-  /** The `Agent` call that spawned it: how the sidecar pairs with its card. */
-  parentToolUseId: string;
-  profileId?: string;
-  description?: string;
-  /** `running` at spawn, rewritten to `completed`/`failed` when the agent stops. */
-  status?: string;
-};
-
-/**
- * Reads every agent sidecar one session wrote, keyed by the launching call.
- * A session that spawned nothing has no directory; an unreadable or
- * malformed sidecar is skipped rather than failing the whole history, since
- * the card still renders from its own input and result.
- */
-async function readZCodeAgentSidecars(parentSessionId: string): Promise<Map<string, ZCodeAgentSidecar>> {
-  const byToolUseId = new Map<string, ZCodeAgentSidecar>();
-  const dir = getZCodeAgentSidecarDir(parentSessionId);
-
-  let entries: string[];
-  try {
-    entries = await fsp.readdir(dir);
-  } catch (error) {
-    // No directory simply means the session spawned no agent. Anything else
-    // (permissions, a file in the way) hides every agent's outcome, so say so.
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-      console.error(`[ZCodeSessions] Could not read the agent sidecar directory ${dir}:`, error);
-    }
-    return byToolUseId;
-  }
-
-  for (const entry of entries) {
-    try {
-      const parsed = readJsonRecord(await fsp.readFile(path.join(dir, entry, 'metadata.json'), 'utf8'));
-      const agentId = readOptionalString(parsed?.agentId);
-      const parentToolUseId = readOptionalString(parsed?.parentToolUseId);
-      if (!parsed || !agentId || !parentToolUseId) {
-        continue;
-      }
-      byToolUseId.set(parentToolUseId, {
-        agentId,
-        parentToolUseId,
-        childSessionId: readOptionalString(parsed.childSessionId),
-        profileId: readOptionalString(parsed.profileId),
-        description: readOptionalString(parsed.description),
-        status: readOptionalString(parsed.status),
-      });
-    } catch (error) {
-      // Not every entry is an agent directory with a finished sidecar; a
-      // missing metadata.json is that ordinary case, anything else is not.
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== 'ENOENT' && code !== 'ENOTDIR') {
-        console.error(`[ZCodeSessions] Could not read the agent sidecar ${path.join(dir, entry)}:`, error);
-      }
-    }
-  }
-
-  return byToolUseId;
-}
-
-/**
- * The model the agent's own session ran on, read off its first assistant
- * row. The sidecar does not record it, and the spawn event's `model` is not
- * persisted anywhere.
- */
-function readZCodeChildSessionModel(db: Database.Database, childSessionId: string): string | undefined {
-  const rows = db.prepare(
-    'SELECT data FROM message WHERE session_id = ? ORDER BY COALESCE(time_created, 0), sequence, id',
-  ).iterate(childSessionId) as Iterable<{ data: string }>;
-  for (const row of rows) {
-    const info = readJsonRecord(row.data);
-    if (readOptionalString(info?.role) !== 'assistant') {
-      continue;
-    }
-    return readOptionalString(info?.modelId) ?? readOptionalString(info?.modelID);
-  }
-  return undefined;
-}
-
-type ZCodeSessionsProviderOptions = {
-  /**
-   * Whether the runtime still tracks this agent as running. Only consulted
-   * for an agent whose sidecar still says `running`: the sidecar is rewritten
-   * when the agent stops, so `running` with no tracker means the process
-   * that ran it is gone and nothing can still report. Injected so history
-   * tests can pin both readings without driving a real engine.
-   */
-  isSubagentRunning?: (agentId: string) => boolean;
-};
-
-/**
  * Session history provider for ZCode's SQLite-backed session store.
  *
  * Implements the IProviderSessions interface to normalize ZCode-specific
@@ -461,11 +260,6 @@ type ZCodeSessionsProviderOptions = {
  */
 export class ZCodeSessionsProvider implements IProviderSessions {
   private readonly liveEventNormalizer = new ZCodeLiveEventNormalizer();
-  private readonly isSubagentRunning: (agentId: string) => boolean;
-
-  constructor({ isSubagentRunning = (agentId) => zcodeBackgroundWork.has(agentId) }: ZCodeSessionsProviderOptions = {}) {
-    this.isSubagentRunning = isSubagentRunning;
-  }
 
   /**
    * Normalizes live protocol events into frontend messages.
@@ -489,8 +283,8 @@ export class ZCodeSessionsProvider implements IProviderSessions {
   /**
    * Loads ZCode session history from SQLite database.
    *
-   * Iterates joined message/part rows through a read-only connection and
-   * compacts media before retaining the normalized transcript.
+   * Uses read-only connection to query message and part tables with proper
+   * pagination (LIMIT/OFFSET). Joins with part table for full message content.
    * Uses the existing sequence column and message_session_time_created_id_idx index.
    *
    * Filter out sub-agent sessions (sess_subagent_agent_*) per plan requirements.
@@ -515,11 +309,32 @@ export class ZCodeSessionsProvider implements IProviderSessions {
     }
 
     try {
-      const rows = this.selectHistoryRows(db, providerSessionId);
+      const rows = db.prepare(`
+        SELECT
+          m.id AS message_id,
+          m.time_created AS message_time_created,
+          m.sequence AS message_sequence,
+          m.data AS message_data,
+          p.id AS part_id,
+          p.time_created AS part_time_created,
+          p.data AS part_data
+        FROM message m
+        LEFT JOIN part p
+          ON p.session_id = m.session_id
+         AND p.message_id = m.id
+        WHERE m.session_id = ?
+        ORDER BY
+          COALESCE(m.time_created, 0),
+          m.sequence,
+          m.id,
+          COALESCE(p.time_created, 0),
+          p.id
+      `).all(providerSessionId) as ZCodeHistoryRow[];
 
       const normalized = this.normalizeHistoryRows(rows, sessionId);
-      await this.attachSubagents(db, normalized, providerSessionId);
-      const tokenUsage = aggregateZCodeSessionTokenUsage(db, providerSessionId);
+      // Current context occupancy (not the lifetime spend): the page's badge
+      // and the live mid-turn frame must agree.
+      const tokenUsage = readZCodeContextUsage(db, providerSessionId);
 
       const normalizedOffset = Math.max(0, offset);
       const normalizedLimit = limit === null ? null : Math.max(0, limit);
@@ -535,65 +350,12 @@ export class ZCodeSessionsProvider implements IProviderSessions {
         tokenUsage,
       };
     } catch (error) {
-      if (error instanceof ProviderDisplayAssetError) throw error;
       const message = error instanceof Error ? error.message : String(error);
       console.warn(`[ZCodeProvider] Failed to load session ${sessionId}:`, message);
       return { messages: [], total: 0, hasMore: false, offset: 0, limit: null };
     } finally {
       db.close();
     }
-  }
-
-  /** One session's message and part rows, in transcript order. */
-  private selectHistoryRows(db: Database.Database, providerSessionId: string): Iterable<ZCodeHistoryRow> {
-    return db.prepare(`
-      SELECT
-        m.id AS message_id,
-        m.time_created AS message_time_created,
-        m.sequence AS message_sequence,
-        m.data AS message_data,
-        p.id AS part_id,
-        p.time_created AS part_time_created,
-        p.data AS part_data
-      FROM message m
-      LEFT JOIN part p
-        ON p.session_id = m.session_id
-       AND p.message_id = m.id
-      WHERE m.session_id = ?
-      ORDER BY
-        COALESCE(m.time_created, 0),
-        m.sequence,
-        m.id,
-        COALESCE(p.time_created, 0),
-        p.id
-    `).iterate(providerSessionId) as Iterable<ZCodeHistoryRow>;
-  }
-
-  /**
-   * The agent's own work as a subagent timeline: the text, reasoning and tool
-   * calls of its child session, read with the same normalizer as the parent's
-   * history. A child session the database does not hold yields an empty list.
-   */
-  private readChildSessionActivity(db: Database.Database, childSessionId: string): SubagentActivity[] {
-    const messages = this.normalizeHistoryRows(this.selectHistoryRows(db, childSessionId), childSessionId);
-    const activity: SubagentActivity[] = [];
-    for (const message of messages) {
-      if (message.kind === 'tool_use') {
-        activity.push({
-          kind: 'tool',
-          timestamp: message.timestamp,
-          toolId: message.toolId,
-          toolName: message.toolName,
-          toolInput: message.toolInput,
-          toolResult: message.toolResult ?? null,
-        });
-      } else if (message.kind === 'text' && message.role !== 'user') {
-        activity.push({ kind: 'text', timestamp: message.timestamp, content: message.content });
-      } else if (message.kind === 'thinking') {
-        activity.push({ kind: 'thinking', timestamp: message.timestamp, content: message.content });
-      }
-    }
-    return activity;
   }
 
   /**
@@ -604,7 +366,7 @@ export class ZCodeSessionsProvider implements IProviderSessions {
    * per the Phase 0.3 SQLite schema. Applies suffix to fragment IDs for
    * uniqueness per §5.1 of the plan.
    */
-  private normalizeHistoryRows(rows: Iterable<ZCodeHistoryRow>, sessionId: string): NormalizedMessage[] {
+  private normalizeHistoryRows(rows: ZCodeHistoryRow[], sessionId: string): NormalizedMessage[] {
     const normalized: NormalizedMessage[] = [];
     const emittedMessageErrors = new Set<string>();
     const emittedUserTexts = new Set<string>();
@@ -617,25 +379,8 @@ export class ZCodeSessionsProvider implements IProviderSessions {
       const timestamp = normalizeProviderTimestamp(row.part_time_created ?? row.message_time_created);
       // Apply suffix to fragment IDs for uniqueness per §5.1
       const baseId = `${row.message_id}_${row.part_id ?? normalized.length}`;
-      const messageInfo = compactProviderPayload(readJsonRecord(row.message_data));
+      const messageInfo = readJsonRecord(row.message_data);
       const messageRole = readOptionalString(messageInfo?.role);
-
-      // A compaction summary is written for the model, so the engine marks it
-      // hidden like any injection, but the user asked for it: its text is the
-      // summary the client folds into the compaction row. Its own `compaction`
-      // part repeats the boundary the visible timeline row already draws.
-      const isCompactSummary = messageRole === 'user'
-        && (readOptionalString(readObjectRecord(messageInfo?.semantics)?.kind) === 'compact_summary'
-          || Boolean(readObjectRecord(messageInfo?.summary)));
-      if (isCompactSummary) {
-        const summaryPart = readJsonRecord(row.part_data);
-        const content = readOptionalString(summaryPart?.type) === 'text' ? extractText(summaryPart) : '';
-        if (content.trim() && !emittedSummaryMessages.has(row.message_id)) {
-          emittedSummaryMessages.add(row.message_id);
-          normalized.push(createZCodeCompactSummaryMessage(row.message_id, sessionId, timestamp, content));
-        }
-        continue;
-      }
 
       // Model-only injections are skipped entirely, including their parts.
       if (messageRole === 'user' && isEngineHiddenUserMessage(messageInfo)) {
@@ -697,24 +442,36 @@ export class ZCodeSessionsProvider implements IProviderSessions {
         continue;
       }
 
-      const rawPartData = readJsonRecord(row.part_data);
-      const partData = compactProviderPayload(rawPartData && messageRole === 'user' ? { ...rawPartData, role: 'user' } : rawPartData);
+      const partData = readJsonRecord(row.part_data);
       if (!partData) {
         continue;
       }
 
       const partType = readOptionalString(partData.type);
 
-      // The compaction operation on the visible timeline message: the row
-      // the live updates of the same part drew.
-      if (partType === 'compaction' && readOptionalString(partData.timelineStatus)) {
-        normalized.push(createZCodeCompactionMessage(partData, row.part_id, sessionId, timestamp));
-        continue;
-      }
-
       // Handle text parts
       if (partType === 'text') {
         const content = extractText(partData);
+
+        // A compaction summary persists as a user message carrying a
+        // structured `summary` field. Surfacing it as assistant-authored
+        // summary text (the shape claude uses) keeps it out of a user bubble.
+        if (readObjectRecord(messageInfo?.summary)) {
+          if (content.trim() && !emittedSummaryMessages.has(row.message_id)) {
+            emittedSummaryMessages.add(row.message_id);
+            normalized.push(createNormalizedMessage({
+              id: baseId,
+              sessionId,
+              timestamp,
+              provider: PROVIDER,
+              kind: 'text',
+              role: 'assistant',
+              content,
+              isCompactSummary: true,
+            }));
+          }
+          continue;
+        }
 
         if (content.trim()) {
           normalized.push(createNormalizedMessage({
@@ -833,79 +590,12 @@ export class ZCodeSessionsProvider implements IProviderSessions {
   }
 
   /**
-   * Publishes each spawned agent's outcome on the Agent row that launched it.
+   * Reads the context usage for one ZCode session.
    *
-   * The launch row alone cannot say how the agent ended: a background
-   * launch's result is only the acknowledgement ("Async agent launched
-   * successfully…"), and the lifecycle events that reported the stop live
-   * were never persisted. The engine's sidecar is the durable record, and
-   * the card reads its status off `subagent`, so the row gets one whenever
-   * a sidecar names its call.
-   */
-  private async attachSubagents(
-    db: Database.Database,
-    messages: NormalizedMessage[],
-    providerSessionId: string,
-  ): Promise<void> {
-    const launches = messages.filter((message) => message.kind === 'tool_use' && message.toolName === SUBAGENT_TOOL_NAME && message.toolId);
-    if (launches.length === 0) {
-      return;
-    }
-
-    const sidecars = await readZCodeAgentSidecars(providerSessionId);
-    for (const launch of launches) {
-      const sidecar = sidecars.get(launch.toolId as string);
-      if (!sidecar) {
-        continue;
-      }
-
-      const input = readObjectRecord(launch.toolInput);
-      const subagent: SubagentInfo = {
-        id: sidecar.agentId,
-        name: sidecar.profileId,
-        type: sidecar.profileId,
-        description: sidecar.description ?? readOptionalString(input?.description),
-        status: this.resolveSidecarStatus(sidecar),
-        model: sidecar.childSessionId ? readZCodeChildSessionModel(db, sidecar.childSessionId) : undefined,
-      };
-      if (sidecar.childSessionId) {
-        const activity = this.readChildSessionActivity(db, sidecar.childSessionId);
-        if (activity.length > 0) {
-          launch.subagentTools = activity
-            .slice(0, MAX_TRANSMITTED_SUBAGENT_ACTIVITIES)
-            .map(truncateSubagentActivity);
-          subagent.activityCount = activity.length;
-        }
-      }
-      launch.subagent = subagent;
-    }
-  }
-
-  /**
-   * `completed` and `failed` are the engine's final word. `running` is only
-   * final while the runtime still tracks the agent; otherwise the process
-   * that ran it is gone and the card must not spin forever. Anything else
-   * the engine may write (a stop, a cancellation) reads as stopped.
-   */
-  private resolveSidecarStatus(sidecar: ZCodeAgentSidecar): SubagentInfo['status'] {
-    switch (sidecar.status) {
-      case 'completed':
-      case 'failed':
-        return sidecar.status;
-      case 'running':
-        return this.isSubagentRunning(sidecar.agentId) ? 'running' : 'stopped';
-      default:
-        return 'stopped';
-    }
-  }
-
-  /**
-   * Reads the aggregated token usage for one ZCode session.
-   *
-   * Consumer: the provider token-usage service. Sums `message.data.tokens`
-   * rows for the provider-native session id (the same aggregation fetchHistory
-   * uses). A missing database or a session unknown to ZCode is a 404; a known
-   * session without recorded usage reports zeros.
+   * Consumer: the provider token-usage service. Reports the newest step's
+   * occupancy plus the model's window (the same reading `fetchHistory` returns
+   * and the runtime pushes mid-turn). A missing database or a session unknown
+   * to ZCode is a 404; a known session without recorded usage reports zeros.
    */
   async getTokenUsage(input: ProviderSessionUsageInput): Promise<ProviderTokenUsageResult> {
     const db = openZCodeDatabase();
@@ -917,7 +607,7 @@ export class ZCodeSessionsProvider implements IProviderSessions {
     }
 
     try {
-      const usage = aggregateZCodeSessionTokenUsage(db, input.nativeSessionId);
+      const usage = readZCodeContextUsage(db, input.nativeSessionId);
       if (usage) {
         return usage;
       }

@@ -91,5 +91,9 @@ export function createCliApplication(): CliApplication {
       const { startBrowserUseMcp } = await import('../browser-use/index.js');
       await startBrowserUseMcp();
     },
+    startScheduledJobsMcp: async () => {
+      const { startScheduledJobsMcp } = await import('../scheduled-jobs/index.js');
+      await startScheduledJobsMcp();
+    },
   });
 }

@@ -1,9 +1,8 @@
 import { Star, X } from 'lucide-react';
 
 import { useGitHubStars } from '@/modules/sidebar/hooks/useGitHubStars';
+import { GITHUB_REPO_NAME, GITHUB_REPO_OWNER, GITHUB_REPO_URL } from '@/shared/constants';
 import { IS_PLATFORM } from '@/shared/utils';
-
-const GITHUB_REPO_URL = 'https://github.com/siteboon/claudecodeui';
 
 function GitHubIcon({ className }: { className?: string }) {
   return (
@@ -15,7 +14,7 @@ function GitHubIcon({ className }: { className?: string }) {
 
 /** Rendered by SidebarHeader on self-hosted (non-platform) builds to link to the GitHub repo with its star count. */
 export default function GitHubStarBadge() {
-  const { formattedCount, isDismissed, dismiss } = useGitHubStars('siteboon', 'claudecodeui');
+  const { formattedCount, isDismissed, dismiss } = useGitHubStars(GITHUB_REPO_OWNER, GITHUB_REPO_NAME);
 
   if (IS_PLATFORM || isDismissed) return null;
 

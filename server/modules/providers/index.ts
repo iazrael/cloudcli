@@ -38,6 +38,12 @@ export {
 // the shared ZCode app-server subprocess during the shutdown flow.
 export { shutdownZCodeRuntime } from './list/zcode/index.js';
 
+// configureOpenCodeExternalRunAdoption: used by the server entrypoint to hand
+// the opencode runtime the gateway-side adopter for executions the engine
+// started on its own (a subagent completion resuming an idle session),
+// mirroring chatRunRegistry's retention-guard wiring.
+export { configureOpenCodeExternalRunAdoption } from './list/opencode/opencode-runtime.provider.js';
+
 // getAntigravityBrainRoots: used by the File Tree composition root as the
 // read-only allowlist for workspace-external Antigravity plan documents.
 export { getAntigravityBrainRoots } from './list/antigravity/index.js';

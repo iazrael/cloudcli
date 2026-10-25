@@ -9,7 +9,7 @@ type GitCommandResult = { stdout: string };
 
 function runGit(args: string[]): Promise<GitCommandResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn('git', args, { shell: false });
+    const child = spawn('git', args, { shell: false, windowsHide: true });
     let stdout = '';
     child.stdout?.on('data', (data: Buffer) => { stdout += data.toString(); });
     child.on('error', reject);

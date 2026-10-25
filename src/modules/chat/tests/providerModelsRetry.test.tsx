@@ -211,3 +211,41 @@ test('removing a custom entry still offered by the engine preserves the selected
   assert.equal(result.current.currentProviderEffort, 'high');
   assert.equal(result.current.currentProviderModelOptions.find((item) => item.value === 'available')?.label, 'Official');
 });
+
+test('a fallback catalog is shown at once and replaced when the live catalog arrives', async () => {
+  localStorage.setItem('opencode-model', 'opencode-go/deepseek-v4-pro');
+  const fallback = { success: true, data: { models: {
+    DEFAULT: 'opencode/anchor', OPTIONS: [{ value: 'opencode/anchor', label: 'Anchor' }], FALLBACK: true,
+  } } };
+  const live = { success: true, data: { models: {
+    DEFAULT: 'opencode/anchor',
+    OPTIONS: [{ value: 'opencode/anchor', label: 'Anchor' }, { value: 'opencode-go/deepseek-v4-pro', label: 'DeepSeek' }],
+  } } };
+  let opencodeCalls = 0;
+  mockAuthenticatedFetch.mockImplementation((url) => {
+    const isOpencode = String(url).includes('/opencode/');
+    if (isOpencode) opencodeCalls += 1;
+    const payload = !isOpencode ? modelsPayload('ok') : opencodeCalls < 3 ? fallback : live;
+    return Promise.resolve({ json: () => Promise.resolve(payload) } as Response);
+  });
+
+  const { result } = renderProviderState();
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
+  // The stand-in is published and loading settles; the saved choice survives it.
+  assert.equal(result.current.providerModelsLoading, false);
+  assert.equal(result.current.providerModelCatalog.opencode?.OPTIONS.length, 1);
+  assert.equal(localStorage.getItem('opencode-model'), 'opencode-go/deepseek-v4-pro');
+
+  // First refresh still answers with the fallback, the second one is live.
+  await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+  assert.equal(result.current.providerModelCatalog.opencode?.OPTIONS.length, 2);
+  await act(async () => { result.current.setProvider('opencode'); });
+  assert.equal(result.current.currentProviderModel, 'opencode-go/deepseek-v4-pro');
+
+  // Polling stops once the live catalog landed; other providers never re-polled.
+  await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+  assert.equal(opencodeCalls, 3);
+  assert.equal(modelsCalls().length, PROVIDER_COUNT + 2);
+});

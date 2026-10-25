@@ -36,7 +36,7 @@ const withOpenCodeHome = async (
 ): Promise<void> => {
   const homeDir = await mkdtemp(path.join(os.tmpdir(), 'opencode-catalog-'));
   const originalHomedir = os.homedir;
-  const envKeys = [...OPENCODE_ENV_KEYS, 'CLOUDCLI_OPENCODE_CLI'];
+  const envKeys = [...OPENCODE_ENV_KEYS, 'CLOUDCLI_OPENCODE_CLI', 'NODE_OPTIONS', 'FAKE_OPENCODE_OUTPUT'];
   const originalEnv = envKeys.map((key) => [key, process.env[key]] as const);
 
   (os as any).homedir = () => homeDir;
@@ -66,8 +66,27 @@ const withOpenCodeHome = async (
 
 /** Installs a fake `opencode` executable whose stdout stands in for `opencode models`. */
 const writeFakeOpenCodeCli = async (homeDir: string, stdout: string): Promise<string> => {
-  const cliPath = path.join(homeDir, 'fake-opencode');
   const heredocBody = stdout.endsWith('\n') ? stdout : `${stdout}\n`;
+  if (process.platform === 'win32') {
+    // Windows has no POSIX shell to run the shebang stub, and Node refuses to
+    // execFile a `.cmd` shim outright (EINVAL since the 2024 spawn hardening).
+    // Run the real `node` executable instead with a `--require` preload that
+    // prints the fixture and exits before node looks at the `models` argument.
+    const outputPath = path.join(homeDir, 'fake-opencode-output.txt');
+    const hookPath = path.join(homeDir, 'fake-opencode-hook.cjs');
+    await writeFile(outputPath, heredocBody, 'utf8');
+    await writeFile(
+      hookPath,
+      'process.stdout.write(require(\'node:fs\').readFileSync(process.env.FAKE_OPENCODE_OUTPUT, \'utf8\'));\nprocess.exit(0);\n',
+      'utf8',
+    );
+    process.env.FAKE_OPENCODE_OUTPUT = outputPath;
+    // NODE_OPTIONS treats backslashes as escapes, so the preload path must use
+    // forward slashes.
+    process.env.NODE_OPTIONS = `--require "${hookPath.replace(/\\/g, '/')}"`;
+    return process.execPath;
+  }
+  const cliPath = path.join(homeDir, 'fake-opencode');
   await writeFile(cliPath, `#!/bin/sh\ncat <<'EOF'\n${heredocBody}EOF\n`, 'utf8');
   await chmod(cliPath, 0o755);
   return cliPath;
@@ -83,7 +102,7 @@ test('OpenCode falls back to the anchor catalog when nothing dynamic is readable
   await withOpenCodeHome(async () => {}, async (adapter) => {
     // Nothing readable about this install, so the picker keeps the anchor
     // entries rather than coming up empty.
-    assert.deepEqual(await adapter.getSupportedModels(), OPENCODE_PREDEFINED_MODELS);
+    assert.deepEqual(await adapter.getSupportedModels(), { ...OPENCODE_PREDEFINED_MODELS, FALLBACK: true });
     assert.equal(
       (await adapter.getCurrentActiveModel()).model,
       OPENCODE_PREDEFINED_MODELS.DEFAULT,
@@ -135,7 +154,7 @@ test('OpenCode offers only models the install can route to', async () => {
   await withOpenCodeHome(
     (homeDir) => writeOpenCodeAuth(homeDir, { anthropic: { type: 'api', key: 'test' } }),
     async (adapter) => {
-      assert.deepEqual(await adapter.getSupportedModels(), OPENCODE_PREDEFINED_MODELS);
+      assert.deepEqual(await adapter.getSupportedModels(), { ...OPENCODE_PREDEFINED_MODELS, FALLBACK: true });
     },
   );
 
@@ -317,6 +336,8 @@ test('OpenCode lists only the models the CLI reports for the account', async () 
       ]);
       // The curated default stays when the account has it enabled.
       assert.equal(catalog.DEFAULT, OPENCODE_PREDEFINED_MODELS.DEFAULT);
+      // A live catalog is never flagged, so clients stop polling once it lands.
+      assert.equal(catalog.FALLBACK, undefined);
     },
   );
 

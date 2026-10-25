@@ -16,8 +16,12 @@ async function withUploads(
   options: Parameters<typeof createAssetsRouter>[0] = {},
 ) {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), 'cloudcli-upload-test-'));
+  // os.homedir() reads $HOME on POSIX and %USERPROFILE% on Windows, so the
+  // isolated upload store needs both variables pointed at the fixture home.
   const savedHome = process.env.HOME;
+  const savedUserProfile = process.env.USERPROFILE;
   process.env.HOME = home;
+  process.env.USERPROFILE = home;
   let firstPayload: unknown;
   const app = express();
   app.use((req, res, next) => {
@@ -42,6 +46,8 @@ async function withUploads(
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     if (savedHome === undefined) delete process.env.HOME;
     else process.env.HOME = savedHome;
+    if (savedUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = savedUserProfile;
     await fs.rm(home, { recursive: true, force: true });
   }
 }

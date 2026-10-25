@@ -85,6 +85,7 @@ export function createCliApplication() {
     updateGlobalPackage: () => undefined,
     startServer: async () => undefined,
     startBrowserUseMcp: async () => undefined,
+    startScheduledJobsMcp: async () => undefined,
   });
 
   return {

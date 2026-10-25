@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Dispatch, KeyboardEvent, RefObject, SetStateAction } from 'react';
+import { useTranslation } from 'react-i18next';
 
 import { safeLocalStorage } from '@/modules/chat/utils/chatStorage';
 import { useProjectSlashCommands } from '@/shared/hooks/useProjectSlashCommands';
@@ -16,6 +17,11 @@ type UseSlashCommandsOptions = {
   setInput: Dispatch<SetStateAction<string>>;
   textareaRef: RefObject<HTMLTextAreaElement>;
   onExecuteCommand: (command: SlashCommand, rawInput?: string) => void | Promise<void>;
+  /**
+   * Whether the active provider's runtime exposes on-demand compaction; when
+   * true the menu offers `/compact` (the command itself IS the capability).
+   */
+  supportsCompaction?: boolean;
 };
 
 const getCommandHistoryKey = (projectName: string) => `command_history_${projectName}`;
@@ -82,13 +88,31 @@ export function useSlashCommands({
   setInput,
   textareaRef,
   onExecuteCommand,
+  supportsCompaction = false,
 }: UseSlashCommandsOptions) {
+  const { t } = useTranslation();
   const { commands: projectCommands } = useProjectSlashCommands(selectedProject, provider);
   const [filteredCommands, setFilteredCommands] = useState<SlashCommand[]>([]);
   const [showCommandMenu, setShowCommandMenu] = useState(false);
   const [commandQuery, setCommandQuery] = useState('');
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(-1);
   const [slashPosition, setSlashPosition] = useState(-1);
+
+  // Provider-gated built-in: the entry exists exactly when the backend
+  // capability says the provider runtime can execute it.
+  const compactionCommand = useMemo<SlashCommand | null>(() => (
+    supportsCompaction
+      ? {
+          name: '/compact',
+          description: t('chat:misc.commandDescriptions.compact', {
+            defaultValue: 'Summarize the conversation to free up context.',
+          }),
+          namespace: 'builtin',
+          type: 'built-in',
+          metadata: { type: 'builtin' },
+        }
+      : null
+  ), [supportsCompaction, t]);
 
   const commandQueryTimerRef = useRef<number | null>(null);
 
@@ -115,12 +139,18 @@ export function useSlashCommands({
     }
 
     const parsedHistory = readCommandHistory(selectedProject.projectId);
-    return [...projectCommands].sort((commandA, commandB) => {
+    // The shared project list already injects `/compact` for compacting
+    // providers; only fall back to this entry when it doesn't carry one.
+    const hasCompactCommand = projectCommands.some((command) => command.name === '/compact');
+    const allCommands = compactionCommand && !hasCompactCommand
+      ? [compactionCommand, ...projectCommands]
+      : projectCommands;
+    return [...allCommands].sort((commandA, commandB) => {
       const commandAUsage = parsedHistory[commandA.name] || 0;
       const commandBUsage = parsedHistory[commandB.name] || 0;
       return commandBUsage - commandAUsage;
     });
-  }, [projectCommands, selectedProject]);
+  }, [compactionCommand, projectCommands, selectedProject]);
 
   useEffect(() => {
     if (!showCommandMenu) {

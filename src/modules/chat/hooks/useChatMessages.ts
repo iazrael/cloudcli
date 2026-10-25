@@ -6,7 +6,7 @@
 import type { NormalizedMessage } from '@/modules/chat/hooks/useSessionStore';
 import type { ChatMessage, LiveTaskStatus, SubagentActivity } from '@/shared/types';
 import { formatUsageLimitText } from '@/modules/chat/utils/chatFormatting';
-import { isSubagentToolName } from '@shared/protocol/subagent';
+import { isSubagentSpawnTool } from '@/modules/chat/tools/toolTaxonomy';
 
 function formatToolResultContent(content: unknown): string {
   // JSON.stringify(undefined) returns undefined (not a string), so guard the
@@ -62,70 +62,6 @@ function parseTaskNotification(content: string): ParsedTaskNotification | null {
   };
 }
 
-/** Kinds of live row that can belong to a subagent's card. */
-const CHILD_ROW_KINDS: ReadonlySet<string> = new Set(['tool_use', 'tool_result', 'text', 'thinking', 'stream_delta', 'stream_end']);
-
-const NO_CHILD_ROWS: NormalizedMessage[] = [];
-
-/**
- * The top-level subagent card a row's `parentToolUseId` leads to: the
- * outermost `Agent` call on its parent chain, whatever non-agent calls sit above
- * it. `null` when the chain reaches no agent call and ends at a call this
- * transcript does not hold (the card has not arrived); `undefined` when it
- * reaches a known call that is not an agent (Bash, a workflow). A cycle is cut
- * where it closes, so its members stay cards.
- */
-function resolveParentCard(
-  parentId: string,
-  toolCallById: Map<string, NormalizedMessage>,
-): string | null | undefined {
-  let current: string | undefined = parentId;
-  let outermost: string | undefined;
-  let reachedKnownCall = false;
-  const visited = new Set<string>();
-  while (current !== undefined && !visited.has(current)) {
-    visited.add(current);
-    const call = toolCallById.get(current);
-    if (!call) break;
-    reachedKnownCall = true;
-    if (isSubagentToolName(call.toolName)) outermost = current;
-    current = call.parentToolUseId;
-  }
-  if (outermost !== undefined) return outermost;
-  return reachedKnownCall ? undefined : null;
-}
-
-function sameRows(a: NormalizedMessage[], b: NormalizedMessage[]): boolean {
-  return a.length === b.length && a.every((row, index) => Object.is(row, b[index]));
-}
-
-/**
- * The timeline of a running agent, from the rows its stream delivered: the
- * same shape the history reader gives a finished one, so a card reads the same
- * live and after a refresh.
- */
-function buildLiveActivity(rows: NormalizedMessage[], toolResultMap: Map<string, NormalizedMessage>): SubagentActivity[] {
-  const activity: SubagentActivity[] = [];
-  for (const row of rows) {
-    if (row.kind === 'tool_use') {
-      const result = row.toolResult ?? (row.toolId ? toolResultMap.get(row.toolId) : undefined);
-      activity.push({
-        kind: 'tool',
-        timestamp: row.timestamp,
-        toolId: row.toolId,
-        toolName: row.toolName,
-        toolInput: row.toolInput,
-        toolResult: result ? { content: formatToolResultContent(result.content), isError: Boolean(result.isError) } : null,
-      });
-    } else if (row.kind === 'text' && row.role !== 'user' && row.content?.trim()) {
-      activity.push({ kind: 'text', timestamp: row.timestamp, content: row.content });
-    } else if (row.kind === 'thinking' && row.content?.trim()) {
-      activity.push({ kind: 'thinking', timestamp: row.timestamp, content: row.content });
-    }
-  }
-  return activity;
-}
-
 /**
  * Per-row conversion cache. Conversion output for one NormalizedMessage is a
  * pure function of the row itself plus, for tool_use rows, the attached
@@ -137,10 +73,8 @@ function buildLiveActivity(rows: NormalizedMessage[], toolResultMap: Map<string,
 type ConversionCacheEntry = {
   /** Identity of whatever tool-result source fed this row's conversion. */
   attachedToolResult: unknown;
-  /** The live child rows folded into a subagent card, compared element by element. */
-  foldedChildRows: NormalizedMessage[];
-  /** The result each folded child tool call had when this entry was built. */
-  foldedResults?: Map<NormalizedMessage, NormalizedMessage | undefined>;
+  /** Newest live subagent row folded into a container's timeline, when any. */
+  subagentActivitySource: NormalizedMessage | null;
   /** Newest live task-status row folded into this row's projection, when any. */
   taskStatusSource: NormalizedMessage | null;
   outputs: ChatMessage[];
@@ -179,10 +113,8 @@ function foldTaskStatus(
   // must not wipe the last one that named them.
   const agents = msg.agents?.length ? msg.agents : previous?.agents;
   liveTasksByToolUseId.set(toolUseId, {
-    // A settled status holds against `progress` and `updated`, but a later
-    // `started` revives the task: ZCode re-announces a resumed agent with
-    // `resumed: true`, and that card must run again. Short of a settled
-    // status, `started` and `progress` mean the task is running, while an `updated` patch that does not change the
+    // A settled status is final. Short of one, `started` and `progress` mean
+    // the task is running, while an `updated` patch that does not change the
     // status (an end time, say) leaves it where it was.
     status: settled ?? (msg.event === 'started' || msg.event === 'progress' ? 'running' : previous?.status ?? 'running'),
     taskId: msg.taskId ?? previous?.taskId,
@@ -205,62 +137,118 @@ function foldTaskStatus(
  * transcript artifacts such as local slash commands and compact summaries are
  * intentionally preserved and annotated so they render like normal chat.
  */
-export function normalizedToChatMessages(
-  messages: NormalizedMessage[],
-  options: {
-    /**
-     * Keep a live row out of the main thread while its parent card has not
-     * arrived. Pass it only while the session is still running: a settled
-     * session's orphan will never get a card, and a history row's card may sit
-     * on a page that is not loaded, so those render where they are.
-     */
-    holdOrphanedLiveRows?: boolean;
-  } = {},
-): ChatMessage[] {
+/**
+ * Folds one live subagent row into the timeline of the call that spawned it.
+ *
+ * A running subagent's rows stream in stamped with `parentToolUseId`. Rendered
+ * top-level they read as the session's own tool calls, only to jump inside the
+ * container on the next history load, which ships the same timeline as
+ * `subagentTools`. Streaming text and thinking frames reuse one row id, so
+ * their deltas append to the same activity instead of becoming one entry per
+ * fragment.
+ */
+function foldLiveSubagentRow(
+  msg: NormalizedMessage,
+  activityByParent: Map<string, SubagentActivity[]>,
+  toolById: Map<string, SubagentActivity>,
+  textById: Map<string, SubagentActivity>,
+): void {
+  const parentId = msg.parentToolUseId;
+  if (!parentId) {
+    return;
+  }
+
+  let activity = activityByParent.get(parentId);
+  if (!activity) {
+    activity = [];
+    activityByParent.set(parentId, activity);
+  }
+
+  switch (msg.kind) {
+    case 'tool_use': {
+      const tool: SubagentActivity = {
+        kind: 'tool',
+        toolId: msg.toolId,
+        toolName: msg.toolName || 'Tool',
+        toolInput: msg.toolInput,
+        timestamp: msg.timestamp,
+      };
+      activity.push(tool);
+      if (msg.toolId) {
+        toolById.set(msg.toolId, tool);
+      }
+      break;
+    }
+    case 'tool_result': {
+      const tool = msg.toolId ? toolById.get(msg.toolId) : undefined;
+      if (tool) {
+        tool.toolResult = {
+          content: formatToolResultContent(msg.content ?? ''),
+          isError: Boolean(msg.isError),
+        };
+      }
+      break;
+    }
+    case 'text':
+    case 'thinking':
+    case 'stream_delta': {
+      // Assistant prose and reasoning only, matching the timeline the server
+      // builds from the subagent's transcript — user-role rows there are tool
+      // results and the echoed task prompt.
+      if ((msg.kind === 'text' && msg.role !== 'assistant') || !msg.content?.trim()) {
+        break;
+      }
+      const kind = msg.kind === 'thinking' ? 'thinking' : 'text';
+      const key = `${parentId}\u0000${msg.id}`;
+      const existing = textById.get(key);
+      if (existing && (msg.kind === 'thinking' || msg.kind === 'stream_delta')) {
+        // Deltas of one streamed block share the block id.
+        existing.content = `${existing.content ?? ''}${msg.content}`;
+      } else if (!existing || existing.content !== msg.content) {
+        const entry: SubagentActivity = {
+          kind,
+          content: msg.content,
+          timestamp: msg.timestamp,
+        };
+        activity.push(entry);
+        textById.set(key, entry);
+      }
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMessage[] {
   const converted: ChatMessage[] = [];
 
-  // First pass: collect tool results for attachment, and fold the live word
-  // on each background task into the tool call that launched it. Both answer
-  // the same question — what has this call's work done since it launched —
-  // from different sides of a turn's end.
+  // First pass: collect tool results for attachment, fold the live word on
+  // each background task into the call that launched it, and fold a running
+  // subagent's rows into its spawner's timeline. All three answer the same
+  // question — what has this call's work done since it launched — from rows
+  // the store keeps at top level.
   const toolResultMap = new Map<string, NormalizedMessage>();
   const liveTasksByToolUseId = new Map<string, LiveTaskStatus>();
   const toolUseIdByTaskId = new Map<string, string>();
   const lastTaskSourceByToolUseId = new Map<string, NormalizedMessage>();
-  // Subagent cards in this transcript, and the live rows their agents produced.
-  // A row naming a card as its parent belongs to that card's timeline, not to
-  // the main thread. Cards can nest (an agent spawning an agent): the inner
-  // call is a step inside the outer card, and everything under it folds into
-  // that same outer card, the only one the user sees.
-  const toolCallById = new Map<string, NormalizedMessage>();
+  const liveSubagentActivity = new Map<string, SubagentActivity[]>();
+  const liveSubagentToolsById = new Map<string, SubagentActivity>();
+  const liveSubagentTextById = new Map<string, SubagentActivity>();
+  /** Newest folded row per container, so its cached projection knows to rebuild. */
+  const lastSubagentSourceByParent = new Map<string, NormalizedMessage>();
   for (const msg of messages) {
-    if (msg.kind === 'tool_use' && msg.toolId) {
-      toolCallById.set(msg.toolId, msg);
-    }
-  }
-  const childRowsByAgentCall = new Map<string, NormalizedMessage[]>();
-  const foldedRows = new Set<NormalizedMessage>();
-  for (const msg of messages) {
-    if (!msg.parentToolUseId || !CHILD_ROW_KINDS.has(msg.kind)) continue;
-    const card = resolveParentCard(msg.parentToolUseId, toolCallById);
-    // `undefined`: a call that is not an agent; its rows stay in the main thread.
-    if (card === undefined) continue;
-    foldedRows.add(msg);
-    // `null`: the parent card has not arrived. A live row of a running session
-    // waits for it out of the main thread; any other row renders in place.
-    if (card === null) {
-      if (!(options.holdOrphanedLiveRows && typeof msg.seq === 'number')) foldedRows.delete(msg);
+    if (msg.kind === 'task_status') {
+      foldTaskStatus(msg, liveTasksByToolUseId, toolUseIdByTaskId, lastTaskSourceByToolUseId);
       continue;
     }
-    // A card caught in a parent cycle is its own card: it renders itself.
-    if (msg.kind === 'tool_use' && msg.toolId === card) {
-      foldedRows.delete(msg);
+
+    if (msg.parentToolUseId) {
+      foldLiveSubagentRow(msg, liveSubagentActivity, liveSubagentToolsById, liveSubagentTextById);
+      lastSubagentSourceByParent.set(msg.parentToolUseId, msg);
       continue;
     }
-    const rows = childRowsByAgentCall.get(card);
-    if (rows) rows.push(msg); else childRowsByAgentCall.set(card, [msg]);
-  }
-  for (const msg of messages) {
+
     if (msg.kind === 'tool_result' && msg.toolId) {
       toolResultMap.set(msg.toolId, msg);
       // A launch acknowledgement names its task, so an `updated` event for a
@@ -270,20 +258,20 @@ export function normalizedToChatMessages(
       if (typeof launchedTaskId === 'string' && launchedTaskId) {
         toolUseIdByTaskId.set(launchedTaskId, msg.toolId);
       }
-    } else if (msg.kind === 'task_status') {
-      foldTaskStatus(msg, liveTasksByToolUseId, toolUseIdByTaskId, lastTaskSourceByToolUseId);
     }
   }
 
   for (const msg of messages) {
-    if (foldedRows.has(msg)) {
+    // Subagent rows were folded into their container's timeline above.
+    if (msg.parentToolUseId) {
       continue;
     }
-    const foldedChildRows = msg.kind === 'tool_use' && msg.toolId
-      ? childRowsByAgentCall.get(msg.toolId) ?? NO_CHILD_ROWS
-      : NO_CHILD_ROWS;
+
     const attachedToolResult: unknown = msg.kind === 'tool_use'
       ? (msg.toolResult || (msg.toolId ? toolResultMap.get(msg.toolId) ?? null : null))
+      : null;
+    const subagentActivitySource = msg.kind === 'tool_use' && msg.toolId
+      ? lastSubagentSourceByParent.get(msg.toolId) ?? null
       : null;
     const taskStatusSource = msg.kind === 'tool_use' && msg.toolId
       ? lastTaskSourceByToolUseId.get(msg.toolId) ?? null
@@ -293,17 +281,15 @@ export function normalizedToChatMessages(
     if (
       cached
       && Object.is(cached.attachedToolResult, attachedToolResult)
+      && Object.is(cached.subagentActivitySource, subagentActivitySource)
       && Object.is(cached.taskStatusSource, taskStatusSource)
-      && sameRows(cached.foldedChildRows, foldedChildRows)
-      && foldedChildRows.every((child) => Object.is(cached.foldedResults?.get(child), child.toolId ? toolResultMap.get(child.toolId) : undefined))
     ) {
       converted.push(...cached.outputs);
       continue;
     }
 
-    const outputs = convertRow(msg, toolResultMap, liveTasksByToolUseId, foldedChildRows);
-    const foldedResults = new Map(foldedChildRows.map((child) => [child, child.toolId ? toolResultMap.get(child.toolId) : undefined]));
-    conversionCache.set(msg, { attachedToolResult, taskStatusSource, foldedChildRows, foldedResults, outputs });
+    const outputs = convertRow(msg, toolResultMap, liveTasksByToolUseId, liveSubagentActivity);
+    conversionCache.set(msg, { attachedToolResult, subagentActivitySource, taskStatusSource, outputs });
     converted.push(...outputs);
   }
 
@@ -379,7 +365,7 @@ function convertRow(
   msg: NormalizedMessage,
   toolResultMap: Map<string, NormalizedMessage>,
   liveTasksByToolUseId: Map<string, LiveTaskStatus>,
-  foldedChildRows: NormalizedMessage[],
+  liveSubagentActivity: Map<string, SubagentActivity[]>,
 ): ChatMessage[] {
   const outputs: ChatMessage[] = [];
 
@@ -451,7 +437,11 @@ function convertRow(
 
       case 'tool_use': {
         const tr = msg.toolResult || (msg.toolId ? toolResultMap.get(msg.toolId) : null);
-        const isSubagentContainer = isSubagentToolName(msg.toolName);
+        // A row is a subagent container when the backend attached agent
+        // metadata to it, or when its tool is an engine's spawn call whose
+        // metadata has not been indexed yet (Claude Task/Agent, OpenCode
+        // subagent/task, Antigravity invoke_subagent).
+        const isSubagentContainer = Boolean(msg.subagent) || isSubagentSpawnTool(msg.toolName ?? '');
 
         const toolResult = tr
           ? {
@@ -460,6 +450,16 @@ function convertRow(
               toolUseResult: (tr as any).toolUseResult,
             }
           : null;
+
+        // The server-indexed timeline arrives on a history load; the live fold
+        // covers the run in progress. A mid-run refresh can attach a partial
+        // server timeline while newer live rows keep streaming, so the longer
+        // list is the fresher one.
+        const serverActivity = Array.isArray(msg.subagentTools) ? msg.subagentTools : undefined;
+        const liveActivity = msg.toolId ? liveSubagentActivity.get(msg.toolId) : undefined;
+        const subagentActivity = liveActivity && liveActivity.length > (serverActivity?.length ?? 0)
+          ? liveActivity
+          : serverActivity;
 
         outputs.push({
           type: 'assistant',
@@ -470,13 +470,11 @@ function convertRow(
           toolInput: typeof msg.toolInput === 'string' ? msg.toolInput : JSON.stringify(msg.toolInput ?? '', null, 2),
           toolId: msg.toolId,
           toolResult,
+          toolStatus: typeof msg.status === 'string' ? msg.status : undefined,
           isSubagentContainer,
-          // The agent's outcome and work: the history reader's record when the
-          // row carries one, else the child rows the live stream delivered.
           subagent: msg.subagent,
-          subagentActivity: msg.subagentTools?.length
-            ? msg.subagentTools
-            : foldedChildRows.length > 0 ? buildLiveActivity(foldedChildRows, toolResultMap) : undefined,
+          subagentActivity,
+          workflow: msg.workflow,
           // The latest live word on this call's background work, folded from
           // the session's task_status events. Undefined once the transcript's
           // own settled record (subagent / workflow) takes over.

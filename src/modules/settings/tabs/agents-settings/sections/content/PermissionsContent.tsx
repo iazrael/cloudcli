@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 
 import ClaudeSettingsFileRules from '@/modules/settings/tabs/agents-settings/sections/content/ClaudeSettingsFileRules';
 import { Button, Input } from '@/shared/ui';
-import type { AntigravityPermissionMode, CodexPermissionMode, OpencodePermissionMode, PermissionMode, ZcodePermissionMode } from '@/shared/types';
+import type { AntigravityPermissionMode, CodexPermissionMode, OpenCodePermissionMode, PermissionMode, ZcodePermissionMode } from '@/shared/types';
 
 const COMMON_CLAUDE_TOOLS = [
   'Bash(git log:*)',
@@ -16,8 +16,7 @@ const COMMON_CLAUDE_TOOLS = [
   'Glob',
   'Grep',
   'MultiEdit',
-  // The CLI still resolves a saved legacy `Task` rule to `Agent`.
-  'Agent',
+  'Task',
   'TodoWrite',
   'TodoRead',
   'WebFetch',
@@ -38,9 +37,6 @@ const COMMON_CURSOR_COMMANDS = [
   'Shell(python)',
   'Shell(node)',
 ];
-
-/** A saved legacy `Task` rule is the `Agent` rule: the CLI resolves one to the other. */
-const LEGACY_TOOL_ALIASES: Record<string, string> = { Agent: 'Task' };
 
 const addUnique = (items: string[], value: string): string[] => {
   const normalizedValue = value.trim();
@@ -76,9 +72,6 @@ function ClaudePermissions({
   const { t } = useTranslation('settings');
   const [newAllowedTool, setNewAllowedTool] = useState('');
   const [newDisallowedTool, setNewDisallowedTool] = useState('');
-
-  const isPresetAdded = (tool: string): boolean =>
-    allowedTools.includes(tool) || (LEGACY_TOOL_ALIASES[tool] !== undefined && allowedTools.includes(LEGACY_TOOL_ALIASES[tool]));
 
   const handleAddAllowedTool = (tool: string) => {
     const updated = addUnique(allowedTools, tool);
@@ -216,7 +209,7 @@ function ClaudePermissions({
                 variant="outline"
                 size="sm"
                 onClick={() => handleAddAllowedTool(tool)}
-                disabled={isPresetAdded(tool)}
+                disabled={allowedTools.includes(tool)}
                 className="h-8 text-xs"
               >
                 {tool}
@@ -840,18 +833,13 @@ function ZcodePermissions({ permissionMode, onPermissionModeChange }: Omit<Zcode
   );
 }
 
-type OpencodePermissionsProps = {
+type OpenCodePermissionsProps = {
   agent: 'opencode';
-  permissionMode: OpencodePermissionMode;
-  onPermissionModeChange: (value: OpencodePermissionMode) => void;
+  permissionMode: OpenCodePermissionMode;
+  onPermissionModeChange: (value: OpenCodePermissionMode) => void;
 };
 
-/**
- * OpenCode has one toggle per mode rather than Claude-style tool lists: the
- * runtime maps the mode onto the engine's plan agent and per-action ask rules
- * (shell/edit/write/patch), so there is nothing finer-grained to configure here.
- */
-function OpencodePermissions({ permissionMode, onPermissionModeChange }: Omit<OpencodePermissionsProps, 'agent'>) {
+function OpenCodePermissions({ permissionMode, onPermissionModeChange }: Omit<OpenCodePermissionsProps, 'agent'>) {
   const { t } = useTranslation('settings');
 
   return (
@@ -926,7 +914,7 @@ type PermissionsContentProps =
   | CodexPermissionsProps
   | AntigravityPermissionsProps
   | ZcodePermissionsProps
-  | OpencodePermissionsProps;
+  | OpenCodePermissionsProps;
 
 /** Rendered by AgentCategoryContentSection for the "permissions" category, one variant per agent provider. */
 export default function PermissionsContent(props: PermissionsContentProps) {
@@ -947,7 +935,7 @@ export default function PermissionsContent(props: PermissionsContentProps) {
   }
 
   if (props.agent === 'opencode') {
-    return <OpencodePermissions {...props} />;
+    return <OpenCodePermissions {...props} />;
   }
 
   return <CodexPermissions {...props} />;

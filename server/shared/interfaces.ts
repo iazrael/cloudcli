@@ -47,6 +47,36 @@ export interface IProviderRuntime {
   ): Promise<unknown>;
   abort(sessionId: string): boolean | Promise<boolean>;
   /**
+  /**
+   * Compacts a stored conversation into a summary the next turn builds on.
+   *
+   * Present only for engines whose CLI or protocol exposes on-demand
+   * compaction; its absence is what keeps `/compact` out of the composer menu.
+   * Runtimes report progress through the same writer `run` receives, and the
+   * chat gateway emits the terminal `complete` when the promise settles.
+   */
+  compact?(
+    options: AnyRecord,
+    writer: ProviderRuntimeWriter,
+    context: ProviderRuntimeContext,
+  ): Promise<unknown>;
+  /**
+   * Hands a new user message to the turn already running for the session,
+   * instead of starting a run of its own.
+   *
+   * Present only for engines that absorb a mid-turn message without
+   * interrupting the work in flight (the provider declares
+   * `inputWhileBusy: 'always'`). The running turn's writer carries the
+   * output, and that run does not complete until the injected message has
+   * been answered too. Resolves false when the session has no live turn that
+   * can still take input — the gateway then treats the send as a new run.
+   */
+  injectInput?(
+    command: string,
+    options: AnyRecord,
+    context: ProviderRuntimeContext,
+  ): Promise<boolean>;
+  /**
    * What the engine is doing with the session's round.
    *
    * A resident engine knows whether the queued input has been picked up; the
@@ -143,21 +173,30 @@ export interface IProvider {
  */
 export interface IProviderFork {
   /**
+   * Whether a fork needs the source transcript to exist as a file.
+   *
+   * Providers that keep their transcript in a shared database (OpenCode) set
+   * this to `false`; everything else defaults to `true`, and the service then
+   * refuses to fork a session whose transcript file is missing.
+   */
+  readonly requiresTranscriptFile?: boolean;
+  /**
    * Copies a session's transcript, up to and including `upToAnchorId` (the
    * whole conversation when omitted), into a brand-new provider session.
    *
    * Returns the new provider-native id and the path of the artifact it wrote,
    * so the caller can insert the database row before the filesystem watcher
-   * notices the file and indexes it as an unrelated session.
+   * notices the file and indexes it as an unrelated session. The path is `null`
+   * for providers whose transcript is not a file.
    */
   forkSession(input: {
     providerSessionId: string;
-    jsonlPath: string;
+    jsonlPath: string | null;
     /** The session's working directory — how providers scope a session lookup. */
     projectPath: string;
     upToAnchorId?: string;
     title?: string;
-  }): Promise<{ providerSessionId: string; jsonlPath: string }>;
+  }): Promise<{ providerSessionId: string; jsonlPath: string | null }>;
 }
 
 // ---------------------------

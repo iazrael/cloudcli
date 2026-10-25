@@ -18,7 +18,9 @@ function writeHelper(root: string, platform: string, mode: number): string {
   return helper;
 }
 
-test('restoreNativeBinaryExecBits adds the exec bit to spawn-helper binaries only', () => {
+// Exec permission bits do not exist on Windows — the helper only matters for
+// POSIX spawn-helper binaries, so these two assertions cannot hold there.
+test('restoreNativeBinaryExecBits adds the exec bit to spawn-helper binaries only', { skip: process.platform === 'win32' }, () => {
   const root = makeTempDir();
   try {
     const arm64 = writeHelper(root, 'darwin-arm64', 0o644);
@@ -36,7 +38,7 @@ test('restoreNativeBinaryExecBits adds the exec bit to spawn-helper binaries onl
   }
 });
 
-test('restoreNativeBinaryExecBits leaves already-executable helpers alone', () => {
+test('restoreNativeBinaryExecBits leaves already-executable helpers alone', { skip: process.platform === 'win32' }, () => {
   const root = makeTempDir();
   try {
     const helper = writeHelper(root, 'darwin-arm64', 0o755);

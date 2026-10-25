@@ -6,7 +6,6 @@ import { ChevronDown, ChevronRight } from 'lucide-react';
 import type { ProviderModelOption } from '@/shared/types';
 import { DEFAULT_EFFORT_VALUE } from '@/shared/constants';
 import { useComposerMenuAnchor } from '@/modules/chat/hooks/useComposerMenuAnchor';
-import { findCatalogModelOption } from '@/modules/chat/utils/catalogModel';
 import {
   ComposerMenuHeading,
   ComposerMenuItem,
@@ -74,7 +73,7 @@ function ComposerModelMenu({
   }, [model]);
 
   const selectedModelOption = useMemo(
-    () => findCatalogModelOption(modelOptions, model),
+    () => modelOptions.find((option) => option.value === model) ?? null,
     [model, modelOptions],
   );
   const modelLabel = selectedModelOption?.label || fallbackModelLabel;
@@ -104,14 +103,18 @@ function ComposerModelMenu({
       <ComposerMenuItem
         key={option.value}
         label={option.label || option.value}
-        isSelected={option === selectedModelOption}
+        // Providers share model names (GLM 5.3 exists on both OpenCode
+        // Zen and Go); the catalog description names the gateway so
+        // the duplicate labels stay distinguishable.
+        description={option.description}
+        isSelected={option.value === model}
         onSelect={() => {
           onSelectModel(option.value);
           setIsOpen(false);
         }}
       />
     ),
-    [selectedModelOption, onSelectModel],
+    [model, onSelectModel],
   );
 
   const hasEffortSection = resolvedEffortOptions.length > 0;
@@ -175,6 +178,7 @@ function ComposerModelMenu({
               <ComposerMenuItem
                 role="menuitem"
                 label={selectedModelOption?.group ? `${modelLabel} · ${selectedModelOption.group}` : modelLabel}
+                description={selectedModelOption?.description}
                 isSelected={false}
                 onSelect={() => setIsModelSectionOpen((current) => !current)}
                 trailing={

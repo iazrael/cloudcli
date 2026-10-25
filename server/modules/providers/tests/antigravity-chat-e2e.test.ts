@@ -189,8 +189,10 @@ after(async () => {
       });
     });
   }
-  await fs.rm(stubDir, { recursive: true, force: true });
-  await fs.rm(e2eHome, { recursive: true, force: true });
+  // Windows releases the terminated child's SQLite file handles a moment
+  // after the exit event, so the cleanup retries instead of failing with EBUSY.
+  await fs.rm(stubDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  await fs.rm(e2eHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 // --------------- helpers ---------------
@@ -410,6 +412,12 @@ test('chat.abort stops a running agy process and emits exactly one aborted compl
   const ws = await connectWebSocket();
   try {
     await fs.writeFile(sleepModeMarkerPath, 'sleep');
+    // The args file is shared across this file's tests and still holds the
+    // previous turn's argv; clear it so the wait below blocks until THIS run's
+    // stub process exists. Aborting before the runtime spawned its child makes
+    // the abort find no process and answer with ABORT_FAILED instead of a
+    // complete.
+    await fs.rm(argsFilePath, { force: true });
     const appSessionId = await createAppSession('abort me');
     sendChat(ws, appSessionId, 'abort me');
     await waitForArgsFile(); // stub process spawned and registered

@@ -8,6 +8,7 @@ import { broadcastSessionUpserted } from '@/modules/websocket/services/session-u
 import type {
   LLMProvider,
   NormalizedMessage,
+  ProviderSessionIdReplacement,
   RealtimeClientConnection,
   RunOutcomeReason,
 } from '@/shared/types.js';
@@ -167,6 +168,23 @@ const sessionChannels = new Map<string, ChatSessionChannel>();
  * even when the previous run's buffer is long gone.
  */
 const sessionWatermarks = new Map<string, number>();
+
+/**
+ * Sockets that have asked to watch a session, kept even while the session has
+ * no active run.
+ *
+ * `attachConnection` can only attach to a run that already exists, so a tab
+ * sitting on an idle conversation is invisible to the gateway. That is fine
+ * while every run begins with a client send — the sender's socket is known —
+ * but a run the provider engine starts on its own (opencode resuming a session
+ * from its inbox when a background subagent completes) has no sender at all.
+ * These subscribers are what `adoptExternalRun` attaches so the tabs already
+ * watching see the adopted run live instead of only after a manual refresh.
+ *
+ * Entries are keyed by app session id; a socket is dropped on close
+ * (`forgetSessionSubscriber`) and dead sockets are pruned lazily on attach.
+ */
+const sessionSubscribers = new Map<string, Set<RealtimeClientConnection>>();
 
 /**
  * Answers whether a completed run must stay registered a while longer. Set by
@@ -329,8 +347,18 @@ function readExitCode(message: NormalizedMessage): number {
  * Called from the gateway writer when the runtime either calls
  * `setSessionId(...)` or emits its `session_created` event — whichever
  * happens first wins; later calls with the same id are no-ops.
+ *
+ * A `replacement` descriptor means the engine started a different session than
+ * the one this run resumed (Claude, after its first prompt was edited). The app
+ * row must then move to the replacement transcript — `assignProviderSessionId`
+ * would keep the old `jsonl_path` — and the transcript it leaves behind must be
+ * retired so the indexer never offers it back as its own conversation.
  */
-function recordProviderSessionId(run: ChatRun, providerSessionId: string): void {
+function recordProviderSessionId(
+  run: ChatRun,
+  providerSessionId: string,
+  replacement?: ProviderSessionIdReplacement,
+): void {
   if (!providerSessionId || run.providerSessionId === providerSessionId) {
     return;
   }
@@ -338,7 +366,15 @@ function recordProviderSessionId(run: ChatRun, providerSessionId: string): void 
   run.providerSessionId = providerSessionId;
 
   try {
-    sessionsDb.assignProviderSessionId(run.appSessionId, providerSessionId);
+    if (replacement) {
+      sessionsDb.repointSessionToProviderSession(run.appSessionId, {
+        providerSessionId,
+        jsonlPath: replacement.transcriptPath,
+        supersedePrevious: true,
+      });
+    } else {
+      sessionsDb.assignProviderSessionId(run.appSessionId, providerSessionId);
+    }
     void broadcastSessionUpserted(run.appSessionId).catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
       console.error('[ChatRunRegistry] Failed to broadcast canonical session mapping', {
@@ -498,8 +534,8 @@ export const chatRunRegistry = {
       sessionName: input.sessionName,
       provider: input.provider,
       providerSessionId: input.providerSessionId,
-      onProviderSessionId: (providerSessionId) => {
-        recordProviderSessionId(run, providerSessionId);
+      onProviderSessionId: (providerSessionId, replacement) => {
+        recordProviderSessionId(run, providerSessionId, replacement);
       },
       decorateOutboundEvent: (message) => decorateAndRecordEvent(run, message),
     });
@@ -530,6 +566,102 @@ export const chatRunRegistry = {
         startedAt: run.startedAt,
         lastSeq: run.channel.lastSeq,
       }));
+  },
+
+  /**
+   * Records one socket as watching a session. Called for every `chat.subscribe`
+   * target — including sessions with a run in flight, where attachment happens
+   * through `attachConnection` — so a later engine-initiated run can reach
+   * whoever is already looking without waiting for a refresh.
+   */
+  noteSessionSubscriber(appSessionId: string, connection: RealtimeClientConnection): void {
+    let subscribers = sessionSubscribers.get(appSessionId);
+    if (!subscribers) {
+      subscribers = new Set();
+      sessionSubscribers.set(appSessionId, subscribers);
+    }
+    subscribers.add(connection);
+  },
+
+  /** Drops one closed socket from every session it was watching. */
+  forgetSessionSubscriber(connection: RealtimeClientConnection): void {
+    for (const [appSessionId, subscribers] of sessionSubscribers) {
+      if (!subscribers.delete(connection)) {
+        continue;
+      }
+      if (subscribers.size === 0) {
+        sessionSubscribers.delete(appSessionId);
+      }
+    }
+  },
+
+  /**
+   * Attaches every socket currently watching the session to its run.
+   *
+   * Used when a run begins without a sender socket — an adopted engine run —
+   * so the tabs already on the conversation receive its frames live. A later
+   * subscriber still attaches through `chat.subscribe`'s own path; attaching
+   * here is an addition, never a takeover. Returns how many sockets attached.
+   */
+  attachSessionSubscribers(appSessionId: string): number {
+    const run = runs.get(appSessionId);
+    const subscribers = sessionSubscribers.get(appSessionId);
+    if (!run || !subscribers) {
+      return 0;
+    }
+
+    let attached = 0;
+    for (const connection of [...subscribers]) {
+      if (connection.readyState === WS_OPEN_STATE) {
+        run.writer.updateWebSocket(connection);
+        attached += 1;
+      } else {
+        subscribers.delete(connection);
+      }
+    }
+    return attached;
+  },
+
+  /**
+   * Opens a gateway run for an execution the provider engine started on its
+   * own, and returns the app session the run belongs to plus the writer the
+   * runtime must feed its translated frames.
+   *
+   * This is the adoption half of the two-registry design: the runtime detects
+   * engine-initiated activity on its event feed (opencode resuming an idle
+   * session from its inbox after a subagent completes) and asks here for a
+   * run, because only the gateway can assign `seq`, buffer for replay, record
+   * the outcome, and reach the sockets. The run is registered exactly like a
+   * detached scheduled turn — no owning connection, so `isProcessing` reports
+   * busy everywhere, subscribers attach below, and a client that subscribes
+   * later replays it from the start.
+   *
+   * Returns null when the provider session maps to no app session (subagent
+   * and CLI-created sessions live only in the engine), the row is archived,
+   * the provider disagrees, or a run is already in flight for the session.
+   */
+  adoptExternalRun(input: {
+    provider: LLMProvider;
+    providerSessionId: string;
+  }): { appSessionId: string; writer: ChatSessionWriter } | null {
+    const session = sessionsDb.getSessionByProviderSessionId(input.providerSessionId);
+    if (!session || session.provider !== input.provider || session.isArchived) {
+      return null;
+    }
+
+    const run = this.startRun({
+      appSessionId: session.session_id,
+      provider: input.provider,
+      providerSessionId: input.providerSessionId,
+      connection: null,
+      userId: null,
+    });
+    if (!run) {
+      return null;
+    }
+
+    this.attachSessionSubscribers(session.session_id);
+    return { appSessionId: session.session_id, writer: run.writer };
   },
 
   /**
@@ -663,5 +795,6 @@ export const chatRunRegistry = {
     sessionChannels.clear();
     totalBufferedBytes = 0;
     sessionWatermarks.clear();
+    sessionSubscribers.clear();
   },
 };

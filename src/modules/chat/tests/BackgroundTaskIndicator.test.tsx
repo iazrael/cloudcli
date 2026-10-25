@@ -51,8 +51,8 @@ describe('BackgroundTaskIndicator', () => {
     expect(screen.getByText(/Task/)).toBeTruthy();
   });
 
-  it('triggers onAbort when abort button is clicked', () => {
-    const onAbort = vi.fn();
+  it('stops every task from the header and one task from its row', () => {
+    const onStopTasks = vi.fn();
     const tasks: ActiveBackgroundTask[] = [
       {
         id: 'task-1',
@@ -62,29 +62,50 @@ describe('BackgroundTaskIndicator', () => {
       },
     ];
 
-    render(<BackgroundTaskIndicator tasks={tasks} onAbort={onAbort} />);
+    render(<BackgroundTaskIndicator tasks={tasks} onStopTasks={onStopTasks} />);
 
-    const abortButton = screen.getByTitle('中止后台任务');
-    expect(abortButton).toBeTruthy();
-    abortButton.click();
-    expect(onAbort).toHaveBeenCalledTimes(1);
+    screen.getByTitle('中止后台任务').click();
+    expect(onStopTasks).toHaveBeenLastCalledWith();
+
+    screen.getByTitle('停止此任务').click();
+    expect(onStopTasks).toHaveBeenLastCalledWith('task-1');
   });
 
-  const runningBash: ActiveBackgroundTask[] = [{ id: 'task-1', toolName: 'Bash', command: 'npm run dev', startedAt: Date.now() }];
+  it('reveals the task whose label is clicked, and stopping it does not reveal', () => {
+    // The label region is the jump to the transcript card; the stop button
+    // beside it must not trigger that jump.
+    const onRevealTask = vi.fn();
+    const onStopTasks = vi.fn();
+    const task: ActiveBackgroundTask = {
+      id: 'toolu_spawn_1',
+      taskId: 'task-1',
+      toolName: 'Agent',
+      description: 'Audit the repo',
+      startedAt: Date.now(),
+    };
 
-  it('says a message waits for the tasks when the background work holds the input back', () => {
-    render(<BackgroundTaskIndicator tasks={runningBash} queuesInput />);
-    expect(screen.getByText('Messages are queued and sent when the tasks finish')).toBeTruthy();
+    render(
+      <BackgroundTaskIndicator tasks={[task]} onRevealTask={onRevealTask} onStopTasks={onStopTasks} />,
+    );
+
+    screen.getByTitle('定位到对应卡片').click();
+    expect(onRevealTask).toHaveBeenCalledTimes(1);
+    expect(onRevealTask).toHaveBeenCalledWith(task);
+    expect(onStopTasks).not.toHaveBeenCalled();
+
+    screen.getByTitle('停止此任务').click();
+    expect(onStopTasks).toHaveBeenCalledWith('toolu_spawn_1');
+    expect(onRevealTask).toHaveBeenCalledTimes(1);
   });
 
-  it('says a message waits for the turn while a reply is streaming', () => {
-    render(<BackgroundTaskIndicator tasks={runningBash} queuesInput isReplyInFlight />);
-    expect(screen.getByText('Messages are queued and sent when this turn ends')).toBeTruthy();
-  });
+  it('keeps rows inert when there is nothing to reveal', () => {
+    const tasks: ActiveBackgroundTask[] = [
+      { id: 'task-1', toolName: 'Bash', command: 'pnpm run build', startedAt: Date.now() },
+    ];
 
-  it('says a message can go out now when the background work does not hold the input back', () => {
-    render(<BackgroundTaskIndicator tasks={runningBash} queuesInput={false} />);
-    expect(screen.getByText('Send anytime; background tasks keep running')).toBeTruthy();
-    expect(screen.queryByText(/queued/)).toBeNull();
+    render(<BackgroundTaskIndicator tasks={tasks} />);
+
+    expect(screen.queryByTitle('定位到对应卡片')).toBeNull();
+    expect(screen.getByText(/pnpm run build/)).toBeTruthy();
   });
 });

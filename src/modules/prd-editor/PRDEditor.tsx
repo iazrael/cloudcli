@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from 'react';
 
-import type { MarkdownImageContext, Project,PrdEditorFile } from '@/shared/types';
+import type { Project,PrdEditorFile } from '@/shared/types';
 import { saveOrShareBlob } from '@/shared/utils';
 import { usePrdDocument } from '@/modules/prd-editor/hooks/usePrdDocument';
 import { usePrdKeyboardShortcuts } from '@/modules/prd-editor/hooks/usePrdKeyboardShortcuts';
@@ -48,17 +48,6 @@ export default function PRDEditor({
   });
 
   const isExistingFile = useMemo(() => !isNewFile || Boolean(file?.isExisting), [file?.isExisting, isNewFile]);
-
-  // A PRD is stored in the project's TaskMaster docs folder, so a relative
-  // image path inside one resolves from there rather than from the project root.
-  const markdownImageContext = useMemo<MarkdownImageContext>(
-    () => ({
-      projectId: project?.projectId,
-      baseDir: projectPath ? `${projectPath.replace(/\\/g, '/')}/.taskmaster/docs` : undefined,
-      isExternal: false,
-    }),
-    [project?.projectId, projectPath],
-  );
 
   const { savePrd, saving, saveSuccess } = usePrdSave({
     projectId: project?.projectId,
@@ -128,7 +117,6 @@ export default function PRDEditor({
         onDownload={handleDownload}
         onClose={onClose}
         loadError={loadError}
-        markdownImageContext={markdownImageContext}
       />
 
       <OverwriteConfirmModal

@@ -1,4 +1,4 @@
-import { Bell, Bot, GitBranch, Info, Key, ListChecks, MessageSquare, Mic, MonitorPlay, Palette, Puzzle, Stethoscope } from 'lucide-react';
+import { Bell, Bot, Clock, GitBranch, Info, Key, ListChecks, MessageSquare, Mic, MonitorPlay, Palette, Puzzle, Stethoscope } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { cn } from '@/shared/utils';
@@ -26,6 +26,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'voice', labelKey: 'mainTabs.voice', fallback: 'Voice', icon: Mic },
   { id: 'tasks', labelKey: 'mainTabs.tasks', fallback: 'Tasks', icon: ListChecks },
   { id: 'browser', labelKey: 'mainTabs.browser', fallback: 'Browser', icon: MonitorPlay },
+  { id: 'scheduled', labelKey: 'mainTabs.scheduled', fallback: 'Scheduled tasks', icon: Clock },
   { id: 'plugins', labelKey: 'mainTabs.plugins', fallback: 'Plugins', icon: Puzzle },
   { id: 'notifications', labelKey: 'mainTabs.notifications', fallback: 'Notifications', icon: Bell },
   { id: 'diagnostics', labelKey: 'mainTabs.diagnostics', fallback: 'Diagnostics', icon: Stethoscope },
@@ -38,8 +39,8 @@ export default function SettingsSidebar({ activeTab, onChange }: SettingsSidebar
 
   return (
     <>
-      {/* Desktop sidebar */}
-      <aside className="hidden w-56 flex-shrink-0 border-r border-border bg-muted/30 md:flex md:flex-col">
+      {/* Desktop sidebar — scrolls on its own once the nav outgrows a short window. */}
+      <aside className="scrollbar-thin hidden min-h-0 w-56 flex-shrink-0 overflow-y-auto overscroll-contain border-r border-border bg-muted/30 [-webkit-overflow-scrolling:touch] md:flex md:flex-col">
         <nav className="flex flex-col gap-1 p-3">
           {NAV_ITEMS.map((item) => {
             const Icon = item.icon;
@@ -66,7 +67,7 @@ export default function SettingsSidebar({ activeTab, onChange }: SettingsSidebar
 
       {/* Mobile horizontal nav — pill bar */}
       <div className="flex-shrink-0 border-b border-border px-3 py-2 md:hidden">
-        <PillBar className="scrollbar-hide w-full overflow-x-auto">
+        <PillBar className="scrollbar-hide w-full overflow-x-auto overscroll-x-contain [-webkit-overflow-scrolling:touch]">
           {NAV_ITEMS.map((item) => {
             const Icon = item.icon;
 

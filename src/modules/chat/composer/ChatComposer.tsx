@@ -10,12 +10,14 @@ import type {
   RefObject,
   TouchEvent,
 } from 'react';
-import { PaperclipIcon, MessageSquareIcon, XIcon, Loader2, ArrowUpIcon, PencilIcon } from 'lucide-react';
+import { PaperclipIcon, MessageSquareIcon, XIcon, Loader2, ArrowUpIcon, PencilIcon, CircleHelpIcon } from 'lucide-react';
+
+import { Tooltip } from '@/shared/ui/Tooltip';
 
 import { useVoiceInput } from '@/modules/chat/hooks/useVoiceInput';
 import { useVoiceAvailable } from '@/modules/chat/hooks/useVoiceAvailable';
 import type { QueuedDraft } from '@/modules/chat/hooks/useChatComposerState';
-import type { LLMProvider, SessionActivity, ScheduledMessage } from '@/shared/types';
+import type { LLMProvider, SessionActivity, ScheduledJob, ScheduledMessage } from '@/shared/types';
 import type { PendingPermissionRequest, PermissionMode } from '@/shared/types';
 import type { ProviderModelOption } from '@/shared/types';
 import {
@@ -35,6 +37,7 @@ import ComposerAttachment from '@/modules/chat/composer/ComposerAttachment';
 import VoiceInputButton from '@/modules/chat/composer/VoiceInputButton';
 import PermissionRequestsBanner from '@/modules/chat/composer/PermissionRequestsBanner';
 import TokenUsageSummary from '@/modules/chat/composer/TokenUsageSummary';
+import { ContextUsageBar } from '@/modules/chat/composer/ContextUsageBar';
 import QueuedMessageCard from '@/modules/chat/composer/QueuedMessageCard';
 import { ScheduleMessagePopover } from '@/modules/chat/composer/ScheduleMessagePopover';
 import { ScheduledMessageList } from '@/modules/chat/composer/ScheduledMessageList';
@@ -67,10 +70,7 @@ type ChatComposerProps = {
   handleGrantToolPermission: (suggestion: { entry: string; toolName: string }) => { success: boolean };
   activity: SessionActivity | null;
   isLoading: boolean;
-  /** Whether Stop can act now; busy work nothing can stop (a ZCode agent past its turn) keeps the send button. */
-  canAbortSession: boolean;
   onAbortSession: () => void;
-  onAbortBackgroundTasks: () => void;
   permissionMode: PermissionMode | string;
   availablePermissionModes: (PermissionMode | string)[];
   onSelectPermissionMode: (mode: PermissionMode | string) => void;
@@ -103,12 +103,31 @@ type ChatComposerProps = {
   isDragActive: boolean;
   queuedDraft: QueuedDraft | null;
   onEditQueuedDraft: () => void;
+  /** True while a `/compact` waits for the running turn to end before it runs. */
+  pendingCompact: boolean;
+  onCancelPendingCompact: () => void;
   /** True while the composer is editing an already-sent message (edit & resend). */
   isEditingSentMessage: boolean;
+  /** Whether editing also reverts the files the agent changed, so the banner can say which. */
+  editRevertsFiles: boolean;
   onCancelEditMessage: () => void;
   scheduledMessages: ScheduledMessage[];
+  /** Recurring jobs bound to this session, shown above the input. */
+  scheduledJobs: ScheduledJob[];
+  /** Whether the scheduled-tasks feature is on; hides the repeat entry when off. */
+  scheduledJobsEnabled: boolean;
   onScheduleMessage: (scheduledFor: Date) => void;
+  onScheduleTask: (schedule: {
+    cronExpression?: string;
+    runAt?: string;
+    timezone: string;
+    /** Days before the bound session is rotated; omitted never rotates. */
+    rotateAfterDays?: number;
+  }) => void;
   onCancelScheduledMessage: (id: string) => void;
+  onDeleteScheduledJob: (id: string) => void;
+  /** Whether the current provider schedules inside its own session (hint only). */
+  supportsNativeScheduling: boolean;
   onDeleteQueuedDraft: () => void;
   attachedFiles: File[];
   onRemoveAttachment: (index: number) => void;
@@ -144,23 +163,17 @@ type ChatComposerProps = {
   isTextareaExpanded: boolean;
   sendByCtrlEnter?: boolean;
   backgroundTasks?: ActiveBackgroundTask[];
+  /** Stops the task launched by `toolUseId`, or all of them when omitted. */
+  onStopBackgroundTasks?: (toolUseId?: string) => void;
+  /** Reveals a running task's card in the transcript. */
+  onRevealBackgroundTask?: (task: ActiveBackgroundTask) => void;
   hasActiveBackgroundTasks?: boolean;
-  /** Whether a new message has to be queued; see `isInputBlocked` in useChatSessionState. */
-  isInputBlocked?: boolean;
-  /** A reply is streaming, so anything sent waits for this turn to end. */
-  isReplyInFlight?: boolean;
-  /** Present only while a force send can be taken: the turn is over and only background work is waited on. */
+  /** Running background work holds new messages in the queue (see `inputWhileBusy`). */
+  backgroundWorkQueuesInput?: boolean;
+  /** The session is busy with work a new message must wait for, so sending queues it. */
+  queuesInput?: boolean;
   onForceSendQueuedDraft?: () => void;
 }
-
-/**
- * Whether the composer offers the "send later" (定时发送) trigger.
- *
- * The popover, the scheduling hook and the server-side dispatcher all live in
- * this same flow, so messages scheduled before any switch-off still show in
- * the list above the input and are still sent on time.
- */
-const SHOW_SCHEDULE_TRIGGER = true;
 
 function ChatComposer({
   pendingPermissionRequests,
@@ -168,9 +181,7 @@ function ChatComposer({
   handleGrantToolPermission,
   activity,
   isLoading,
-  canAbortSession,
   onAbortSession,
-  onAbortBackgroundTasks,
   permissionMode,
   availablePermissionModes,
   onSelectPermissionMode,
@@ -196,11 +207,19 @@ function ChatComposer({
   isDragActive,
   queuedDraft,
   onEditQueuedDraft,
+  pendingCompact,
+  onCancelPendingCompact,
   isEditingSentMessage,
+  editRevertsFiles,
   onCancelEditMessage,
   scheduledMessages,
+  scheduledJobs,
+  scheduledJobsEnabled,
   onScheduleMessage,
+  onScheduleTask,
   onCancelScheduledMessage,
+  onDeleteScheduledJob,
+  supportsNativeScheduling,
   onDeleteQueuedDraft,
   attachedFiles,
   onRemoveAttachment,
@@ -236,9 +255,11 @@ function ChatComposer({
   isTextareaExpanded,
   sendByCtrlEnter = false,
   backgroundTasks = [],
+  onStopBackgroundTasks,
+  onRevealBackgroundTask,
   hasActiveBackgroundTasks = false,
-  isInputBlocked,
-  isReplyInFlight = false,
+  backgroundWorkQueuesInput = false,
+  queuesInput = false,
   onForceSendQueuedDraft,
 }: ChatComposerProps) {
   const { t } = useTranslation('chat');
@@ -306,14 +327,11 @@ function ChatComposer({
   const hasActivityIndicator = Boolean(activity && !hasPendingPermissions);
 
   const hasQueuedDraft = Boolean(queuedDraft);
-  const isBusy = isInputBlocked ?? (isLoading || Boolean(hasActiveBackgroundTasks));
   const hasDraftContent = Boolean(input.trim() || attachedFiles.length > 0);
-  // The button is Stop only when stopping can do something. Otherwise it stays
-  // the send button: disabled while the input is empty, queueing once typed.
-  // A typed message that nothing holds back (Claude's background phase) is
-  // sent by this button, so it is Send rather than Stop then.
-  const offersStop = isLoading && canAbortSession && !(hasDraftContent && !isBusy);
-  const canQueueDraft = isBusy && hasDraftContent;
+  const canQueueDraft = queuesInput && hasDraftContent;
+  // The engine takes a message mid-turn: typed content is sent now, and the
+  // button only turns back into stop once the input is empty.
+  const canSendDuringTurn = isLoading && !queuesInput && hasDraftContent;
   const submitHint = canQueueDraft
     ? hasQueuedDraft
       ? sendByCtrlEnter
@@ -326,7 +344,9 @@ function ChatComposer({
             defaultValue: t('input.hintText.queue', { defaultValue: 'Enter to queue your next message' }).replace(/^Enter/, 'Ctrl+Enter'),
           })
         : t('input.hintText.queue', { defaultValue: 'Enter to queue your next message' })
-    : null;
+    : sendByCtrlEnter
+      ? t('input.hintText.ctrlEnter')
+      : t('input.hintText.enter');
   const sendButtonLabel = `${t('input.send')} (${sendByCtrlEnter ? 'Ctrl+Enter' : 'Enter'})`;
   const submitAriaLabel = isSubmitting
     ? t('input.sending')
@@ -334,7 +354,7 @@ function ChatComposer({
     ? hasQueuedDraft
       ? t('input.queue.update', { defaultValue: 'Update queued message' })
       : t('input.queue.sendNext', { defaultValue: 'Queue next message' })
-    : offersStop
+    : isLoading && !canSendDuringTurn
       ? t('input.stop')
       : sendButtonLabel;
 
@@ -360,7 +380,9 @@ function ChatComposer({
 
       <ScheduledMessageList
         scheduledMessages={scheduledMessages}
+        scheduledJobs={scheduledJobs}
         onCancel={onCancelScheduledMessage}
+        onDeleteJob={onDeleteScheduledJob}
       />
 
       {isEditingSentMessage && (
@@ -369,7 +391,9 @@ function ChatComposer({
           <span className="min-w-0 flex-1">
             {t('composer.editing.title')}
             {' — '}
-            <span className="text-muted-foreground">{t('composer.editing.filesNotReverted')}</span>
+            <span className="text-muted-foreground">
+              {t(editRevertsFiles ? 'composer.editing.filesReverted' : 'composer.editing.filesNotReverted')}
+            </span>
           </span>
           <button
             type="button"
@@ -384,10 +408,31 @@ function ChatComposer({
       {hasActiveBackgroundTasks && backgroundTasks.length > 0 && (
         <BackgroundTaskIndicator
           tasks={backgroundTasks}
-          queuesInput={isBusy}
-          isReplyInFlight={isReplyInFlight}
-          onAbort={backgroundTasks.every((task) => task.taskId) ? onAbortBackgroundTasks : undefined}
+          onStopTasks={onStopBackgroundTasks}
+          onRevealTask={onRevealBackgroundTask}
         />
+      )}
+
+      {pendingCompact && (
+        <div className="settings-content-enter mx-auto mb-2 flex max-w-[54.25rem] items-center gap-2 rounded-xl border border-dashed border-primary/25 bg-primary/[0.04] px-3 py-2 text-xs text-foreground">
+          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary/60" aria-hidden />
+          <span className="min-w-0 flex-1">
+            <span className="font-medium uppercase tracking-wide text-primary/70">
+              {t('input.compactQueued.label', { defaultValue: 'Compaction queued' })}
+            </span>
+            <span className="text-muted-foreground">
+              {' · '}
+              {t('input.compactQueued.willRun', { defaultValue: 'Will compact when this turn finishes' })}
+            </span>
+          </span>
+          <button
+            type="button"
+            onClick={onCancelPendingCompact}
+            className="shrink-0 rounded-md px-2 py-1 font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          >
+            {t('input.compactQueued.cancel', { defaultValue: 'Cancel' })}
+          </button>
+        </div>
       )}
 
       {queuedDraft && (
@@ -398,8 +443,8 @@ function ChatComposer({
           }
           onEdit={onEditQueuedDraft}
           onDelete={onDeleteQueuedDraft}
-          onForceSend={onForceSendQueuedDraft}
-          isWaitingForBackgroundTasks={Boolean(hasActiveBackgroundTasks) && !isReplyInFlight}
+          onForceSend={backgroundWorkQueuesInput ? onForceSendQueuedDraft : undefined}
+          isWaitingForBackgroundTasks={backgroundWorkQueuesInput}
         />
       )}
 
@@ -447,13 +492,15 @@ function ChatComposer({
 
         <PromptInput
           onSubmit={onSubmit as (event: FormEvent<HTMLFormElement>) => void}
-          status={offersStop ? 'streaming' : 'ready'}
+          status={isLoading ? 'streaming' : 'ready'}
           className={[
             isTextareaExpanded ? 'chat-input-expanded' : '',
             hasActivityIndicator ? 'rounded-t-none' : '',
           ].filter(Boolean).join(' ')}
           {...getRootProps()}
         >
+          <ContextUsageBar usage={tokenBudget} onClick={onShowTokenUsage} />
+
           {isDragActive && (
             <div className="absolute inset-0 z-50 flex items-center justify-center rounded-2xl border-2 border-dashed border-primary/50 bg-primary/15">
               <div className="rounded-xl border border-border/30 bg-card p-4 shadow-lg">
@@ -527,6 +574,8 @@ function ChatComposer({
               <VoiceInputButton state={voiceState} onToggle={voiceToggle} errorMsg={voiceError} />
             )}
 
+            {/* Phones get the bare token count (no icon/percentage) so this row
+                stays inside ~320px; ContextUsageBar shows the window fill. */}
             <TokenUsageSummary usage={tokenBudget} onClick={onShowTokenUsage} />
 
             <PromptInputButton
@@ -557,18 +606,30 @@ function ChatComposer({
           </PromptInputTools>
 
           <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
-            {submitHint && (
-              <div className="hidden text-xs text-muted-foreground/50 transition-opacity duration-200 lg:block">
-                {submitHint}
-              </div>
-            )}
+            <Tooltip
+              content={
+                <div className="flex flex-col gap-0.5">
+                  {submitHint.split(' • ').map((line) => (
+                    <span key={line}>{line}</span>
+                  ))}
+                </div>
+              }
+            >
+              <span
+                aria-label={submitHint}
+                className="flex h-6 w-6 cursor-help items-center justify-center text-muted-foreground/50 transition-colors hover:text-muted-foreground"
+              >
+                <CircleHelpIcon className="h-3.5 w-3.5" />
+              </span>
+            </Tooltip>
 
-            {SHOW_SCHEDULE_TRIGGER && (
-              <ScheduleMessagePopover
-                disabled={!input.trim()}
-                onSchedule={onScheduleMessage}
-              />
-            )}
+            <ScheduleMessagePopover
+              disabled={!input.trim()}
+              onSchedule={onScheduleMessage}
+              onScheduleTask={onScheduleTask}
+              supportsNativeScheduling={supportsNativeScheduling}
+              recurringEnabled={scheduledJobsEnabled}
+            />
 
             <ComposerModelMenu
               effort={effort}
@@ -591,12 +652,12 @@ function ChatComposer({
 
             <PromptInputSubmit
               onClick={
-                canQueueDraft
+                canQueueDraft || canSendDuringTurn
                   ? (e: MouseEvent<HTMLButtonElement>) => {
                       e.preventDefault();
                       onSubmit(e);
                     }
-                  : offersStop
+                  : isLoading
                     ? onAbortSession
                     : isRecording
                       ? (e: MouseEvent<HTMLButtonElement>) => {
@@ -608,7 +669,7 @@ function ChatComposer({
               disabled={
                 isSubmitting
                   ? true
-                  : offersStop
+                  : isLoading
                     ? false
                     : isRecording
                       ? false
@@ -622,7 +683,7 @@ function ChatComposer({
             >
               {isSubmitting || isTranscribing ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
-              ) : canQueueDraft ? (
+              ) : canQueueDraft || canSendDuringTurn ? (
                 <ArrowUpIcon className="h-4 w-4" />
               ) : undefined}
             </PromptInputSubmit>

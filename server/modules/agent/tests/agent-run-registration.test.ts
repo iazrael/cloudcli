@@ -16,6 +16,10 @@ import { createNormalizedMessage } from '@/shared/utils.js';
 
 import { createAgentRouter } from '../agent.routes.js';
 
+// Resolved so the route's own `path.resolve` agrees with it on Windows too,
+// where a rooted POSIX path gains the current drive letter.
+const PROJECT_PATH = path.resolve('/home/test/project');
+
 /**
  * `POST /api/agent` runs a provider for an API-key caller. Until now it wrote
  * the run's events straight to the HTTP response and nothing else knew: the
@@ -124,7 +128,7 @@ test('an API run is registered like a chat send: listed while running, streamed 
   await withIsolatedDatabase(async () => {
     const runtime = createHeldRuntime();
     await withAgentServer(createDependencies(runtime.queryClaude), async (baseUrl) => {
-      const responsePromise = post(baseUrl, { projectPath: '/home/test/project', message: 'Run it' });
+      const responsePromise = post(baseUrl, { projectPath: PROJECT_PATH, message: 'Run it' });
       // Wait for the runtime to be entered.
       for (let i = 0; i < 50 && runtime.seen.length === 0; i += 1) {
         await new Promise((resolve) => { setTimeout(resolve, 20); });
@@ -160,14 +164,14 @@ test('a second API request on a session mid-run is refused with 409, as the chat
   await withIsolatedDatabase(async () => {
     const runtime = createHeldRuntime();
     await withAgentServer(createDependencies(runtime.queryClaude), async (baseUrl) => {
-      const first = post(baseUrl, { projectPath: '/home/test/project', message: 'Run it' });
+      const first = post(baseUrl, { projectPath: PROJECT_PATH, message: 'Run it' });
       for (let i = 0; i < 50 && runtime.seen.length === 0; i += 1) {
         await new Promise((resolve) => { setTimeout(resolve, 20); });
       }
       const [running] = chatRunRegistry.listRunningRuns();
       assert.ok(running);
 
-      const second = await post(baseUrl, { projectPath: '/home/test/project', message: 'Again', sessionId: running.sessionId, stream: false });
+      const second = await post(baseUrl, { projectPath: PROJECT_PATH, message: 'Again', sessionId: running.sessionId, stream: false });
       assert.equal(second.status, 409);
       assert.equal(runtime.seen.length, 1, 'the provider is not entered twice');
 
@@ -182,7 +186,7 @@ test('a non-streaming API run answers with the app session id and is off the lis
     const runtime = createHeldRuntime();
     runtime.release();
     await withAgentServer(createDependencies(runtime.queryClaude), async (baseUrl) => {
-      const response = await post(baseUrl, { projectPath: '/home/test/project', message: 'Run it', stream: false });
+      const response = await post(baseUrl, { projectPath: PROJECT_PATH, message: 'Run it', stream: false });
       assert.equal(response.status, 200);
       const body = await response.json() as { success: boolean; sessionId: string };
       assert.equal(body.success, true);
@@ -194,22 +198,22 @@ test('a non-streaming API run answers with the app session id and is off the lis
 
 test('an API run continues a session the caller names by either id, and refuses one that does not exist', async () => {
   await withIsolatedDatabase(async () => {
-    sessionsDb.createAppSession('app-existing', 'claude', '/home/test/project', 'Existing');
+    sessionsDb.createAppSession('app-existing', 'claude', PROJECT_PATH, 'Existing');
     sessionsDb.assignProviderSessionId('app-existing', 'native-existing');
     const runtime = createHeldRuntime();
     runtime.release();
     await withAgentServer(createDependencies(runtime.queryClaude), async (baseUrl) => {
-      const byAppId = await post(baseUrl, { projectPath: '/home/test/project', message: 'More', sessionId: 'app-existing', stream: false });
+      const byAppId = await post(baseUrl, { projectPath: PROJECT_PATH, message: 'More', sessionId: 'app-existing', stream: false });
       assert.equal(byAppId.status, 200);
       assert.equal((await byAppId.json() as { sessionId: string }).sessionId, 'app-existing');
 
       // A caller that stored the provider-native id an earlier response gave it.
-      const byNativeId = await post(baseUrl, { projectPath: '/home/test/project', message: 'More', sessionId: 'native-existing', stream: false });
+      const byNativeId = await post(baseUrl, { projectPath: PROJECT_PATH, message: 'More', sessionId: 'native-existing', stream: false });
       assert.equal(byNativeId.status, 200);
       assert.equal((await byNativeId.json() as { sessionId: string }).sessionId, 'app-existing');
       assert.deepEqual(runtime.seen.map((call) => call.sessionId), ['app-existing', 'app-existing']);
 
-      const unknown = await post(baseUrl, { projectPath: '/home/test/project', message: 'More', sessionId: 'nope', stream: false });
+      const unknown = await post(baseUrl, { projectPath: PROJECT_PATH, message: 'More', sessionId: 'nope', stream: false });
       assert.equal(unknown.status, 404);
       assert.equal(runtime.seen.length, 2);
     });
@@ -220,7 +224,7 @@ test('a runtime that throws leaves no run behind', async () => {
   await withIsolatedDatabase(async () => {
     const queryClaude: RunFunction = async () => { throw new Error('provider exploded'); };
     await withAgentServer(createDependencies(queryClaude), async (baseUrl) => {
-      const response = await post(baseUrl, { projectPath: '/home/test/project', message: 'Run it', stream: false });
+      const response = await post(baseUrl, { projectPath: PROJECT_PATH, message: 'Run it', stream: false });
       assert.equal(response.status, 500);
       assert.deepEqual(chatRunRegistry.listRunningRuns(), [], 'the safety net completes the run');
     });
@@ -233,7 +237,7 @@ test('a sessionId that is not a string is refused, not bound to a query', async 
   await withIsolatedDatabase(async () => {
     const runtime = createHeldRuntime();
     await withAgentServer(createDependencies(runtime.queryClaude), async (baseUrl) => {
-      const response = await post(baseUrl, { projectPath: '/home/test/project', message: 'Run', sessionId: { $ne: null }, stream: false });
+      const response = await post(baseUrl, { projectPath: PROJECT_PATH, message: 'Run', sessionId: { $ne: null }, stream: false });
       assert.equal(response.status, 400);
       assert.equal(runtime.seen.length, 0);
     });
@@ -242,7 +246,7 @@ test('a sessionId that is not a string is refused, not bound to a query', async 
 
 test('a continued session runs under its own provider and project, as a chat send does', async () => {
   await withIsolatedDatabase(async () => {
-    sessionsDb.createAppSession('app-codex', 'codex', '/home/test/project', 'Codex one');
+    sessionsDb.createAppSession('app-codex', 'codex', PROJECT_PATH, 'Codex one');
     const claudeCalls: unknown[] = [];
     const codexCalls: unknown[] = [];
     const dependencies = createDependencies(async (_command, options, writer) => {
@@ -255,12 +259,12 @@ test('a continued session runs under its own provider and project, as a chat sen
     };
     await withAgentServer(dependencies, async (baseUrl) => {
       // No provider named: the row's, not the default.
-      const continued = await post(baseUrl, { projectPath: '/home/test/project', message: 'More', sessionId: 'app-codex', stream: false });
+      const continued = await post(baseUrl, { projectPath: PROJECT_PATH, message: 'More', sessionId: 'app-codex', stream: false });
       assert.equal(continued.status, 200);
       assert.deepEqual([claudeCalls.length, codexCalls.length], [0, 1]);
 
       // Another provider named: refused, not re-homed.
-      const mismatched = await post(baseUrl, { projectPath: '/home/test/project', message: 'More', sessionId: 'app-codex', provider: 'claude', stream: false });
+      const mismatched = await post(baseUrl, { projectPath: PROJECT_PATH, message: 'More', sessionId: 'app-codex', provider: 'claude', stream: false });
       assert.equal(mismatched.status, 400);
       assert.equal(claudeCalls.length, 0);
 
@@ -280,14 +284,14 @@ test('a busy session is refused before anything is cloned', async () => {
     let clones = 0;
     dependencies.spawnProcess = (() => { clones += 1; throw new Error('no clone expected'); }) as unknown as AgentDependencies['spawnProcess'];
     await withAgentServer(dependencies, async (baseUrl) => {
-      const first = post(baseUrl, { projectPath: '/home/test/project', message: 'Run it' });
+      const first = post(baseUrl, { projectPath: PROJECT_PATH, message: 'Run it' });
       for (let i = 0; i < 50 && runtime.seen.length === 0; i += 1) {
         await new Promise((resolve) => { setTimeout(resolve, 20); });
       }
       const [running] = chatRunRegistry.listRunningRuns();
       assert.ok(running);
 
-      const retry = await post(baseUrl, { githubUrl: 'https://github.com/owner/repo.git', projectPath: '/home/test/project', message: 'Again', sessionId: running.sessionId, stream: false });
+      const retry = await post(baseUrl, { githubUrl: 'https://github.com/owner/repo.git', projectPath: PROJECT_PATH, message: 'Again', sessionId: running.sessionId, stream: false });
       assert.equal(retry.status, 409);
       assert.equal(clones, 0, 'the refusal comes before the clone step');
 
@@ -306,7 +310,7 @@ test('a run a tab aborted ends without branching or opening a PR, and says so', 
     });
     dependencies.spawnProcess = (() => { gitCalls += 1; throw new Error('git should not run after an abort'); }) as unknown as AgentDependencies['spawnProcess'];
     await withAgentServer(dependencies, async (baseUrl) => {
-      const responsePromise = post(baseUrl, { projectPath: '/home/test/project', message: 'Run it', createBranch: true, stream: false });
+      const responsePromise = post(baseUrl, { projectPath: PROJECT_PATH, message: 'Run it', createBranch: true, stream: false });
       for (let i = 0; i < 50 && runtime.seen.length === 0; i += 1) {
         await new Promise((resolve) => { setTimeout(resolve, 20); });
       }
@@ -338,7 +342,7 @@ test('a non-streaming run answers with the assistant\'s replies, its token usage
       writer.send(createNormalizedMessage({ kind: 'complete', provider: 'claude', sessionId: 'native-7', exitCode: 0 }));
     });
     await withAgentServer(dependencies, async (baseUrl) => {
-      const response = await post(baseUrl, { projectPath: '/home/test/project', message: 'ping', stream: false });
+      const response = await post(baseUrl, { projectPath: PROJECT_PATH, message: 'ping', stream: false });
       const body = await response.json() as { providerSessionId: string; messages: Array<{ content: string }>; tokens: Record<string, number> };
       assert.equal(body.providerSessionId, 'native-7');
       assert.deepEqual(body.messages.map((message) => message.content), ['pong']);

@@ -9,11 +9,11 @@
 
 import fs from 'node:fs';
 
-import { hasKeychainItem } from '@/modules/providers/shared/credentials/macos-keychain.js';
 import type { IProviderAuth } from '@/shared/interfaces.js';
 import type { ProviderAuthStatus, ProviderQuotaData } from '@/shared/types.js';
 import { extractEmailFromJwt } from '@/shared/utils.js';
 
+import { hasStoredAntigravityCredential } from './antigravity-credential-store.js';
 import { getAntigravityOauthTokenPath } from './antigravity-data-root.js';
 import { getEngineVersion, tryResolveEnginePath } from './antigravity-engine-path.js';
 import { fetchAntigravityQuota } from './antigravity-quota.provider.js';
@@ -122,32 +122,16 @@ function opaqueCredential(): AntigravityTokenInfo {
 }
 
 /**
- * Detects the OAuth credentials agy keeps in the macOS login keychain
- * (service `gemini`, account `antigravity`). agy writes the token file on a
- * completed login, but later refreshes update only the keychain — and a
- * failed refresh can clear the file while the keychain copy stays valid — so
- * the file alone under-reports authenticated state and traps the UI in its
- * login prompt.
- * `CLOUDCLI_ANTIGRAVITY_SKIP_KEYCHAIN=1` disables the probe for hermetic tests.
- */
-function hasKeychainCredentials(): boolean {
-  return hasKeychainItem({
-    service: 'gemini',
-    account: 'antigravity',
-    extraSkipEnvVars: ['CLOUDCLI_ANTIGRAVITY_SKIP_KEYCHAIN'],
-  });
-}
-
-/**
  * Reads and classifies the agy OAuth credential. Returns `null` only when agy
- * has no credentials anywhere (never logged in, or the keychain entry was
+ * has no credentials anywhere (never logged in, or the stored credential was
  * removed too).
  *
  * The token file written by a completed `agy` login counts as authenticated;
- * so does a macOS keychain credential when the file is gone, because agy
- * silently refreshes from the keychain on its next run. `installation_id` and
- * `settings.json` are created on first launch regardless of login state, so
- * they must never mark the provider as authenticated.
+ * so does a credential-store login (macOS keychain or Windows Credential
+ * Manager) when the file is gone, because agy silently refreshes from the
+ * store on its next run. `installation_id` and `settings.json` are created on
+ * first launch regardless of login state, so they must never mark the
+ * provider as authenticated.
  */
 function readAntigravityCredential(): AntigravityTokenInfo | null {
   const tokenFile = getAntigravityOauthTokenPath();
@@ -160,8 +144,8 @@ function readAntigravityCredential(): AntigravityTokenInfo | null {
     }
   }
 
-  if (hasKeychainCredentials()) {
-    // Keychain-only credentials are live but opaque: expiry and email stay
+  if (hasStoredAntigravityCredential()) {
+    // Store-only credentials are live but opaque: expiry and email stay
     // inside the item agy owns, and `isCredentialValid` treats an unknown
     // expiry as valid so an existing user is never locked out.
     return opaqueCredential();

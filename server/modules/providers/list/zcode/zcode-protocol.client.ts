@@ -30,7 +30,7 @@ import { EngineSupervisor } from './zcode-engine-supervisor.js';
 import { RequestRouter } from './zcode-request-router.js';
 import {
   buildZCodeAccountSyncPayload,
-  findBuiltinConfig,
+  findActiveZCodeBuiltinConfig,
 } from './zcode-provider-config.js';
 
 export {
@@ -45,7 +45,7 @@ export {
 } from './zcode-codec.js';
 
 type ProtocolClientDeps = {
-  findBuiltinConfig?: typeof findBuiltinConfig;
+  findActiveBuiltinConfig?: typeof findActiveZCodeBuiltinConfig;
   buildZCodeAccountSyncPayload?: typeof buildZCodeAccountSyncPayload;
 };
 
@@ -61,7 +61,7 @@ export class ZCodeProtocolClient {
 
   private readonly supervisor: EngineSupervisor;
   private readonly router: RequestRouter;
-  private readonly findBuiltinConfigFn: typeof findBuiltinConfig;
+  private readonly findActiveBuiltinConfigFn: typeof findActiveZCodeBuiltinConfig;
   private readonly buildAccountSyncPayloadFn: typeof buildZCodeAccountSyncPayload;
 
   private syncedProcessId: number | null = null;
@@ -88,7 +88,7 @@ export class ZCodeProtocolClient {
       ensureRunning: () => this.supervisor.ensureRunning(),
       writeLine: (line: string) => this.supervisor.writeLine(line),
     });
-    this.findBuiltinConfigFn = deps?.findBuiltinConfig ?? findBuiltinConfig;
+    this.findActiveBuiltinConfigFn = deps?.findActiveBuiltinConfig ?? findActiveZCodeBuiltinConfig;
     this.buildAccountSyncPayloadFn = deps?.buildZCodeAccountSyncPayload ?? buildZCodeAccountSyncPayload;
 
     this.supervisor.onLine((line) => this.router.handleLine(line));
@@ -134,7 +134,7 @@ export class ZCodeProtocolClient {
         }
 
         const enginePath = this.supervisor.getEnginePath();
-        const builtinConfigPath = enginePath ? this.findBuiltinConfigFn(enginePath) : null;
+        const builtinConfigPath = enginePath ? this.findActiveBuiltinConfigFn(enginePath) : null;
         if (!builtinConfigPath) {
           if (pid !== null) this.syncedProcessId = pid;
           return;

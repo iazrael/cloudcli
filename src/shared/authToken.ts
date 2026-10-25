@@ -106,3 +106,23 @@ export const storeAuthToken = (token: unknown): boolean => {
   }
   return true;
 };
+
+/**
+ * Stores a token taken from an `X-Refreshed-Token` response header. Headers can
+ * be stale (a 304 replays the cached 200's headers), so the token must decode,
+ * be unexpired, and be no older than the stored one; anything else is ignored
+ * without touching the current session.
+ */
+export const storeRefreshedAuthToken = (token: unknown): boolean => {
+  const claims = readTokenClaims(token);
+  if (!claims || isAuthTokenExpired(token)) {
+    return false;
+  }
+
+  const currentClaims = readTokenClaims(localStorage.getItem('auth-token'));
+  if (currentClaims && claims.issuedAt < currentClaims.issuedAt) {
+    return false;
+  }
+
+  return storeAuthToken(token);
+};

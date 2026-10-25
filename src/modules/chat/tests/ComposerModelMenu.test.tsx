@@ -109,4 +109,37 @@ describe('ComposerModelMenu', () => {
     fireEvent.click(startPlanItem);
     expect(onSelectModel).toHaveBeenCalledWith('account:bigmodel-start-plan/GLM-5.3-Flash');
   });
+
+  // OpenCode Zen and OpenCode Go share model names (GLM 5.3, Kimi K3, ...), so
+  // without the catalog description the duplicate entries were
+  // indistinguishable and picking the right gateway was guesswork.
+  it('names the gateway of the selected model and of every option', () => {
+    const gatewayOptions = [
+      { value: 'opencode/glm-5.3', label: 'GLM 5.3', description: 'OpenCode Zen' },
+      { value: 'opencode-go/glm-5.3', label: 'GLM 5.3', description: 'OpenCode Go' },
+    ];
+    const { container, getAllByText, getByRole, getByText } = render(
+      <ComposerModelMenu
+        effort="default"
+        effortOptions={[]}
+        onSelectEffort={vi.fn()}
+        model="opencode/glm-5.3"
+        modelOptions={gatewayOptions}
+        onSelectModel={vi.fn()}
+        modelsLoading={false}
+        modelsError={false}
+        onReloadModels={vi.fn()}
+      />
+    );
+
+    fireEvent.click(container.querySelector('button[aria-haspopup="menu"]') as HTMLButtonElement);
+
+    // Collapsed: the section row names the gateway of the current selection...
+    assert.ok(getByText('OpenCode Zen'));
+
+    // ...and expanding the section names the gateway of every duplicate label.
+    fireEvent.click(getByRole('menuitem'));
+    assert.ok(getByText('OpenCode Go'));
+    assert.equal(getAllByText('GLM 5.3').length >= 2, true);
+  });
 });

@@ -227,6 +227,107 @@ test('session_created is swallowed and persisted as the provider-id mapping', as
   });
 });
 
+/**
+ * Seeds an app session that already runs on one provider session and
+ * transcript, the state a Claude session is in before its first prompt is
+ * edited.
+ */
+function seedClaudeSession(appSessionId: string, providerSessionId: string, jsonlPath: string): void {
+  sessionsDb.createAppSession(appSessionId, 'claude', '/workspace/demo', 'Edited session');
+  sessionsDb.assignProviderSessionId(appSessionId, providerSessionId);
+  sessionsDb.createSession(
+    providerSessionId,
+    'claude',
+    '/workspace/demo',
+    'Edited session',
+    undefined,
+    undefined,
+    jsonlPath,
+  );
+}
+
+test('a replacement provider session moves the row onto the new transcript', async () => {
+  await withIsolatedDatabase(async () => {
+    seedClaudeSession('app-replace-1', 'native-old-1', '/transcripts/native-old-1.jsonl');
+    const connection = new FakeConnection();
+    const run = chatRunRegistry.startRun({
+      appSessionId: 'app-replace-1',
+      provider: 'claude',
+      providerSessionId: 'native-old-1',
+      connection,
+      userId: null,
+    });
+    assert.ok(run);
+
+    run.writer.setSessionId('native-new-1', {
+      transcriptPath: '/transcripts/native-new-1.jsonl',
+    });
+    await new Promise((resolve) => { setTimeout(resolve, 0); });
+
+    assert.equal(run.providerSessionId, 'native-new-1');
+    const row = sessionsDb.getSessionById('app-replace-1');
+    assert.equal(row?.provider_session_id, 'native-new-1');
+    // The whole point of the replacement descriptor: `jsonl_path` moves too,
+    // so history reads the new conversation instead of the superseded one.
+    assert.equal(row?.jsonl_path, '/transcripts/native-new-1.jsonl');
+    // The transcript left behind must not come back as its own session.
+    assert.equal(sessionsDb.isProviderSessionSuperseded('native-old-1', 'claude'), true);
+  });
+});
+
+test('a replacement merges the row the watcher already indexed for the new transcript', async () => {
+  await withIsolatedDatabase(async () => {
+    seedClaudeSession('app-replace-2', 'native-old-2', '/transcripts/native-old-2.jsonl');
+    // The filesystem watcher can index the new transcript before the runtime
+    // announces its id to the gateway: a second row keyed by that id.
+    sessionsDb.createSession(
+      'native-new-2',
+      'claude',
+      '/workspace/demo',
+      'Watcher name',
+      undefined,
+      undefined,
+      '/transcripts/native-new-2.jsonl',
+    );
+    assert.equal(sessionsDb.getAllSessions().length, 2);
+
+    const connection = new FakeConnection();
+    const run = chatRunRegistry.startRun({
+      appSessionId: 'app-replace-2',
+      provider: 'claude',
+      providerSessionId: 'native-old-2',
+      connection,
+      userId: null,
+    });
+    assert.ok(run);
+
+    run.writer.setSessionId('native-new-2', {
+      transcriptPath: '/transcripts/native-new-2.jsonl',
+    });
+    await new Promise((resolve) => { setTimeout(resolve, 0); });
+
+    const rows = sessionsDb.getAllSessions();
+    assert.equal(rows.length, 1, 'the watcher duplicate is merged into the app row');
+    assert.equal(rows[0]?.session_id, 'app-replace-2');
+    assert.equal(rows[0]?.provider_session_id, 'native-new-2');
+    assert.equal(rows[0]?.jsonl_path, '/transcripts/native-new-2.jsonl');
+    assert.equal(sessionsDb.isProviderSessionSuperseded('native-old-2', 'claude'), true);
+
+    // A later watcher pass resolves the transcript through the mapping and
+    // updates the app row instead of creating the duplicate again.
+    sessionsDb.createSession(
+      'native-new-2',
+      'claude',
+      '/workspace/demo',
+      'Watcher name',
+      undefined,
+      undefined,
+      '/transcripts/native-new-2.jsonl',
+    );
+    assert.equal(sessionsDb.getAllSessions().length, 1);
+  });
+});
+
 test('complete marks the run finished and duplicate completes are dropped', async () => {
   await withIsolatedDatabase(() => {
     sessionsDb.createAppSession('app-run-3', 'codex', '/workspace/demo');
@@ -585,3 +686,80 @@ for (const provider of ['claude', 'codex', 'antigravity', 'zcode'] as const) {
     });
   });
 }
+
+test('an adopted engine run attaches the sockets already watching the session', async () => {
+  await withIsolatedDatabase(() => {
+    clearRunOutcomes();
+    sessionsDb.createAppSession('app-adopt', 'opencode', '/workspace/demo');
+    sessionsDb.assignProviderSessionId('app-adopt', 'ses_engine_1');
+
+    const watcher = new FakeConnection();
+    const forgotten = new FakeConnection();
+    const deadWatcher = new FakeConnection();
+    deadWatcher.readyState = 3; // CLOSED
+    chatRunRegistry.noteSessionSubscriber('app-adopt', watcher as never);
+    chatRunRegistry.noteSessionSubscriber('app-adopt', forgotten as never);
+    chatRunRegistry.noteSessionSubscriber('app-adopt', deadWatcher as never);
+    chatRunRegistry.forgetSessionSubscriber(forgotten as never);
+
+    const adopted = chatRunRegistry.adoptExternalRun({ provider: 'opencode', providerSessionId: 'ses_engine_1' });
+    assert.ok(adopted);
+    assert.equal(adopted.appSessionId, 'app-adopt');
+    assert.equal(chatRunRegistry.isProcessing('app-adopt'), true);
+
+    adopted.writer.send({ kind: 'stream_delta', provider: 'opencode', sessionId: 'ses_engine_1', content: 'live' });
+    assert.equal(watcher.frames.length, 1);
+    assert.equal(watcher.frames[0]?.sessionId, 'app-adopt');
+    assert.equal(watcher.frames[0]?.seq, 1);
+    assert.equal(forgotten.frames.length, 0, 'a forgotten socket is not attached');
+    assert.equal(deadWatcher.frames.length, 0, 'a closed socket is pruned, not attached');
+
+    adopted.writer.send({ kind: 'complete', provider: 'opencode', sessionId: 'ses_engine_1', exitCode: 0 });
+    assert.equal(chatRunRegistry.isProcessing('app-adopt'), false);
+    const [recorded] = readRunOutcomes();
+    assert.equal(recorded?.sessionId, 'app-adopt');
+    assert.equal(recorded?.reason, 'engine_completed');
+  });
+});
+
+test('adoption refuses unknown, mismatched, archived and busy sessions', async () => {
+  await withIsolatedDatabase(() => {
+    assert.equal(
+      chatRunRegistry.adoptExternalRun({ provider: 'opencode', providerSessionId: 'ses_unknown' }),
+      null,
+      'a provider session with no app row is not adoptable',
+    );
+
+    sessionsDb.createAppSession('app-open', 'opencode', '/workspace/demo');
+    sessionsDb.assignProviderSessionId('app-open', 'ses_engine_2');
+    assert.equal(
+      chatRunRegistry.adoptExternalRun({ provider: 'claude', providerSessionId: 'ses_engine_2' }),
+      null,
+      'a provider disagreement is not adoptable',
+    );
+
+    const active = chatRunRegistry.startRun({
+      appSessionId: 'app-open',
+      provider: 'opencode',
+      providerSessionId: 'ses_engine_2',
+      connection: null,
+      userId: null,
+    });
+    assert.ok(active);
+    assert.equal(
+      chatRunRegistry.adoptExternalRun({ provider: 'opencode', providerSessionId: 'ses_engine_2' }),
+      null,
+      'a session with a run in flight is not adoptable',
+    );
+
+    sessionsDb.archiveSessionsByIds(sessionsDb.listSessionsOlderThanCutoff('2999-01-01T00:00:00Z'));
+    sessionsDb.createAppSession('app-archived', 'opencode', '/workspace/demo');
+    sessionsDb.assignProviderSessionId('app-archived', 'ses_engine_3');
+    sessionsDb.archiveSessionsByIds(sessionsDb.listSessionsOlderThanCutoff('2999-01-01T00:00:00Z'));
+    assert.equal(
+      chatRunRegistry.adoptExternalRun({ provider: 'opencode', providerSessionId: 'ses_engine_3' }),
+      null,
+      'an archived session is not adoptable',
+    );
+  });
+});

@@ -131,7 +131,11 @@ function isPathInsideDirectory(candidate: string, directory: string): boolean {
 function getDirectoryPathVariants(directory: string): string[] {
   const resolvedDirectory = path.resolve(directory);
   try {
-    const canonicalDirectory = path.resolve(realpathSync(directory));
+    // `.native` canonicalizes exactly like the async `fs.realpath` used on the
+    // candidate being checked — notably on Windows it expands 8.3 short
+    // components (`JAMESC~1`), which plain `realpathSync` preserves, so both
+    // sides always compare in the same long form.
+    const canonicalDirectory = path.resolve(realpathSync.native(directory));
     return canonicalDirectory === resolvedDirectory
       ? [resolvedDirectory]
       : [resolvedDirectory, canonicalDirectory];

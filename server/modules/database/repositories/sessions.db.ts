@@ -16,6 +16,11 @@ type SessionRow = {
   model: string | null;
   /** Reasoning effort this session runs with; NULL until the app records one for it. */
   effort: string | null;
+  /**
+   * Context window in tokens the provider engine reported for this session;
+   * NULL until an engine reports one.
+   */
+  context_window: number | null;
   /** The app session this one was branched from; NULL unless it is a fork. */
   forked_from_session_id: string | null;
   /** Git worktree the session runs in; NULL for main-checkout sessions. */
@@ -33,7 +38,7 @@ type RecentSessionsPage = {
 };
 
 const SESSION_ROW_COLUMNS =
-  'session_id, provider, provider_session_id, project_path, jsonl_path, custom_name, name_locked, model, effort, forked_from_session_id, worktree_path, worktree_branch, isArchived, created_at, updated_at';
+  'session_id, provider, provider_session_id, project_path, jsonl_path, custom_name, name_locked, model, effort, context_window, forked_from_session_id, worktree_path, worktree_branch, isArchived, created_at, updated_at';
 
 /**
  * Archives the project row a session just moved away from, but only when it
@@ -268,10 +273,16 @@ export const sessionsDb = {
     /** True when the fork name was typed by the user; locks it against engine titles. */
     nameLocked: boolean;
     providerSessionId: string;
-    jsonlPath: string;
+    jsonlPath: string | null;
     forkedFromSessionId: string;
     model: string | null;
     effort: string | null;
+    /**
+     * Window the branched conversation was measured against. The fork resumes
+     * the same conversation, so the page's first reading must use the same
+     * window instead of falling back to a default until the first turn ends.
+     */
+    contextWindow?: number | null;
   }): string {
     const db = getConnection();
     const normalizedProjectPath = normalizeProjectPathForProvider(input.provider, input.projectPath);
@@ -285,8 +296,8 @@ export const sessionsDb = {
       db.prepare('DELETE FROM sessions WHERE session_id = ? AND session_id <> ?')
         .run(input.providerSessionId, input.sessionId);
       db.prepare(
-        `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, name_locked, project_path, jsonl_path, model, effort, forked_from_session_id, isArchived, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+        `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, name_locked, project_path, jsonl_path, model, effort, context_window, forked_from_session_id, isArchived, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
       ).run(
         input.sessionId,
         input.provider,
@@ -297,6 +308,7 @@ export const sessionsDb = {
         input.jsonlPath,
         input.model,
         input.effort,
+        input.contextWindow ?? null,
         input.forkedFromSessionId,
       );
     })();
@@ -365,23 +377,61 @@ export const sessionsDb = {
   /**
    * Moves one session onto a different provider session and transcript.
    *
-   * Only editing a message on a provider that has to branch to rewind (Codex)
-   * does this — an ordinary run keeps the same provider session for its whole
-   * life. `assignProviderSessionId` cannot be used for it: that one keeps the
-   * existing `jsonl_path` on purpose, so a session repointed with it would
-   * claim the new thread while still reading the old transcript.
+   * Two providers use this. Codex has to branch to rewind, so it repoints after
+   * forking the kept part of the conversation; Claude starts a fresh session
+   * when the first prompt was edited and repoints when the new native id
+   * arrives. `assignProviderSessionId` cannot be used for either: that one
+   * keeps the existing `jsonl_path` on purpose, so a session repointed with it
+   * would claim the new thread while still reading the old transcript.
    *
    * The watcher may already have indexed the new transcript under its own id.
    * That row is the same conversation this one is about to become, so it is
    * replaced rather than left behind as a second sidebar entry.
+   *
+   * `supersedePrevious` records the session being left behind in
+   * `superseded_provider_sessions`, so a later indexer pass does not resurrect
+   * its transcript as an unrelated conversation. Codex records that itself
+   * (it also knows the abandoned artifact); Claude supplies it here because
+   * this move is the only place its old transcript leaves the row.
    */
   repointSessionToProviderSession(
     sessionId: string,
-    input: { providerSessionId: string; jsonlPath: string },
+    input: {
+      providerSessionId: string;
+      jsonlPath: string | null;
+      supersedePrevious?: boolean;
+    },
   ): void {
     const db = getConnection();
 
     db.transaction(() => {
+      if (input.supersedePrevious) {
+        const previous = db
+          .prepare(
+            `SELECT provider_session_id, provider, jsonl_path FROM sessions
+             WHERE session_id = ?`
+          )
+          .get(sessionId) as
+            | { provider_session_id: string | null; provider: string; jsonl_path: string | null }
+            | undefined;
+
+        if (previous?.provider_session_id && previous.provider_session_id !== input.providerSessionId) {
+          db.prepare(
+            `INSERT INTO superseded_provider_sessions (provider_session_id, provider, session_id, jsonl_path)
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT(provider_session_id, provider) DO UPDATE SET
+               session_id = excluded.session_id,
+               jsonl_path = excluded.jsonl_path,
+               created_at = CURRENT_TIMESTAMP`
+          ).run(
+            previous.provider_session_id,
+            previous.provider,
+            sessionId,
+            previous.jsonl_path,
+          );
+        }
+      }
+
       db.prepare('DELETE FROM sessions WHERE session_id = ? AND session_id <> ?')
         .run(input.providerSessionId, sessionId);
       db.prepare(
@@ -495,6 +545,23 @@ export const sessionsDb = {
        SET model = ?
        WHERE session_id = ?`
     ).run(model, sessionId);
+  },
+
+  /**
+   * Records the context window one session actually runs against, in tokens.
+   *
+   * Written by a provider runtime once its engine reports the real window for
+   * the session (Claude does at the end of every turn). Readers prefer this
+   * over any heuristic, because a transcript records the resolved model id and
+   * never the context-window variant the run was started with.
+   */
+  setSessionContextWindow(sessionId: string, contextWindow: number): void {
+    const db = getConnection();
+    db.prepare(
+      `UPDATE sessions
+       SET context_window = ?
+       WHERE session_id = ?`
+    ).run(contextWindow, sessionId);
   },
 
   /**

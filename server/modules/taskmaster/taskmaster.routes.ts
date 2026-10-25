@@ -82,7 +82,7 @@ export function createTaskmasterRouter(dependencies: TaskmasterRouterDependencie
     const router = express.Router();
 
     function runTaskmasterProcess(command, args, options, onComplete) {
-        const child = spawn(command, args, options);
+        const child = spawn(command, args, { ...options, windowsHide: true });
         let stdout = '';
         let stderr = '';
         let settled = false;
@@ -114,7 +114,8 @@ export function createTaskmasterRouter(dependencies: TaskmasterRouterDependencie
             // Check if task-master command is available
             const child = spawn('which', ['task-master'], {
                 stdio: ['ignore', 'pipe', 'pipe'],
-                shell: true
+                shell: true,
+                windowsHide: true
             });
 
             let output = '';
@@ -133,7 +134,8 @@ export function createTaskmasterRouter(dependencies: TaskmasterRouterDependencie
                     // TaskMaster is installed, get version
                     const versionChild = spawn('task-master', ['--version'], {
                         stdio: ['ignore', 'pipe', 'pipe'],
-                        shell: true
+                        shell: true,
+                        windowsHide: true
                     });
 
                     let versionOutput = '';

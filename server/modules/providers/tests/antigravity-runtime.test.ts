@@ -92,6 +92,13 @@ if (mode === 'sleep') {
   console.log(JSON.stringify({ event: 'init', conversation_id: 'stub-conv-noisy', init: { cwd: '/tmp' } }));
   console.log(JSON.stringify({ event: 'step_update', step_update: { conversation_id: 'stub-conv-noisy', step_index: 2, state: 'DONE', step_type: 'agent_response', text_delta: 'OK' } }));
   console.log(JSON.stringify({ event: 'result', result: { conversation_id: 'stub-conv-noisy', status: 'SUCCESS', usage: { total_tokens: 7 } } }));
+} else if (mode === 'multi-step-usage') {
+  // Real agy shape: each step_update usage is one model call, while the
+  // result usage sums all calls of the turn.
+  console.log(JSON.stringify({ event: 'init', conversation_id: 'stub-conv-usage', init: { cwd: '/tmp' } }));
+  console.log(JSON.stringify({ event: 'step_update', step_update: { conversation_id: 'stub-conv-usage', step_index: 1, state: 'DONE', step_type: 'agent_response', usage: { input_tokens: 13129, output_tokens: 52, total_tokens: 13181 } } }));
+  console.log(JSON.stringify({ event: 'step_update', step_update: { conversation_id: 'stub-conv-usage', step_index: 3, state: 'DONE', step_type: 'agent_response', usage: { input_tokens: 13593, output_tokens: 1, total_tokens: 13594 } } }));
+  console.log(JSON.stringify({ event: 'result', result: { conversation_id: 'stub-conv-usage', status: 'SUCCESS', usage: { input_tokens: 26722, output_tokens: 53, total_tokens: 26775 } } }));
 } else if (mode === 'explosive') {
   console.log(JSON.stringify({ event: 'init', conversation_id: 'stub-conv-boom', init: { cwd: '/tmp' } }));
   console.log(JSON.stringify({ event: 'explosive', payload: true }));
@@ -311,6 +318,23 @@ test('runtime emits one session_created, stream deltas and a token-bearing compl
   assert.equal(delta?.providerRowKey, 'assistant-step:2');
   const complete = messages.find((msg) => msg.kind === 'complete');
   assert.equal(complete?.tokens, 42);
+});
+
+test('token budget tracks the latest model call, not the turn-wide result sum', async () => {
+  const runtime = new AntigravityRuntimeProvider();
+  const { messages, writer } = createWriter();
+
+  process.env.AGY_STUB_MODE = 'multi-step-usage';
+  try {
+    await runtime.run('hello', { sessionId: 'sess-usage' }, writer, context);
+  } finally {
+    delete process.env.AGY_STUB_MODE;
+  }
+
+  const budgets = messages
+    .filter((msg) => msg.kind === 'status' && msg.text === 'token_budget')
+    .map((msg) => (msg.tokenBudget as { used: number }).used);
+  assert.deepEqual(budgets, [13181, 13594]);
 });
 
 test('abort resolves the run quietly as aborted', async () => {

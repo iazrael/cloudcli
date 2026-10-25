@@ -121,6 +121,38 @@ export function createProviderRuntimeService(
     return provider.runtime.run(command, options, writer, createRuntimeContext(provider));
   };
 
+  const compact = (
+    providerName: LLMProvider,
+    options: AnyRecord,
+    writer: ProviderRuntimeWriter,
+  ): Promise<unknown> => {
+    const provider = dependencies.resolveProvider(providerName);
+    const compactFacet = provider.runtime.compact;
+    if (typeof compactFacet !== 'function') {
+      return Promise.reject(
+        new Error(`Provider "${providerName}" cannot compact conversations.`),
+      );
+    }
+    return compactFacet.call(provider.runtime, options, writer, createRuntimeContext(provider));
+  };
+
+  /**
+   * Feeds a message into the session's running turn. Resolves false for a
+   * provider without the primitive, so the caller falls back to a new run.
+   */
+  const injectInput = async (
+    providerName: LLMProvider,
+    command: string,
+    options: AnyRecord,
+  ): Promise<boolean> => {
+    const provider = dependencies.resolveProvider(providerName);
+    const injectFacet = provider.runtime.injectInput;
+    if (typeof injectFacet !== 'function') {
+      return false;
+    }
+    return Boolean(await injectFacet.call(provider.runtime, command, options, createRuntimeContext(provider)));
+  };
+
   // Only runtimes that broadcast `background_tasks` can later clear this on the
   // client, so the others never report it.
   const isBackgroundWorkPending = (sessionId: string): boolean => dependencies.listProviders()
@@ -128,6 +160,8 @@ export function createProviderRuntimeService(
 
   return {
     run,
+    compact,
+    injectInput,
 
     /**
      * Installs the entry that publishes an event to a session outside any
@@ -166,6 +200,14 @@ export function createProviderRuntimeService(
     hasRuntime(providerName: string): boolean {
       try {
         return Boolean(dependencies.resolveProvider(providerName).runtime);
+      } catch {
+        return false;
+      }
+    },
+
+    supportsCompaction(providerName: string): boolean {
+      try {
+        return typeof dependencies.resolveProvider(providerName).runtime.compact === 'function';
       } catch {
         return false;
       }
@@ -241,6 +283,20 @@ export function createProviderRuntimeService(
         (provider.runtime.listBackgroundWork?.() ?? []).some((entry) => entry.sessionId === sessionId));
     },
 
+    /**
+     * Wider than `hasBackgroundWork`: also true while the composer strip still
+     * lists a task. The strip comes from its own list (Claude's is keyed by the
+     * launching call, not by the task tracker), and its clearing frame rides
+     * the run's writer — so the run must stay registered, and a reconnecting
+     * socket attached, until that list is empty too. Otherwise the socket
+     * missed the clear and the strip stuck until a reload.
+     */
+    hasLiveBackgroundState(sessionId: string): boolean {
+      return isBackgroundWorkPending(sessionId) || dependencies.listProviders().some((provider) =>
+        (provider.runtime.listBackgroundWork?.() ?? []).some((entry) => entry.sessionId === sessionId)
+        || (provider.runtime.backgroundTasks?.list(sessionId) ?? []).length > 0);
+    },
+
     resolveToolApproval(requestId: string, decision: ProviderPermissionDecision): void {
       for (const provider of dependencies.listProviders()) {
         provider.runtime.permissions?.resolve(requestId, decision);
@@ -251,6 +307,12 @@ export function createProviderRuntimeService(
       return dependencies.listProviders().flatMap(
         (provider) => provider.runtime.permissions?.listPending(sessionId) ?? [],
       );
+    },
+
+    reconcilePendingInteractions(sessionId: string): void {
+      for (const provider of dependencies.listProviders()) {
+        provider.runtime.permissions?.reconcilePending?.(sessionId);
+      }
     },
 
     backgroundWorkQueuesInput(providerName: LLMProvider, sessionId: string): boolean {

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 
-const CACHE_KEY = 'CLOUDCLI_GITHUB_STARS';
+// Keyed per repository so a count cached for a previous repo is never shown for another.
+const CACHE_KEY_PREFIX = 'CLOUDCLI_GITHUB_STARS';
 const DISMISS_KEY = 'CLOUDCLI_HIDE_GITHUB_STAR';
 const CACHE_TTL = 60 * 60 * 1000; // 1 hour
 
@@ -21,10 +22,11 @@ export const useGitHubStars = (owner: string, repo: string) => {
 
   useEffect(() => {
     if (isDismissed) return;
+    const cacheKey = `${CACHE_KEY_PREFIX}:${owner}/${repo}`;
 
     // Check cache first
     try {
-      const cached = localStorage.getItem(CACHE_KEY);
+      const cached = localStorage.getItem(cacheKey);
       if (cached) {
         const parsed: CachedStars = JSON.parse(cached);
         if (Date.now() - parsed.timestamp < CACHE_TTL) {
@@ -45,7 +47,7 @@ export const useGitHubStars = (owner: string, repo: string) => {
         if (typeof count === 'number') {
           setStarCount(count);
           try {
-            localStorage.setItem(CACHE_KEY, JSON.stringify({ count, timestamp: Date.now() }));
+            localStorage.setItem(cacheKey, JSON.stringify({ count, timestamp: Date.now() }));
           } catch {
             // ignore
           }

@@ -35,6 +35,8 @@ type ChatMessagesPaneProps = {
   onEditMessage?: (message: ChatMessage) => void;
   /** Present when the provider supports forking the session from a message. */
   onForkFromMessage?: (message: ChatMessage) => void;
+  /** True while a fork requested from this pane's session is in flight. */
+  isForking?: boolean;
   isLoadingMoreMessages: boolean;
   /** Row a search jump landed on, flashed to orient the reader. */
   highlightedItemIndex: number | null;
@@ -99,6 +101,7 @@ function ChatMessagesPane({
   provider,
   onEditMessage,
   onForkFromMessage,
+  isForking = false,
   isLoadingMoreMessages,
   highlightedItemIndex,
   createDiff,
@@ -218,6 +221,7 @@ function ChatMessagesPane({
             provider={provider}
             onEditMessage={onEditMessage}
             onForkFromMessage={onForkFromMessage}
+            isForking={isForking}
           />
         )}
       </div>
@@ -226,6 +230,7 @@ function ChatMessagesPane({
     createDiff,
     getMessageKey,
     highlightedItemIndex,
+    isForking,
     isProcessing,
     onEditMessage,
     onFileOpen,

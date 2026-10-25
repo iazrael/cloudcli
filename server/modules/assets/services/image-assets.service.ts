@@ -1,11 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import fsSync, { promises as fs } from 'node:fs';
 import path from 'node:path';
+import type { Transform } from 'node:stream';
 
 import mime from 'mime-types';
 import type multer from 'multer';
 
 import { getGlobalImageAssetsDir, toPosixPath } from '@/shared/image-attachments.js';
+import { createByteLimitTransform } from '@/shared/utils.js';
 
 /**
  * Image mime types accepted for chat attachment uploads. SVG is allowed for
@@ -53,13 +55,17 @@ export async function ensureImageAssetsDir(): Promise<string> {
 
 /**
  * Used by the assets routes for streaming multipart files to the global asset store.
- * Aborted requests close the writer and remove its partial file before notifying
- * Multer, so failed uploads release the replay slot as well as disk resources.
+ * `maxBytes` must match Multer's `limits.fileSize` for the route, keeping the
+ * stored partial file within the configured cap (see
+ * `createByteLimitTransform`). Aborted requests close the writer and remove
+ * its partial file before notifying Multer, so failed uploads release the
+ * replay slot as well as disk resources.
  */
-export function createAttachmentUploadStorage(): multer.StorageEngine {
+export function createAttachmentUploadStorage(maxBytes = Number.POSITIVE_INFINITY): multer.StorageEngine {
   return {
     _handleFile(req, file, callback) {
       let output: fsSync.WriteStream | undefined;
+      let limitGate: Transform | undefined;
       let filePath: string | undefined;
       let finished = false;
 
@@ -67,7 +73,9 @@ export function createAttachmentUploadStorage(): multer.StorageEngine {
         if (finished) return;
         finished = true;
         req.off('aborted', onAbort);
-        file.stream.unpipe(output);
+        file.stream.unpipe(limitGate);
+        limitGate?.unpipe(output);
+        limitGate?.destroy();
         // Destroy without an error: Multer decrements its write counter itself
         // on a source-stream error, and must not decrement it again via callback.
         file.stream.destroy();
@@ -107,7 +115,8 @@ export function createAttachmentUploadStorage(): multer.StorageEngine {
           req.off('aborted', onAbort);
           callback(null, { destination, filename, path: filePath, size: output!.bytesWritten });
         });
-        file.stream.pipe(output);
+        limitGate = createByteLimitTransform(maxBytes);
+        file.stream.pipe(limitGate).pipe(output);
       }, (error: unknown) => fail(error instanceof Error ? error : new Error(String(error))));
     },
     _removeFile(_req, file, callback) {

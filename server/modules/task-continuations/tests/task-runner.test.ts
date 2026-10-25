@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
@@ -14,6 +15,12 @@ import {
 } from '@/modules/task-continuations/cli/task-runner.js';
 
 import { createTestUserToken } from './helpers/user-token.js';
+
+// The CLI is spawned as a real process; resolving tsx through Node itself keeps
+// the invocation working on Windows, where the POSIX `node_modules/.bin/tsx`
+// shim cannot be executed directly.
+const require = createRequire(import.meta.url);
+const tsxCliPath = require.resolve('tsx/cli');
 
 test('parseTaskRunnerArgs parses run command with flags and trailing command', () => {
   const argv = [
@@ -127,8 +134,8 @@ test('real task-runner process retries through the authenticated HTTP route', as
   await once(server, 'listening');
   const apiUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   try {
-    const child = spawn('./node_modules/.bin/tsx', [
-      '--tsconfig', 'server/tsconfig.json', 'server/modules/task-continuations/cli/task-runner.ts',
+    const child = spawn(process.execPath, [
+      tsxCliPath, '--tsconfig', 'server/tsconfig.json', 'server/modules/task-continuations/cli/task-runner.ts',
       'retry-notification', '--task', registered.taskId, '--confirm-may-duplicate', '--reason', '已真实检查过任务输出',
     ], {
       cwd: process.cwd(),
@@ -155,7 +162,8 @@ test('real task-runner process retries through the authenticated HTTP route', as
     assert.deepEqual(audit, { user_id: 1, reason: '已真实检查过任务输出' });
 
     const runCli = async (args: string[]) => {
-      const configChild = spawn('./node_modules/.bin/tsx', [
+      const configChild = spawn(process.execPath, [
+        tsxCliPath,
         '--tsconfig', 'server/tsconfig.json', 'server/modules/task-continuations/cli/task-runner.ts',
         ...args,
       ], {

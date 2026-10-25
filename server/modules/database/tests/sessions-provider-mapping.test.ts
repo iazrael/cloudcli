@@ -113,6 +113,55 @@ test('assignProviderSessionId merges a watcher-created duplicate into the app ro
   });
 });
 
+test('repointSessionToProviderSession moves both columns and retires the old transcript', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('app-edit-1', 'claude', '/workspace/demo', 'Edited first prompt');
+    sessionsDb.assignProviderSessionId('app-edit-1', 'native-before-edit');
+    sessionsDb.createSession(
+      'native-before-edit',
+      'claude',
+      '/workspace/demo',
+      'Edited first prompt',
+      undefined,
+      undefined,
+      '/fake/transcripts/native-before-edit.jsonl',
+    );
+
+    // The watcher indexed the replacement transcript before the runtime
+    // announced its id: the same conversation, under a second sidebar id.
+    sessionsDb.createSession(
+      'native-after-edit',
+      'claude',
+      '/workspace/demo',
+      'Watcher name',
+      undefined,
+      undefined,
+      '/fake/transcripts/native-after-edit.jsonl',
+    );
+    assert.equal(sessionsDb.getAllSessions().length, 2);
+
+    sessionsDb.repointSessionToProviderSession('app-edit-1', {
+      providerSessionId: 'native-after-edit',
+      jsonlPath: '/fake/transcripts/native-after-edit.jsonl',
+      supersedePrevious: true,
+    });
+
+    const rows = sessionsDb.getAllSessions();
+    assert.equal(rows.length, 1, 'the watcher duplicate is replaced, not kept');
+    assert.equal(rows[0]?.session_id, 'app-edit-1');
+    assert.equal(rows[0]?.provider_session_id, 'native-after-edit');
+    assert.equal(rows[0]?.jsonl_path, '/fake/transcripts/native-after-edit.jsonl');
+
+    // The transcript the conversation left must not come back through a later
+    // full rescan; its path stays recorded so force-delete can still reach it.
+    assert.equal(sessionsDb.isProviderSessionSuperseded('native-before-edit', 'claude'), true);
+    assert.deepEqual(
+      sessionsDb.getSupersededTranscriptPaths('app-edit-1'),
+      ['/fake/transcripts/native-before-edit.jsonl'],
+    );
+  });
+});
+
 test('legacy provider-keyed rows stay resolvable through both lookups', async () => {
   await withIsolatedDatabase(() => {
     sessionsDb.createSession('legacy-1', 'opencode', '/workspace/demo');

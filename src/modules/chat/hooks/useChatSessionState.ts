@@ -13,11 +13,12 @@ import { createCachedDiffCalculator } from '@/modules/chat/utils/messageTransfor
 
 import { normalizedToChatMessages } from '@/modules/chat/hooks/useChatMessages';
 import { useTranscriptViewport } from '@/modules/chat/hooks/useTranscriptViewport';
-import { groupConsecutiveTools } from '@/modules/chat/utils/toolGrouping';
+import { groupConsecutiveTools, isToolGroupItem } from '@/modules/chat/utils/toolGrouping';
+import { toTokenBudget } from '@/modules/chat/utils/contextUsage';
 import { findSearchTargetIndex } from '@/modules/chat/utils/searchTargetLocator';
 
-/** How long a search hit stays flashed after the jump lands. */
-const SEARCH_HIGHLIGHT_DURATION_MS = 4000;
+/** How long a jumped-to row stays flashed after the jump lands. */
+const ROW_HIGHLIGHT_DURATION_MS = 4000;
 
 type UseChatSessionStateArgs = {
   isActive: boolean;
@@ -120,12 +121,7 @@ export function useChatSessionState({
 }: UseChatSessionStateArgs) {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(selectedSession?.id || null);
   const [isLoadingSessionMessages, setIsLoadingSessionMessages] = useState(false);
-  /**
-   * Drives the floating older-history spinner at the top of the transcript.
-   * The ref alone cannot render it — it never re-renders — so this state
-   * mirrors the in-flight window around each `fetchMore`.
-   */
-  const [isLoadingMoreMessages, setIsLoadingMoreMessages] = useState(false);
+  const [isLoadingMoreMessages, _setIsLoadingMoreMessages] = useState(false);
   const [hasMoreMessages, setHasMoreMessages] = useState(false);
   const [totalMessages, setTotalMessages] = useState(0);
   const [tokenBudget, setTokenBudget] = useState<Record<string, unknown> | null>(null);
@@ -202,39 +198,16 @@ export function useChatSessionState({
   /* ---------------------------------------------------------------- */
 
   const activeSessionId = selectedSession?.id || currentSessionId || null;
-  /** The id of the session on screen, without the rest of its metadata. */
-  const openSessionId = selectedSession?.id ?? null;
 
   // The activity indicator always reflects the latest status of the session
   // being viewed — never stale local UI state from the last time it was
   // open. Session ids are concrete before any send, so no pending
   // placeholder entry exists anymore.
-  const backgroundTasks = activeSessionId ? sessionStore.getBackgroundTasks(activeSessionId) : [];
-  const hasActiveBackgroundTasks = activeSessionId ? sessionStore.hasPendingBackgroundWork(activeSessionId) : false;
-  const processingActivity = (activeSessionId && processingSessions?.get(activeSessionId)) || null;
-  const backgroundStartedAt = activeSessionId ? sessionStore.getBackgroundWorkStartedAt(activeSessionId) : undefined;
-  const backgroundCanInterrupt = activeSessionId ? sessionStore.canInterruptBackgroundWork(activeSessionId) : true;
-  // A response turn keeps its own activity. The background phase times from
-  // its tasks rather than from whenever this tab marked it busy, and its Stop
-  // follows what the runtime that broadcast the tasks says — not the activity
-  // poll, which lists every background session as not interruptible.
-  const sessionActivity = hasActiveBackgroundTasks && backgroundStartedAt !== undefined
-    && !(processingActivity && !processingActivity.background) ? {
-      statusText: null,
-      ...processingActivity,
-      startedAt: backgroundStartedAt,
-      background: backgroundTasks.length > 0,
-      canInterrupt: backgroundCanInterrupt,
-    } : processingActivity;
-  const isProcessing = sessionActivity !== null;
+  const sessionActivity = (activeSessionId && processingSessions?.get(activeSessionId)) || null;
+  // Background-only work is not a response in flight: whether it holds new
+  // input back is the provider's call (`backgroundWorkQueuesInput`).
+  const isProcessing = sessionActivity !== null && !sessionActivity.background;
   const canAbortSession = isProcessing && sessionActivity.canInterrupt;
-  // A reply in flight always holds a new message back. Background work does
-  // too, unless its runtime takes the next turn alongside it (Claude's held
-  // process), in which case sending at once disturbs nothing.
-  const isReplyInFlight = Boolean(processingActivity && !processingActivity.background);
-  const isInputBlocked = isReplyInFlight
-    || ((isProcessing || hasActiveBackgroundTasks)
-      && !(activeSessionId && !sessionStore.backgroundWorkQueuesInput(activeSessionId)));
 
   // Ref mirror so effects can read the latest map without re-running on
   // every activity transition.
@@ -257,7 +230,7 @@ export function useChatSessionState({
     setHasMoreMessages(slot.hasMore);
     setTotalMessages(slot.total);
     if (slot.tokenUsage && typeof slot.tokenUsage === 'object') {
-      setTokenBudget(slot.tokenUsage as Record<string, unknown>);
+      setTokenBudget(toTokenBudget(slot.tokenUsage));
     }
   }, []);
 
@@ -340,14 +313,14 @@ export function useChatSessionState({
   }
 
   const chatMessages = useMemo(() => {
-    const all = normalizedToChatMessages(storeMessages, { holdOrphanedLiveRows: isProcessing });
+    const all = normalizedToChatMessages(storeMessages);
     // Show pending user message when no session data exists yet (new session, pre-backend-response)
     if (pendingUserMessage && all.length === 0) {
       return [pendingUserMessage];
     }
     if (viewHiddenCount > 0 && viewHiddenCount < all.length) return all.slice(0, -viewHiddenCount);
     return all;
-  }, [storeMessages, viewHiddenCount, pendingUserMessage, isProcessing]);
+  }, [storeMessages, viewHiddenCount, pendingUserMessage]);
 
   /* ---------------------------------------------------------------- */
   /*  addMessage / clearMessages / rewindMessages                     */
@@ -376,7 +349,9 @@ export function useChatSessionState({
       if (!hasMoreMessages || !selectedSession || !selectedProject) return false;
 
       isLoadingMoreRef.current = true;
-      setIsLoadingMoreMessages(true);
+      // The spinner rides the same flag the guard uses: one page request at a
+      // time, and the affordance shows while it is out.
+      _setIsLoadingMoreMessages(true);
 
       try {
         const result = await sessionStore.fetchMore(selectedSession.id, {
@@ -396,7 +371,7 @@ export function useChatSessionState({
         return prependedCount > 0;
       } finally {
         isLoadingMoreRef.current = false;
-        setIsLoadingMoreMessages(false);
+        _setIsLoadingMoreMessages(false);
       }
     },
     [hasMoreMessages, isActive, isLoadingMoreMessages, selectedProject, selectedSession, sessionStore],
@@ -457,7 +432,10 @@ export function useChatSessionState({
     statusCheckSentAtRef.current.set(selectedSession.id, Date.now());
     sendMessage({
       type: 'chat.subscribe',
-      sessions: [sessionStore.getSubscriptionCursor(selectedSession.id)],
+      sessions: [{
+        sessionId: selectedSession.id,
+        lastSeq: sessionStore.getResumeSeq(selectedSession.id),
+      }],
     });
   }, [selectedProject, selectedSession, sendMessage, sessionStore, statusCheckSentAtRef, ws]);
 
@@ -566,7 +544,7 @@ export function useChatSessionState({
 
   // External message update (e.g. WebSocket reconnect, background refresh)
   useEffect(() => {
-    if (!externalMessageUpdate || !openSessionId || !selectedProject) return;
+    if (!externalMessageUpdate || !activeSessionId || !selectedProject) return;
 
     const reloadExternalMessages = async () => {
       try {
@@ -574,7 +552,7 @@ export function useChatSessionState({
         if (!isProcessing) {
           // Sticking is the viewport's default while pinned; a refresh that
           // replaces the tail needs no separate scroll choreography.
-          await requestLatestMessages(openSessionId);
+          await requestLatestMessages(activeSessionId);
         }
       } catch (error) {
         console.error('Error reloading messages from external update:', error);
@@ -588,7 +566,7 @@ export function useChatSessionState({
     selectedProject,
     // The session's id, not the session itself: a title that arrives for the
     // open session must not read as "the transcript changed".
-    openSessionId,
+    activeSessionId,
     isProcessing,
   ]);
 
@@ -664,12 +642,74 @@ export function useChatSessionState({
       scrollToRow(targetIndex);
       setHighlightedItemIndex(targetIndex);
       searchScrollActiveRef.current = false;
-      window.setTimeout(() => setHighlightedItemIndex(null), SEARCH_HIGHLIGHT_DURATION_MS);
+      window.setTimeout(() => setHighlightedItemIndex(null), ROW_HIGHLIGHT_DURATION_MS);
     };
 
     scrollToTarget();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatMessages.length, isActive, isLoadingSessionMessages, searchTarget]);
+
+  /**
+   * Reveals the transcript row one tool call owns — the jump the composer's
+   * background-tasks strip makes to a running subagent's card.
+   *
+   * The card may sit in history this pane has not loaded, so the full
+   * transcript is hydrated first (the search jump's own path). The row is then
+   * addressed by index, the only coordinate the virtualizer has: off-screen
+   * rows are not in the DOM, so there is nothing to `getElementById`.
+   */
+  const revealToolRow = useCallback(async (toolUseId: string) => {
+    const sessionId = selectedSession?.id;
+    if (!isActive || !toolUseId || !sessionId) return;
+
+    if (!allMessagesLoadedRef.current && selectedProject) {
+      try {
+        const slot = await sessionStore.fetchFromServer(sessionId, {
+          limit: null,
+          offset: 0,
+          canRequest: () => (
+            isActiveRef.current
+            && activeSessionIdRef.current === sessionId
+          ),
+        });
+        if (slot) {
+          syncPaginationFromSlot(slot);
+          setAllMessagesLoaded(true);
+          allMessagesLoadedRef.current = true;
+        } else if (!isActiveRef.current || activeSessionIdRef.current !== sessionId) {
+          return;
+        }
+      } catch {
+        // Fall through and look among the rows already loaded: a transient
+        // read failure should not make the click a no-op when the card is there.
+      }
+    }
+
+    if (!isActiveRef.current || activeSessionIdRef.current !== sessionId) return;
+
+    const messages = normalizedToChatMessages(sessionStore.getMessages(sessionId));
+    const items = groupConsecutiveTools(messages, showThinking);
+    const targetIndex = items.findIndex(
+      (item) => !isToolGroupItem(item) && item.isToolUse === true && item.toolId === toolUseId,
+    );
+    if (targetIndex < 0) {
+      // Nothing to reveal: a nested task's call lives in another agent's
+      // transcript, and a call no row records simply has no card here.
+      return;
+    }
+
+    scrollToRow(targetIndex);
+    setHighlightedItemIndex(targetIndex);
+    window.setTimeout(() => setHighlightedItemIndex(null), ROW_HIGHLIGHT_DURATION_MS);
+  }, [
+    isActive,
+    selectedProject,
+    selectedSession?.id,
+    sessionStore,
+    showThinking,
+    scrollToRow,
+    syncPaginationFromSlot,
+  ]);
 
   const refreshTokenUsage = useCallback(async (sessionIdToFetch?: string) => {
     const sid = sessionIdToFetch || activeSessionIdRef.current;
@@ -684,6 +724,12 @@ export function useChatSessionState({
         const payload = await response.json();
         if (payload.data && typeof payload.data === 'object' && activeSessionIdRef.current === sid) {
           const nextData = payload.data as Record<string, unknown>;
+          const nextBudget = toTokenBudget(nextData);
+          if (nextData.compacted === true) {
+            // No occupancy until the next turn; only the summary size is known.
+            setTokenBudget(nextBudget);
+            return;
+          }
           const nextUsed = Number(nextData.used ?? 0)
             || (Number(nextData.inputTokens ?? 0) + Number(nextData.outputTokens ?? 0));
           setTokenBudget((prev) => {
@@ -691,7 +737,7 @@ export function useChatSessionState({
             if (nextUsed === 0 && currentUsed > 0) {
               return prev;
             }
-            return nextData;
+            return nextBudget;
           });
         }
       }
@@ -765,6 +811,11 @@ export function useChatSessionState({
     }
   }, [currentSessionId, isActive, isLoadingAllMessages, selectedProject, selectedSession, sessionStore]);
 
+  const backgroundTasks = useMemo(() => {
+    return currentSessionId ? sessionStore.getBackgroundTasks(currentSessionId) : [];
+  }, [currentSessionId, sessionStore]);
+  const hasActiveBackgroundTasks = backgroundTasks.length > 0 || Boolean(sessionActivity?.background);
+
   return {
     chatMessages,
     addMessage,
@@ -774,8 +825,6 @@ export function useChatSessionState({
     canAbortSession,
     backgroundTasks,
     hasActiveBackgroundTasks,
-    isReplyInFlight,
-    isInputBlocked,
     currentSessionId,
     setCurrentSessionId,
     isLoadingSessionMessages,
@@ -789,6 +838,7 @@ export function useChatSessionState({
     transcriptItems,
     highlightedItemIndex,
     loadAllMessages,
+    revealToolRow,
     allMessagesLoaded,
     isLoadingAllMessages,
     createDiff,

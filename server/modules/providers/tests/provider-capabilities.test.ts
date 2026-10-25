@@ -10,7 +10,9 @@
  *    default permission mode;
  * 3. the catalog's static default model equals each provider's predefined
  *    models definition's DEFAULT — the fallback default shown before the
- *    model catalog loads must never drift from the catalog's own answer.
+ *    model catalog loads must never drift from the catalog's own answer;
+ * 4. `inputWhileBusy: 'always'` is declared exactly where the runtime has the
+ *    `injectInput` primitive the gateway needs to honour it.
  */
 
 import assert from 'node:assert/strict';
@@ -43,11 +45,19 @@ const BASELINE: Record<string, Omit<ProviderCapabilities, 'provider'>> = {
     supportsQuota: true,
     supportsQuotaReset: false,
     supportsEffort: true,
-    // Runtime levels; a custom model may only declare from this list.
     effortLevels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
     supportsMessageEditing: true,
     supportsSessionForking: true,
+    // The Agent SDK processes `/compact` from the held input stream, which is
+    // exactly what the runtime's compact primitive feeds it.
     supportsCompaction: true,
+    // Claude's CronCreate/ScheduleWakeup schedule inside the running CLI
+    // process; CloudCLI holds that process open so the wake-ups can fire.
+    supportsNativeScheduling: true,
+    editRevertsFiles: false,
+    // Claude injects the turn into the live CLI process that holds the work;
+    // a running turn still queues.
+    inputWhileBusy: 'background',
     mcp: {
       scopes: ['user', 'local', 'project'],
       transports: ['stdio', 'http', 'sse'],
@@ -66,11 +76,13 @@ const BASELINE: Record<string, Omit<ProviderCapabilities, 'provider'>> = {
     supportsQuota: false,
     supportsQuotaReset: false,
     supportsEffort: false,
-    // Runtime levels; a custom model may only declare from this list.
     effortLevels: [],
     supportsMessageEditing: false,
     supportsSessionForking: false,
     supportsCompaction: false,
+    supportsNativeScheduling: false,
+    editRevertsFiles: false,
+    inputWhileBusy: 'queue',
     mcp: {
       scopes: ['user', 'project'],
       transports: ['stdio', 'http'],
@@ -92,13 +104,16 @@ const BASELINE: Record<string, Omit<ProviderCapabilities, 'provider'>> = {
     supportsQuota: true,
     supportsQuotaReset: true,
     supportsEffort: true,
-    // Runtime levels; a custom model may only declare from this list.
     effortLevels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
     // `thread/fork` copies a thread up to a chosen turn; editing is that fork
     // plus a new prompt, which is how Codex's own IDE clients do it.
     supportsMessageEditing: true,
     supportsSessionForking: true,
+    // `thread/compact/start` on the same app-server transport the fork rides.
     supportsCompaction: true,
+    supportsNativeScheduling: false,
+    editRevertsFiles: false,
+    inputWhileBusy: 'queue',
     mcp: {
       scopes: ['user', 'project'],
       transports: ['stdio', 'http'],
@@ -116,14 +131,23 @@ const BASELINE: Record<string, Omit<ProviderCapabilities, 'provider'>> = {
     // forms surface as cards answered through the service API.
     supportsPermissionRequests: true,
     supportsTokenUsage: true,
-    supportsQuota: false,
+    // OpenCode Go exposes the official usage endpoint (5-hour/weekly/monthly
+    // windows), so its auth facet carries getQuota.
+    supportsQuota: true,
     supportsQuotaReset: false,
     supportsEffort: true,
-    // Runtime levels; a custom model may only declare from this list.
     effortLevels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'thinking'],
+    // The service-client runtime carries no edit/rewind or fork path yet, so
+    // neither capability is derived for this provider.
     supportsMessageEditing: false,
     supportsSessionForking: false,
+    // The runtime's `compact` facet drives the service's compaction request
+    // (a synthetic message the engine runs as a summarization turn), which is
+    // what puts `/compact` in the composer menu for this provider.
     supportsCompaction: true,
+    supportsNativeScheduling: false,
+    editRevertsFiles: false,
+    inputWhileBusy: 'queue',
     mcp: {
       scopes: ['user', 'project'],
       transports: ['stdio', 'http'],
@@ -147,13 +171,18 @@ const BASELINE: Record<string, Omit<ProviderCapabilities, 'provider'>> = {
     supportsQuota: true,
     supportsQuotaReset: true,
     supportsEffort: true,
-    // Runtime levels; a custom model may only declare from this list.
     effortLevels: ['low', 'high', 'max'],
     // No resolveEditAnchor/fork facets: transcripts are append-only for this
     // provider today.
     supportsMessageEditing: false,
     supportsSessionForking: false,
+    // The runtime's `compact` facet drives the engine's `session/compact` (a
+    // background summarization turn), which is what puts `/compact` in the
+    // composer menu for this provider.
     supportsCompaction: true,
+    supportsNativeScheduling: false,
+    editRevertsFiles: false,
+    inputWhileBusy: 'queue',
     mcp: {
       scopes: ['user', 'project'],
       transports: ['stdio', 'http'],
@@ -172,11 +201,17 @@ const BASELINE: Record<string, Omit<ProviderCapabilities, 'provider'>> = {
     supportsQuota: true,
     supportsQuotaReset: false,
     supportsEffort: true,
-    // Runtime levels; a custom model may only declare from this list.
     effortLevels: ['low', 'medium', 'high'],
     supportsMessageEditing: false,
     supportsSessionForking: false,
+    // Upstream's matrix says the engine parses `/compact` from the prompt
+    // itself, so the composer offers it; this fork has not re-verified that
+    // against agy here (an earlier probe saw print mode pass the text through
+    // to the model).
     supportsCompaction: true,
+    supportsNativeScheduling: false,
+    editRevertsFiles: false,
+    inputWhileBusy: 'queue',
     mcp: {
       scopes: ['user', 'project'],
       transports: ['stdio', 'http', 'sse'],
@@ -206,6 +241,18 @@ test('the catalog covers exactly the registered providers with valid mode tables
     );
     assert.ok(entry.permissionModes.length > 0, `${provider}: permissionModes must not be empty`);
     assert.ok(entry.defaultModel.length > 0, `${provider}: defaultModel must be declared`);
+  }
+});
+
+test('only providers whose runtime can inject input mid-turn declare inputWhileBusy always', () => {
+  for (const provider of providerRegistry.listProviders()) {
+    const declaresAlways = String(PROVIDER_CATALOG[provider.id].inputWhileBusy) === 'always';
+    const canInject = typeof provider.runtime.injectInput === 'function';
+    assert.equal(
+      declaresAlways,
+      canInject,
+      `${provider.id}: inputWhileBusy 'always' and runtime.injectInput must go together`,
+    );
   }
 });
 

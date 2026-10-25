@@ -4,6 +4,9 @@
  * @module cli-installation-probe
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
+
 import spawn from 'cross-spawn';
 
 /**
@@ -16,6 +19,19 @@ import spawn from 'cross-spawn';
  * product-agreed window.
  */
 export const DEFAULT_NEGATIVE_PROBE_TTL_MS = 120_000;
+
+/**
+ * How long a timed-out probe is trusted as "installed" before the next query
+ * probes again. A timeout means the binary exists and launched (a missing one
+ * is caught by the PATH check in `probeSpawnAsync`) but did not answer in time — in practice CPU/disk
+ * contention right after a server restart, when the initial session sync runs
+ * alongside the first status checks. Reporting that as "not installed" would
+ * hide the provider for the whole negative TTL.
+ *
+ * Consumers: `createCliInstallationProbe`, and its tests to step the clock
+ * across the window.
+ */
+export const TIMED_OUT_PROBE_TTL_MS = 10_000;
 
 /**
  * Configuration for one provider's installation probe.
@@ -53,11 +69,13 @@ export type CliInstallationProbe = {
 /**
  * One subprocess probe outcome, shaped so the installed check mirrors the
  * fixed `spawnSync` semantics: exit 0 without an error means installed;
- * ENOENT, non-zero exit, timeout, and thrown errors all mean not installed.
+ * ENOENT, non-zero exit, and thrown errors mean not installed. A timeout
+ * (`timedOut`) means the CLI launched but was too slow to answer.
  */
 type ProbeOutcome = {
   error?: Error;
   status: number | null;
+  timedOut?: boolean;
 };
 
 /**
@@ -70,23 +88,57 @@ export type ProbeSpawn = (
   options: { timeoutMs: number },
 ) => Promise<ProbeOutcome>;
 
+const isFile = (candidate: string): boolean => {
+  try {
+    return fs.statSync(candidate).isFile();
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Whether `command` resolves to a file, either as a path or through PATH
+ * (plus PATHEXT on Windows).
+ *
+ * Consumers: `probeSpawnAsync`, to answer "not installed" without spawning.
+ * On Windows cross-spawn wraps an unresolvable command in `cmd.exe /c`, so a
+ * missing CLI does not fail fast with ENOENT — it waits for cmd to exit, which
+ * under startup contention outlasts the probe timeout and would be misread as
+ * an installed-but-slow CLI.
+ */
+const isCommandResolvable = (command: string): boolean => {
+  const extensions = process.platform === 'win32'
+    ? ['', ...(process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)]
+    : [''];
+  const bases = path.isAbsolute(command) || /[\\/]/.test(command)
+    ? [path.resolve(command)]
+    : (process.env.PATH ?? '').split(path.delimiter).filter(Boolean).map((dir) => path.join(dir, command));
+  return bases.some((base) => extensions.some((extension) => isFile(base + extension)));
+};
+
 const probeSpawnAsync: ProbeSpawn = (command, args, { timeoutMs }) =>
   new Promise((resolve) => {
+    if (!isCommandResolvable(command)) {
+      resolve({ error: new Error(`${command} not found on PATH`), status: null });
+      return;
+    }
+
+
     let settled = false;
     let childProcess: ReturnType<typeof spawn> | undefined;
 
-    // A hung CLI must not pin the status endpoint; treat it as not installed.
+    // A hung CLI must not pin the status endpoint; give up and flag the timeout.
     const timeout = setTimeout(() => {
       if (settled) {
         return;
       }
       settled = true;
       childProcess?.kill();
-      resolve({ error: new Error('installation probe timed out'), status: null });
+      resolve({ error: new Error('installation probe timed out'), status: null, timedOut: true });
     }, timeoutMs);
 
     try {
-      childProcess = spawn(command, args, { stdio: 'ignore' });
+      childProcess = spawn(command, args, { stdio: 'ignore', windowsHide: true });
     } catch (error) {
       clearTimeout(timeout);
       settled = true;
@@ -120,8 +172,9 @@ const probeSpawnAsync: ProbeSpawn = (command, args, { timeoutMs }) =>
  * "installed" is cached for the process lifetime (CLIs are not uninstalled
  * mid-use); "not installed" is cached for `negativeTtlMs` so the status
  * endpoint stops spawning a subprocess per request while still self-healing
- * shortly after the user installs the CLI. Concurrent queries during a probe
- * share the in-flight attempt.
+ * shortly after the user installs the CLI; a timed-out probe counts as
+ * installed for `TIMED_OUT_PROBE_TTL_MS`, then probes again. Concurrent
+ * queries during a probe share the in-flight attempt.
  */
 export function createCliInstallationProbe(
   config: CliInstallationProbeConfig,
@@ -131,17 +184,20 @@ export function createCliInstallationProbe(
   const now = dependencies.now ?? Date.now;
   const negativeTtlMs = config.negativeTtlMs ?? DEFAULT_NEGATIVE_PROBE_TTL_MS;
 
-  /** `true` = installed (cached forever); `false` = not installed (cached until `negativeUntil`). */
+  /** Last probe verdict, trusted until `cachedUntil` (`Infinity` for a confirmed install). */
   let cachedInstalled: boolean | null = null;
-  let negativeUntil = 0;
+  let cachedUntil = 0;
   let inFlight: Promise<boolean> | null = null;
 
+  const remember = (installed: boolean, ttlMs: number): boolean => {
+    cachedInstalled = installed;
+    cachedUntil = now() + ttlMs;
+    return installed;
+  };
+
   const isInstalled = (): Promise<boolean> => {
-    if (cachedInstalled === true) {
-      return Promise.resolve(true);
-    }
-    if (cachedInstalled === false && now() < negativeUntil) {
-      return Promise.resolve(false);
+    if (cachedInstalled !== null && now() < cachedUntil) {
+      return Promise.resolve(cachedInstalled);
     }
     if (inFlight) {
       return inFlight;
@@ -154,17 +210,16 @@ export function createCliInstallationProbe(
           config.args ?? ['--version'],
           { timeoutMs: config.timeoutMs ?? 5000 },
         );
-        cachedInstalled = !outcome.error && outcome.status === 0;
-        return cachedInstalled;
+        if (outcome.timedOut) {
+          return remember(true, TIMED_OUT_PROBE_TTL_MS);
+        }
+        const installed = !outcome.error && outcome.status === 0;
+        return remember(installed, installed ? Infinity : negativeTtlMs);
       } catch {
         // A crashed probe is indistinguishable from a broken install; report
         // not installed and let the negative TTL schedule a retry.
-        cachedInstalled = false;
-        return false;
+        return remember(false, negativeTtlMs);
       } finally {
-        if (cachedInstalled === false) {
-          negativeUntil = now() + negativeTtlMs;
-        }
         inFlight = null;
       }
     })();

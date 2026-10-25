@@ -216,8 +216,13 @@ const filterOpenCodeModelsByProvider = (
 
 const execFileAsync = promisify(execFile);
 
-/** `opencode models` answers in ~100ms via the background service; a hung CLI must not pin the models endpoint. */
-const OPENCODE_MODELS_PROBE_TIMEOUT_MS = 5000;
+/**
+ * `opencode models` answers in ~200ms once OpenCode's background service is
+ * up, but the first call after boot has to start that service and can take
+ * several seconds; 5s was short enough to hand a cold-start page load the
+ * anchor catalog. A hung CLI still must not pin the models endpoint forever.
+ */
+const OPENCODE_MODELS_PROBE_TIMEOUT_MS = 15_000;
 
 /** `<providerID>/<modelID>` as printed by `opencode models`; looser ids would never run anyway. */
 const OPENCODE_MODEL_ID_PATTERN = /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/i;
@@ -366,6 +371,8 @@ const readOpenCodeCliModelIds = async (): Promise<string[]> => {
   try {
     const { stdout } = await execFileAsync(executable, ['models'], {
       timeout: OPENCODE_MODELS_PROBE_TIMEOUT_MS,
+      // Otherwise the probe flashes a console window on Windows.
+      windowsHide: true,
     });
 
     const modelIds: string[] = [];
@@ -433,10 +440,15 @@ export class OpenCodeProviderModels implements IProviderModels {
       return buildAccountScopedOpenCodeCatalog(cliModelIds, readOpenCodeCatalogEntries());
     }
 
-    return filterOpenCodeModelsByProvider(
-      OPENCODE_PREDEFINED_MODELS,
-      await readConnectedOpenCodeProviderIds(),
-    );
+    // Flagged so the client keeps polling for the account catalog instead of
+    // settling on the anchors for the life of the page.
+    return {
+      ...filterOpenCodeModelsByProvider(
+        OPENCODE_PREDEFINED_MODELS,
+        await readConnectedOpenCodeProviderIds(),
+      ),
+      FALLBACK: true,
+    };
   }
 
   async getCurrentActiveModel(sessionId?: string): Promise<ProviderCurrentActiveModel> {

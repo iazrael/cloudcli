@@ -4,7 +4,7 @@ import { act, renderHook } from '@testing-library/react';
 import React from 'react';
 import { beforeEach, test, vi } from 'vitest';
 
-import { readQueuedMessage, writeQueuedMessage } from '@/modules/chat/utils/chatStorage';
+import { readQueuedCompact, readQueuedMessage, writeQueuedCompact, writeQueuedMessage } from '@/modules/chat/utils/chatStorage';
 
 /**
  * Pins the app-level half of message queuing. The composer flush only covers
@@ -111,4 +111,41 @@ test('a completed session without a queued draft dispatches nothing', async () =
   });
 
   assert.deepEqual(sent, []);
+});
+
+test('dispatches a parked compaction for a background session before its queued message', async () => {
+  writeQueuedCompact('session-c', { options: { model: 'm1' } });
+  writeQueuedMessage('session-c', { content: 'after the compaction' });
+  const { result, sent } = await setup({ activeSessionId: 'session-view' });
+
+  act(() => result.current.markSessionProcessing('session-c'));
+  assert.deepEqual([...sent], [], 'nothing to dispatch while the run is still live');
+
+  act(() => result.current.markSessionIdle('session-c'));
+
+  assert.equal(sent.length, 1, 'the compaction goes first');
+  assert.equal(sent[0]?.type, 'chat.compact');
+  assert.equal(sent[0]?.sessionId, 'session-c');
+  assert.equal(readQueuedCompact('session-c'), null, 'the storage key is the claim ticket');
+  assert.ok(readQueuedMessage('session-c'), 'the message waits behind the compaction run');
+
+  // The compaction's own run ends: the queued message follows it.
+  act(() => result.current.markSessionIdle('session-c'));
+
+  assert.equal(sent.length, 2);
+  assert.equal(sent[1]?.type, 'chat.send');
+  assert.equal(sent[1]?.content, 'after the compaction');
+});
+
+test('keeps a parked compaction when disconnected', async () => {
+  writeQueuedCompact('session-d', {});
+  const { result, sent } = await setup({ activeSessionId: 'session-view', isConnected: false });
+
+  act(() => {
+    result.current.markSessionProcessing('session-d');
+    result.current.markSessionIdle('session-d');
+  });
+
+  assert.deepEqual(sent, []);
+  assert.ok(readQueuedCompact('session-d'), 'an offline send would drop the frame silently');
 });

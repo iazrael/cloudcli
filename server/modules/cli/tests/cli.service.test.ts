@@ -42,6 +42,7 @@ function createHarness() {
       serverStarts += 1;
     },
     startBrowserUseMcp: async () => undefined,
+    startScheduledJobsMcp: async () => undefined,
   });
 
   return {

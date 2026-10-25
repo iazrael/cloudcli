@@ -18,6 +18,11 @@
  * after a reload, retracts cards the moment they are answered (here or in
  * another opencode client), and expires forgotten ones.
  *
+ * The engine's event feed is volatile — a dropped connection loses the events
+ * that happened while it was down — so the bridge can also re-read what the
+ * service still holds (`adoptPending`) and place the cards those lost events
+ * never announced: a question the model is waiting on stays answerable.
+ *
  * @module opencode-interaction-bridge
  */
 
@@ -27,6 +32,7 @@ import { createNormalizedMessage, generateMessageId, readObjectRecord, readOptio
 import type { OpenCodeApiClient, OpenCodeFormAnswer } from './opencode-api.client.js';
 import type { OpenCodeEventEnvelope } from './opencode-event-stream.js';
 import type { OpenCodeToolCall } from './opencode-event-translator.js';
+import { OpenCodeSubagentIndex } from './opencode-subagent-index.js';
 
 const PROVIDER = 'opencode' as const;
 const QUESTION_TOOL_NAME = 'AskUserQuestion';
@@ -50,8 +56,6 @@ export type OpenCodeInteractionSession = {
   writer: ProviderRuntimeWriter;
   /** Tool call lookup for labelling permission cards (translator-backed). */
   resolveToolCall: (callId: string) => OpenCodeToolCall | null;
-  /** For a subagent's session: the `Agent` card its requests belong to. Absent on the root session. */
-  resolveOrigin?: () => { toolUseId: string; description?: string } | null;
 };
 
 /** Replay shape for `chat.subscribe`; mirrors zcode's PendingPermissionView. */
@@ -75,6 +79,12 @@ type FormField = {
   options?: Array<{ value?: string; label?: string; description?: string }>;
 };
 
+type ResolvedAttachedSession = {
+  session: OpenCodeInteractionSession;
+  /** Session the service expects the answer on: the child for a subagent ask. */
+  replySessionId: string;
+};
+
 type PendingInteraction = {
   requestId: string;
   kind: 'permission' | 'form';
@@ -94,16 +104,6 @@ type ReplyClient = Pick<OpenCodeApiClient, 'replyPermission' | 'replyForm' | 'ca
 
 type BridgeDependencies = {
   getClient: () => ReplyClient | null;
-  /**
-   * Who owns a session the engine created for a subagent: the root run's
-   * provider session and the child's own tool-call lookup. Its requests carry
-   * the child's id, so without this they match no attached run.
-   */
-  resolveChild?: (providerSessionId: string) => {
-    rootProviderSessionId: string;
-    resolveToolCall: (callId: string) => OpenCodeToolCall | null;
-    resolveOrigin: () => { toolUseId: string; description?: string } | null;
-  } | null;
   now?: () => number;
   pendingTtlMs?: number;
 };
@@ -161,34 +161,17 @@ const toPanelQuestion = (field: FormField) => ({
  */
 export class OpenCodeInteractionBridge {
   private readonly getClient: () => ReplyClient | null;
-  private readonly resolveChild: NonNullable<BridgeDependencies['resolveChild']>;
   private readonly now: () => number;
   private readonly pendingTtlMs: number;
   private readonly sessions = new Map<string, OpenCodeInteractionSession>();
   private readonly pending = new Map<string, PendingInteraction>();
+  /** Child session → parent run links, so a card raised inside an agent is the parent's. */
+  private readonly subagents = new OpenCodeSubagentIndex();
 
   constructor(dependencies: BridgeDependencies) {
     this.getClient = dependencies.getClient;
-    this.resolveChild = dependencies.resolveChild ?? (() => null);
     this.now = dependencies.now ?? Date.now;
     this.pendingTtlMs = dependencies.pendingTtlMs ?? DEFAULT_PENDING_TTL_MS;
-  }
-
-  /**
-   * The run a request belongs to: the attached run itself, or the root run of
-   * a subagent's session. For a child the card is shown under the root's app
-   * session while the reply goes to the child's own provider session.
-   */
-  private sessionFor(providerSessionId: string): OpenCodeInteractionSession | undefined {
-    const direct = this.sessions.get(providerSessionId);
-    if (direct) {
-      return direct;
-    }
-    const child = this.resolveChild(providerSessionId);
-    const root = child ? this.sessions.get(child.rootProviderSessionId) : undefined;
-    return child && root
-      ? { ...root, providerSessionId, resolveToolCall: child.resolveToolCall, resolveOrigin: child.resolveOrigin }
-      : undefined;
   }
 
   attach(session: OpenCodeInteractionSession): void {
@@ -197,10 +180,14 @@ export class OpenCodeInteractionBridge {
 
   detach(providerSessionId: string): void {
     this.sessions.delete(providerSessionId);
+    this.subagents.forgetParent(providerSessionId);
   }
 
   /** Feeds one service event; non-interaction events and foreign sessions are ignored. */
   handleEvent(event: OpenCodeEventEnvelope): void {
+    // Session lifecycle events teach the bridge which child sessions belong
+    // to an attached run, so cards raised inside a subagent resolve to it.
+    this.subagents.note(event);
     const data = readObjectRecord(event.data);
     if (!data) {
       return;
@@ -258,7 +245,12 @@ export class OpenCodeInteractionBridge {
     this.sweepExpired();
     const views: OpenCodePendingInteractionView[] = [];
     for (const entry of this.pending.values()) {
-      if (entry.appSessionId !== sessionId && entry.providerSessionId !== sessionId) {
+      const parentProviderSessionId = this.subagents.resolve(entry.providerSessionId)?.parentProviderSessionId;
+      if (
+        entry.appSessionId !== sessionId
+        && entry.providerSessionId !== sessionId
+        && parentProviderSessionId !== sessionId
+      ) {
         continue;
       }
       views.push({
@@ -274,14 +266,10 @@ export class OpenCodeInteractionBridge {
     return views;
   }
 
-  /**
-   * Retracts every card of a session whose run is ending; the server settles
-   * its own forms. Cards asked by a session in `keep` stay: a background
-   * agent's session still waits for its answer after the run ends.
-   */
-  cancelSession(appSessionId: string, reason: string, keep: ReadonlySet<string> = new Set()): void {
+  /** Retracts every card of a session whose run is ending; the server settles its own forms. */
+  cancelSession(appSessionId: string, reason: string): void {
     for (const entry of [...this.pending.values()]) {
-      if (entry.appSessionId !== appSessionId || keep.has(entry.providerSessionId)) {
+      if (entry.appSessionId !== appSessionId) {
         continue;
       }
       this.pending.delete(entry.requestId);
@@ -290,27 +278,91 @@ export class OpenCodeInteractionBridge {
   }
 
   /**
-   * Points the session's pending cards at a new writer, so the answer and the
-   * retraction of a card kept past its run reach the page through the
-   * session channel instead of the finished run.
+   * Resolves the attached session an interactive request belongs to, directly
+   * or through the subagent that raised it. `replySessionId` is where the
+   * service expects the answer (the child for a subagent request); the session
+   * itself carries the parent's writer and app id.
    */
-  rebind(appSessionId: string, writer: ProviderRuntimeWriter): void {
-    for (const entry of this.pending.values()) {
-      if (entry.appSessionId === appSessionId) {
-        entry.writer = writer;
+  private resolveAttachedSession(providerSessionId: string): ResolvedAttachedSession | null {
+    const direct = this.sessions.get(providerSessionId);
+    if (direct) {
+      return { session: direct, replySessionId: providerSessionId };
+    }
+    const parent = this.subagents.resolve(providerSessionId);
+    const parentSession = parent ? this.sessions.get(parent.parentProviderSessionId) : undefined;
+    return parentSession ? { session: parentSession, replySessionId: providerSessionId } : null;
+  }
+
+  /**
+   * Announces the interactions the service still holds for a session but this
+   * bridge has no card for — the recovery path for `permission.asked` and
+   * `form.created` events lost while the service's event feed was down.
+   *
+   * The service keeps its pending set in process memory and the list routes
+   * read it back, so an ask lost in a gap is still answerable; nothing else
+   * ever re-reads those sets, and a model waiting on a question would wait
+   * forever. Ids already pending are left alone, so reconciling after every
+   * event-stream reconnect and every subscribe is idempotent.
+   *
+   * Consumer: opencode runtime (event-stream reconnect, session subscribe).
+   */
+  adoptPending(
+    providerSessionId: string,
+    input: { forms?: unknown[]; permissions?: unknown[] },
+  ): number {
+    const resolved = this.resolveAttachedSession(providerSessionId);
+    if (!resolved) {
+      return 0;
+    }
+    let announced = 0;
+    for (const permission of input.permissions ?? []) {
+      if (this.announcePermission(resolved, readObjectRecord(permission))) {
+        announced += 1;
       }
     }
+    for (const form of input.forms ?? []) {
+      if (this.announceForm(resolved, readObjectRecord(form), { warnOnUnsupportedKind: false })) {
+        announced += 1;
+      }
+    }
+    return announced;
   }
 
   private onPermissionAsked(data: Record<string, unknown>): void {
-    const requestId = readOptionalString(data.id);
     const providerSessionId = readOptionalString(data.sessionID);
-    if (!requestId || !providerSessionId || this.pending.has(requestId)) {
+    if (!providerSessionId) {
       return;
     }
-    const session = this.sessionFor(providerSessionId);
-    if (!session) {
+    // A permission asked inside a subagent is answered against the child
+    // session (the service owns the request there) but belongs to the parent
+    // chat session, whose run the card surfaces through.
+    const resolved = this.resolveAttachedSession(providerSessionId);
+    if (!resolved) {
       return;
+    }
+    this.announcePermission(resolved, data);
+  }
+
+  private onFormCreated(form: Record<string, unknown>): void {
+    const providerSessionId = readOptionalString(form.sessionID);
+    if (!providerSessionId) {
+      return;
+    }
+    const resolved = this.resolveAttachedSession(providerSessionId);
+    if (!resolved) {
+      return;
+    }
+    this.announceForm(resolved, form, { warnOnUnsupportedKind: true });
+  }
+
+  /** Places one permission card; false when it is malformed or already pending. */
+  private announcePermission(
+    { session, replySessionId }: ResolvedAttachedSession,
+    data: Record<string, unknown> | null,
+  ): boolean {
+    const requestId = data ? readOptionalString(data.id) : undefined;
+    if (!data || !requestId || this.pending.has(requestId)) {
+      return false;
     }
     const action = readOptionalString(data.action) ?? 'tool';
     const resources = Array.isArray(data.resources) ? data.resources.filter((item): item is string => typeof item === 'string') : [];
@@ -321,7 +373,7 @@ export class OpenCodeInteractionBridge {
       requestId,
       kind: 'permission',
       appSessionId: session.appSessionId,
-      providerSessionId,
+      providerSessionId: replySessionId,
       toolName: toolCall?.name ?? action,
       toolId,
       input: toolCall?.input ?? { resources },
@@ -330,31 +382,38 @@ export class OpenCodeInteractionBridge {
         resources,
         save: Array.isArray(data.save) ? data.save : undefined,
         reason: resources.length > 0 ? `${action}: ${resources.join(', ')}` : action,
-        ...this.originOf(session),
       },
       receivedAt: new Date(this.now()),
       formFields: [],
       writer: session.writer,
     });
+    return true;
   }
 
-  private onFormCreated(form: Record<string, unknown>): void {
-    const requestId = readOptionalString(form.id);
-    const providerSessionId = readOptionalString(form.sessionID);
-    if (!requestId || !providerSessionId || this.pending.has(requestId)) {
-      return;
-    }
-    const session = this.sessionFor(providerSessionId);
-    if (!session) {
-      return;
+  /**
+   * Places one question card; false when it is malformed, already pending, or
+   * a kind the panel cannot render. Only the event path warns about that last
+   * case — a reconcile re-reads the same list on every subscribe, and the
+   * warning exists to notice a new service-side form kind once.
+   */
+  private announceForm(
+    { session, replySessionId }: ResolvedAttachedSession,
+    form: Record<string, unknown> | null,
+    options: { warnOnUnsupportedKind: boolean },
+  ): boolean {
+    const requestId = form ? readOptionalString(form.id) : undefined;
+    if (!form || !requestId || this.pending.has(requestId)) {
+      return false;
     }
     const metadata = readObjectRecord(form.metadata);
     const kind = readOptionalString(metadata?.kind);
     if (kind !== 'question') {
       // Only the question tool's form has the panel shape; anything else the
       // service adds later must not be rendered as an answerable survey.
-      console.warn(`[OpenCode] ignoring form of unsupported kind "${kind ?? 'unknown'}"`);
-      return;
+      if (options.warnOnUnsupportedKind) {
+        console.warn(`[OpenCode] ignoring form of unsupported kind "${kind ?? 'unknown'}"`);
+      }
+      return false;
     }
     const tool = readObjectRecord(metadata?.tool);
     const fields = readFormFields(form.fields);
@@ -362,21 +421,16 @@ export class OpenCodeInteractionBridge {
       requestId,
       kind: 'form',
       appSessionId: session.appSessionId,
-      providerSessionId,
+      providerSessionId: replySessionId,
       toolName: QUESTION_TOOL_NAME,
       toolId: readOptionalString(tool?.id),
       input: { questions: fields.map(toPanelQuestion) },
-      context: { reason: readOptionalString(form.title) ?? 'Questions', kind: readOptionalString(metadata?.kind), ...this.originOf(session) },
+      context: { reason: readOptionalString(form.title) ?? 'Questions', kind: readOptionalString(metadata?.kind) },
       receivedAt: new Date(this.now()),
       formFields: fields,
       writer: session.writer,
     });
-  }
-
-  /** `{ subagent }` for a request from a subagent's session, else nothing. */
-  private originOf(session: OpenCodeInteractionSession): { subagent?: { toolUseId: string; description?: string } } {
-    const origin = session.resolveOrigin?.();
-    return origin ? { subagent: origin } : {};
+    return true;
   }
 
   private announce(session: OpenCodeInteractionSession, entry: PendingInteraction): void {

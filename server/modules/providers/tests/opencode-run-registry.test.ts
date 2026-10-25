@@ -2,13 +2,35 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { OpenCodeApiError } from '@/modules/providers/list/opencode/opencode-api.client.js';
-import { OpenCodeRunRegistry, toOpenCodeTokenBudget } from '@/modules/providers/list/opencode/opencode-run-registry.js';
-import { BackgroundWorkRegistry } from '@/modules/providers/shared/background-work/background-work-registry.js';
+import { OpenCodeRunRegistry, OpenCodeTokenBudgetTracker } from '@/modules/providers/list/opencode/opencode-run-registry.js';
 import type { NormalizedMessage } from '@/shared/types.js';
 
 const writerOf = () => {
   const frames: NormalizedMessage[] = [];
   return { frames, writer: { send: (data: unknown) => { frames.push(data as NormalizedMessage); } } };
+};
+
+/**
+ * Registers one background child the way the service announces it: the child's
+ * own creation, the parent's launch acknowledgement, and a first child frame
+ * (which is what flushes the queued link and records the background task).
+ */
+const startBackgroundChild = (
+  registry: OpenCodeRunRegistry,
+  { childId = 'ses_child', callId = 'call_subagent', title = 'Audit the repo' } = {},
+) => {
+  registry.dispatch({
+    type: 'session.created',
+    data: { sessionID: childId, parentID: 'ses_parent', agent: 'general', title },
+  });
+  registry.dispatch({
+    type: 'session.tool.progress',
+    data: { sessionID: 'ses_parent', id: callId, metadata: { sessionID: childId, status: 'running' } },
+  });
+  registry.dispatch({
+    type: 'session.text.delta',
+    data: { sessionID: childId, assistantMessageID: 'm_child', ordinal: 0, delta: 'working' },
+  });
 };
 
 test('dispatch routes events by provider session and settles on the first terminal only', async () => {
@@ -28,6 +50,272 @@ test('dispatch routes events by provider session and settles on the first termin
   runA.settle({ outcome: 'failed', error: 'late' });
   registry.dispatch({ type: 'session.execution.failed', data: { sessionID: 'ses_a', error: { message: 'late event' } } });
   assert.deepEqual(await runA.settled, outcome, 'first settlement wins over later terminals');
+});
+
+test('child session frames ride the parent run and are stamped with the spawn call id', async () => {
+  const registry = new OpenCodeRunRegistry();
+  const { frames, writer } = writerOf();
+  const run = registry.create('app-parent', 'ses_parent', writer);
+
+  registry.dispatch({
+    type: 'session.tool.input.started',
+    data: { sessionID: 'ses_parent', id: 'call_subagent', name: 'subagent' },
+  });
+  registry.dispatch({
+    type: 'session.tool.called',
+    data: {
+      sessionID: 'ses_parent',
+      id: 'call_subagent',
+      input: { agent: 'general', description: 'Inspect it' },
+    },
+  });
+  registry.dispatch({
+    type: 'session.created',
+    data: {
+      sessionID: 'ses_child',
+      parentID: 'ses_parent',
+      agent: 'general',
+      title: 'Inspect it',
+    },
+  });
+
+  frames.length = 0;
+  registry.dispatch({
+    type: 'session.text.delta',
+    data: { sessionID: 'ses_child', assistantMessageID: 'm_child', ordinal: 0, delta: 'child says hi' },
+  });
+
+  assert.equal(frames.length, 1);
+  assert.equal(frames[0]?.sessionId, 'app-parent');
+  assert.equal(frames[0]?.parentToolUseId, 'call_subagent');
+  assert.equal(frames[0]?.content, 'child says hi');
+
+  // The child's own terminal ends the child, not the parent turn.
+  registry.dispatch({ type: 'session.execution.succeeded', data: { sessionID: 'ses_child' } });
+  assert.equal(await Promise.race([run.settled, Promise.resolve('still-open')]), 'still-open');
+  registry.dispatch({ type: 'session.execution.succeeded', data: { sessionID: 'ses_parent' } });
+  assert.deepEqual(await run.settled, { outcome: 'succeeded' });
+});
+
+test('a running child session is background work for the composer until it settles', async () => {
+  const registry = new OpenCodeRunRegistry();
+  const { frames, writer } = writerOf();
+  registry.create('app-parent', 'ses_parent', writer);
+
+  registry.dispatch({
+    type: 'session.tool.input.started',
+    data: { sessionID: 'ses_parent', id: 'call_subagent', name: 'subagent' },
+  });
+  registry.dispatch({
+    type: 'session.tool.called',
+    data: { sessionID: 'ses_parent', id: 'call_subagent', input: { agent: 'general', description: 'Audit the repo' } },
+  });
+  registry.dispatch({
+    type: 'session.created',
+    data: { sessionID: 'ses_child', parentID: 'ses_parent', agent: 'general', title: 'Audit the repo' },
+  });
+
+  assert.equal(registry.isBackgroundWorkPending('app-parent'), true);
+  assert.deepEqual(registry.listBackgroundWork(), [{
+    sessionId: 'app-parent',
+    tasks: [{
+      taskId: 'ses_child',
+      toolUseId: 'call_subagent',
+      taskType: 'local_agent',
+      description: 'Audit the repo',
+      startedAt: registry.backgroundTasksFor('app-parent')[0]?.startedAt,
+    }],
+  }]);
+  assert.equal(registry.backgroundTasksFor('app-parent')[0]?.toolName, 'subagent');
+  assert.equal(
+    registry.backgroundTasksFor('app-parent')[0]?.id,
+    'call_subagent',
+    'the strip addresses the spawn call: that is the transcript anchor and the id a per-task stop matches',
+  );
+  const announced = frames.filter((frame) => frame.kind === 'status' && frame.text === 'background_tasks');
+  assert.equal(announced.length, 1, 'the composer learns about the background work live');
+  assert.equal(announced[0]?.backgroundTasks?.length, 1);
+  assert.equal(announced[0]?.backgroundTasks?.[0]?.id, 'call_subagent');
+  assert.equal(announced[0]?.backgroundTasks?.[0]?.taskId, 'ses_child');
+  assert.equal(announced[0]?.backgroundWorkPending, true);
+
+  let cleared = false;
+  void registry.whenBackgroundWorkClears('app-parent').then(() => { cleared = true; });
+  frames.length = 0;
+  registry.dispatch({ type: 'session.execution.succeeded', data: { sessionID: 'ses_child' } });
+  await Promise.resolve();
+
+  assert.equal(cleared, true);
+  assert.equal(registry.isBackgroundWorkPending('app-parent'), false);
+  assert.deepEqual(registry.listBackgroundWork(), []);
+  const settled = frames.filter((frame) => frame.kind === 'status' && frame.text === 'background_tasks');
+  assert.equal(settled.length, 1, 'the pill clears as soon as the child settles');
+  assert.deepEqual(settled[0]?.backgroundTasks, []);
+  assert.equal(settled[0]?.backgroundWorkPending, false);
+  const cardSettle = frames.filter((frame) => frame.kind === 'task_status');
+  assert.equal(cardSettle.length, 1, 'the card is settled by the terminal, not by the next reload');
+  assert.equal(cardSettle[0]?.status, 'completed');
+  assert.equal(cardSettle[0]?.toolUseId, 'call_subagent');
+
+  // The child's own terminal must not settle the parent turn.
+  const parent = registry.get('app-parent');
+  assert.ok(parent);
+  assert.equal(await Promise.race([parent.settled, Promise.resolve('still-open')]), 'still-open');
+});
+
+test('the background hold times out so a lost child terminal cannot pin the run', async () => {
+  const registry = new OpenCodeRunRegistry();
+  const { frames, writer } = writerOf();
+  registry.create('app-parent', 'ses_parent', writer);
+  // The launch call is identified by the parent's progress event, which also
+  // flushes the queued `session.created` and records the background task.
+  startBackgroundChild(registry, { title: 'Lost child' });
+  assert.equal(registry.isBackgroundWorkPending('app-parent'), true);
+
+  // No reader is wired here, so the deadline cannot judge the child and drops
+  // it — the backstop for a terminal (and a service) that is simply gone.
+  await registry.whenBackgroundWorkClears('app-parent', 10);
+  assert.equal(registry.isBackgroundWorkPending('app-parent'), false);
+
+  const announced = frames.filter((frame) => frame.kind === 'status' && frame.text === 'background_tasks');
+  assert.equal(announced.at(-1)?.backgroundWorkPending, false, 'the composer is told the work is gone');
+  assert.deepEqual(announced.at(-1)?.backgroundTasks, []);
+});
+
+test('a deadline verdict from the child\'s own row settles it with the engine outcome', async () => {
+  const registry = new OpenCodeRunRegistry({
+    readChildSnapshot: async () => ({ outcome: 'succeeded', idleAt: Date.now() + 1_000, tokens: null }),
+  });
+  const { frames, writer } = writerOf();
+  registry.create('app-parent', 'ses_parent', writer);
+  startBackgroundChild(registry);
+  frames.length = 0;
+
+  await registry.whenBackgroundWorkClears('app-parent', 10);
+
+  assert.equal(registry.isBackgroundWorkPending('app-parent'), false);
+  const settled = frames.filter((frame) => frame.kind === 'task_status');
+  assert.equal(settled.length, 1, 'the card is settled without waiting for a history refresh');
+  assert.equal(settled[0]?.status, 'completed');
+  assert.equal(settled[0]?.toolUseId, 'call_subagent');
+  assert.equal(settled[0]?.taskId, 'ses_child');
+});
+
+test('a child the engine still reports mid-turn survives its deadline and settles on a later verdict', async () => {
+  // The session row keeps its previous idle stamp while the child is woken
+  // again and works, so a verdict older than the launch means "still running".
+  let idleAt: number | null = Date.now() - 60_000;
+  const registry = new OpenCodeRunRegistry({
+    readChildSnapshot: async () => ({ outcome: 'succeeded', idleAt, tokens: null }),
+  });
+  const { frames, writer } = writerOf();
+  registry.create('app-parent', 'ses_parent', writer);
+  startBackgroundChild(registry);
+
+  const cleared = registry.whenBackgroundWorkClears('app-parent', 10);
+  let resolved = false;
+  void cleared.then(() => { resolved = true; });
+  await new Promise((resolve) => { setTimeout(resolve, 40); });
+
+  assert.equal(resolved, false, 'a mid-turn child is not dropped at the deadline');
+  assert.equal(registry.isBackgroundWorkPending('app-parent'), true);
+
+  frames.length = 0;
+  idleAt = Date.now();
+  await Promise.race([cleared, new Promise((resolve) => { setTimeout(resolve, 1_000); })]);
+
+  assert.equal(resolved, true);
+  assert.equal(registry.isBackgroundWorkPending('app-parent'), false);
+  assert.equal(frames.filter((frame) => frame.kind === 'task_status').length, 1);
+});
+
+test('the hold cap drops a child the engine keeps reporting mid-turn', async () => {
+  const registry = new OpenCodeRunRegistry({
+    readChildSnapshot: async () => ({ outcome: 'succeeded', idleAt: Date.now() - 60_000, tokens: null }),
+    maxBackgroundHoldMs: 1,
+  });
+  const { frames, writer } = writerOf();
+  registry.create('app-parent', 'ses_parent', writer);
+  startBackgroundChild(registry);
+  frames.length = 0;
+
+  await registry.whenBackgroundWorkClears('app-parent', 10);
+
+  assert.equal(registry.isBackgroundWorkPending('app-parent'), false, 'the cap is the last backstop');
+  assert.equal(frames.filter((frame) => frame.kind === 'task_status').length, 0, 'nothing knew how it ended');
+  const announced = frames.filter((frame) => frame.kind === 'status' && frame.text === 'background_tasks');
+  assert.deepEqual(announced.at(-1)?.backgroundTasks, []);
+});
+
+test('a child event that arrives before its launch call is held, then delivered in order', async () => {
+  const registry = new OpenCodeRunRegistry();
+  const { frames, writer } = writerOf();
+  registry.create('app-parent', 'ses_parent', writer);
+
+  // The session link is known from `session.created`, but its description did
+  // not match the launch (no `called` event was seen), so the tool call id is
+  // still unknown. The frame must not leak untagged to the top level.
+  registry.dispatch({
+    type: 'session.created',
+    data: { sessionID: 'ses_child', parentID: 'ses_parent', agent: 'general', title: 'Renamed child' },
+  });
+  registry.dispatch({
+    type: 'session.text.delta',
+    data: { sessionID: 'ses_child', assistantMessageID: 'm_child', ordinal: 0, delta: 'early' },
+  });
+  assert.equal(frames.length, 0);
+
+  registry.dispatch({
+    type: 'session.tool.progress',
+    data: {
+      sessionID: 'ses_parent',
+      id: 'call_subagent',
+      metadata: { sessionID: 'ses_child', status: 'running' },
+    },
+  });
+  registry.dispatch({
+    type: 'session.text.delta',
+    data: { sessionID: 'ses_child', assistantMessageID: 'm_child', ordinal: 0, delta: ' late' },
+  });
+
+  assert.deepEqual(
+    frames
+      .filter((frame) => frame.parentToolUseId)
+      .map((frame) => [frame.content, frame.parentToolUseId]),
+    [['early', 'call_subagent'], [' late', 'call_subagent']],
+  );
+});
+
+test('dispatch fails a compact run on a failed compaction, and leaves a chat run alone', async () => {
+  const registry = new OpenCodeRunRegistry();
+  const compactWriter = writerOf();
+  const compactRun = registry.create('app-compact', 'ses_1', compactWriter.writer, 'compact');
+  const chatWriter = writerOf();
+  const chatRun = registry.create('app-chat', 'ses_2', chatWriter.writer);
+
+  const failedEvent = {
+    type: 'session.compaction.failed',
+    data: {
+      sessionID: 'ses_1',
+      reason: 'manual',
+      inputID: 'msg_1',
+      error: { type: 'provider.no-route', message: 'Model unavailable: opencode/gpt-5.6-terra' },
+    },
+  };
+  registry.dispatch(failedEvent);
+  assert.deepEqual(await compactRun.settled, {
+    outcome: 'failed',
+    error: 'Model unavailable: opencode/gpt-5.6-terra',
+  });
+  assert.equal(compactWriter.frames.length, 0, 'the runtime renders the failure, not the registry');
+
+  // The same event for an ordinary turn (the engine compacted its own
+  // context) must not fail the user's run — it ends on its execution
+  // terminal like any other.
+  registry.dispatch({ ...failedEvent, data: { ...failedEvent.data, sessionID: 'ses_2' } });
+  assert.equal(await Promise.race([chatRun.settled, Promise.resolve('still-open')]), 'still-open');
+  registry.dispatch({ type: 'session.execution.succeeded', data: { sessionID: 'ses_2' } });
+  assert.deepEqual(await chatRun.settled, { outcome: 'succeeded' });
 });
 
 test('reconcile settles a run whose session went idle after the prompt', async () => {
@@ -99,101 +387,112 @@ test('reconcile: 404 loses the run, other errors keep it open, unaccepted prompt
   assert.equal(notAccepted.promptAccepted, false);
 });
 
-test('toOpenCodeTokenBudget sums cache reads into input and skips empty totals', () => {
-  assert.equal(toOpenCodeTokenBudget({ input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 }), null);
+test('dispatch publishes a budget frame from a step.ended event when a tracker is registered', () => {
+  const registry = new OpenCodeRunRegistry();
+  const { frames, writer } = writerOf();
+  const run = registry.create('app-a', 'ses_a', writer);
+  run.budgetTracker = new OpenCodeTokenBudgetTracker(null, null);
+
+  registry.dispatch({
+    type: 'session.step.ended',
+    data: {
+      sessionID: 'ses_a',
+      tokens: { input: 2798, output: 509, reasoning: 711, cache: { read: 488192, write: 0 } },
+    },
+  });
+
+  const budgetFrames = frames.filter((frame) => frame.kind === 'status' && frame.text === 'token_budget');
+  assert.equal(budgetFrames.length, 1);
+  assert.deepEqual(budgetFrames[0]?.tokenBudget, {
+    used: 492210,
+    inputTokens: 490990,
+    outputTokens: 1220,
+    breakdown: { input: 490990, output: 1220 },
+  });
+});
+
+test('dispatch drops step tokens when no tracker is registered, and throttles repeats', () => {
+  const registry = new OpenCodeRunRegistry();
+  const { frames, writer } = writerOf();
+  const run = registry.create('app-a', 'ses_a', writer);
+  const stepEvent = {
+    type: 'session.step.ended',
+    data: { sessionID: 'ses_a', tokens: { input: 100, output: 10, reasoning: 0, cache: { read: 0, write: 0 } } },
+  };
+
+  // No tracker: nothing is emitted from step events.
+  registry.dispatch(stepEvent);
+  assert.equal(frames.length, 0);
+
+  run.budgetTracker = new OpenCodeTokenBudgetTracker(null, null);
+  registry.dispatch(stepEvent);
+  registry.dispatch(stepEvent);
+  const budgetFrames = frames.filter((frame) => frame.kind === 'status' && frame.text === 'token_budget');
+  assert.equal(budgetFrames.length, 1, 'an unchanged value inside the interval must not repaint');
+});
+
+test('concurrent runs each publish occupancy through their own tracker', () => {
+  const registry = new OpenCodeRunRegistry();
+  const first = writerOf();
+  const second = writerOf();
+  const runA = registry.create('app-a', 'ses_a', first.writer);
+  const runB = registry.create('app-b', 'ses_b', second.writer);
+  runA.budgetTracker = new OpenCodeTokenBudgetTracker(null, null);
+  // A run started later must not take over the earlier run's publisher.
+  runB.budgetTracker = new OpenCodeTokenBudgetTracker(null, null);
+  const tokens = { input: 100, output: 10, reasoning: 0, cache: { read: 0, write: 0 } };
+
+  registry.dispatch({ type: 'session.step.ended', data: { sessionID: 'ses_a', tokens } });
+  registry.dispatch({ type: 'session.step.ended', data: { sessionID: 'ses_b', tokens } });
+
+  const budgetsOf = (frames: typeof first.frames) => frames.filter((frame) => frame.text === 'token_budget');
+  assert.equal(budgetsOf(first.frames).length, 1);
+  assert.equal(budgetsOf(second.frames).length, 1, "B's equal reading is not throttled by A's");
+  assert.equal(budgetsOf(first.frames)[0]?.sessionId, 'app-a');
+});
+
+test('the service exiting clears the composer strip live, not only on the next reload', () => {
+  const registry = new OpenCodeRunRegistry();
+  const { frames, writer } = writerOf();
+  registry.create('app-parent', 'ses_parent', writer);
+  startBackgroundChild(registry);
+  frames.length = 0;
+
+  registry.settleAll({ outcome: 'lost', error: 'The OpenCode service exited.' });
+
+  assert.equal(registry.isBackgroundWorkPending('app-parent'), false);
+  const announced = frames.filter((frame) => frame.kind === 'status' && frame.text === 'background_tasks');
+  assert.equal(announced.length, 1);
+  assert.deepEqual(announced[0]?.backgroundTasks, []);
+  assert.equal(announced[0]?.backgroundWorkPending, false);
+});
+
+test('reconcile retires a background child whose terminal fell in the stream gap', async () => {
+  const registry = new OpenCodeRunRegistry();
+  const { frames, writer } = writerOf();
+  registry.create('app-parent', 'ses_parent', writer);
+  startBackgroundChild(registry, { childId: 'ses_done', callId: 'call_done' });
+  startBackgroundChild(registry, { childId: 'ses_busy', callId: 'call_busy' });
+  startBackgroundChild(registry, { childId: 'ses_unreadable', callId: 'call_unreadable' });
+  frames.length = 0;
+
+  await registry.reconcile({
+    getSession: async (id) => {
+      if (id === 'ses_done') return { outcome: 'failed', idleAt: Date.now() + 1_000, tokens: null };
+      if (id === 'ses_busy') return { outcome: null, idleAt: null, tokens: null };
+      throw new Error('unreadable');
+    },
+  });
+
   assert.deepEqual(
-    toOpenCodeTokenBudget({ input: 19154, output: 10, reasoning: 435, cacheRead: 2048, cacheWrite: 0 }),
-    { used: 21647, inputTokens: 21202, outputTokens: 10, breakdown: { input: 21202, output: 10 } },
+    registry.backgroundTasksFor('app-parent').map((task) => task.id).sort(),
+    ['call_busy', 'call_unreadable'],
+    'only the child the engine reports idle is retired; a failed read proves nothing',
   );
-});
-
-// Background work whose notice fell into a stream gap (see opencode-background-work.ts).
-const launchInBackground = (registry: OpenCodeRunRegistry) => {
-  registry.dispatch({ type: 'session.tool.called', data: { sessionID: 'ses_1', assistantMessageID: 'm', id: 'call_bg', name: 'subagent', input: { description: 'Review', background: true } } });
-  registry.dispatch({ type: 'session.tool.success', data: { sessionID: 'ses_1', assistantMessageID: 'm', id: 'call_bg', content: [], metadata: { sessionID: 'ses_child', status: 'running' } } });
-};
-
-test('reconcile settles background work from a notice persisted after it launched, and learns the report turn', async () => {
-  const backgroundWork = new BackgroundWorkRegistry();
-  const registry = new OpenCodeRunRegistry({ backgroundWork });
-  const { writer } = writerOf();
-  const channel = writerOf();
-  const run = registry.create('app-1', 'ses_1', writer, channel.writer);
-  launchInBackground(registry);
-  registry.dispatch({ type: 'session.execution.succeeded', data: { sessionID: 'ses_1' } });
-  await run.settled;
-  registry.release(run);
-  const startedAt = backgroundWork.get('app-1', 'ses_child')?.startedAt ?? 0;
-
-  // A resumed agent keeps its child session id: the notice of its earlier run must not end this one.
-  registry.reconcileBackground(() => [{ taskId: 'ses_child', outcome: 'completed', at: startedAt - 60_000 }]);
-  assert.ok(backgroundWork.get('app-1', 'ses_child'), 'an older notice is another run\'s');
-
-  registry.reconcileBackground(() => [{ taskId: 'ses_child', outcome: 'completed', at: startedAt + 5_000 }]);
-  assert.equal(backgroundWork.get('app-1', 'ses_child'), undefined);
-  assert.equal(channel.frames.find((frame) => frame.kind === 'task_status' && frame.status === 'completed')?.toolUseId, 'call_bg');
-  assert.ok(registry.conversation('app-1'), 'kept until the service says whether a report turn runs');
-
-  await registry.reconcile({ getSession: async () => ({ outcome: 'succeeded', idleAt: null, tokens: null }) });
-  assert.equal(registry.isReporting('app-1'), true, 'a busy session with no run of ours is the engine\'s report');
-
-  await registry.reconcile({ getSession: async () => ({ outcome: 'succeeded', idleAt: Date.now(), tokens: null }) });
-  assert.equal(registry.conversation('app-1'), null, 'an idle session with nothing left is forgotten');
-});
-
-test('the end of the report turn that follows the last background work is announced once', async () => {
-  const finished: string[] = [];
-  const registry = new OpenCodeRunRegistry({
-    backgroundWork: new BackgroundWorkRegistry(),
-    hooks: { workFinished: (conversation) => finished.push(conversation.appSessionId) },
-  });
-  const { writer } = writerOf();
-  const run = registry.create('app-1', 'ses_1', writer, writerOf().writer);
-  launchInBackground(registry);
-  registry.dispatch({ type: 'session.execution.succeeded', data: { sessionID: 'ses_1' } });
-  await run.settled;
-  registry.release(run);
-  assert.deepEqual(finished, [], 'the run ended but the agent still works');
-
-  registry.dispatch({ type: 'session.inbox.enqueued', data: { sessionID: 'ses_1', item: { type: 'synthetic', payload: { metadata: { source: 'subagent', childID: 'ses_child', state: 'completed' } } } } });
-  registry.dispatch({ type: 'session.execution.started', data: { sessionID: 'ses_1' } });
-  assert.deepEqual(finished, []);
-  registry.dispatch({ type: 'session.execution.succeeded', data: { sessionID: 'ses_1' } });
-  assert.deepEqual(finished, ['app-1']);
-});
-
-test('a conversation dropped twice tells the runtime once, and never about its successor', () => {
-  const dropped: string[] = [];
-  const registry = new OpenCodeRunRegistry({
-    backgroundWork: new BackgroundWorkRegistry(),
-    hooks: { dropped: (conversation) => dropped.push(conversation.appSessionId) },
-  });
-  const first = registry.create('app-1', 'ses_1', writerOf().writer);
-  const stale = registry.conversation('app-1');
-  registry.release(first);
-  assert.deepEqual(dropped, ['app-1']);
-
-  // A new run of the same conversation; a reconcile that still held the old
-  // record must not retract the new run's cards.
-  registry.create('app-1', 'ses_1', writerOf().writer);
-  assert.ok(stale);
-  (registry as unknown as { drop: (conversation: unknown) => void }).drop(stale);
-  assert.deepEqual(dropped, ['app-1']);
-  assert.ok(registry.get('app-1'), 'the new run is untouched');
-});
-
-test('a notice repeated long after its work ended does not settle a later launch of the same agent', () => {
-  const backgroundWork = new BackgroundWorkRegistry();
-  let now = 1_000_000;
-  const registry = new OpenCodeRunRegistry({ backgroundWork, now: () => now });
-  registry.create('app-1', 'ses_1', writerOf().writer, writerOf().writer);
-  const notice = { type: 'session.inbox.enqueued', data: { sessionID: 'ses_1', item: { type: 'synthetic', payload: { metadata: { source: 'subagent', childID: 'ses_child', state: 'completed' } } } } };
-  launchInBackground(registry);
-  registry.dispatch(notice);
-  registry.dispatch(notice);
-  now += 60_000;
-  // The agent is resumed under the same child session id.
-  registry.dispatch({ type: 'session.tool.called', data: { sessionID: 'ses_1', assistantMessageID: 'm2', id: 'call_bg2', name: 'subagent', input: { description: 'Again', background: true } } });
-  registry.dispatch({ type: 'session.tool.success', data: { sessionID: 'ses_1', assistantMessageID: 'm2', id: 'call_bg2', content: [], metadata: { sessionID: 'ses_child', status: 'running' } } });
-  assert.equal(backgroundWork.get('app-1', 'ses_child')?.toolUseId, 'call_bg2', 'the resumed agent runs');
+  const settled = frames.filter((frame) => frame.kind === 'task_status');
+  assert.equal(settled.length, 1);
+  assert.equal(settled[0]?.toolUseId, 'call_done');
+  assert.equal(settled[0]?.status, 'failed');
+  const announced = frames.filter((frame) => frame.kind === 'status' && frame.text === 'background_tasks');
+  assert.equal(announced.at(-1)?.backgroundTasks?.length, 2);
 });

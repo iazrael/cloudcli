@@ -15,10 +15,12 @@ import { getProviderDisplayName } from '@/shared/providerDisplay';
 import { useProviderAuthStatus } from '@/modules/provider-auth';
 
 import { useScheduledMessages } from '@/modules/chat/composer/useScheduledMessages';
+import { useScheduledJobs } from '@/modules/scheduled-jobs';
+import { useProviderCapabilitiesMap } from '@/shared/hooks/useProviderCapabilities';
 import ChatMessagesPane from '@/modules/chat/transcript/ChatMessagesPane';
 import ProviderSelectionEmptyState from '@/modules/chat/transcript/ProviderSelectionEmptyState';
-import type { ChatMessage } from '@/shared/types';
-import { api } from '@/shared/api';
+import type { ChatMessage, ActiveBackgroundTask } from '@/shared/types';
+import { useSessionFork } from '@/shared/hooks/useSessionFork';
 import ChatComposer from '@/modules/chat/composer/ChatComposer';
 import CommandResultModal from '@/modules/chat/modals/CommandResultModal';
 
@@ -42,6 +44,7 @@ function ChatInterface({
   externalMessageUpdate,
   newSessionTrigger,
   onShowAllTasks,
+  scheduledJobsEnabled = false,
 }: ChatInterfaceProps) {
   const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings();
   const { subscribe } = useWebSocket();
@@ -70,6 +73,7 @@ function ChatInterface({
     setProviderModel,
     supportsMessageEditing,
     supportsSessionForking,
+    editRevertsFiles,
     currentProviderEffort,
     currentProviderEffortOptions,
     currentProviderModel,
@@ -110,6 +114,7 @@ function ChatInterface({
     setTokenBudget,
     transcriptItems,
     highlightedItemIndex,
+    revealToolRow,
     createDiff,
     scrollRef,
     virtualizerRef,
@@ -119,8 +124,6 @@ function ChatInterface({
     requestLatestMessages,
     backgroundTasks,
     hasActiveBackgroundTasks,
-    isReplyInFlight,
-    isInputBlocked,
   } = useChatSessionState({
     isActive,
     selectedProject,
@@ -136,6 +139,15 @@ function ChatInterface({
     sessionStore,
     showThinking: Boolean(showThinking),
   });
+
+  // The composer's background-tasks strip jumps to the card its task owns.
+  // `id` is the spawning call (the wire contract for background tasks), so it
+  // addresses both the transcript anchor and the per-task stop request.
+  const handleRevealBackgroundTask = useCallback((task: ActiveBackgroundTask) => {
+    if (task.id) {
+      void revealToolRow(task.id);
+    }
+  }, [revealToolRow]);
 
   // Brand-new conversation: the composer allocated a stable session id via
   // the session gateway before the first send. Record it locally and put it
@@ -183,6 +195,8 @@ function ChatInterface({
     handleSubmit,
     isSubmitting,
     queuedDraft,
+    pendingCompact,
+    cancelPendingCompact,
     editingAnchorId,
     beginEditMessage,
     cancelEditMessage,
@@ -197,7 +211,7 @@ function ChatInterface({
     syncInputOverlayScroll,
     handleClearInput,
     handleAbortSession,
-    handleAbortBackgroundTasks,
+    handleStopBackgroundTasks,
     handlePermissionDecision,
     handleGrantToolPermission,
     handleInputFocusChange,
@@ -206,7 +220,8 @@ function ChatInterface({
     closeCommandModal,
     showCostModal,
     forceSendQueuedDraft,
-    canForceSendQueuedDraft,
+    backgroundWorkQueuesInput,
+    queuesInput,
   } = useChatComposerState({
     selectedProject,
     selectedSession,
@@ -232,7 +247,6 @@ function ChatInterface({
     addMessage,
     setPendingPermissionRequests,
     resolvePermissionModeForProvider,
-    isInputBlocked,
     backgroundTasks,
     hasActiveBackgroundTasks,
   });
@@ -262,7 +276,6 @@ function ChatInterface({
 
   useChatRealtimeHandlers({
     isActive,
-    sendMessage,
     subscribe,
     provider,
     selectedSession,
@@ -273,7 +286,6 @@ function ChatInterface({
     statusCheckSentAtRef,
     onSessionProcessing,
     onSessionIdle,
-    processingSessions,
     onWebSocketReconnect: handleWebSocketReconnect,
     requestLatestMessages,
     sessionStore,
@@ -333,8 +345,36 @@ function ChatInterface({
   // overlapping the last message.
   const hasActivityIndicator = Boolean(sessionActivity && pendingPermissionRequests.length === 0);
 
-  const { scheduledMessages, schedule: scheduleMessage, cancel: cancelScheduledMessage } =
-    useScheduledMessages(currentSessionId || selectedSession?.id || null);
+  const {
+    scheduledMessages,
+    schedule: scheduleMessage,
+    cancel: cancelScheduledMessage,
+    refresh: refreshScheduledMessages,
+  } = useScheduledMessages(currentSessionId || selectedSession?.id || null);
+
+  const {
+    jobs: scheduledJobs,
+    createJob: createScheduledJob,
+    removeJob: removeScheduledJob,
+    refresh: refreshScheduledJobs,
+  } = useScheduledJobs({ sessionId: currentSessionId || selectedSession?.id || null });
+
+  // Both banners are plain fetches, so a run ending is when they can be stale:
+  // a one-off task disables itself after firing and a sent message stops being
+  // pending, and neither would leave the composer until the next scope change.
+  const wasProcessingRef = useRef(isProcessing);
+  useEffect(() => {
+    if (wasProcessingRef.current && !isProcessing) {
+      void refreshScheduledJobs();
+      void refreshScheduledMessages();
+    }
+    wasProcessingRef.current = isProcessing;
+  }, [isProcessing, refreshScheduledJobs, refreshScheduledMessages]);
+
+  const { capabilities: providerCapabilities } = useProviderCapabilitiesMap();
+  // Informational only: engines that schedule inside their own session get a
+  // hint in the repeat entry, not a disabled feature.
+  const supportsNativeScheduling = providerCapabilities?.[provider]?.supportsNativeScheduling ?? false;
 
   const handleScheduleMessage = useCallback(async (scheduledFor: Date) => {
     const content = input.trim();
@@ -350,23 +390,66 @@ function ChatInterface({
     }
   }, [currentProviderEffort, currentProviderModel, input, permissionMode, scheduleMessage, setInput]);
 
+  const handleScheduleTask = useCallback(async (schedule: {
+    cronExpression?: string;
+    runAt?: string;
+    timezone: string;
+    rotateAfterDays?: number;
+  }) => {
+    const content = input.trim();
+    const sessionId = currentSessionId || selectedSession?.id;
+    if (!content || !sessionId) return;
+
+    try {
+      await createScheduledJob({
+        name: content.length > 60 ? `${content.slice(0, 60)}…` : content,
+        prompt: content,
+        sessionMode: 'reuse',
+        sessionId,
+        ...(schedule.rotateAfterDays ? { rotateAfterDays: schedule.rotateAfterDays } : {}),
+        options: { model: currentProviderModel, effort: currentProviderEffort, permissionMode },
+        cronExpression: schedule.cronExpression,
+        runAt: schedule.runAt,
+        timezone: schedule.timezone,
+      });
+      setInput('');
+    } catch (error) {
+      console.error('Failed to create scheduled task:', error);
+    }
+  }, [
+    createScheduledJob,
+    currentProviderEffort,
+    currentProviderModel,
+    currentSessionId,
+    input,
+    permissionMode,
+    selectedSession?.id,
+    setInput,
+  ]);
+
+  const handleDeleteScheduledJob = useCallback((id: string) => {
+    void removeScheduledJob(id).catch((error) => {
+      console.error('Failed to delete scheduled task:', error);
+    });
+  }, [removeScheduledJob]);
+
+  const { forkSession, forkingSessionIds } = useSessionFork();
+
   const handleForkFromMessage = useCallback(async (message: ChatMessage) => {
     const anchorId = message.transcriptAnchorId;
     const sourceSessionId = selectedSession?.id;
     if (!anchorId || !sourceSessionId) return;
 
     try {
-      const response = await api.forkSession(sourceSessionId, { upToAnchorId: anchorId });
-      const payload = await response.json();
-      const forkedSessionId = payload?.data?.sessionId;
-      if (!response.ok || typeof forkedSessionId !== 'string') {
-        throw new Error(payload?.message || `HTTP ${response.status}`);
+      const forked = await forkSession(sourceSessionId, { upToAnchorId: anchorId });
+      // `null` means another fork for this session is already in flight.
+      if (forked) {
+        onNavigateToSession?.(forked.sessionId);
       }
-      onNavigateToSession?.(forkedSessionId);
     } catch (error) {
       console.error('Error forking session:', error);
     }
-  }, [onNavigateToSession, selectedSession?.id]);
+  }, [forkSession, onNavigateToSession, selectedSession?.id]);
 
   // Stable adapter so ChatMessagesPane's React.memo is not defeated by an
   // inline arrow recreated on every render.
@@ -437,6 +520,7 @@ function ChatInterface({
           provider={provider}
           onEditMessage={supportsMessageEditing && !isProcessing ? beginEditMessage : undefined}
           onForkFromMessage={supportsSessionForking ? handleForkFromMessage : undefined}
+          isForking={Boolean(selectedSession?.id && forkingSessionIds.has(selectedSession.id))}
           isLoadingMoreMessages={isLoadingMoreMessages}
           createDiff={createDiff}
           onFileOpen={onFileOpen}
@@ -467,9 +551,7 @@ function ChatInterface({
           handleGrantToolPermission={handleGrantToolPermission}
           activity={sessionActivity}
           isLoading={isProcessing}
-          canAbortSession={canAbortSession}
           onAbortSession={handleAbortSession}
-          onAbortBackgroundTasks={handleAbortBackgroundTasks}
           permissionMode={permissionMode}
           availablePermissionModes={availablePermissionModes}
           onSelectPermissionMode={(mode) => selectPermissionMode(mode as PermissionMode)}
@@ -496,6 +578,8 @@ function ChatInterface({
           queuedDraft={queuedDraft}
           onEditQueuedDraft={editQueuedDraft}
           onDeleteQueuedDraft={deleteQueuedDraft}
+          pendingCompact={pendingCompact}
+          onCancelPendingCompact={cancelPendingCompact}
           attachedFiles={attachedFiles}
           onRemoveAttachment={(index) =>
             setAttachedFiles((previous) =>
@@ -530,19 +614,27 @@ function ChatInterface({
           onTextareaInput={handleTextareaInput}
           isInputFocused={isInputFocused}
           isEditingSentMessage={Boolean(editingAnchorId)}
+          editRevertsFiles={editRevertsFiles}
           onCancelEditMessage={cancelEditMessage}
           scheduledMessages={scheduledMessages}
+          scheduledJobs={scheduledJobsEnabled ? scheduledJobs : []}
+          scheduledJobsEnabled={scheduledJobsEnabled}
           onScheduleMessage={handleScheduleMessage}
+          onScheduleTask={handleScheduleTask}
           onCancelScheduledMessage={cancelScheduledMessage}
+          onDeleteScheduledJob={handleDeleteScheduledJob}
+          supportsNativeScheduling={supportsNativeScheduling}
           onInputFocusChange={handleInputFocusChange}
           placeholder={t('input.placeholder', { provider: selectedProviderLabel })}
           isTextareaExpanded={isTextareaExpanded}
           sendByCtrlEnter={sendByCtrlEnter}
           backgroundTasks={backgroundTasks}
+          onStopBackgroundTasks={handleStopBackgroundTasks}
+          onRevealBackgroundTask={handleRevealBackgroundTask}
           hasActiveBackgroundTasks={hasActiveBackgroundTasks}
-          isInputBlocked={isInputBlocked}
-          isReplyInFlight={isReplyInFlight}
-          onForceSendQueuedDraft={canForceSendQueuedDraft ? forceSendQueuedDraft : undefined}
+          backgroundWorkQueuesInput={backgroundWorkQueuesInput}
+          queuesInput={queuesInput}
+          onForceSendQueuedDraft={forceSendQueuedDraft}
         />
         </div>
       </div>
