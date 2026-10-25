@@ -76,6 +76,15 @@ test('the bridge entry needs the engine call it names, not just the credential',
   });
 
   try {
+    // With the switch off no round carries a run token, so no call is ever
+    // announced. The bridge says so at once instead of waiting for one.
+    const disabledStartedAt = Date.now();
+    const disabled = await invoke({ callId: 'call-disabled', threadId: 'native-thread-1', turnId: 'native-turn-1' });
+    assert.equal(disabled.status, 409);
+    assert.equal((await disabled.json() as { code?: string }).code, 'TASK_CONTINUATIONS_DISABLED');
+    assert.ok(Date.now() - disabledStartedAt < 1_000, 'a disabled bridge must not wait for an engine call');
+    setTaskContinuationsEnabled(true);
+
     // The credential alone proves nothing: the engine never announced this
     // call, so there is no authority behind it.
     const unannounced = await invoke({ callId: 'call-unknown', threadId: 'native-thread-1', turnId: 'native-turn-1' });
@@ -115,7 +124,6 @@ test('the bridge entry needs the engine call it names, not just the credential',
     process.env.CLOUDCLI_TASKS_DIR = path.join(temporaryDirectory, 'tasks');
     process.env.CODEX_HOME = path.join(temporaryDirectory, 'codex');
     await fs.mkdir(process.env.CODEX_HOME);
-    setTaskContinuationsEnabled(true);
     const taskArguments = { title: 'isolated bridge identity', command: process.execPath, args: ['-e', 'process.exit(0)'], notify: false };
     const taskIds = new Set<string>();
     const register = async (callId: string, requestId: string) => {

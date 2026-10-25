@@ -108,6 +108,25 @@ function readBridgeCallIdentity(params: Record<string, unknown>): BridgeCallIden
 }
 
 /**
+ * The text a refused host request shows the model.
+ *
+ * The host's error middleware nests the code and message under `error`; the
+ * code alone often does not say what to do next (a disabled switch and an
+ * unannounced call are both refusals), so the host's own message goes along.
+ */
+function describeHostRefusal(status: number, body: unknown): string {
+  const record = readObjectRecord(body);
+  const error = readObjectRecord(record?.error);
+  // A bare `{ code }` body still names the refusal.
+  const rawCode = error?.code ?? record?.code;
+  const code = typeof rawCode === 'string' && rawCode ? ` (${rawCode})` : '';
+  const message = typeof error?.message === 'string' && error.message.trim()
+    ? `: ${error.message.trim().slice(0, 300)}`
+    : '.';
+  return `Task host rejected the request with HTTP ${status}${code}${message}`;
+}
+
+/**
  * Calls the host's bridge entry with the engine's call identity.
  *
  * The bridge credential replaces the global API key here: a resident process
@@ -149,9 +168,7 @@ async function requestHostViaBridge(
     });
     result = await response.json().catch(() => null);
     if (!response.ok) {
-      const responseRecord = readObjectRecord(result);
-      const code = typeof responseRecord?.code === 'string' ? ` (${responseRecord.code})` : '';
-      throw new AppError(`Task host rejected the request with HTTP ${response.status}${code}.`, {
+      throw new AppError(describeHostRefusal(response.status, result), {
         code: 'TASK_HOST_REQUEST_FAILED',
         statusCode: response.status,
       });
@@ -191,9 +208,7 @@ async function requestHost(
     });
     result = await response.json().catch(() => null);
     if (!response.ok) {
-      const responseRecord = readObjectRecord(result);
-      const code = typeof responseRecord?.code === 'string' ? ` (${responseRecord.code})` : '';
-      throw new AppError(`Task host rejected the request with HTTP ${response.status}${code}.`, {
+      throw new AppError(describeHostRefusal(response.status, result), {
         code: 'TASK_HOST_REQUEST_FAILED',
         statusCode: response.status,
       });
