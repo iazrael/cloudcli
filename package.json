@@ -1,6 +1,6 @@
 {
   "name": "cloudcli",
-  "version": "2.13.0",
+  "version": "2.14.0",
   "productName": "CloudCLI",
   "description": "A web-based UI for Claude Code CLI",
   "type": "module",
