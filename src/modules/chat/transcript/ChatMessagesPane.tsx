@@ -12,6 +12,7 @@ import MessageComponent from '@/modules/chat/transcript/MessageComponent';
 import ToolGroupContainer from '@/modules/chat/transcript/ToolGroupContainer';
 import ChatExportMenu from '@/modules/chat/transcript/ChatExportMenu';
 import { observeScrollStuck } from '@/shared/diagnostics/scrollScreening';
+import { MarkdownWorkspaceContext } from '@/modules/chat/context/MarkdownWorkspaceContext';
 
 type ChatMessagesPaneProps = {
   /** The scroll container, owned by `useTranscriptViewport`. */
@@ -108,6 +109,8 @@ function ChatMessagesPane({
   selectedProject,
 }: ChatMessagesPaneProps) {
   const { t } = useTranslation('chat');
+  // 真实聊天入口统一提供项目身份，普通消息、流式消息和工具结果都继承它。
+  const markdownWorkspace = useMemo(() => ({ projectId: selectedProject.projectId }), [selectedProject.projectId]);
 
   // Screens the touches that should have scrolled the transcript but did not,
   // so a report taken after "the list won't scroll" says which cause it was.
@@ -271,15 +274,17 @@ function ChatMessagesPane({
       )}
 
       <div className="mx-auto w-full max-w-[54.25rem] px-4">
-        <Virtualizer
-          ref={virtualizerRef}
-          scrollRef={scrollRef}
-          shift={shiftOnPrepend}
-          onScroll={onScroll}
-          data={transcriptItems}
-        >
-          {renderRow}
-        </Virtualizer>
+        <MarkdownWorkspaceContext.Provider value={markdownWorkspace}>
+          <Virtualizer
+            ref={virtualizerRef}
+            scrollRef={scrollRef}
+            shift={shiftOnPrepend}
+            onScroll={onScroll}
+            data={transcriptItems}
+          >
+            {renderRow}
+          </Virtualizer>
+        </MarkdownWorkspaceContext.Provider>
       </div>
     </div>
   );

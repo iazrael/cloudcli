@@ -1,14 +1,9 @@
 import { createContext, useContext } from 'react';
 
 /**
- * The project that relative file references in model-authored markdown
- * resolve against.
- *
- * Markdown is rendered deep inside the transcript (messages, tool results,
- * streaming halves) and none of those call sites know the selected project.
- * ChatInterface provides it once so `![alt](imagenes/foto.png)` can be fetched
- * through the authenticated project files route instead of failing as a bare
- * `<img src>` against the web origin.
+ * 聊天 Markdown 文件引用所属项目。ChatMessagesPane 统一提供项目身份，
+ * 普通消息、工具结果和流式回复通过它调用鉴权文件接口。
+ * 不在聊天项目内的独立渲染入口默认没有项目身份。
  */
 export const MarkdownWorkspaceContext = createContext<{ projectId: string | null }>({ projectId: null });
 
