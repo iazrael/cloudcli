@@ -39,7 +39,10 @@
     "clearSelection": "ניקוי",
     "deleteSelected_one": "מחיקת סשן אחד",
     "deleteSelected_two": "מחיקת שני סשנים",
-    "deleteSelected_other": "מחיקת {{count}} סשנים"
+    "deleteSelected_other": "מחיקת {{count}} סשנים",
+    "pinSession": "הצמדת סשן",
+    "unpinSession": "ביטול הצמדה",
+    "pinned": "מוצמד"
   },
   "tooltips": {
     "viewEnvironments": "הצגת סביבות",
@@ -132,7 +135,8 @@
     "forkSessionError": "לא ניתן לפצל (fork) את הסשן. יש לנסות שוב.",
     "deleteSessionsPartialFailure_one": "סשן אחד מתוך {{total}} לא נמחק. יש לנסות שוב.",
     "deleteSessionsPartialFailure_two": "שני סשנים מתוך {{total}} לא נמחקו. יש לנסות שוב.",
-    "deleteSessionsPartialFailure_other": "{{count}} מתוך {{total}} סשנים לא נמחקו. יש לנסות שוב."
+    "deleteSessionsPartialFailure_other": "{{count}} מתוך {{total}} סשנים לא נמחקו. יש לנסות שוב.",
+    "pinSessionError": "לא ניתן להצמיד את הסשן. יש לנסות שוב."
   },
   "version": {
     "updateAvailable": "יש עדכון זמין",

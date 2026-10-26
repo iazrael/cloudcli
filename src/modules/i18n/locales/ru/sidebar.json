@@ -40,7 +40,10 @@
     "deleteSelected_one": "Удалить {{count}} сеанс",
     "deleteSelected_few": "Удалить {{count}} сеанса",
     "deleteSelected_many": "Удалить {{count}} сеансов",
-    "deleteSelected_other": "Удалить {{count}} сеансов"
+    "deleteSelected_other": "Удалить {{count}} сеансов",
+    "pinSession": "Закрепить сессию",
+    "unpinSession": "Открепить сессию",
+    "pinned": "Закреплена"
   },
   "tooltips": {
     "viewEnvironments": "Просмотр окружений",
@@ -126,7 +129,8 @@
     "deleteSessionsPartialFailure_one": "Не удалось удалить {{count}} сеанс из {{total}}. Попробуйте снова.",
     "deleteSessionsPartialFailure_few": "Не удалось удалить {{count}} сеанса из {{total}}. Попробуйте снова.",
     "deleteSessionsPartialFailure_many": "Не удалось удалить {{count}} сеансов из {{total}}. Попробуйте снова.",
-    "deleteSessionsPartialFailure_other": "Не удалось удалить {{count}} сеансов из {{total}}. Попробуйте снова."
+    "deleteSessionsPartialFailure_other": "Не удалось удалить {{count}} сеансов из {{total}}. Попробуйте снова.",
+    "pinSessionError": "Не удалось закрепить сессию. Попробуйте ещё раз."
   },
   "version": {
     "updateAvailable": "Доступно обновление",

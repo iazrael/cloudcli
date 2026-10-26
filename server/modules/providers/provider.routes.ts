@@ -354,6 +354,19 @@ const parseSessionForkPayload = (payload: unknown): { upToAnchorId?: string; tit
   };
 };
 
+const parseSessionPinnedFlag = (payload: unknown): boolean => {
+  const isPinned = payload && typeof payload === 'object'
+    ? (payload as Record<string, unknown>).isPinned
+    : undefined;
+  if (typeof isPinned !== 'boolean') {
+    throw new AppError('isPinned must be a boolean.', {
+      code: 'INVALID_SESSION_PINNED',
+      statusCode: 400,
+    });
+  }
+  return isPinned;
+};
+
 const parseSessionRenameSummary = (payload: unknown): string => {
   if (!payload || typeof payload !== 'object') {
     throw new AppError('Request body must be an object.', {
@@ -1079,6 +1092,16 @@ router.put(
     const sessionId = parseSessionId(req.params.sessionId);
     const summary = parseSessionRenameSummary(req.body);
     const result = sessionsService.renameSessionById(sessionId, summary);
+    res.json(createApiSuccessResponse(result));
+  }),
+);
+
+router.put(
+  '/sessions/:sessionId/pin',
+  asyncHandler(async (req: Request, res: Response) => {
+    const sessionId = parseSessionId(req.params.sessionId);
+    const isPinned = parseSessionPinnedFlag(req.body);
+    const result = sessionsService.setSessionPinnedById(sessionId, isPinned);
     res.json(createApiSuccessResponse(result));
   }),
 );

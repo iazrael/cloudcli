@@ -32,6 +32,7 @@ function createSessionRow(overrides: Record<string, unknown> = {}) {
     worktree_path: null,
     worktree_branch: null,
     isArchived: 0,
+    isPinned: 0,
     created_at: '2026-01-01T00:00:00.000Z',
     updated_at: '2026-01-01T00:00:00.000Z',
     ...overrides,

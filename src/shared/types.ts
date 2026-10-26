@@ -222,6 +222,9 @@ export type ProjectSession = {
   // session with the branch. Null/absent for main-checkout sessions.
   worktreePath?: string | null;
   worktreeBranch?: string | null;
+  // True when the user pinned the session: sidebar lists put it above every
+  // unpinned session, with activity time still ordering each group.
+  isPinned?: boolean;
   // Tags the session with the owning project's DB `projectId` so UI handlers
   // (session switching, sidebar focus, etc.) can match against selectedProject.
   __projectId?: string;
@@ -1402,6 +1405,8 @@ export type SessionRowActions = {
   onDeleteSession: (sessionId: string, sessionTitle: string) => void;
   /** Branches a session into an independent one. Rows hide it for providers that cannot. */
   onForkSession?: (session: SessionWithProvider) => void;
+  /** Pins or unpins a session; pinned sessions sit at the top of every sidebar list. */
+  onSetSessionPinned?: (sessionId: string, isPinned: boolean) => void;
 };
 
 export type SidebarProjectListProps = SessionRowActions & {
@@ -1485,7 +1490,10 @@ export type ArchivedSessionListItem = {
 export type RecentConversationListItem = Pick<
   ArchivedSessionListItem,
   'sessionId' | 'provider' | 'projectId' | 'projectDisplayName' | 'sessionTitle' | 'lastActivity'
->;
+> & {
+  /** True when the user pinned the session; the feed lists pinned rows first. */
+  isPinned?: boolean;
+};
 
 /**
  * The rename the sidebar currently has open, if any.

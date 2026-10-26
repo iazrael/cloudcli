@@ -38,7 +38,10 @@
     "selectAllLoaded": "Select all loaded",
     "clearSelection": "Clear",
     "deleteSelected_one": "Delete {{count}} session",
-    "deleteSelected_other": "Delete {{count}} sessions"
+    "deleteSelected_other": "Delete {{count}} sessions",
+    "pinSession": "Pin session",
+    "unpinSession": "Unpin session",
+    "pinned": "Pinned"
   },
   "tooltips": {
     "viewEnvironments": "View Environments",
@@ -123,7 +126,8 @@
     "restoreSessionError": "Error restoring session. Please try again.",
     "forkSessionError": "Could not fork this session. Please try again.",
     "deleteSessionsPartialFailure_one": "{{count}} session out of {{total}} could not be deleted. Please try again.",
-    "deleteSessionsPartialFailure_other": "{{count}} of {{total}} sessions could not be deleted. Please try again."
+    "deleteSessionsPartialFailure_other": "{{count}} of {{total}} sessions could not be deleted. Please try again.",
+    "pinSessionError": "Could not pin this session. Please try again."
   },
   "version": {
     "updateAvailable": "Update available",

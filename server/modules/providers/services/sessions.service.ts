@@ -80,7 +80,10 @@ type ArchivedSessionListItem = {
 type RecentSessionListItem = Pick<
   ArchivedSessionListItem,
   'sessionId' | 'provider' | 'projectId' | 'projectDisplayName' | 'sessionTitle' | 'lastActivity'
->;
+> & {
+  /** True when the user pinned the session; the feed already lists pinned rows first. */
+  isPinned: boolean;
+};
 
 type RecentSessionsPage = {
   conversations: RecentSessionListItem[];
@@ -427,6 +430,7 @@ export const sessionsService = {
         projectDisplayName: resolveProjectDisplayName(projectPath, project?.custom_project_name),
         sessionTitle: session.custom_name?.trim() || session.session_id,
         lastActivity: session.updated_at ?? session.created_at ?? null,
+        isPinned: Boolean(session.isPinned),
       };
     });
 
@@ -980,6 +984,24 @@ export const sessionsService = {
 
     sessionsDb.updateSessionCustomName(session.session_id, summary, { lockName: true });
     return { sessionId: session.session_id, summary };
+  },
+
+  /**
+   * Pins or unpins one session by id. Sets the flag rather than toggling it,
+   * so a retried request cannot flip it back.
+   */
+  setSessionPinnedById(sessionId: string, isPinned: boolean): { sessionId: string; isPinned: boolean } {
+    const session =
+      sessionsDb.getSessionById(sessionId) ?? sessionsDb.getSessionByProviderSessionId(sessionId);
+    if (!session) {
+      throw new AppError(`Session "${sessionId}" was not found.`, {
+        code: 'SESSION_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+
+    sessionsDb.updateSessionIsPinned(session.session_id, isPinned);
+    return { sessionId: session.session_id, isPinned };
   },
 
   /**

@@ -23,6 +23,8 @@ type SessionRow = {
   /** Branch checked out in that worktree; NULL when detached or main-checkout. */
   worktree_branch: string | null;
   isArchived: number;
+  /** 1 when the user pinned the session; sidebar lists order it first. */
+  isPinned: number;
   created_at: string;
   updated_at: string;
 };
@@ -33,7 +35,7 @@ type RecentSessionsPage = {
 };
 
 const SESSION_ROW_COLUMNS =
-  'session_id, provider, provider_session_id, project_path, jsonl_path, custom_name, name_locked, model, effort, forked_from_session_id, worktree_path, worktree_branch, isArchived, created_at, updated_at';
+  'session_id, provider, provider_session_id, project_path, jsonl_path, custom_name, name_locked, model, effort, forked_from_session_id, worktree_path, worktree_branch, isArchived, isPinned, created_at, updated_at';
 
 /**
  * Archives the project row a session just moved away from, but only when it
@@ -677,7 +679,8 @@ export const sessionsDb = {
          FROM sessions
          LEFT JOIN projects ON projects.project_path = sessions.project_path
          WHERE ${visibilityClause}
-         ORDER BY julianday(COALESCE(sessions.updated_at, sessions.created_at)) DESC,
+         ORDER BY sessions.isPinned DESC,
+                  julianday(COALESCE(sessions.updated_at, sessions.created_at)) DESC,
                   sessions.session_id DESC
          LIMIT ? OFFSET ?`
       )
@@ -757,7 +760,7 @@ export const sessionsDb = {
          FROM sessions
          WHERE project_path = ?
            AND isArchived = 0
-         ORDER BY datetime(COALESCE(updated_at, created_at)) DESC, session_id DESC
+         ORDER BY isPinned DESC, datetime(COALESCE(updated_at, created_at)) DESC, session_id DESC
          LIMIT ? OFFSET ?`
       )
       .all(normalizedProjectPath, limit, offset) as SessionRow[];
@@ -810,6 +813,19 @@ export const sessionsDb = {
        SET isArchived = ?
        WHERE session_id = ?`
     ).run(isArchived ? 1 : 0, sessionId);
+  },
+
+  /**
+   * Pins or unpins one session. Leaves `updated_at` alone: pinning is not
+   * activity, and the time still orders sessions within each pin group.
+   */
+  updateSessionIsPinned(sessionId: string, isPinned: boolean): void {
+    const db = getConnection();
+    db.prepare(
+      `UPDATE sessions
+       SET isPinned = ?
+       WHERE session_id = ?`
+    ).run(isPinned ? 1 : 0, sessionId);
   },
 
   deleteSessionById(sessionId: string): boolean {

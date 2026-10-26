@@ -356,6 +356,8 @@ export type SessionUpsertedEvent = {
     worktreePath?: string | null;
     /** Branch checked out in that worktree; null when detached or main-checkout. */
     worktreeBranch?: string | null;
+    /** True when the user pinned the session; sidebar lists order it first. */
+    isPinned?: boolean;
   };
   project: SessionUpsertedProject | null;
   timestamp: string;

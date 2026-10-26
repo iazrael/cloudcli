@@ -40,6 +40,21 @@ type RecentConversationsApiPayload = {
   };
 };
 
+/**
+ * Orders Conversations rows the way the server pages them: pinned first, then
+ * newest activity first. Used after a pin change re-sorts the loaded rows.
+ */
+const orderRecentConversations = (
+  conversations: RecentConversationListItem[],
+): RecentConversationListItem[] => {
+  const activityTime = (conversation: RecentConversationListItem) =>
+    new Date(conversation.lastActivity ?? 0).getTime() || 0;
+  return [...conversations].sort((a, b) => (
+    Number(Boolean(b.isPinned)) - Number(Boolean(a.isPinned))
+    || activityTime(b) - activityTime(a)
+  ));
+};
+
 type UseSidebarControllerArgs = {
   projects: Project[];
   selectedProject: Project | null;
@@ -1213,6 +1228,35 @@ export function useSidebarController({
   );
 
   /**
+   * Pins or unpins a session.
+   *
+   * The Conversations rows are patched and re-ordered in place, which keeps
+   * the pages already loaded past the first; the project lists pick the flag
+   * up from the refresh, whose session pages the server orders pinned-first.
+   */
+  const setSessionPinned = useCallback(
+    async (sessionId: string, isPinned: boolean) => {
+      try {
+        const response = await api.pinSession(sessionId, isPinned);
+        if (!response.ok) {
+          console.error('[Sidebar] Failed to pin session:', response.status);
+          alert(t('messages.pinSessionError'));
+          return;
+        }
+
+        setRecentConversations((previous) => orderRecentConversations(previous.map((conversation) => (
+          conversation.sessionId === sessionId ? { ...conversation, isPinned } : conversation
+        ))));
+        await onRefresh();
+      } catch (error) {
+        console.error('[Sidebar] Error pinning session:', error);
+        alert(t('messages.pinSessionError'));
+      }
+    },
+    [onRefresh, t],
+  );
+
+  /**
    * Branches a session and opens the copy.
    *
    * The new row arrives over the websocket as a `session_upserted`, so nothing
@@ -1287,6 +1331,7 @@ export function useSidebarController({
     toggleProject,
     handleSessionClick,
     forkSession,
+    setSessionPinned,
     toggleStarProject,
     isProjectStarred,
     getProjectSessions,

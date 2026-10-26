@@ -38,7 +38,10 @@
     "selectAllLoaded": "全選已載入",
     "clearSelection": "清除選取",
     "deleteSelected_one": "刪除 {{count}} 個工作階段",
-    "deleteSelected_other": "刪除 {{count}} 個工作階段"
+    "deleteSelected_other": "刪除 {{count}} 個工作階段",
+    "pinSession": "置頂工作階段",
+    "unpinSession": "取消置頂",
+    "pinned": "已置頂"
   },
   "tooltips": {
     "viewEnvironments": "查看環境",
@@ -121,7 +124,8 @@
     "restoreSessionError": "還原工作階段時出錯，請重試。",
     "forkSessionError": "無法分支此工作階段，請再試一次。",
     "deleteSessionsPartialFailure_one": "{{total}} 個工作階段中有 {{count}} 個刪除失敗，請重試。",
-    "deleteSessionsPartialFailure_other": "{{total}} 個工作階段中有 {{count}} 個刪除失敗，請重試。"
+    "deleteSessionsPartialFailure_other": "{{total}} 個工作階段中有 {{count}} 個刪除失敗，請重試。",
+    "pinSessionError": "無法置頂此工作階段，請再試一次。"
   },
   "version": {
     "updateAvailable": "有可用更新",

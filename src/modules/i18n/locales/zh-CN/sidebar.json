@@ -38,7 +38,10 @@
     "selectAllLoaded": "全选已加载",
     "clearSelection": "清除选择",
     "deleteSelected_one": "删除 {{count}} 个会话",
-    "deleteSelected_other": "删除 {{count}} 个会话"
+    "deleteSelected_other": "删除 {{count}} 个会话",
+    "pinSession": "置顶会话",
+    "unpinSession": "取消置顶",
+    "pinned": "已置顶"
   },
   "tooltips": {
     "viewEnvironments": "查看环境",
@@ -122,7 +125,8 @@
     "restoreSessionError": "恢复会话时出错，请重试。",
     "forkSessionError": "无法派生该会话，请重试。",
     "deleteSessionsPartialFailure_one": "{{total}} 个会话中有 {{count}} 个删除失败，请重试。",
-    "deleteSessionsPartialFailure_other": "{{total}} 个会话中有 {{count}} 个删除失败，请重试。"
+    "deleteSessionsPartialFailure_other": "{{total}} 个会话中有 {{count}} 个删除失败，请重试。",
+    "pinSessionError": "无法置顶该会话，请重试。"
   },
   "version": {
     "updateAvailable": "有可用更新",

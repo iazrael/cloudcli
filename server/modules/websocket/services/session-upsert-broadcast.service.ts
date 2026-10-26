@@ -53,6 +53,7 @@ async function buildSessionUpsertedEvent(
       lastActivity: row.updated_at ?? row.created_at ?? new Date().toISOString(),
       worktreePath: row.worktree_path,
       worktreeBranch: row.worktree_branch,
+      isPinned: Boolean(row.isPinned),
     },
     project: project
       ? {

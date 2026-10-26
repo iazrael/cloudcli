@@ -99,7 +99,10 @@ export const getAllSessions = (project: Project): SessionWithProvider[] => {
     ...session,
     __provider: getSessionProvider(session),
   })).sort(
-    (a, b) => getSessionDate(b).getTime() - getSessionDate(a).getTime(),
+    // Pinned sessions first, newest first inside each group — the same order
+    // the server pages in, so a loaded page never reshuffles.
+    (a, b) => Number(Boolean(b.isPinned)) - Number(Boolean(a.isPinned))
+      || getSessionDate(b).getTime() - getSessionDate(a).getTime(),
   );
 
   sortedSessionsByProject.set(project, sessions);

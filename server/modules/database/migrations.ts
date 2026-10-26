@@ -489,6 +489,16 @@ const addSessionNameLockedColumn = (db: Database): void => {
 };
 
 /**
+ * Adds the `isPinned` flag the sidebar orders pinned sessions by.
+ *
+ * Existing rows default to 0: nothing was pinned before the column existed.
+ */
+const addSessionPinnedColumn = (db: Database): void => {
+  const columnNames = getTableInfo(db, 'sessions').map((column) => column.name);
+  addColumnToTableIfNotExists(db, 'sessions', columnNames, 'isPinned', 'BOOLEAN DEFAULT 0');
+};
+
+/**
  * Adds the reasoning-effort metadata columns to the custom-model library.
  *
  * Existing rows stay NULL on purpose: no effort levels were ever declared for
@@ -602,6 +612,7 @@ export const runMigrations = (db: Database) => {
     addForkedFromSessionIdColumn(db);
     addSessionWorktreeColumns(db);
     addSessionNameLockedColumn(db);
+    addSessionPinnedColumn(db);
     ensureProjectsForSessionPaths(db);
     db.exec(SCHEDULED_MESSAGES_TABLE_SCHEMA_SQL);
 

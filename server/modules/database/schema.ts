@@ -153,6 +153,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     worktree_path TEXT,
     worktree_branch TEXT,
     isArchived BOOLEAN DEFAULT 0,
+    -- 1 when the user pinned the session: every sidebar list (project
+    -- sessions and the cross-project conversations feed) orders pinned rows
+    -- first, then by activity.
+    isPinned BOOLEAN DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (session_id),

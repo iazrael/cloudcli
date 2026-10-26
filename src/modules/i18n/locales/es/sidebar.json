@@ -38,7 +38,10 @@
     "selectAllLoaded": "Seleccionar las cargadas",
     "clearSelection": "Quitar selección",
     "deleteSelected_one": "Eliminar {{count}} sesión",
-    "deleteSelected_other": "Eliminar {{count}} sesiones"
+    "deleteSelected_other": "Eliminar {{count}} sesiones",
+    "pinSession": "Fijar sesión",
+    "unpinSession": "Desfijar sesión",
+    "pinned": "Fijada"
   },
   "tooltips": {
     "viewEnvironments": "Ver entornos",
@@ -122,7 +125,8 @@
     "restoreSessionError": "Error al restaurar la sesión. Inténtalo de nuevo.",
     "forkSessionError": "No se pudo bifurcar esta sesión. Inténtalo de nuevo.",
     "deleteSessionsPartialFailure_one": "No se pudo eliminar {{count}} sesión de {{total}}. Inténtalo de nuevo.",
-    "deleteSessionsPartialFailure_other": "No se pudieron eliminar {{count}} de {{total}} sesiones. Inténtalo de nuevo."
+    "deleteSessionsPartialFailure_other": "No se pudieron eliminar {{count}} de {{total}} sesiones. Inténtalo de nuevo.",
+    "pinSessionError": "No se pudo fijar esta sesión. Inténtalo de nuevo."
   },
   "version": {
     "updateAvailable": "Actualización disponible",

@@ -38,7 +38,10 @@
     "selectAllLoaded": "Alle geladenen auswählen",
     "clearSelection": "Auswahl aufheben",
     "deleteSelected_one": "{{count}} Sitzung löschen",
-    "deleteSelected_other": "{{count}} Sitzungen löschen"
+    "deleteSelected_other": "{{count}} Sitzungen löschen",
+    "pinSession": "Sitzung anheften",
+    "unpinSession": "Sitzung lösen",
+    "pinned": "Angeheftet"
   },
   "tooltips": {
     "viewEnvironments": "Umgebungen anzeigen",
@@ -122,7 +125,8 @@
     "restoreSessionError": "Fehler beim Wiederherstellen der Sitzung. Bitte erneut versuchen.",
     "forkSessionError": "Diese Sitzung konnte nicht verzweigt werden. Bitte erneut versuchen.",
     "deleteSessionsPartialFailure_one": "{{count}} Sitzung von {{total}} konnte nicht gelöscht werden. Bitte erneut versuchen.",
-    "deleteSessionsPartialFailure_other": "{{count}} von {{total}} Sitzungen konnten nicht gelöscht werden. Bitte erneut versuchen."
+    "deleteSessionsPartialFailure_other": "{{count}} von {{total}} Sitzungen konnten nicht gelöscht werden. Bitte erneut versuchen.",
+    "pinSessionError": "Diese Sitzung konnte nicht angeheftet werden. Bitte erneut versuchen."
   },
   "version": {
     "updateAvailable": "Update verfügbar",

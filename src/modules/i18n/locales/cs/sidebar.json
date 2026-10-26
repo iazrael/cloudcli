@@ -32,7 +32,10 @@
     "loadingSessions": "Načítání relací...",
     "unnamed": "Bez názvu",
     "loading": "Načítání...",
-    "showMore": "Zobrazit další relace"
+    "showMore": "Zobrazit další relace",
+    "pinSession": "Připnout relaci",
+    "unpinSession": "Odepnout relaci",
+    "pinned": "Připnuto"
   },
   "tooltips": {
     "viewEnvironments": "Zobrazit prostředí",
@@ -125,7 +128,8 @@
     "restoreProjectError": "Při obnovování projektu došlo k chybě. Zkuste to prosím znovu.",
     "restoreSessionFailed": "Nepodařilo se obnovit relaci. Zkuste to prosím znovu.",
     "restoreSessionError": "Při obnovování relace došlo k chybě. Zkuste to prosím znovu.",
-    "forkSessionError": "Tuto relaci se nepodařilo forknout. Zkuste to prosím znovu."
+    "forkSessionError": "Tuto relaci se nepodařilo forknout. Zkuste to prosím znovu.",
+    "pinSessionError": "Tuto relaci se nepodařilo připnout. Zkuste to prosím znovu."
   },
   "version": {
     "updateAvailable": "Je dostupná aktualizace",

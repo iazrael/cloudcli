@@ -1,6 +1,6 @@
 import { memo, useState } from 'react';
 import type { KeyboardEvent } from 'react';
-import { Check, CheckSquare, Edit2, GitBranch, Loader2, MoreHorizontal, Square, Trash2, X } from 'lucide-react';
+import { Check, CheckSquare, Edit2, GitBranch, Loader2, MoreHorizontal, Pin, PinOff, Square, Trash2, X } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
 import { Badge, Dialog, DialogContent, DialogTitle, LLMProviderLogo, Tooltip, buttonVariants } from '@/shared/ui';
@@ -33,6 +33,7 @@ type SidebarSessionItemProps = {
   onDeleteSession: (sessionId: string, sessionTitle: string) => void;
   /** Branches this session into an independent one; absent when its provider cannot. */
   onForkSession?: (session: SessionWithProvider) => void;
+  onSetSessionPinned?: (sessionId: string, isPinned: boolean) => void;
   /** This project's list is in bulk-selection mode: the row acts as a checkbox and hides its options. */
   isSelecting: boolean;
   /** Ticked for the pending bulk delete. Resolved by the list, which never ticks a running row. */
@@ -61,6 +62,7 @@ function SidebarSessionItem({
   onSessionSelect,
   onDeleteSession,
   onForkSession,
+  onSetSessionPinned,
   isSelecting,
   isChecked,
   onToggleSessionSelected,
@@ -92,6 +94,11 @@ function SidebarSessionItem({
         <GitBranch className="h-3 w-3" />
       </span>
     </Tooltip>
+  ) : null;
+
+  const isPinned = Boolean(session.isPinned);
+  const pinIndicator = isPinned ? (
+    <Pin aria-label={t('sessions.pinned')} className="h-3 w-3 flex-shrink-0 text-muted-foreground" />
   ) : null;
 
   // The desktop controls live in SessionOptions, which owns the rename panel and
@@ -226,6 +233,7 @@ function SidebarSessionItem({
 
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
+                {pinIndicator}
                 <div
                   className="min-w-0 flex-1 truncate text-sm font-normal text-foreground"
                   title={sessionView.sessionName}
@@ -347,6 +355,22 @@ function SidebarSessionItem({
                   <span className="text-sm font-medium">Rename session</span>
                 </button>
 
+                {onSetSessionPinned && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMobileOptionsOpen(false);
+                      onSetSessionPinned(session.id, !isPinned);
+                    }}
+                    className="flex min-h-12 w-full items-center gap-3 rounded-xl border border-border bg-muted/35 px-4 py-3 text-left text-foreground transition-colors active:bg-muted"
+                  >
+                    {isPinned ? <PinOff className="h-5 w-5 flex-shrink-0" /> : <Pin className="h-5 w-5 flex-shrink-0" />}
+                    <span className="text-sm font-medium">
+                      {isPinned ? t('sessions.unpinSession') : t('sessions.pinSession')}
+                    </span>
+                  </button>
+                )}
+
                 <button
                   type="button"
                   onClick={handleCopyAction}
@@ -452,6 +476,7 @@ function SidebarSessionItem({
             </div>
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
+                {pinIndicator}
                 <div
                   className="min-w-0 flex-1 truncate text-sm font-normal text-foreground"
                   title={sessionView.sessionName}
@@ -506,6 +531,8 @@ function SidebarSessionItem({
             onSaveEditingSession={onSaveEditingSession}
             onDeleteSession={onDeleteSession}
             onFork={onForkSession ? () => onForkSession(session) : undefined}
+            isPinned={isPinned}
+            onSetPinned={onSetSessionPinned}
             t={t}
           />
         )}

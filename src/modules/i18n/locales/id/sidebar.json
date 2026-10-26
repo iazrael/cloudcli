@@ -38,7 +38,10 @@
     "selectAllLoaded": "Pilih semua yang dimuat",
     "clearSelection": "Hapus pilihan",
     "deleteSelected_one": "Hapus {{count}} sesi",
-    "deleteSelected_other": "Hapus {{count}} sesi"
+    "deleteSelected_other": "Hapus {{count}} sesi",
+    "pinSession": "Sematkan sesi",
+    "unpinSession": "Lepas sematan",
+    "pinned": "Disematkan"
   },
   "tooltips": {
     "viewEnvironments": "Lihat Lingkungan",
@@ -122,7 +125,8 @@
     "restoreSessionError": "Terjadi kesalahan saat memulihkan sesi. Silakan coba lagi.",
     "forkSessionError": "Sesi ini tidak dapat di-fork. Silakan coba lagi.",
     "deleteSessionsPartialFailure_one": "{{count}} dari {{total}} sesi gagal dihapus. Silakan coba lagi.",
-    "deleteSessionsPartialFailure_other": "{{count}} dari {{total}} sesi gagal dihapus. Silakan coba lagi."
+    "deleteSessionsPartialFailure_other": "{{count}} dari {{total}} sesi gagal dihapus. Silakan coba lagi.",
+    "pinSessionError": "Sesi ini tidak dapat disematkan. Silakan coba lagi."
   },
   "version": {
     "updateAvailable": "Pembaruan tersedia",

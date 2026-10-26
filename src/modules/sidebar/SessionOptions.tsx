@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { Check, Edit2, GitBranch, MoreHorizontal, Trash2, X } from 'lucide-react';
+import { Check, Edit2, GitBranch, MoreHorizontal, Pin, PinOff, Trash2, X } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
 import { ActionMenu } from '@/shared/ui';
@@ -31,6 +31,9 @@ type SessionOptionsProps = {
   onFork?: () => void;
   /** Withheld where the row has nowhere to send a delete. */
   canDelete?: boolean;
+  isPinned?: boolean;
+  /** Pins or unpins the session; the menu item is withheld without it. */
+  onSetPinned?: (sessionId: string, isPinned: boolean) => void;
   className?: string;
   t: TFunction;
 };
@@ -59,6 +62,8 @@ export default function SessionOptions({
   onDeleteSession,
   onFork,
   canDelete = true,
+  isPinned = false,
+  onSetPinned,
   className,
   t,
 }: SessionOptionsProps) {
@@ -174,6 +179,12 @@ export default function SessionOptions({
               label: 'Rename session',
               icon: Edit2,
               onSelect: () => onStartEditingSession(projectId, sessionId, sessionName),
+            }] : []),
+            ...(onSetPinned ? [{
+              key: 'pin',
+              label: isPinned ? t('sessions.unpinSession') : t('sessions.pinSession'),
+              icon: isPinned ? PinOff : Pin,
+              onSelect: () => onSetPinned(sessionId, !isPinned),
             }] : []),
             {
               key: 'copy',
