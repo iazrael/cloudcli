@@ -266,136 +266,110 @@ const CodeBlock = memo(function CodeBlock({ node: _node, className, children, fo
   );
 });
 
-const LOCAL_IMAGE_EXTENSION_RE = /\.(png|jpe?g|gif|webp|svg|avif|bmp)$/i;
-const SYSTEM_ABSOLUTE_PREFIX_RE = /^\/(Users|home|var|tmp|private|Volumes|opt|mnt|root)\//i;
-const WINDOWS_ABSOLUTE_PATH_RE = /^[a-zA-Z]:([/\\]|%5[cC])/i;
+// 保留现有静态图片地址语义；其他绝对引用按文件路径处理。
+// 不按目录层级或扩展名猜测是否可读，权限由后端校验。
 const COMMON_STATIC_WEB_PREFIX_RE = /^\/(assets|static|public|icons|images|favicon|logo)[/.?#]/i;
-
-const isLikelyLocalFilesystemPath = (rawPath: string): boolean => {
-  if (COMMON_STATIC_WEB_PREFIX_RE.test(rawPath)) {
-    return false;
-  }
-  if (SYSTEM_ABSOLUTE_PREFIX_RE.test(rawPath) || WINDOWS_ABSOLUTE_PATH_RE.test(rawPath)) {
-    return true;
-  }
-  const clean = rawPath.split('?')[0].split('#')[0];
-  const segments = clean.replace(/\\/g, '/').split('/').filter(Boolean);
-  return segments.length >= 3;
-};
-
-// A workspace-relative image path ('imagenes/gato.png'): not a URL, not a
-// filesystem path — the project files route resolves it against the project
-// root. Absolute paths and file:// URLs go to the read-only external route
-// instead (localPathFromImageSrc).
-const RELATIVE_IMAGE_SRC = /^(?!https?:|data:|blob:|file:)(?!\/)[^\s]+$/;
-
 const BROWSER_LOADABLE_IMAGE_SRC = /^(https?:|data:|blob:)/i;
+const WINDOWS_ABSOLUTE_PATH_RE = /^[a-z]:[/\\]/i;
 
-const relativePathFromImageSrc = (src?: string): string | undefined => {
-  if (!src || !RELATIVE_IMAGE_SRC.test(src.trim())) {
-    return undefined;
-  }
-  let decoded = src.trim();
-  if (decoded.startsWith('./')) {
-    decoded = decoded.slice(2);
-  }
-  try {
-    decoded = decodeURIComponent(decoded);
-  } catch {
-    // Keep raw src if decode fails
-  }
-  return decoded;
-};
+type MarkdownImageTarget =
+  | { kind: 'browser'; src: string }
+  | { kind: 'absolute' | 'relative'; path: string }
+  | { kind: 'unresolved' };
 
-const localPathFromImageSrc = (src?: string): string | undefined => {
-  if (!src) {
-    return undefined;
+function resolveImageTarget(src: string): MarkdownImageTarget {
+  const value = src.trim();
+  if (!value) return { kind: 'unresolved' };
+  if (BROWSER_LOADABLE_IMAGE_SRC.test(value) || value.startsWith('//') || COMMON_STATIC_WEB_PREFIX_RE.test(value)) {
+    return { kind: 'browser', src: value };
   }
-  if (isFileUrl(src)) {
-    return filePathFromFileUrl(src);
+  if (isFileUrl(value)) {
+    const filePath = filePathFromFileUrl(value);
+    return filePath ? { kind: 'absolute', path: filePath } : { kind: 'unresolved' };
   }
-  let decoded = src;
+  let decoded = value;
   try {
-    decoded = decodeURIComponent(src);
+    decoded = decodeURIComponent(value);
   } catch {
-    // Keep raw src if decode fails
+    // 无效百分号编码可能是文件名中的字面字符，保留原文。
   }
-  if (!decoded.startsWith('/') && !WINDOWS_ABSOLUTE_PATH_RE.test(decoded)) {
-    return undefined;
+  if (decoded.startsWith('/') || decoded.startsWith('\\\\') || WINDOWS_ABSOLUTE_PATH_RE.test(decoded)) {
+    return { kind: 'absolute', path: decoded };
   }
-  const clean = decoded.split('?')[0].split('#')[0];
-  if (!LOCAL_IMAGE_EXTENSION_RE.test(clean)) {
-    return undefined;
-  }
-  return isLikelyLocalFilesystemPath(clean) ? clean : undefined;
-};
+  // 未知协议不能作为工作区文件名读取。
+  if (/^[a-z][a-z0-9+.-]*:/i.test(decoded)) return { kind: 'unresolved' };
+  return { kind: 'relative', path: decoded.replace(/^\.\//, '') };
+}
 
 type MarkdownImageProps = { node?: unknown } & React.ImgHTMLAttributes<HTMLImageElement>;
+type ImageLoadError = 'unauthorized' | 'forbidden' | 'notFound' | 'failed' | 'decode' | 'unresolved';
+type LoadedMarkdownImage = { key: string; url?: string; error?: ImageLoadError };
 
-// Renders markdown <img> inside chat messages — both the live stream and
-// restored history go through here. Remote and data images render as-is;
-// local filesystem images resolve into a blob URL (a bare <img> cannot carry
-// the auth header) and expand into the unified image viewer on click.
-function MarkdownImage({ src, alt, node: _node, ...props }: MarkdownImageProps) {
-  const { t } = useTranslation('chat');
+// 历史消息与流式回复共用此入口，本地文件复用鉴权接口，失败时保留引用。
+function MarkdownImage(props: MarkdownImageProps) {
   const { projectId } = useContext(MarkdownWorkspaceContext);
-  const localPath = localPathFromImageSrc(src);
-  const workspaceRelative = localPath ? undefined : relativePathFromImageSrc(src);
-  // Blob URL handed to <img> once the bytes arrive; null while loading.
-  const [blobSrc, setBlobSrc] = useState<string | null>(null);
-  // Set when the endpoint refuses the path (not allowlisted / deleted): fall
-  // back to the raw src, i.e. exactly the pre-fix rendering.
-  const [resolveFailed, setResolveFailed] = useState(false);
-  // Controls the viewer only after a resolved image is clicked; it is not
-  // derivable from the URL because closing the viewer must preserve the image.
-  const [expanded, setExpanded] = useState(false);
+  // 引用或项目变化时销毁旧状态，切回原引用也不能复用已释放的 Blob URL。
+  return <MarkdownImageContent key={JSON.stringify([projectId, props.src])} {...props} projectId={projectId} />;
+}
+
+function MarkdownImageContent({ src = '', alt, node: _node, projectId, ...props }: MarkdownImageProps & { projectId: string | null }) {
+  const { t } = useTranslation('chat');
+  const target = resolveImageTarget(src);
+  const localPath = target.kind === 'absolute' ? target.path : undefined;
+  const workspaceRelative = target.kind === 'relative' ? target.path : undefined;
+  const browserSrc = target.kind === 'browser' ? target.src : undefined;
+  // 重试发起新请求，并释放上一次的 Blob URL。
+  const [attempt, setAttempt] = useState(0);
+  const key = JSON.stringify([projectId, src, attempt]);
+  // 只使用本次请求的结果，重试时不展示旧图片或旧错误。
+  const [loaded, setLoaded] = useState<LoadedMarkdownImage | null>(null);
+  // 显示复制结果，让用户知道是否需要手动复制路径。
+  const [copyResult, setCopyResult] = useState<{ key: string; success: boolean } | null>(null);
+  // 仅用户点击时打开查看器，加载或切换图片不能自动打开。
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const current = loaded?.key === key ? loaded : null;
+  const unresolved = target.kind === 'unresolved' || (target.kind === 'relative' && !projectId);
+  const error = current?.error ?? (unresolved ? 'unresolved' : undefined);
+  const imageSrc = browserSrc ?? current?.url;
 
   useEffect(() => {
-    if (!localPath && !(workspaceRelative && projectId)) {
-      setBlobSrc(null);
-      setResolveFailed(false);
-      return;
-    }
-
-    setBlobSrc(null);
-    setResolveFailed(false);
+    if (!localPath && !(workspaceRelative && projectId)) return;
     const controller = new AbortController();
     let objectUrl: string | null = null;
-    let revoked = false;
     const revokeObjectUrl = () => {
-      if (objectUrl && !revoked) {
-        revoked = true;
+      if (objectUrl) {
         URL.revokeObjectURL(objectUrl);
+        objectUrl = null;
       }
     };
     const load = async () => {
       try {
-        let blob: Blob;
-        if (localPath) {
-          const response = projectId
+        let response = localPath
+          ? projectId
             ? await readExternalFileContent(localPath, { signal: controller.signal }, projectId)
-            : await readExternalFileContent(localPath, { signal: controller.signal });
-          if (!response.ok) {
-            throw new Error(`Image request failed with status ${response.status}`);
-          }
-          blob = await response.blob();
-        } else {
-          const response = await api.readFileBlob(projectId!, workspaceRelative!, { signal: controller.signal });
-          if (!response.ok) {
-            throw new Error(`Image request failed with status ${response.status}`);
-          }
-          blob = await response.blob();
+            : await readExternalFileContent(localPath, { signal: controller.signal })
+          : await api.readFileBlob(projectId!, workspaceRelative!, { signal: controller.signal });
+        if (controller.signal.aborted) return;
+        // 非 Git 项目不在外部工作树目录中；交给项目接口校验同一路径。
+        if (localPath && projectId && response.status === 403) {
+          response = await api.readFileBlob(projectId, localPath, { signal: controller.signal });
+          if (controller.signal.aborted) return;
         }
-        objectUrl = URL.createObjectURL(blob);
-        if (controller.signal.aborted) {
-          revokeObjectUrl();
+        if (!response.ok) {
+          const reason: ImageLoadError = response.status === 401 ? 'unauthorized'
+            : response.status === 403 ? 'forbidden'
+              : response.status === 404 ? 'notFound' : 'failed';
+          setLoaded({ key, error: reason });
           return;
         }
-        setBlobSrc(objectUrl);
+        const blob = await response.blob();
+        if (controller.signal.aborted) return;
+        objectUrl = URL.createObjectURL(blob);
+        setLoaded({ key, url: objectUrl });
       } catch (caught) {
-        console.error('[MarkdownImage] load failed:', caught);
         if (!controller.signal.aborted) {
-          setResolveFailed(true);
+          console.error('[MarkdownImage] load failed:', caught);
+          setLoaded({ key, error: 'failed' });
         }
       }
     };
@@ -404,61 +378,50 @@ function MarkdownImage({ src, alt, node: _node, ...props }: MarkdownImageProps) 
       controller.abort();
       revokeObjectUrl();
     };
-  }, [localPath, workspaceRelative, projectId]);
+  }, [key, localPath, workspaceRelative, projectId]);
 
-  if (resolveFailed) {
-    // The read was refused. A workspace-relative path has no browser-loadable
-    // form at all, so the alt text replaces it; an external filesystem path
-    // falls back to the raw src — exactly the rendering this component shipped
-    // with before the read-only route existed.
-    if (workspaceRelative) {
-      return <span className="text-xs italic text-muted-foreground">{alt}</span>;
-    }
-    return <img src={src} alt={alt} loading="lazy" decoding="async" className="rounded-lg" {...props} />;
-  }
-
-  if (!localPath && !(workspaceRelative && projectId)) {
-    // Web URLs load directly, and so do origin-relative paths (/assets/…):
-    // the browser resolves those against the app's own origin.
-    if (src && (BROWSER_LOADABLE_IMAGE_SRC.test(src) || src.startsWith('/'))) {
-      // Lazy decoding keeps late image loads from shifting scroll position
-      // while the user reads (native anchoring absorbs what remains).
-      return <img src={src} alt={alt} loading="lazy" decoding="async" className="rounded-lg" {...props} />;
-    }
-    // A path no route can resolve (and no project to resolve it against).
-    return <span className="text-xs italic text-muted-foreground">{alt}</span>;
-  }
-
-  if (!blobSrc) {
-    // Placeholder holds the layout while the bytes load. Deliberately not
-    // role="img": it is a skeleton, not an image, and claiming the role would
-    // satisfy img queries before the bytes arrive.
+  if (error) {
     return (
-      <div aria-hidden className="my-1 h-28 max-w-sm animate-pulse rounded-lg bg-muted" />
+      <span role="status" className="my-2 inline-flex max-w-full flex-col gap-1 rounded-lg border p-3 text-sm">
+        {alt && <span>{alt}</span>}
+        <span>{t(`imageLoad.${error}`)}</span>
+        {src && <code className="whitespace-pre-wrap break-all text-xs">{src}</code>}
+        <span className="flex gap-3">
+          {src && <button type="button" onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            void copyTextToClipboard(localPath ?? workspaceRelative ?? src).then((success) => setCopyResult({ key, success }));
+          }}>{t('common:fileOperations.copyPath')}</button>}
+          {!unresolved && <button type="button" onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            setAttempt((value) => value + 1);
+          }}>{t('common:buttons.retry')}</button>}
+        </span>
+        {copyResult?.key === key && <span>{t(copyResult.success ? 'imageLoad.copied' : 'imageLoad.copyFailed')}</span>}
+      </span>
     );
   }
 
+  if (!imageSrc) {
+    return <span aria-hidden className="my-1 block h-28 max-w-sm animate-pulse rounded-lg bg-muted" />;
+  }
+
+  const image = <img {...props} src={imageSrc} alt={alt} loading="lazy" decoding="async" className="rounded-lg"
+    onError={() => setLoaded({ key, error: browserSrc ? 'failed' : 'decode' })} />;
+  if (browserSrc) return image;
   return (
     <>
-      <button
-        type="button"
-        onClick={(event) => {
-          event.stopPropagation();
-          setExpanded(true);
-        }}
-        aria-label={t('misc.expandImage', { name: alt ?? '' })}
-        className="block max-w-full cursor-zoom-in"
-      >
-        <img src={blobSrc} alt={alt} loading="lazy" decoding="async" className="rounded-lg" {...props} />
+      <button type="button" onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        setExpanded(key);
+      }} aria-label={t('misc.expandImage', { name: alt ?? '' })} className="block max-w-full cursor-zoom-in">
+        {image}
       </button>
-      {expanded && (
-        <UnifiedImageViewer
-          src={blobSrc}
-          alt={alt ?? ''}
-          title={alt ?? ''}
-          filePath={localPath}
-          onClose={() => setExpanded(false)}
-        />
+      {expanded === key && (
+        <UnifiedImageViewer src={imageSrc} alt={alt ?? ''} title={alt ?? ''}
+          filePath={localPath ?? workspaceRelative} onClose={() => setExpanded(null)} />
       )}
     </>
   );

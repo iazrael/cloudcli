@@ -1,4 +1,14 @@
 {
+  "imageLoad": {
+    "unauthorized": "Sign in again to load this image.",
+    "forbidden": "This image is outside the readable directories or access was denied.",
+    "notFound": "Image file not found. It may have been moved or deleted.",
+    "failed": "Could not load the image. Check the address or your connection and retry.",
+    "decode": "Could not display the image. The file may be damaged or its format unsupported.",
+    "unresolved": "Cannot resolve this image reference. Relative paths require an active project.",
+    "copied": "Path copied.",
+    "copyFailed": "Could not copy. Select the path above to copy it manually."
+  },
   "replay": {
     "recoveryFailed": "Chat sync failed. Retrying automatically; your existing messages are kept. You can also reload this page to retry."
   },
