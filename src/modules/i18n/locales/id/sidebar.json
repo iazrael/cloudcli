@@ -41,7 +41,21 @@
     "deleteSelected_other": "Hapus {{count}} sesi",
     "pinSession": "Sematkan sesi",
     "unpinSession": "Lepas sematan",
-    "pinned": "Disematkan"
+    "pinned": "Disematkan",
+    "optionsTitle": "Opsi sesi",
+    "optionsFor": "Opsi sesi untuk {{name}}",
+    "providerSession": "Sesi {{provider}}",
+    "forkSession": "Fork sesi",
+    "forkSessionDescription": "Lanjutkan dari salinan, sesi ini tidak diubah.",
+    "archiveOrDelete": "Arsipkan atau hapus sesi",
+    "clickToRetry": "Klik untuk mencoba lagi.",
+    "tapToRetry": "Ketuk untuk mencoba lagi.",
+    "sessionName": "Nama sesi",
+    "copyId": "Salin ID sesi {{provider}}",
+    "copyIdLoading": "Memuat ID sesi {{provider}}…",
+    "copyIdCopied": "ID sesi {{provider}} disalin",
+    "copyIdFailed": "Tidak dapat menyalin ID sesi {{provider}}",
+    "copyIdUnavailable": "ID sesi {{provider}} tidak tersedia"
   },
   "tooltips": {
     "viewEnvironments": "Lihat Lingkungan",

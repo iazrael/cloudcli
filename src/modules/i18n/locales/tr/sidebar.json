@@ -41,7 +41,21 @@
     "deleteSelected_other": "{{count}} oturumu sil",
     "pinSession": "Oturumu sabitle",
     "unpinSession": "Sabitlemeyi kaldır",
-    "pinned": "Sabitlendi"
+    "pinned": "Sabitlendi",
+    "optionsTitle": "Oturum seçenekleri",
+    "optionsFor": "{{name}} oturum seçenekleri",
+    "providerSession": "{{provider}} oturumu",
+    "forkSession": "Oturumu çatalla",
+    "forkSessionDescription": "Bir kopyadan devam et, bu oturum olduğu gibi kalsın.",
+    "archiveOrDelete": "Oturumu arşivle veya sil",
+    "clickToRetry": "Tekrar denemek için tıklayın.",
+    "tapToRetry": "Tekrar denemek için dokunun.",
+    "sessionName": "Oturum adı",
+    "copyId": "{{provider}} oturum kimliğini kopyala",
+    "copyIdLoading": "{{provider}} oturum kimliği yükleniyor…",
+    "copyIdCopied": "{{provider}} oturum kimliği kopyalandı",
+    "copyIdFailed": "{{provider}} oturum kimliği kopyalanamadı",
+    "copyIdUnavailable": "{{provider}} oturum kimliği kullanılamıyor"
   },
   "tooltips": {
     "viewEnvironments": "Ortamları Görüntüle",

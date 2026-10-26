@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from 'react';
 import { Check, Copy } from 'lucide-react';
+import type { TFunction } from 'i18next';
 
 import { api } from '@/shared/api';
 import { copyTextToClipboard } from '@/shared/utils';
@@ -18,7 +19,7 @@ type CopyState = 'loading' | 'idle' | 'copying' | 'copied' | 'error';
  * the former as `onOpenChange` and depends on it in two document-listener
  * effects, which would otherwise be torn down and rebuilt on every keystroke.
  */
-export function useProviderSessionIdCopy(sessionId: string, providerLabel: string) {
+export function useProviderSessionIdCopy(sessionId: string, providerLabel: string, t: TFunction) {
   const [copyState, setCopyState] = useState<CopyState>('idle');
   const [providerSessionId, setProviderSessionId] = useState<string | null>(null);
   const requestRef = useRef(0);
@@ -81,14 +82,14 @@ export function useProviderSessionIdCopy(sessionId: string, providerLabel: strin
   }, [copy, copyState, load, providerSessionId]);
 
   const copyLabel = copyState === 'loading'
-    ? `Loading ${providerLabel} session ID…`
+    ? t('sessions.copyIdLoading', { provider: providerLabel })
     : copyState === 'copied'
-      ? `${providerLabel} session ID copied`
+      ? t('sessions.copyIdCopied', { provider: providerLabel })
       : copyState === 'error'
         ? providerSessionId
-          ? `Couldn't copy ${providerLabel} session ID`
-          : `${providerLabel} session ID unavailable`
-        : `Copy ${providerLabel} session ID`;
+          ? t('sessions.copyIdFailed', { provider: providerLabel })
+          : t('sessions.copyIdUnavailable', { provider: providerLabel })
+        : t('sessions.copyId', { provider: providerLabel });
 
   return {
     copyState,

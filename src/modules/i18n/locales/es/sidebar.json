@@ -41,7 +41,21 @@
     "deleteSelected_other": "Eliminar {{count}} sesiones",
     "pinSession": "Fijar sesión",
     "unpinSession": "Desfijar sesión",
-    "pinned": "Fijada"
+    "pinned": "Fijada",
+    "optionsTitle": "Opciones de la sesión",
+    "optionsFor": "Opciones de la sesión {{name}}",
+    "providerSession": "Sesión de {{provider}}",
+    "forkSession": "Bifurcar sesión",
+    "forkSessionDescription": "Continuar desde una copia, sin tocar esta.",
+    "archiveOrDelete": "Archivar o eliminar sesión",
+    "clickToRetry": "Haz clic para reintentar.",
+    "tapToRetry": "Toca para reintentar.",
+    "sessionName": "Nombre de la sesión",
+    "copyId": "Copiar ID de sesión de {{provider}}",
+    "copyIdLoading": "Cargando ID de sesión de {{provider}}…",
+    "copyIdCopied": "ID de sesión de {{provider}} copiado",
+    "copyIdFailed": "No se pudo copiar el ID de sesión de {{provider}}",
+    "copyIdUnavailable": "ID de sesión de {{provider}} no disponible"
   },
   "tooltips": {
     "viewEnvironments": "Ver entornos",

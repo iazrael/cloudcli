@@ -43,7 +43,21 @@
     "deleteSelected_other": "Удалить {{count}} сеансов",
     "pinSession": "Закрепить сессию",
     "unpinSession": "Открепить сессию",
-    "pinned": "Закреплена"
+    "pinned": "Закреплена",
+    "optionsTitle": "Параметры сессии",
+    "optionsFor": "Параметры сессии {{name}}",
+    "providerSession": "Сессия {{provider}}",
+    "forkSession": "Создать ветку сессии",
+    "forkSessionDescription": "Продолжить с копии, не меняя эту сессию.",
+    "archiveOrDelete": "Архивировать или удалить сессию",
+    "clickToRetry": "Нажмите, чтобы повторить.",
+    "tapToRetry": "Коснитесь, чтобы повторить.",
+    "sessionName": "Название сессии",
+    "copyId": "Копировать ID сессии {{provider}}",
+    "copyIdLoading": "Загрузка ID сессии {{provider}}…",
+    "copyIdCopied": "ID сессии {{provider}} скопирован",
+    "copyIdFailed": "Не удалось скопировать ID сессии {{provider}}",
+    "copyIdUnavailable": "ID сессии {{provider}} недоступен"
   },
   "tooltips": {
     "viewEnvironments": "Просмотр окружений",

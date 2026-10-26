@@ -316,7 +316,7 @@ test('the compact layout selects with the same rules and hides its options butto
   assert.equal(rows.length, SESSIONS.length);
   assert.deepEqual(rows.map((row) => row.getAttribute('aria-checked')), ['true', 'false', 'false']);
   assert.equal(
-    container.querySelector('[aria-label^="Session options for"]'),
+    container.querySelector('[aria-label^="sessions.optionsFor"]'),
     null,
     'the mobile row hides its "..." button while selecting',
   );

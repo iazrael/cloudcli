@@ -40,7 +40,21 @@
     "deleteSelected": "{{count}}件のセッションを削除",
     "pinSession": "セッションをピン留め",
     "unpinSession": "ピン留めを解除",
-    "pinned": "ピン留め済み"
+    "pinned": "ピン留め済み",
+    "optionsTitle": "セッションオプション",
+    "optionsFor": "{{name}} のセッションオプション",
+    "providerSession": "{{provider}} セッション",
+    "forkSession": "セッションを分岐",
+    "forkSessionDescription": "コピーから続行し、このセッションはそのまま残します。",
+    "archiveOrDelete": "セッションをアーカイブまたは削除",
+    "clickToRetry": "クリックして再試行。",
+    "tapToRetry": "タップして再試行。",
+    "sessionName": "セッション名",
+    "copyId": "{{provider}} セッション ID をコピー",
+    "copyIdLoading": "{{provider}} セッション ID を読み込み中…",
+    "copyIdCopied": "{{provider}} セッション ID をコピーしました",
+    "copyIdFailed": "{{provider}} セッション ID をコピーできませんでした",
+    "copyIdUnavailable": "{{provider}} セッション ID を取得できません"
   },
   "tooltips": {
     "viewEnvironments": "環境を表示",

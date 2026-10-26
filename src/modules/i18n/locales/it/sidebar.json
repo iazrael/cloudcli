@@ -41,7 +41,21 @@
     "deleteSelected_other": "Elimina {{count}} sessioni",
     "pinSession": "Fissa sessione",
     "unpinSession": "Sblocca sessione",
-    "pinned": "Fissata"
+    "pinned": "Fissata",
+    "optionsTitle": "Opzioni sessione",
+    "optionsFor": "Opzioni sessione per {{name}}",
+    "providerSession": "Sessione {{provider}}",
+    "forkSession": "Crea ramo della sessione",
+    "forkSessionDescription": "Continua da una copia, lasciando intatta questa.",
+    "archiveOrDelete": "Archivia o elimina sessione",
+    "clickToRetry": "Fai clic per riprovare.",
+    "tapToRetry": "Tocca per riprovare.",
+    "sessionName": "Nome sessione",
+    "copyId": "Copia ID sessione {{provider}}",
+    "copyIdLoading": "Caricamento ID sessione {{provider}}…",
+    "copyIdCopied": "ID sessione {{provider}} copiato",
+    "copyIdFailed": "Impossibile copiare l’ID sessione {{provider}}",
+    "copyIdUnavailable": "ID sessione {{provider}} non disponibile"
   },
   "tooltips": {
     "viewEnvironments": "Visualizza ambienti",

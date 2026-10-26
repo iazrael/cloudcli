@@ -41,7 +41,21 @@
     "deleteSelected_other": "{{count}} Sitzungen löschen",
     "pinSession": "Sitzung anheften",
     "unpinSession": "Sitzung lösen",
-    "pinned": "Angeheftet"
+    "pinned": "Angeheftet",
+    "optionsTitle": "Sitzungsoptionen",
+    "optionsFor": "Sitzungsoptionen für {{name}}",
+    "providerSession": "{{provider}}-Sitzung",
+    "forkSession": "Sitzung verzweigen",
+    "forkSessionDescription": "Von einer Kopie aus weitermachen, diese Sitzung bleibt unverändert.",
+    "archiveOrDelete": "Sitzung archivieren oder löschen",
+    "clickToRetry": "Zum Wiederholen klicken.",
+    "tapToRetry": "Zum Wiederholen tippen.",
+    "sessionName": "Sitzungsname",
+    "copyId": "{{provider}}-Sitzungs-ID kopieren",
+    "copyIdLoading": "{{provider}}-Sitzungs-ID wird geladen…",
+    "copyIdCopied": "{{provider}}-Sitzungs-ID kopiert",
+    "copyIdFailed": "{{provider}}-Sitzungs-ID konnte nicht kopiert werden",
+    "copyIdUnavailable": "{{provider}}-Sitzungs-ID nicht verfügbar"
   },
   "tooltips": {
     "viewEnvironments": "Umgebungen anzeigen",

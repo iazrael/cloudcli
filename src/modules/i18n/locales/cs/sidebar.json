@@ -35,7 +35,21 @@
     "showMore": "Zobrazit další relace",
     "pinSession": "Připnout relaci",
     "unpinSession": "Odepnout relaci",
-    "pinned": "Připnuto"
+    "pinned": "Připnuto",
+    "optionsTitle": "Možnosti relace",
+    "optionsFor": "Možnosti relace {{name}}",
+    "providerSession": "Relace {{provider}}",
+    "forkSession": "Forknout relaci",
+    "forkSessionDescription": "Pokračovat z kopie, tato relace zůstane beze změny.",
+    "archiveOrDelete": "Archivovat nebo smazat relaci",
+    "clickToRetry": "Klikněte pro opakování.",
+    "tapToRetry": "Klepněte pro opakování.",
+    "sessionName": "Název relace",
+    "copyId": "Kopírovat ID relace {{provider}}",
+    "copyIdLoading": "Načítání ID relace {{provider}}…",
+    "copyIdCopied": "ID relace {{provider}} zkopírováno",
+    "copyIdFailed": "ID relace {{provider}} se nepodařilo zkopírovat",
+    "copyIdUnavailable": "ID relace {{provider}} není k dispozici"
   },
   "tooltips": {
     "viewEnvironments": "Zobrazit prostředí",
