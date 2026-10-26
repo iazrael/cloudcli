@@ -9,6 +9,7 @@ import type { MarkdownImageContext } from '@/shared/types';
 import { markdownUrlTransform } from '@/shared/utils';
 import MarkdownCodeBlock from '@/modules/code-editor/markdown/MarkdownCodeBlock';
 import MarkdownPreviewImage from '@/modules/code-editor/markdown/MarkdownPreviewImage';
+import MarkdownPreviewLink from '@/modules/code-editor/markdown/MarkdownPreviewLink';
 
 type MarkdownPreviewProps = {
   content: string;
@@ -34,11 +35,6 @@ const markdownPreviewComponents: Components = {
       {children}
     </blockquote>
   ),
-  a: ({ href, children }) => (
-    <a href={href} className="text-blue-600 hover:underline dark:text-blue-400" target="_blank" rel="noopener noreferrer">
-      {children}
-    </a>
-  ),
   table: ({ children }) => (
     <div className="my-2 overflow-x-auto">
       <table className="min-w-full border-collapse border border-gray-200 dark:border-gray-700">{children}</table>
@@ -60,6 +56,9 @@ export default function MarkdownPreview({ content, imageContext = null }: Markdo
   const components = useMemo<Components>(
     () => ({
       ...markdownPreviewComponents,
+      a: ({ node: _node, ...props }) => (
+        <MarkdownPreviewLink {...props} context={imageContext ?? NO_IMAGE_CONTEXT} />
+      ),
       img: ({ node: _node, ...props }) => (
         <MarkdownPreviewImage {...props} context={imageContext ?? NO_IMAGE_CONTEXT} />
       ),

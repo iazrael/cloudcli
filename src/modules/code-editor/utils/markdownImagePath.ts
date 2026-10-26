@@ -32,7 +32,7 @@ const WINDOWS_UNC_PATH = /^\/\//;
 // used as a filesystem path. A literal `%` that is not valid encoding is kept.
 const decodeSrc = (src: string): string => {
   try {
-    return decodeURI(src);
+    return decodeURIComponent(src);
   } catch {
     return src;
   }
