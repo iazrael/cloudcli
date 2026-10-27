@@ -1,5 +1,5 @@
 <div align="center">
- <img src="../public/logo.svg" alt="CloudCLI UI" width="64" height="64">
+ <img src="../public/logo.svg" alt="CloudCLI" width="64" height="64">
  <h1>Cloud CLI (auch bekannt als Claude Code UI)</h1>
  <p>Eine Desktop- und Mobile-Oberfläche für <a href="https://docs.anthropic.com/en/docs/claude-code">Claude Code</a>, <a href="https://docs.cursor.com/en/cli/overview">Cursor CLI</a> und <a href="https://developers.openai.com/codex">Codex</a>.<br>Lokal oder remote nutzbar – verwalte deine aktiven Projekte und Sitzungen von überall.</p>
 </div>
@@ -78,7 +78,7 @@ Der schnellste Einstieg – keine lokale Einrichtung erforderlich. Erhalte eine 
 
 #### npm
 
-CloudCLI UI sofort mit **npx** ausprobieren (erfordert **Node.js** v22+):
+CloudCLI sofort mit **npx** ausprobieren (erfordert **Node.js** v22+):
 
 ```bash
 npx @cloudcli-ai/cloudcli
@@ -109,9 +109,9 @@ Unterstützt Claude Code und Codex. Weitere Details in der [Sandbox-Dokumentatio
 
 ## Welche Option passt zu dir?
 
-CloudCLI UI ist die Open-Source-UI-Schicht, die CloudCLI Cloud antreibt. Du kannst es auf deinem eigenen Rechner selbst hosten oder CloudCLI Cloud nutzen, das darauf aufbaut und eine vollständig verwaltete Cloud-Umgebung, Team-Funktionen und tiefere Integrationen bietet.
+CloudCLI ist die Open-Source-UI-Schicht, die CloudCLI Cloud antreibt. Du kannst es auf deinem eigenen Rechner selbst hosten oder CloudCLI Cloud nutzen, das darauf aufbaut und eine vollständig verwaltete Cloud-Umgebung, Team-Funktionen und tiefere Integrationen bietet.
 
-| | CloudCLI UI (Self-hosted) | CloudCLI Cloud |
+| | CloudCLI (Self-hosted) | CloudCLI Cloud |
 |---|---|---|
 | **Am besten für** | Entwickler:innen, die eine vollständige UI für lokale Agent-Sitzungen auf ihrem eigenen Rechner möchten | Teams und Entwickler:innen, die Agents in der Cloud betreiben möchten, überall erreichbar |
 | **Zugriff** | Browser via `[deineIP]:port` | Browser, jede IDE, REST API, n8n |
@@ -186,12 +186,12 @@ CloudCLI verfügt über ein Plugin-System, mit dem benutzerdefinierte Tabs mit e
 
 Claude Code Remote Control ermöglicht es, Nachrichten an eine bereits im lokalen Terminal laufende Sitzung zu senden. Der Rechner muss eingeschaltet bleiben, das Terminal muss offen bleiben, und Sitzungen laufen nach etwa 10 Minuten ohne Netzwerkverbindung ab.
 
-CloudCLI UI und CloudCLI Cloud erweitern Claude Code, anstatt neben ihm zu laufen – MCP-Server, Berechtigungen, Einstellungen und Sitzungen sind exakt dieselben, die Claude Code nativ verwendet. Nichts wird dupliziert oder separat verwaltet.
+CloudCLI und CloudCLI Cloud erweitern Claude Code, anstatt neben ihm zu laufen – MCP-Server, Berechtigungen, Einstellungen und Sitzungen sind exakt dieselben, die Claude Code nativ verwendet. Nichts wird dupliziert oder separat verwaltet.
 
 Das bedeutet in der Praxis:
 
-- **Alle Sitzungen, nicht nur eine** – CloudCLI UI erkennt automatisch jede Sitzung aus dem `~/.claude`-Ordner. Remote Control stellt nur die einzelne aktive Sitzung bereit, um sie in der Claude Mobile App verfügbar zu machen.
-- **Deine Einstellungen sind deine Einstellungen** – MCP-Server, Tool-Berechtigungen und Projektkonfiguration, die in CloudCLI UI geändert werden, werden direkt in die Claude Code-Konfiguration geschrieben und treten sofort in Kraft – und umgekehrt.
+- **Alle Sitzungen, nicht nur eine** – CloudCLI erkennt automatisch jede Sitzung aus dem `~/.claude`-Ordner. Remote Control stellt nur die einzelne aktive Sitzung bereit, um sie in der Claude Mobile App verfügbar zu machen.
+- **Deine Einstellungen sind deine Einstellungen** – MCP-Server, Tool-Berechtigungen und Projektkonfiguration, die in CloudCLI geändert werden, werden direkt in die Claude Code-Konfiguration geschrieben und treten sofort in Kraft – und umgekehrt.
 - **Funktioniert mit mehr Agents** – Claude Code, Cursor CLI und Codex, nicht nur Claude Code.
 - **Vollständige UI, nicht nur ein Chat-Fenster** – Datei-Explorer, Git-Integration, MCP-Verwaltung und ein Shell-Terminal sind alle eingebaut.
 - **CloudCLI Cloud läuft in der Cloud** – Laptop zuklappen, der Agent läuft weiter. Kein Terminal zu überwachen, kein Rechner, der laufen muss.
@@ -206,7 +206,7 @@ Ja. CloudCLI stellt die Umgebung bereit, nicht die KI. Du bringst dein eigenes C
 </details>
 
 <details>
-<summary>Kann ich CloudCLI UI auf meinem Smartphone nutzen?</summary>
+<summary>Kann ich CloudCLI auf meinem Smartphone nutzen?</summary>
 
 Ja. Bei Self-Hosted: Server auf dem eigenen Rechner starten und `[deineIP]:port` in einem beliebigen Browser im Netzwerk öffnen. Bei CloudCLI Cloud: Von jedem Gerät aus öffnen – kein VPN, keine Portweiterleitung, keine Einrichtung. Eine native App ist ebenfalls in Entwicklung.
 
@@ -215,7 +215,7 @@ Ja. Bei Self-Hosted: Server auf dem eigenen Rechner starten und `[deineIP]:port`
 <details>
 <summary>Wirken sich Änderungen in der UI auf mein lokales Claude Code-Setup aus?</summary>
 
-Ja, bei Self-Hosted. CloudCLI UI liest aus und schreibt in dieselbe `~/.claude`-Konfiguration, die Claude Code nativ verwendet. MCP-Server, die über die UI hinzugefügt werden, erscheinen sofort in Claude Code und umgekehrt.
+Ja, bei Self-Hosted. CloudCLI liest aus und schreibt in dieselbe `~/.claude`-Konfiguration, die Claude Code nativ verwendet. MCP-Server, die über die UI hinzugefügt werden, erscheinen sofort in Claude Code und umgekehrt.
 
 </details>
 

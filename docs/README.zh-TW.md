@@ -1,5 +1,5 @@
 <div align="center">
- <img src="../public/logo.svg" alt="CloudCLI UI" width="64" height="64">
+ <img src="../public/logo.svg" alt="CloudCLI" width="64" height="64">
  <h1>Cloud CLI（又名 Claude Code UI）</h1>
  <p><a href="https://docs.anthropic.com/en/docs/claude-code">Claude Code</a>、<a href="https://docs.cursor.com/en/cli/overview">Cursor CLI</a>、<a href="https://developers.openai.com/codex">Codex</a> 的桌面和行動裝置 UI。可在本機或遠端使用，從任何地方查看您的專案與工作階段。</p>
 </div>
@@ -74,7 +74,7 @@
 
 #### npm
 
-啟動 CloudCLI UI，只需一行 `npx`（需要 Node.js v22+）：
+啟動 CloudCLI，只需一行 `npx`（需要 Node.js v22+）：
 
 ```bash
 npx @cloudcli-ai/cloudcli
@@ -105,9 +105,9 @@ npx @cloudcli-ai/cloudcli@latest sandbox ~/my-project
 
 ## 哪個選項更適合你？
 
-CloudCLI UI 是 CloudCLI Cloud 的開源 UI 層。你可以在本機上自架它，也可以使用提供團隊功能與深入整合的 CloudCLI Cloud。
+CloudCLI 是 CloudCLI Cloud 的開源 UI 層。你可以在本機上自架它，也可以使用提供團隊功能與深入整合的 CloudCLI Cloud。
 
-| | CloudCLI UI（自架） | CloudCLI Cloud |
+| | CloudCLI（自架） | CloudCLI Cloud |
 |---|---|---|
 | **適合對象** | 需要為本機代理工作階段提供完整 UI 的開發者 | 需要部署在雲端，隨時從任何地方存取代理的團隊與開發者 |
 | **存取方式** | 透過 `[yourip]:port` 在瀏覽器中存取 | 瀏覽器、任意 IDE、REST API、n8n |
@@ -181,10 +181,10 @@ CloudCLI 配備外掛系統，允許你新增帶有自訂前端 UI 和選用 Nod
 
 Claude Code Remote Control 讓你傳送訊息到本機終端機中已經執行的工作階段。該方式要求你的機器保持開機，終端機保持開啟，中斷網路後約 10 分鐘工作階段會逾時。
 
-CloudCLI UI 與 CloudCLI Cloud 是對 Claude Code 的擴充，而非旁觀 — MCP 伺服器、權限、設定、工作階段與 Claude Code 完全一致。
+CloudCLI 與 CloudCLI Cloud 是對 Claude Code 的擴充，而非旁觀 — MCP 伺服器、權限、設定、工作階段與 Claude Code 完全一致。
 
-- **涵蓋全部工作階段** — CloudCLI UI 會自動掃描 `~/.claude` 資料夾中的每個工作階段。Remote Control 只暴露目前活動的工作階段。
-- **設定統一** — 在 CloudCLI UI 中修改的 MCP、工具權限等設定會立即寫入 Claude Code。
+- **涵蓋全部工作階段** — CloudCLI 會自動掃描 `~/.claude` 資料夾中的每個工作階段。Remote Control 只暴露目前活動的工作階段。
+- **設定統一** — 在 CloudCLI 中修改的 MCP、工具權限等設定會立即寫入 Claude Code。
 - **支援更多 Agents** — Claude Code、Cursor CLI、Codex。
 - **完整 UI** — 除了聊天介面，還包括檔案瀏覽器、Git 整合、MCP 管理和 Shell 終端機。
 - **CloudCLI Cloud 持續運作於雲端** — 關閉本機裝置也不會中斷代理執行，無需監控終端機。
@@ -199,7 +199,7 @@ CloudCLI UI 與 CloudCLI Cloud 是對 Claude Code 的擴充，而非旁觀 — M
 </details>
 
 <details>
-<summary>能在手機上使用 CloudCLI UI 嗎？</summary>
+<summary>能在手機上使用 CloudCLI 嗎？</summary>
 
 可以。自架時，在你的裝置上執行伺服器，然後在網路中的任意瀏覽器開啟 `[yourip]:port`。CloudCLI Cloud 可從任意裝置存取，內建原生應用程式也在開發中。
 
@@ -208,7 +208,7 @@ CloudCLI UI 與 CloudCLI Cloud 是對 Claude Code 的擴充，而非旁觀 — M
 <details>
 <summary>UI 中的變更會影響本機 Claude Code 設定嗎？</summary>
 
-會的。自架模式下，CloudCLI UI 讀取並寫入 Claude Code 使用的 `~/.claude` 設定。透過 UI 新增的 MCP 伺服器會立即在 Claude Code 中可見。
+會的。自架模式下，CloudCLI 讀取並寫入 Claude Code 使用的 `~/.claude` 設定。透過 UI 新增的 MCP 伺服器會立即在 Claude Code 中可見。
 
 </details>
 

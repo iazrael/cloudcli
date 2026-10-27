@@ -84,7 +84,7 @@ function showStatus(dependencies: CliServiceDependencies): void {
   const claudeProjectsPath = path.join(dependencies.homeDirectory, '.claude', 'projects');
   const environmentFilePath = path.join(dependencies.applicationRoot, '.env');
 
-  output.log(`\n${terminalTextStyles.bright('CloudCLI UI - Status')}\n`);
+  output.log(`\n${terminalTextStyles.bright('CloudCLI - Status')}\n`);
   output.log(terminalTextStyles.dim('═'.repeat(60)));
   output.log(`\n${terminalTextStyles.info('[INFO]')} Version: ${terminalTextStyles.bright(dependencies.packageMetadata.version)}`);
   output.log(`\n${terminalTextStyles.info('[INFO]')} Installation Directory:`);

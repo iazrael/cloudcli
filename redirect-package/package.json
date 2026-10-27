@@ -32,7 +32,7 @@
     "ui",
     "mobile IDE"
   ],
-  "author": "CloudCLI UI Contributors",
+  "author": "CloudCLI Contributors",
   "dependencies": {
     "@cloudcli-ai/cloudcli": "*"
   },

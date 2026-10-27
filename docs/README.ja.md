@@ -1,5 +1,5 @@
 <div align="center">
- <img src="../public/logo.svg" alt="CloudCLI UI" width="64" height="64">
+ <img src="../public/logo.svg" alt="CloudCLI" width="64" height="64">
  <h1>Cloud CLI（別名 Claude Code UI）</h1>
  <p><a href="https://docs.anthropic.com/en/docs/claude-code">Claude Code</a>、<a href="https://docs.cursor.com/en/cli/overview">Cursor CLI</a>、<a href="https://developers.openai.com/codex">Codex</a> のためのデスクトップ／モバイル UI。<br>ローカルでもリモートでも使え、アクティブなプロジェクトとセッションをどこからでも閲覧できます。</p>
 </div>
@@ -74,7 +74,7 @@
 
 #### npm
 
-**npx** で今すぐ CloudCLI UI を試せます（**Node.js** v22+ が必要）：
+**npx** で今すぐ CloudCLI を試せます（**Node.js** v22+ が必要）：
 
 ```bash
 npx @cloudcli-ai/cloudcli
@@ -105,9 +105,9 @@ Claude Code、Codex に対応。詳細は[サンドボックスのドキュメ�
 
 ## どちらの選択肢が適していますか？
 
-CloudCLI UI は、CloudCLI Cloud を支えるオープンソースの UI レイヤーです。自分のマシンにセルフホストすることも、フルマネージドのクラウド環境、チーム機能、より深い統合を備えた CloudCLI Cloud を使うこともできます。
+CloudCLI は、CloudCLI Cloud を支えるオープンソースの UI レイヤーです。自分のマシンにセルフホストすることも、フルマネージドのクラウド環境、チーム機能、より深い統合を備えた CloudCLI Cloud を使うこともできます。
 
-| | CloudCLI UI（セルフホスト） | CloudCLI Cloud |
+| | CloudCLI（セルフホスト） | CloudCLI Cloud |
 |---|---|---|
 | **対象ユーザー** | 自分のマシン上でローカルの agent セッションに対してフル UI を使いたい開発者 | クラウド上で動く agents をどこからでも利用したいチーム／開発者 |
 | **アクセス方法** | ブラウザ（`[yourip]:port`） | ブラウザ、任意の IDE、REST API、n8n |
@@ -180,10 +180,10 @@ CloudCLI にはプラグインシステムがあり、独自のフロントエ�
 
 Claude Code Remote Control は、ローカル端末で既に動作しているセッションへメッセージを送れる仕組みです。マシンを起動したままにし、端末も開いたままにする必要があり、ネットワーク接続がない状態が約 10 分続くとセッションがタイムアウトします。
 
-CloudCLI UI と CloudCLI Cloud は、Claude Code の横に別物として存在するのではなく、Claude Code を拡張します — MCP サーバー、権限、設定、セッションは Claude Code がネイティブに使うものと完全に同一です。複製したり、別系統で管理したりしません。
+CloudCLI と CloudCLI Cloud は、Claude Code の横に別物として存在するのではなく、Claude Code を拡張します — MCP サーバー、権限、設定、セッションは Claude Code がネイティブに使うものと完全に同一です。複製したり、別系統で管理したりしません。
 
-- **すべてのセッションにアクセス** — CloudCLI UI は `~/.claude` フォルダのすべてのセッションを自動検出します。Remote Control は、Claude モバイルアプリで利用可能にするため、1つのアクティブセッションだけを公開します。
-- **設定はあなたの設定** — CloudCLI UI で変更した MCP サーバー、ツール権限、プロジェクト構成は、Claude Code の設定に直接書き込まれて即座に反映され、その逆（Claude Code での変更が UI に反映）も同様です。
+- **すべてのセッションにアクセス** — CloudCLI は `~/.claude` フォルダのすべてのセッションを自動検出します。Remote Control は、Claude モバイルアプリで利用可能にするため、1つのアクティブセッションだけを公開します。
+- **設定はあなたの設定** — CloudCLI で変更した MCP サーバー、ツール権限、プロジェクト構成は、Claude Code の設定に直接書き込まれて即座に反映され、その逆（Claude Code での変更が UI に反映）も同様です。
 - **対応エージェントがさらに充実** — Claude Code に加えて Cursor CLI、Codex にも対応しています。
 - **チャット窓だけではない完全な UI** — ファイルエクスプローラー、Git 統合、MCP 管理、シェル端末などがすべて組み込まれています。
 - **CloudCLI Cloud はクラウド上で稼働** — ノートパソコンを閉じてもエージェントは動き続けます。監視が要る端末も、スリープ防止も不要です。
@@ -198,7 +198,7 @@ CloudCLI UI と CloudCLI Cloud は、Claude Code の横に別物として存在�
 </details>
 
 <details>
-<summary>CloudCLI UI をスマホで使えますか？</summary>
+<summary>CloudCLI をスマホで使えますか？</summary>
 
 はい。セルフホストの場合は、自身のマシンでサーバーを起動し、ネットワーク内のブラウザで `[yourip]:port` を開いてください。CloudCLI Cloud を使う場合は、任意のデバイスからアクセスできます。VPN もポートフォワーディングも不要で、セットアップも不要です。ネイティブアプリも開発中です。
 
@@ -207,7 +207,7 @@ CloudCLI UI と CloudCLI Cloud は、Claude Code の横に別物として存在�
 <details>
 <summary>UI で加えた変更はローカルの Claude Code 設定に影響しますか？</summary>
 
-はい、セルフホストの場合です。CloudCLI UI は Claude Code がネイティブに使う `~/.claude` 設定を読み書きします。UI から追加した MCP サーバーは即座に Claude Code に反映され、その逆も同様です。
+はい、セルフホストの場合です。CloudCLI は Claude Code がネイティブに使う `~/.claude` 設定を読み書きします。UI から追加した MCP サーバーは即座に Claude Code に反映され、その逆も同様です。
 
 </details>
 

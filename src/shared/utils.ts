@@ -201,7 +201,7 @@ export const playChatCompletionSound = (options = {}): Promise<void> => playNoti
 //----------------- DOCUMENT TITLE ------------
 
 /** Browser tab title shown when no project or session is selected. Private to the title helpers. */
-const DEFAULT_PAGE_TITLE = 'CloudCLI UI';
+const DEFAULT_PAGE_TITLE = 'CloudCLI';
 
 /**
  * Resolves the human-readable label for a session.
@@ -385,7 +385,7 @@ export const showCompletionTitleIndicator = (): void => {
     return;
   }
 
-  const baseTitle = stripIndicator(document.title || 'CloudCLI UI');
+  const baseTitle = stripIndicator(document.title || 'CloudCLI');
   document.title = `${getIndicatorPrefix()}${baseTitle}`;
 
   if (pageIsActive()) {
