@@ -250,6 +250,11 @@
       "light": "浅色",
       "dark": "深色",
       "system": "跟随系统外观"
+    },
+    "keepProjectsExpanded": {
+      "section": "侧边栏",
+      "label": "记住项目展开状态",
+      "description": "允许同时展开多个项目，并在此浏览器中记住展开状态。"
     }
   },
   "mcpForm": {

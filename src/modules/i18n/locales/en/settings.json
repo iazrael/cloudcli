@@ -250,6 +250,11 @@
       "light": "Light",
       "dark": "Dark",
       "system": "Follow the system appearance"
+    },
+    "keepProjectsExpanded": {
+      "section": "Sidebar",
+      "label": "Keep projects expanded",
+      "description": "Open several projects together and remember them in this browser after reloading."
     }
   },
   "mcpForm": {

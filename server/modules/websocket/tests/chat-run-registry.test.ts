@@ -73,6 +73,24 @@ test('a session event without a run does not make the session look busy', () => 
   } finally { chatRunRegistry.clearAll(); }
 });
 
+test('a legacy queue refresh notice is visible and replayable without ending the active run', () => {
+  chatRunRegistry.clearAll();
+  try {
+    const connection = new FakeConnection();
+    const run = chatRunRegistry.startRun({ appSessionId: 'legacy-queue', provider: 'claude',
+      providerSessionId: null, connection, userId: 1 });
+    assert.ok(run);
+    chatRunRegistry.publishSessionEvent('legacy-queue', {
+      id: 'legacy-queue-refresh:legacy-queue', sessionId: 'legacy-queue',
+      kind: 'error', provider: 'claude', timestamp: new Date().toISOString(),
+      content: 'Copy the queued content and refresh this page.',
+    });
+    assert.equal(connection.frames[0]?.content, 'Copy the queued content and refresh this page.');
+    assert.equal(chatRunRegistry.isProcessing('legacy-queue'), true);
+    assert.equal(chatRunRegistry.replayEvents('legacy-queue', 0).events[0]?.kind, 'error');
+  } finally { chatRunRegistry.clearAll(); }
+});
+
 test('a published terminal event is dropped, so no round is ended by it', () => {
   chatRunRegistry.clearAll();
   try {

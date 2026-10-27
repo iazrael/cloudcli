@@ -1,6 +1,5 @@
 import { useTranslation } from 'react-i18next';
 
-import { DarkModeToggle } from '@/shared/ui';
 import type { CodeEditorSettingsState, ProjectSortOrder } from '@/shared/types';
 import { useUiPreferences, useSetUiPreference } from '@/shared/context/UiPreferencesContext';
 import { LanguageSelector } from '@/modules/i18n';
@@ -30,7 +29,7 @@ export default function AppearanceSettingsTab({
   onCodeEditorFontSizeChange,
 }: AppearanceSettingsTabProps) {
   const { t } = useTranslation('settings');
-  const { showTerminalTab, showQuickSettingsPanel } = useUiPreferences();
+  const { showTerminalTab, showQuickSettingsPanel, keepProjectsExpanded } = useUiPreferences();
   const setUiPreference = useSetUiPreference();
 
   return (
@@ -80,6 +79,21 @@ export default function AppearanceSettingsTab({
               checked={showQuickSettingsPanel}
               onChange={(value) => setUiPreference('showQuickSettingsPanel', value)}
               ariaLabel={t('appearanceSettings.quickSettingsPanel.label')}
+            />
+          </SettingsRow>
+        </SettingsCard>
+      </SettingsSection>
+
+      <SettingsSection title={t('appearanceSettings.keepProjectsExpanded.section', { defaultValue: 'Sidebar' })}>
+        <SettingsCard>
+          <SettingsRow
+            label={t('appearanceSettings.keepProjectsExpanded.label', { defaultValue: 'Keep projects expanded' })}
+            description={t('appearanceSettings.keepProjectsExpanded.description', { defaultValue: 'Open several projects together and remember them after reloading.' })}
+          >
+            <SettingsToggle
+              checked={keepProjectsExpanded}
+              onChange={(value) => setUiPreference('keepProjectsExpanded', value)}
+              ariaLabel={t('appearanceSettings.keepProjectsExpanded.label', { defaultValue: 'Keep projects expanded' })}
             />
           </SettingsRow>
         </SettingsCard>

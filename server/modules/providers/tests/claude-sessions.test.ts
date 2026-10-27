@@ -6,7 +6,7 @@ import test from 'node:test';
 
 import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
 import { ClaudeSessionsProvider } from '@/modules/providers/list/claude/claude-sessions.provider.js';
-import { AppError, buildLookupMap } from '@/shared/utils.js';
+import { AppError, buildLookupMap, extractFirstValidJsonlData } from '@/shared/utils.js';
 import { ClaudeSessionSynchronizer } from '@/modules/providers/list/claude/claude-session-synchronizer.provider.js';
 import { searchConversations } from '@/modules/providers/services/session-conversations-search.service.js';
 
@@ -2144,6 +2144,23 @@ test('claude: getTokenUsage skips subagent and synthetic all-zero rows like the 
 // ---------------------------------------------------------------------------
 // buildLookupMap
 // ---------------------------------------------------------------------------
+
+test('JSONL readers continue past malformed and structurally invalid rows', async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'jsonl-resilience-'));
+  const filePath = path.join(tmp, 'history.jsonl');
+  try {
+    await writeFile(filePath, ['{"id":"a","name":"first"}', '{broken', 'null', '[]', '42', '{"id":"a","name":"last"}', '{"id":"b","name":"next"}'].join('\n'));
+    assert.equal((await buildLookupMap(filePath, 'id', 'name')).get('b'), 'next');
+    assert.equal((await buildLookupMap(filePath, 'id', 'name', 'last')).get('a'), 'last');
+    assert.equal(await extractFirstValidJsonlData(filePath, (row) =>
+      row && typeof row === 'object' && 'id' in row && row.id === 'b' ? row.id : null), 'b');
+    assert.equal(await extractFirstValidJsonlData(filePath, () => null), null);
+    assert.equal(await extractFirstValidJsonlData(path.join(tmp, 'missing.jsonl'), () => 'unexpected'), null);
+    await assert.rejects(extractFirstValidJsonlData(filePath, () => { throw new Error('extractor failure'); }), /extractor failure/);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
 
 test('buildLookupMap returns first-seen value when key appears multiple times', async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'claude-lookup-'));

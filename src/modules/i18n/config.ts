@@ -41,6 +41,7 @@ import esChat from '@/modules/i18n/locales/es/chat.json';
 import esCodeEditor from '@/modules/i18n/locales/es/codeEditor.json';
 // oxlint-disable-next-line importx/order
 import esTasks from '@/modules/i18n/locales/es/tasks.json';
+import esGit from '@/modules/i18n/locales/es/git.json';
 
 import koCommon from '@/modules/i18n/locales/ko/common.json';
 import koSettings from '@/modules/i18n/locales/ko/settings.json';
@@ -207,6 +208,7 @@ i18n
         chat: esChat,
         codeEditor: esCodeEditor,
         tasks: esTasks,
+        git: esGit,
       },
       ko: {
         common: koCommon,

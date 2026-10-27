@@ -3,6 +3,7 @@ import { PencilIcon, XIcon, Zap } from 'lucide-react';
 
 type QueuedMessageCardProps = {
   content: string;
+  permissionMode?: string;
   attachmentCount?: number;
   onEdit: () => void;
   onDelete: () => void;
@@ -16,6 +17,7 @@ type QueuedMessageCardProps = {
  */
 export default function QueuedMessageCard({
   content,
+  permissionMode,
   attachmentCount = 0,
   onEdit,
   onDelete,
@@ -41,7 +43,15 @@ export default function QueuedMessageCard({
                 : t('input.queue.willSend', { defaultValue: 'Will send when this finishes' })}
             </span>
           </div>
-          <p className="mt-0.5 line-clamp-2 break-words text-sm text-foreground/90">{content}</p>
+          <p tabIndex={0} className="mt-0.5 max-h-28 overflow-y-auto whitespace-pre-wrap break-words rounded-sm text-sm text-foreground/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{content}</p>
+          {permissionMode && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              {t('input.queue.permission', {
+                mode: t(`codex.modes.${permissionMode}`, { defaultValue: permissionMode }),
+                defaultValue: 'Whole queued message: {{mode}}. New additions apply the latest settings.',
+              })}
+            </p>
+          )}
           {attachmentCount > 0 && (
             <p className="mt-0.5 text-xs text-muted-foreground">
               {attachmentCount} {attachmentCount === 1 ? 'file' : 'files'} attached

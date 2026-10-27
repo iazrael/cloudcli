@@ -24,7 +24,9 @@ React 18 + TypeScript + Vite 7（`vite.config.js`，别名 `@` → `src/`，`@sh
 
 聊天消息**不走 Context**：走 `SessionTimelineStore`（框架无关）+ `useSessionStore` 适配器，见 [chat.md](./chat.md) 的四层结构。
 
-输入框草稿和排队消息也不走 Context：`src/shared/chatDrafts.ts` 按作用域（会话 id，或新会话的 `project:<id>`）存，服务端 `auth.db` 为准，localStorage 只做首屏镜像，订阅用 `subscribeToChatDrafts`。排队消息只由服务端发出，页面只写入和跟随，见 [chat.md](./chat.md) 的「排队消息」。
+输入框草稿和排队消息也不走 Context：`src/shared/chatDrafts.ts` 按作用域（会话 id，或新会话的 `project:<id>`）存，服务端 `auth.db` 为准，localStorage 只做首屏镜像，订阅用 `subscribeToChatDrafts`。文本保存和队列追加、清空使用独立接口；重载逐字段保留尚未确认的本地文本和请求期间变化的队列。排队消息只由服务端发出，页面只回显与派发指纹匹配的本地消息，其他内容由历史补齐，见 [chat.md](./chat.md) 的「排队消息与草稿协议」。退出登录使未完成请求的结果失效，不能重新填回上一用户的数据。
+
+项目展开偏好由 `UiPreferencesContext` 管理，默认关闭；开启后允许多个普通项目分组展开。展开集合使用数据库 projectId，保存在当前浏览器中；运行中分组使用独立的折叠集合。权限模式名称按输入栏实际剩余宽度显示，布局测量跟随输入栏、工具和发送控件的尺寸变化，不用屏幕断点推断输入区宽度。
 
 `SessionProtectionContext` 的活动表区分主轮和后台等待两个阶段。后台等待包括任务执行和后续汇报，卡片消失不等于活动结束；后台结束事件只清后台阶段，新主轮会建立自己的活动。阶段交接不依赖毫秒时间比较。消息排队、中止资格和提示音按后台等待状态判断，具体链路见 [chat.md](./chat.md)。
 

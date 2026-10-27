@@ -127,10 +127,21 @@ export function broadcastSessionRemoved(sessionIds: string[]): void {
  * identifies the submitted content without broadcasting one user's text to all pages.
  */
 export function broadcastQueuedMessageDispatched(sessionId: string, messageFingerprint?: string): void {
-  sendToConnectedClients([JSON.stringify({
+  const payload = JSON.stringify({
     kind: 'queued_message_dispatched', sessionId,
     ...(messageFingerprint ? { messageFingerprint } : {}),
-  })]);
+  });
+  connectedClients.forEach((client) => {
+    if (client.readyState !== WS_OPEN_STATE) return;
+    try {
+      client.send(payload);
+    } catch (error) {
+      // The provider must still receive this claimed turn if a page disconnects
+      // during its echo; retrying the message would risk duplicate execution.
+      console.error('[QueuedMessages] Dispatch notification failed', { sessionId,
+        error: error instanceof Error ? error.message : String(error) });
+    }
+  });
 }
 
 /**

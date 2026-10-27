@@ -10,18 +10,23 @@ import type {
   TouchEvent,
 } from 'react';
 import { useDropzone } from 'react-dropzone';
+import { useTranslation } from 'react-i18next';
 
-import { authenticatedFetch } from '@/shared/api';
+import { api, ApiRequestError, authenticatedFetch } from '@/shared/api';
 import { createClientRequestId, isEnginePromptCommand, isImageAttachment } from '@/shared/utils';
 import type { MarkSessionProcessing, SessionActivityMap } from '@/shared/types';
 import { uploadAttachmentFiles } from '@/modules/chat/utils/attachmentUpload';
 import { grantClaudeToolPermission } from '@/modules/chat/utils/chatPermissions';
 import { readProviderToolsSettings, safeLocalStorage } from '@/modules/chat/utils/chatStorage';
 import {
+  appendQueuedMessage,
   clearQueuedMessage,
+  getChatDraftSessionGeneration,
+  hydrateChatDrafts,
+  readDraftText,
   readQueuedMessage,
   subscribeToChatDrafts,
-  writeQueuedMessage,
+  writeDraftText,
   type StoredQueuedMessage,
 } from '@/shared/chatDrafts';
 import type {
@@ -249,6 +254,21 @@ const restoreQueuedDraft = (sessionKey: string): QueuedDraft | null => {
     : null;
 };
 
+const recoverQueuedFiles = async (draft: QueuedDraft): Promise<File[]> => {
+  const uploads = draft.uploadedAttachments ?? [];
+  if (uploads.length === 0 || draft.attachments.length === uploads.length) return draft.attachments;
+  return Promise.all(uploads.map(async (entry) => {
+    const descriptor = typeof entry === 'string' ? { path: entry } : entry as ChatAttachment;
+    const storedName = descriptor?.path?.split(/[\\/]/).pop();
+    if (!storedName) throw new Error('The queued attachment has no stored filename');
+    const response = await api.assets.file(storedName);
+    if (!response.ok) throw new Error(`Cannot restore queued attachment (${response.status})`);
+    return new File([await response.arrayBuffer()], descriptor.name || storedName, {
+      type: descriptor.mimeType || response.headers.get('Content-Type') || 'application/octet-stream',
+    });
+  }));
+};
+
 const getNotificationSessionSummary = (
   selectedSession: ProjectSession | null,
   fallbackInput: string,
@@ -297,11 +317,12 @@ export function useChatComposerState({
   addMessage,
   setPendingPermissionRequests,
 }: UseChatComposerStateArgs) {
+  const { t } = useTranslation('chat');
+  const draftGenerationRef = useRef(getChatDraftSessionGeneration());
   const [input, setInput] = useState(() => {
     if (typeof window !== 'undefined' && selectedProject) {
-      // Draft inputs are keyed by the DB projectId so per-project drafts
-      // survive display-name changes.
-      return safeLocalStorage.getItem(`draft_input_${selectedProject.projectId}`) || '';
+      const scope = selectedSession?.id || currentSessionId || `project:${selectedProject.projectId}`;
+      return readDraftText(scope) || safeLocalStorage.getItem(`draft_input_${selectedProject.projectId}`) || '';
     }
     return '';
   });
@@ -332,18 +353,26 @@ export function useChatComposerState({
   const sessionKey = selectedSession?.id || currentSessionId || null;
   const sessionKeyRef = useRef(sessionKey);
   sessionKeyRef.current = sessionKey;
+  const draftScope = sessionKey ?? (selectedProjectId ? `project:${selectedProjectId}` : null);
+  const draftScopeRef = useRef(draftScope);
+  draftScopeRef.current = draftScope;
+  const inputOwnerRef = useRef(draftScope);
+  const scopeFilesRef = useRef(new Map<string, File[]>());
 
   // Every programmatic input write goes through the same pair of stores a send
   // reads: the state (for the render) and inputValueRef (so an immediate Enter
   // submits the new text, not a stale value). setInput and the ref are both
   // stable, so this callback never changes identity.
-  const updateInput = useCallback((value: string) => {
-    setInput(value);
-    inputValueRef.current = value;
+  const updateInput = useCallback((value: SetStateAction<string>) => {
+    if (draftGenerationRef.current !== getChatDraftSessionGeneration()) return;
+    const next = typeof value === 'function' ? value(inputValueRef.current) : value;
+    setInput(next);
+    inputValueRef.current = next;
+    if (draftScopeRef.current) writeDraftText(draftScopeRef.current, next);
   }, []);
   // The chat scope a draft belongs to: the open session, or the project for a
   // chat that has not been sent yet and so has no session id.
-  const draftScope = sessionKey ?? (selectedProjectId ? `project:${selectedProjectId}` : null);
+  const failedSubmissionsRef = useRef(new Map<string, File[]>());
   const { recordSentMessage, handleHistoryKeyDown } = useInputHistory({
     setInput: updateInput,
     textareaRef,
@@ -591,7 +620,7 @@ export function useChatComposerState({
     selectedProject,
     provider,
     input,
-    setInput,
+    setInput: updateInput,
     textareaRef,
     onExecuteCommand: executeCommand,
   });
@@ -607,7 +636,7 @@ export function useChatComposerState({
   } = useFileMentions({
     selectedProject,
     input,
-    setInput,
+    setInput: updateInput,
     textareaRef,
   });
 
@@ -730,9 +759,17 @@ export function useChatComposerState({
   }, [resetCommandMenuState, selectedProjectId, updateInput]);
 
   /** Puts a failed submit's text and attachments back so nothing is lost. */
-  const restoreComposerAfterFailedSubmit = useCallback((content: string, attachments: File[]) => {
-    updateInput(content);
-    setAttachedFiles(attachments);
+  const restoreComposerAfterFailedSubmit = useCallback((content: string, attachments: File[], ownerScope: string) => {
+    if (draftGenerationRef.current !== getChatDraftSessionGeneration()) return;
+    if (draftScopeRef.current !== ownerScope) {
+      const previous = failedSubmissionsRef.current.get(ownerScope);
+      const restored = [content, readDraftText(ownerScope)].filter((part) => part.trim()).join('\n\n');
+      failedSubmissionsRef.current.set(ownerScope, [...attachments, ...(previous ?? scopeFilesRef.current.get(ownerScope) ?? [])]);
+      writeDraftText(ownerScope, restored);
+      return;
+    }
+    updateInput([content, inputValueRef.current].filter((part) => part.trim()).join('\n\n'));
+    setAttachedFiles((current) => [...attachments, ...current]);
   }, [updateInput]);
 
   // Snapshot of everything `chat.send` needs beyond the text itself. Built at
@@ -788,6 +825,7 @@ export function useChatComposerState({
       submitOptions?: SubmitOptions,
     ): Promise<boolean> => {
       event.preventDefault();
+      if (draftGenerationRef.current !== getChatDraftSessionGeneration()) return false;
       const currentInput = queuedSubmission?.content ?? inputValueRef.current;
       const currentAttachments = queuedSubmission?.attachments ?? attachedFiles;
       const previouslyUploadedAttachments = queuedSubmission?.uploadedAttachments ?? [];
@@ -887,33 +925,21 @@ export function useChatComposerState({
             throw new ComposerSubmitError(`Failed to upload files: ${message}`);
           }
 
-          // If there is already a queued draft, append new content rather than silently overwriting it
-          const existingDraft = queuedDraft;
-          const mergedContent = existingDraft?.content
-            ? `${existingDraft.content}\n\n${currentInput}`
-            : currentInput;
-          const mergedAttachments = existingDraft?.attachments
-            ? [...existingDraft.attachments, ...currentAttachments]
-            : currentAttachments;
-          const mergedUploadedAttachments = existingDraft?.uploadedAttachments
-            ? [...existingDraft.uploadedAttachments, ...uploadedAttachments]
-            : uploadedAttachments;
-
-          const durableDraft: QueuedDraft = {
-            content: mergedContent,
-            attachments: mergedAttachments,
-            uploadedAttachments: mergedUploadedAttachments,
-            options: queuedOptions,
-          };
-          if (queuedSessionKey) {
-            // Write the claim ticket synchronously after upload; this closes the
-            // gap before React's persistence effect runs.
-            writeQueuedMessage(queuedSessionKey, {
-              content: durableDraft.content,
-              options: durableDraft.options,
-              attachments: durableDraft.uploadedAttachments,
-            });
+          if (draftGenerationRef.current !== getChatDraftSessionGeneration()) return false;
+          if (!queuedSessionKey) {
+            throw new ComposerSubmitError('No session is available to queue this message.');
           }
+          const response = await appendQueuedMessage(queuedSessionKey, {
+            content: currentInput,
+            options: queuedOptions,
+            attachments: uploadedAttachments,
+          });
+          const durableDraft: QueuedDraft = {
+            content: response.queuedMessage.content,
+            options: response.queuedMessage.options,
+            uploadedAttachments: response.queuedMessage.attachments,
+            attachments: currentAttachments,
+          };
 
           // Recorded under the session the message was queued FOR, and before
           // the session-switch return below — the queued text must be
@@ -929,7 +955,12 @@ export function useChatComposerState({
           }
 
           queuedDraftSessionRef.current = queuedSessionKey;
-          setQueuedDraft(durableDraft);
+          setQueuedDraft((previous) => ({
+            ...durableDraft,
+            attachments: response.appended && previous
+              ? [...previous.attachments, ...currentAttachments]
+              : currentAttachments,
+          }));
           return true;
         }
 
@@ -953,6 +984,7 @@ export function useChatComposerState({
           }
         }
 
+        if (draftGenerationRef.current !== getChatDraftSessionGeneration()) return false;
         const resolvedProjectPath = selectedProject.fullPath || selectedProject.path || '';
         const sessionSummary = getNotificationSessionSummary(selectedSession, currentInput);
 
@@ -977,6 +1009,7 @@ export function useChatComposerState({
               throw new Error(`Failed to create session (${response.status})`);
             }
             const body = await response.json();
+            if (draftGenerationRef.current !== getChatDraftSessionGeneration()) return false;
             targetSessionId = body?.data?.sessionId || null;
             // A blank server name would leave the session unlabeled, so the local
             // summary stays the fallback unless a real name comes back.
@@ -1056,6 +1089,7 @@ export function useChatComposerState({
         recordSentMessage(currentInput, targetSessionId);
       } catch (error) {
         accepted = false;
+        if (draftGenerationRef.current !== getChatDraftSessionGeneration()) return false;
         // One place turns a failed submit back into an editable message, and
         // exactly one error row is rendered. Nothing is dropped silently.
         if (queuedSubmission) {
@@ -1063,11 +1097,15 @@ export function useChatComposerState({
           queuedDraftSessionRef.current = sessionKey;
           setQueuedDraft(queuedSubmission);
         } else {
-          restoreComposerAfterFailedSubmit(currentInput, currentAttachments);
+          restoreComposerAfterFailedSubmit(currentInput, currentAttachments, submitScope);
         }
         addMessage({
           type: 'error',
-          content: error instanceof ComposerSubmitError
+          content: error instanceof ApiRequestError && error.code === 'QUEUE_DELIVERY_UNCONFIRMED'
+            ? t('input.queue.confirmDelivery', { defaultValue: 'No server confirmation was received. Refresh and confirm whether the message was queued before trying again.' })
+            : error instanceof ApiRequestError && error.code === 'QUEUED_MESSAGE_NOT_COMBINABLE'
+            ? t('input.queue.notCombinable', { defaultValue: 'Slash commands must be sent separately from the queued message.' })
+            : error instanceof ComposerSubmitError
             ? error.message
             : `Failed to send message: ${error instanceof Error ? error.message : 'Unknown error'}`,
           timestamp: new Date(),
@@ -1104,6 +1142,7 @@ export function useChatComposerState({
       draftScope,
       addMessage,
       slashCommands,
+      t,
     ],
   );
 
@@ -1128,26 +1167,51 @@ export function useChatComposerState({
         if (!stored) {
           return null;
         }
-        return current && isSameQueuedMessage(toStoredQueuedMessage(current), stored)
-          ? current
-          : restoreQueuedDraft(sessionKey);
+        if (current && isSameQueuedMessage(toStoredQueuedMessage(current), stored)) {
+          return current;
+        }
+        const restored = restoreQueuedDraft(sessionKey);
+        const uploads = current?.uploadedAttachments ?? [];
+        return restored && current && JSON.stringify((restored.uploadedAttachments ?? []).slice(0, uploads.length)) === JSON.stringify(uploads)
+          ? { ...restored, attachments: current.attachments }
+          : restored;
       });
     });
   }, [sessionKey]);
 
-  const editQueuedDraft = useCallback(() => {
+  const clearQueuedDraftOnServer = useCallback(async (owner: string | null, expected: QueuedDraft) => {
+    if (!owner || draftGenerationRef.current !== getChatDraftSessionGeneration()) return false;
+    const cleared = await clearQueuedMessage(owner, toStoredQueuedMessage(expected));
+    if (draftGenerationRef.current !== getChatDraftSessionGeneration()) return false;
+    if (!cleared) {
+      addMessage({ type: 'error', content: t('input.queue.clearFailed', { defaultValue: 'Could not cancel the queued message. Please try again.' }), timestamp: new Date() });
+    }
+    return cleared;
+  }, [addMessage, t]);
+
+  const editQueuedDraft = useCallback(async () => {
     if (!queuedDraft) {
       return;
     }
-    setQueuedDraft(null);
-    updateInput(queuedDraft.content);
-    setAttachedFiles(queuedDraft.attachments);
+    const owner = queuedDraftSessionRef.current;
+    const draft = queuedDraft;
+    let files: File[];
+    try {
+      files = await recoverQueuedFiles(draft);
+    } catch (error) {
+      addMessage({ type: 'error', content: String(error), timestamp: new Date() });
+      return;
+    }
+    if (!await clearQueuedDraftOnServer(owner, draft)) return;
+    if (sessionKeyRef.current === owner) setQueuedDraft(null);
+    restoreComposerAfterFailedSubmit(draft.content, files, owner ?? '');
     textareaRef.current?.focus();
-  }, [queuedDraft, updateInput]);
+  }, [queuedDraft, clearQueuedDraftOnServer, restoreComposerAfterFailedSubmit, addMessage]);
 
-  const deleteQueuedDraft = useCallback(() => {
-    setQueuedDraft(null);
-  }, []);
+  const deleteQueuedDraft = useCallback(async () => {
+    const owner = queuedDraftSessionRef.current;
+    if (queuedDraft && await clearQueuedDraftOnServer(owner, queuedDraft) && sessionKeyRef.current === owner) setQueuedDraft(null);
+  }, [clearQueuedDraftOnServer, queuedDraft]);
 
   // Force send starts a new run, which the server refuses while a reply is
   // still in flight (RUN_IN_PROGRESS); only a session whose turn has ended
@@ -1156,23 +1220,38 @@ export function useChatComposerState({
   const canForceSendQueuedDraft = provider !== 'claude' && Boolean(hasActiveBackgroundTasks)
     && !(queueTargetActivity && !queueTargetActivity.background);
 
-  const forceSendQueuedDraft = useCallback(() => {
+  const forceSendQueuedDraft = useCallback(async () => {
     if (!canForceSendQueuedDraft || !queuedDraft) {
       return;
     }
-    const draft = queuedDraft;
-    setQueuedDraft(null);
-    if (sessionKey) {
-      clearQueuedMessage(sessionKey);
+    const owner = queuedDraftSessionRef.current;
+    const draft = { ...queuedDraft };
+    try {
+      draft.attachments = await recoverQueuedFiles(draft);
+    } catch (error) {
+      addMessage({ type: 'error', content: String(error), timestamp: new Date() });
+      return;
     }
-    const submitted = handleSubmitRef.current?.(createFakeSubmitEvent(), draft, true);
-    void submitted?.then((accepted) => {
-      if (!accepted) {
-        queuedDraftSessionRef.current = sessionKey;
-        setQueuedDraft(draft);
+    if (!await clearQueuedDraftOnServer(owner, draft)) return;
+    if (sessionKeyRef.current === sessionKey) {
+      setQueuedDraft(null);
+      if (await handleSubmitRef.current?.(createFakeSubmitEvent(), draft, true)) return;
+    }
+    if (draftGenerationRef.current !== getChatDraftSessionGeneration()) return;
+    if (sessionKey) {
+      try {
+        const response = await appendQueuedMessage(sessionKey, toStoredQueuedMessage(draft));
+        if (sessionKeyRef.current === sessionKey) {
+          setQueuedDraft({ ...draft, content: response.queuedMessage.content,
+            uploadedAttachments: response.queuedMessage.attachments, options: response.queuedMessage.options });
+        }
+      } catch (error) {
+        if (sessionKeyRef.current === sessionKey) setQueuedDraft(null);
+        restoreComposerAfterFailedSubmit(draft.content, draft.attachments, sessionKey);
+        addMessage({ type: 'error', content: `Failed to restore queued message: ${String(error)}`, timestamp: new Date() });
       }
-    });
-  }, [canForceSendQueuedDraft, queuedDraft, sessionKey]);
+    }
+  }, [canForceSendQueuedDraft, queuedDraft, sessionKey, clearQueuedDraftOnServer, restoreComposerAfterFailedSubmit, addMessage]);
 
   // A voice transcript either fills the input (to edit before sending) or, when the
   // user tapped "stop and send", is submitted straight away. updateInput mirrors
@@ -1189,52 +1268,20 @@ export function useChatComposerState({
   }, [input]);
 
   useEffect(() => {
-    if (!selectedProjectId) {
-      return;
+    if (draftGenerationRef.current !== getChatDraftSessionGeneration()) return;
+    const previousScope = inputOwnerRef.current;
+    if (previousScope !== draftScope) {
+      if (previousScope) scopeFilesRef.current.set(previousScope, attachedFiles);
+      inputOwnerRef.current = draftScope;
+      const failed = draftScope ? failedSubmissionsRef.current.get(draftScope) : undefined;
+      updateInput(draftScope ? readDraftText(draftScope) : '');
+      setAttachedFiles(failed ?? (draftScope ? scopeFilesRef.current.get(draftScope) : undefined) ?? []);
+      if (draftScope) failedSubmissionsRef.current.delete(draftScope);
+    } else if (draftScope) {
+      writeDraftText(draftScope, inputValueRef.current);
     }
-    const savedInput = safeLocalStorage.getItem(`draft_input_${selectedProjectId}`) || '';
-    setInput((previous) => {
-      const next = previous === savedInput ? previous : savedInput;
-      inputValueRef.current = next;
-      return next;
-    });
-  }, [selectedProjectId]);
-
-  useEffect(() => {
-    if (!selectedProjectId) {
-      return;
-    }
-    if (input !== '') {
-      safeLocalStorage.setItem(`draft_input_${selectedProjectId}`, input);
-    } else {
-      safeLocalStorage.removeItem(`draft_input_${selectedProjectId}`);
-    }
-  }, [input, selectedProjectId]);
-
-  // Persist the queued draft under its session's key. Must be defined BEFORE
-  // the swap effect below: on a session switch there is one commit where
-  // `sessionKey` already points at the new session while `queuedDraft` (and
-  // the owner ref) still describe the old one — the ref mismatch makes this
-  // effect skip that commit instead of writing/clearing across sessions.
-  useEffect(() => {
-    if (!sessionKey || queuedDraftSessionRef.current !== sessionKey) {
-      return;
-    }
-    const stored = readQueuedMessage(sessionKey);
-    if (
-      queuedDraft
-      && (queuedDraft.content.trim() || (queuedDraft.uploadedAttachments?.length ?? 0) > 0)
-    ) {
-      const next = toStoredQueuedMessage(queuedDraft);
-      // Already what the server holds (written at queue time, or adopted from
-      // the store): writing it again would only repeat the request.
-      if (!stored || !isSameQueuedMessage(next, stored)) {
-        writeQueuedMessage(sessionKey, next);
-      }
-    } else if (stored) {
-      clearQueuedMessage(sessionKey);
-    }
-  }, [queuedDraft, sessionKey]);
+    if (selectedProjectId) safeLocalStorage.removeItem(`draft_input_${selectedProjectId}`);
+  }, [attachedFiles, draftScope, selectedProjectId, updateInput]);
 
   // Switching sessions swaps in that session's queued draft. Browser File
   // objects are local to the mounted composer, while their already-uploaded
@@ -1246,7 +1293,19 @@ export function useChatComposerState({
       return;
     }
     setQueuedDraft(restoreQueuedDraft(sessionKey));
-  }, [sessionKey]);
+  }, [sessionKey, updateInput]);
+
+  useEffect(() => {
+    const reconcile = () => {
+      if (document.visibilityState === 'visible') void hydrateChatDrafts();
+    };
+    const timer = setInterval(reconcile, 5_000);
+    document.addEventListener('visibilitychange', reconcile);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', reconcile);
+    };
+  }, []);
 
   useEffect(() => {
     if (!textareaRef.current) {
@@ -1464,7 +1523,7 @@ export function useChatComposerState({
 
   return {
     input,
-    setInput,
+    setInput: updateInput,
     editingAnchorId,
     beginEditMessage,
     cancelEditMessage,

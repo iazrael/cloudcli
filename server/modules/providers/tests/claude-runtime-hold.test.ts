@@ -160,6 +160,7 @@ async function withRun(
     nextTurn: NextTurn;
     /** One scripted CLI process per `createQuery` call, the first being `script`. */
     processes: Scripted[];
+    queryOptions: Array<Parameters<NonNullable<ProviderRuntimeContext['createQuery']>>[0]['options']>;
     cwd: string;
     /** The session's transcript, as the runtime resolves it. */
     transcriptPath: string;
@@ -172,7 +173,9 @@ async function withRun(
   const first = createScriptedQuery();
   const script = first.script;
   const processes: Scripted[] = [];
+  const queryOptions: Array<Parameters<NonNullable<ProviderRuntimeContext['createQuery']>>[0]['options']> = [];
   const createQuery: NonNullable<ProviderRuntimeContext['createQuery']> = (args) => {
+    queryOptions.push(args.options);
     const scripted = processes.length === 0 ? first : createScriptedQuery();
     processes.push(scripted.script);
     return scripted.createQuery(args);
@@ -203,7 +206,7 @@ async function withRun(
   try {
     const done = queryClaudeSDK('hello', { sessionId: SESSION_ID, cwd, ...baseOptions }, writer as never, context);
     try {
-      await runTest({ script, sent, done, nextTurn, processes, cwd, transcriptPath });
+      await runTest({ script, sent, done, nextTurn, processes, queryOptions, cwd, transcriptPath });
     } finally {
       for (const scripted of processes.length ? processes : [script]) scripted.end();
       await done;
@@ -213,6 +216,28 @@ async function withRun(
     await rm(cwd, { recursive: true, force: true });
   }
 }
+
+test('SDK environment enables Artifact by default and respects an explicit host setting', { concurrency: false }, async () => {
+  const previous = process.env.CLAUDE_CODE_ARTIFACT;
+  const previousOther = process.env.CLOUDCLI_TEST_ENV;
+  process.env.CLOUDCLI_TEST_ENV = 'forwarded';
+  try {
+    for (const configured of [undefined, '0']) {
+      if (configured === undefined) delete process.env.CLAUDE_CODE_ARTIFACT;
+      else process.env.CLAUDE_CODE_ARTIFACT = configured;
+      await withRun(async ({ script, queryOptions }) => {
+        await script.drain();
+        assert.equal(queryOptions[0]?.env?.CLAUDE_CODE_ARTIFACT, configured ?? '1');
+        assert.equal(queryOptions[0]?.env?.CLOUDCLI_TEST_ENV, 'forwarded');
+      });
+    }
+  } finally {
+    if (previous === undefined) delete process.env.CLAUDE_CODE_ARTIFACT;
+    else process.env.CLAUDE_CODE_ARTIFACT = previous;
+    if (previousOther === undefined) delete process.env.CLOUDCLI_TEST_ENV;
+    else process.env.CLOUDCLI_TEST_ENV = previousOther;
+  }
+});
 
 const settle = () => new Promise((resolve) => { setTimeout(resolve, 25); });
 

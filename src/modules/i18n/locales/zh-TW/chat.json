@@ -148,7 +148,8 @@
     "stop": "停止",
     "hintText": {
       "ctrlEnter": "Ctrl+Enter 傳送 • Shift+Enter 換行 • Tab 切換模式 • / 斜線指令",
-      "enter": "Enter 傳送 • Shift+Enter 換行 • Tab 切換模式 • / 斜線指令"
+      "enter": "Enter 傳送 • Shift+Enter 換行 • Tab 切換模式 • / 斜線指令",
+      "appendQueued": "Enter 加入排隊訊息"
     },
     "clickToChangeMode": "點擊變更權限模式（或在輸入框中按 Tab）",
     "showAllCommands": "顯示所有指令",
@@ -163,7 +164,9 @@
       "delete": "刪除排隊訊息",
       "willSendAfterBackground": "背景任務完成後將自動傳送",
       "forceSend": "立即傳送，背景任務繼續執行",
-      "forceSendButton": "立即傳送"
+      "forceSendButton": "立即傳送",
+      "append": "加入排隊訊息",
+      "notCombinable": "無法將訊息加入排隊：斜線指令會單獨執行，因此無法與排隊訊息合併。請在排隊訊息送出後再傳送。"
     }
   },
   "thinkingMode": {
@@ -330,7 +333,10 @@
       "abortButton": "中止",
       "hintContinue": "可直接傳送，背景任務繼續執行",
       "hintContinueShort": "可繼續傳送"
-    }
+    },
+    "permissionHeading": "如何核准 {{provider}} 的操作？",
+    "permissionCycleHint": "在輸入框中按 Tab 切換模式",
+    "permissionTriggerLabel": "{{mode}}：{{heading}}"
   },
   "export": {
     "trigger": "匯出對話",

@@ -4,6 +4,8 @@ import { createHash, webcrypto } from 'node:crypto';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, test, vi } from 'vitest';
 
+import type * as Api from '@/shared/api';
+
 import type { ChatMessage } from '@/shared/types';
 
 /**
@@ -16,7 +18,8 @@ import type { ChatMessage } from '@/shared/types';
 let serverDrafts: unknown[] = [];
 let draftRequests = 0;
 
-vi.mock('@/shared/api', () => ({
+vi.mock('@/shared/api', async (importOriginal) => ({
+  ...(await importOriginal<typeof Api>()),
   api: {
     user: {
       drafts: async () => {
@@ -28,11 +31,13 @@ vi.mock('@/shared/api', () => ({
       },
       saveDraft: async () => new Response('{}', { status: 200 }),
       deleteDraft: async () => new Response('{}', { status: 200 }),
+      appendQueuedMessage: async (_scope: string, queuedMessage: unknown) => new Response(JSON.stringify({ queuedMessage, appended: false })),
     },
   },
 }));
 
-type Listener = (event: { kind?: string; sessionId?: string }) => void;
+type DispatchFrame = { kind: string; sessionId?: string; messageFingerprint?: string };
+type Listener = (event: DispatchFrame) => void;
 
 async function setup(activeSessionId: string | null) {
   const drafts = await import('@/shared/chatDrafts');
@@ -51,7 +56,7 @@ async function setup(activeSessionId: string | null) {
     onSessionProcessing: (sessionId) => { if (sessionId) processing.push(sessionId); },
   }));
 
-  const emit = async (event: { kind: string; sessionId?: string; messageFingerprint?: string }) => {
+  const emit = async (event: DispatchFrame) => {
     await act(async () => {
       for (const listener of listeners) listener(event);
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -71,7 +76,7 @@ beforeEach(() => {
 
 test('a queued message the server started is echoed in the viewed conversation and leaves the queue', async () => {
   const { drafts, echoed, processing, emit } = await setup('session-1');
-  drafts.writeQueuedMessage('session-1', {
+  await drafts.appendQueuedMessage('session-1', {
     content: 'next step',
     attachments: [
       { name: 'shot.png', path: '/uploads/shot.png', mimeType: 'image/png' },
@@ -94,7 +99,7 @@ test('a queued message the server started is echoed in the viewed conversation a
 
 test('a queued message started for another session is not echoed here, but marks that session busy', async () => {
   const { drafts, echoed, processing, emit } = await setup('session-1');
-  drafts.writeQueuedMessage('session-2', { content: 'elsewhere' });
+  await drafts.appendQueuedMessage('session-2', { content: 'elsewhere' });
   serverDrafts = [];
 
   await emit({ kind: 'queued_message_dispatched', sessionId: 'session-2' });
@@ -106,7 +111,7 @@ test('a queued message started for another session is not echoed here, but marks
 
 test('a reconnect reloads the queue, so one the server sent while offline disappears', async () => {
   const { drafts, emit } = await setup('session-1');
-  drafts.writeQueuedMessage('session-1', { content: 'sent while the phone slept' });
+  await drafts.appendQueuedMessage('session-1', { content: 'sent while the phone slept' });
   serverDrafts = [];
   const before = draftRequests;
 
@@ -118,7 +123,7 @@ test('a reconnect reloads the queue, so one the server sent while offline disapp
 
 test('unrelated frames leave the queue alone', async () => {
   const { drafts, echoed, emit } = await setup('session-1');
-  drafts.writeQueuedMessage('session-1', { content: 'still waiting' });
+  await drafts.appendQueuedMessage('session-1', { content: 'still waiting' });
   const before = draftRequests;
 
   await emit({ kind: 'session_upserted', sessionId: 'session-1' });
@@ -131,7 +136,7 @@ test('unrelated frames leave the queue alone', async () => {
 for (const localContent of ['sent text', 'sent text\nnew unsent text']) {
   test(`dispatch confirmation only echoes the exact sent input: ${localContent}`, async () => {
     const { drafts, echoed, emit } = await setup('session-1');
-    drafts.writeQueuedMessage('session-1', { content: localContent });
+    await drafts.appendQueuedMessage('session-1', { content: localContent });
     const messageFingerprint = createHash('sha256')
       .update(JSON.stringify({ content: 'sent text', attachments: [] })).digest('hex');
     await emit({ kind: 'queued_message_dispatched', sessionId: 'session-1', messageFingerprint });
@@ -139,3 +144,21 @@ for (const localContent of ['sent text', 'sent text\nnew unsent text']) {
     assert.deepEqual(echoed.map((message) => message.content), localContent === 'sent text' ? ['sent text'] : []);
   });
 }
+
+test('dispatch never echoes a stale card and hydrates the authoritative next queue', async () => {
+  const { drafts, echoed, processing, emit } = await setup('session-1');
+  await drafts.appendQueuedMessage('session-1', { content: 'stale local queue' });
+  serverDrafts = [{ scope: 'session-1', text: '', queuedMessage: {
+    content: 'next message from another tab', attachments: [],
+  } }];
+  const before = draftRequests;
+  const messageFingerprint = createHash('sha256')
+    .update(JSON.stringify({ content: 'actual first\n\nfrom another tab', attachments: [] })).digest('hex');
+
+  await emit({ kind: 'queued_message_dispatched', sessionId: 'session-1', messageFingerprint });
+
+  await waitFor(() => assert.equal(draftRequests, before + 1));
+  assert.equal(echoed.length, 0);
+  assert.deepEqual(processing, ['session-1']);
+  assert.equal(drafts.readQueuedMessage('session-1')?.content, 'next message from another tab');
+});

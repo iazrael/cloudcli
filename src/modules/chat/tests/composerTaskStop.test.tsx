@@ -20,9 +20,20 @@ beforeEach(() => {
   // The queue lives in a module-level store; one test's queued message must
   // not leak into the next.
   resetChatDrafts();
-  vi.stubGlobal('fetch', vi.fn(async (url: string) => new Response(JSON.stringify(url.includes('/files') ? [] : {
-    success: true, data: { messages: [], total: 0, hasMore: false, commands: [], skills: [] },
-  }), { status: 200, headers: { 'Content-Type': 'application/json' } })));
+  const queued = new Map<string, unknown>();
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    let body: unknown = url.includes('/files') ? [] : {
+      success: true, data: { messages: [], total: 0, hasMore: false, commands: [], skills: [] },
+    };
+    if (url.endsWith('/api/user/drafts/queued-message')) {
+      const input = JSON.parse(String(init?.body)) as { scope: string; queuedMessage: unknown };
+      queued.set(input.scope, input.queuedMessage);
+      body = { success: true, queuedMessage: input.queuedMessage, appended: false };
+    } else if (url.endsWith('/api/user/drafts') && init?.method === 'GET') {
+      body = { drafts: [...queued].map(([scope, queuedMessage]) => ({ scope, text: '', queuedMessage })) };
+    }
+    return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  }));
 });
 
 afterEach(() => vi.unstubAllGlobals());

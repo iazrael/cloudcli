@@ -1,4 +1,5 @@
-import { AppError } from '@/shared/utils.js';
+import type { QueuedChatMessage } from '@/shared/types.js';
+import { readQueuedChatMessage, AppError } from '@/shared/utils.js';
 
 type GitConfig = {
   git_name: string | null;
@@ -26,13 +27,16 @@ type UserDependencies = {
   };
   drafts: {
     getDrafts(userId: number): DraftRecord[];
-    saveDraft(userId: number, scope: string, draft: { text: string; queuedMessage: unknown | null }): void;
+    saveDraftText(userId: number, scope: string, text: string): void;
+    appendQueuedMessage(userId: number, scope: string, message: QueuedChatMessage): { queuedMessage: QueuedChatMessage; appended: boolean } | null;
+    clearQueuedMessage(userId: number, scope: string, expected?: QueuedChatMessage): boolean;
     deleteDraft(userId: number, scope: string): void;
   };
   readSystemGitConfig(): Promise<GitConfig>;
   applyGlobalGitConfig(gitName: string, gitEmail: string): Promise<void>;
   logInfo(message: string): void;
   logError(message: string, error: unknown): void;
+  notifyLegacyQueueWrite?(userId: number, scope: string): void;
 };
 
 /**
@@ -58,6 +62,25 @@ const readDraftScope = (value: unknown): string => {
   return scope;
 };
 
+const isRecord = (value: unknown): value is Record<string, unknown> => (
+  Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+);
+const readQueuedMessageInput = (value: unknown, enforceLengthLimit = true): QueuedChatMessage => {
+  if (!isRecord(value)
+    || (value.content !== undefined && typeof value.content !== 'string')
+    || (value.attachments !== undefined && !Array.isArray(value.attachments))
+    || (value.images !== undefined && !Array.isArray(value.images))
+    || (value.options !== undefined && !isRecord(value.options))) {
+    throw new AppError('Invalid queued message', { code: 'INVALID_QUEUED_MESSAGE', statusCode: 400 });
+  }
+  const message = readQueuedChatMessage(value);
+  if (!message) throw new AppError('A queued message needs text or attachments', { code: 'INVALID_QUEUED_MESSAGE', statusCode: 400 });
+  if (enforceLengthLimit && message.content.length > MAX_DRAFT_TEXT_LENGTH) {
+    throw new AppError('Queued message is too long to store', { code: 'DRAFT_TEXT_TOO_LONG', statusCode: 413 });
+  }
+  return message;
+};
+
 const readPreferenceUpdates = (body: unknown): Record<string, unknown> => {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     throw new AppError('Preferences must be sent as an object', {
@@ -81,6 +104,13 @@ const readPreferenceUpdates = (body: unknown): Record<string, unknown> => {
 
 /** Creates user-profile workflows with explicit repository and Git adapters. */
 export function createUserService(dependencies: UserDependencies) {
+  const notifyLegacyQueueWrite = (userId: number, scope: string) => {
+    try {
+      dependencies.notifyLegacyQueueWrite?.(userId, scope);
+    } catch (error) {
+      dependencies.logError('Failed to notify an outdated queue client', error);
+    }
+  };
   return {
     async getGitConfig(userId: number) {
       let gitConfig = dependencies.users.getGitConfig(userId);
@@ -165,7 +195,12 @@ export function createUserService(dependencies: UserDependencies) {
 
     saveDraft(userId: number, scopeInput: unknown, body: unknown) {
       const scope = readDraftScope(scopeInput);
-      const payload = (body ?? {}) as { text?: unknown; queuedMessage?: unknown };
+      if (!isRecord(body)) throw new AppError('Draft must be an object', { code: 'INVALID_DRAFT', statusCode: 400 });
+      if (Object.hasOwn(body, 'queuedMessage') && body.queuedMessage !== null) {
+        notifyLegacyQueueWrite(userId, scope);
+        throw new AppError('Refresh this page to use the queue API', { code: 'LEGACY_QUEUE_WRITE', statusCode: 409 });
+      }
+      const payload = body;
       const text = typeof payload.text === 'string' ? payload.text : '';
 
       if (text.length > MAX_DRAFT_TEXT_LENGTH) {
@@ -175,15 +210,44 @@ export function createUserService(dependencies: UserDependencies) {
         });
       }
 
-      dependencies.drafts.saveDraft(userId, scope, {
-        text,
-        queuedMessage: payload.queuedMessage ?? null,
-      });
+      dependencies.drafts.saveDraftText(userId, scope, text);
+      if (body.queuedMessage === null && dependencies.drafts.getDrafts(userId)
+        .some((draft) => draft.scope === scope && draft.queuedMessage !== null)) {
+        notifyLegacyQueueWrite(userId, scope);
+      }
+      return { success: true };
+    },
+
+    /** User routes submit follow-ups to the atomic repository operation. */
+    appendQueuedMessage(userId: number, scopeInput: unknown, input: unknown) {
+      const scope = readDraftScope(scopeInput);
+      const message = readQueuedMessageInput(input);
+      const result = dependencies.drafts.appendQueuedMessage(userId, scope, message);
+      if (!result) {
+        throw new AppError('A slash command must run in its own turn', { code: 'QUEUED_MESSAGE_NOT_COMBINABLE', statusCode: 409 });
+      }
+      return { success: true, ...result };
+    },
+
+    clearQueuedMessage(userId: number, scopeInput: unknown, body: unknown = {}) {
+      const scope = readDraftScope(scopeInput);
+      if (!isRecord(body)) throw new AppError('Invalid queue clear request', { code: 'INVALID_QUEUED_MESSAGE', statusCode: 400 });
+      const expected = Object.hasOwn(body, 'expectedQueuedMessage')
+        ? readQueuedMessageInput(body.expectedQueuedMessage, false) : undefined;
+      if (!dependencies.drafts.clearQueuedMessage(userId, scope, expected)) {
+        throw new AppError('The queued message changed or has already been claimed; refresh before editing or sending', { code: 'QUEUED_MESSAGE_CHANGED', statusCode: 409 });
+      }
       return { success: true };
     },
 
     deleteDraft(userId: number, scopeInput: unknown) {
-      dependencies.drafts.deleteDraft(userId, readDraftScope(scopeInput));
+      const scope = readDraftScope(scopeInput);
+      const keepsQueue = dependencies.drafts.getDrafts(userId)
+        .some((draft) => draft.scope === scope && draft.queuedMessage !== null);
+      dependencies.drafts.deleteDraft(userId, scope);
+      if (keepsQueue) {
+        notifyLegacyQueueWrite(userId, scope);
+      }
       return { success: true };
     },
   };

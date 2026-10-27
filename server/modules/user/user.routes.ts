@@ -90,5 +90,17 @@ export function createUserRouter(service: ReturnType<typeof createUserService>):
     }
   });
 
+  router.post('/drafts/queued-message', (req, res, next) => {
+    try {
+      res.json(service.appendQueuedMessage(readUserId(req), req.body?.scope, req.body?.queuedMessage));
+    } catch (error) { next(error); }
+  });
+
+  router.delete('/drafts/queued-message', (req, res, next) => {
+    try {
+      res.json(service.clearQueuedMessage(readUserId(req), req.body?.scope, req.body));
+    } catch (error) { next(error); }
+  });
+
   return router;
 }

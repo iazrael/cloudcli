@@ -576,6 +576,10 @@ export const api = {
     drafts: () => get('/api/user/drafts'),
     saveDraft: (scope: string, draft: { text: string; queuedMessage?: unknown }) =>
       put('/api/user/drafts', { scope, ...draft }),
+    appendQueuedMessage: (scope: string, queuedMessage: unknown) =>
+      post('/api/user/drafts/queued-message', { scope, queuedMessage }),
+    clearQueuedMessage: (scope: string, expectedQueuedMessage: unknown) =>
+      del('/api/user/drafts/queued-message', { scope, expectedQueuedMessage }),
     deleteDraft: (scope: string) => del('/api/user/drafts', { scope }),
   },
 

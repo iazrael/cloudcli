@@ -46,6 +46,7 @@ function createRuntime(runs: RunCall[], overrides: {
   supportsInputAcceptance?: boolean;
   acceptAfter?: Promise<void>;
   deferInput?: boolean;
+  afterClaim?: () => void;
   /** Settles the run; by default it settles at once. */
   runSettles?: Promise<void>;
 } = {}) {
@@ -64,6 +65,7 @@ function createRuntime(runs: RunCall[], overrides: {
           throw new AppError('Queued input changed.', { code: 'PROVIDER_INPUT_DEFERRED' });
         }
         if (overrides.deferInput) throw new AppError('The held process cannot take this input.', { code: 'PROVIDER_INPUT_DEFERRED' });
+        overrides.afterClaim?.();
         (options.onInputAccepted as (() => void) | undefined)?.();
       }
       await overrides.runSettles;
@@ -259,7 +261,7 @@ test('queued input waits for engine acceptance before telling pages it was sent'
 
 test('a deferred engine handover restores the queue without a sent notification or error', async () => {
   await withIsolatedDatabase(async (userId) => {
-    const queuedMessage = { content: 'keep the agent running', options: { model: 'haiku' } };
+    const queuedMessage = { content: 'keep the agent running', options: { model: 'haiku' }, attachments: [] };
     sessionDraftsDb.saveDraft(userId, SESSION_ID, { text: '', queuedMessage });
     const frames = watchBroadcasts();
     const runtime = createRuntime([], {
@@ -317,10 +319,139 @@ test('a queued turn that cannot start is put back instead of being lost', async 
     await settle();
 
     assert.equal(runs.length, 0);
-    assert.deepEqual(sessionDraftsDb.getDrafts(userId)[0]?.queuedMessage, { content: 'keep me' });
+    assert.deepEqual(sessionDraftsDb.getDrafts(userId)[0]?.queuedMessage, { content: 'keep me', attachments: [] });
     assert.deepEqual(frames, []);
 
     // A provider that stays unavailable is not retried on every pass.
     assert.equal(await dispatchQueuedMessages(runtime), 0);
+  });
+});
+
+for (const operation of ['append', 'clear'] as const) {
+  test(`atomic ${operation} during engine preparation invalidates only the old snapshot`, async () => {
+    await withIsolatedDatabase(async (userId) => {
+      const sessionId = `prepared-${operation}`;
+      sessionsDb.createAppSession(sessionId, 'claude', '/tmp', 'Prepared');
+      const original = { content: 'A', attachments: [] };
+      sessionDraftsDb.appendQueuedMessage(userId, sessionId, original);
+      let accept!: () => void;
+      const runs: RunCall[] = [];
+      const frames = watchBroadcasts();
+      const runtime = createRuntime(runs, {
+        supportsInputAcceptance: true,
+        acceptAfter: new Promise<void>((resolve) => { accept = resolve; }),
+      });
+      const dispatched = dispatchQueuedMessages(runtime);
+      await settle();
+      assert.equal(runs.length, 1);
+      if (operation === 'append') {
+        sessionDraftsDb.appendQueuedMessage(userId, sessionId, { content: 'B', attachments: [] });
+      } else {
+        assert.equal(sessionDraftsDb.clearQueuedMessage(userId, sessionId, original), true);
+      }
+      accept();
+      await dispatched;
+      assert.deepEqual(frames, []);
+      assert.deepEqual(sessionDraftsDb.getDrafts(userId)[0]?.queuedMessage ?? null,
+        operation === 'append' ? { content: 'A\n\nB', attachments: [] } : null);
+      if (operation === 'append') {
+        await dispatchQueuedMessages(runtime);
+        assert.equal(frames.length, 1);
+        assert.deepEqual(sessionDraftsDb.getDrafts(userId), []);
+      }
+    });
+  });
+}
+
+test('engine input confirmation removes the claimed message while keeping a later append', async () => {
+  await withIsolatedDatabase(async (userId) => {
+    const sessionId = 'confirmed-append';
+    sessionsDb.createAppSession(sessionId, 'claude', '/tmp', 'Confirmed');
+    sessionDraftsDb.appendQueuedMessage(userId, sessionId, { content: 'A', attachments: [] });
+    const frames = watchBroadcasts();
+    await dispatchQueuedMessages(createRuntime([], {
+      supportsInputAcceptance: true,
+      afterClaim: () => {
+        sessionDraftsDb.appendQueuedMessage(userId, sessionId, { content: 'B', attachments: [] });
+      },
+    }));
+    assert.deepEqual(sessionDraftsDb.getDrafts(userId)[0]?.queuedMessage, { content: 'B', attachments: [] });
+    assert.deepEqual(frames[0], { kind: 'queued_message_dispatched', sessionId,
+      messageFingerprint: createHash('sha256').update(JSON.stringify({ content: 'A', attachments: [] })).digest('hex') });
+  });
+});
+
+test('dispatch fingerprints the claimed snapshot and leaves a later append for the next turn', async () => {
+  await withIsolatedDatabase(async (userId) => {
+    const sessionId = 'snapshot-race';
+    sessionsDb.createAppSession(sessionId, 'claude', '/tmp', 'Snapshot');
+    sessionDraftsDb.appendQueuedMessage(userId, sessionId, { content: 'A', attachments: [] });
+    const frames = watchBroadcasts();
+    let appended = false;
+    const runs: RunCall[] = [];
+    const runtime = createRuntime(runs, { hasRuntime: () => {
+      if (!appended) {
+        appended = true;
+        sessionDraftsDb.appendQueuedMessage(userId, sessionId, { content: 'B', attachments: [] });
+      }
+      return true;
+    } });
+    assert.equal(await dispatchQueuedMessages(runtime), 1);
+    await settle();
+    assert.equal(runs[0]?.command, 'A');
+    assert.deepEqual(frames[0], { kind: 'queued_message_dispatched', sessionId,
+      messageFingerprint: createHash('sha256').update(JSON.stringify({ content: 'A', attachments: [] })).digest('hex') });
+    assert.deepEqual(sessionDraftsDb.getDrafts(userId)[0]?.queuedMessage, { content: 'B', attachments: [] });
+    assert.equal(await dispatchQueuedMessages(runtime), 1);
+    await settle();
+    assert.deepEqual(runs.map((run) => run.command), ['A', 'B']);
+    assert.deepEqual(sessionDraftsDb.getDrafts(userId), []);
+  });
+});
+
+test('failed startup restores before concurrent appends and refuses slash mixing during reservation', async () => {
+  await withIsolatedDatabase(async (userId) => {
+    for (const [first, next] of [['A', 'B'], ['/compact', 'B'], ['A', '/compact']]) {
+      const sessionId = `failure-${first}-${next}`;
+      sessionsDb.createAppSession(sessionId, 'claude', '/tmp', 'Failure');
+      sessionDraftsDb.appendQueuedMessage(userId, sessionId, { content: first, attachments: [] });
+      let appendResult: unknown;
+      const runtime = createRuntime([], { hasRuntime: () => {
+        appendResult = sessionDraftsDb.appendQueuedMessage(userId, sessionId, { content: next, attachments: [] });
+        return false;
+      } });
+      await dispatchQueuedMessages(runtime);
+      const stored = sessionDraftsDb.getDrafts(userId).find((draft) => draft.scope === sessionId);
+      const combinable = !first.startsWith('/') && !next.startsWith('/');
+      assert.equal(appendResult !== null, combinable);
+      assert.deepEqual(stored?.queuedMessage, { content: combinable ? `${first}\n\n${next}` : first, attachments: [] });
+    }
+  });
+});
+
+test('unexpected exceptions before startup restore the queue instead of losing it', async () => {
+  await withIsolatedDatabase(async (userId) => {
+    const sessionId = 'throw-before-start';
+    sessionsDb.createAppSession(sessionId, 'claude', '/tmp', 'Throw');
+    sessionDraftsDb.appendQueuedMessage(userId, sessionId, { content: 'keep', attachments: [] });
+    const runtime = createRuntime([], { hasRuntime: () => { throw new Error('probe unavailable'); } });
+    assert.equal(await dispatchQueuedMessages(runtime), 1);
+    assert.deepEqual(sessionDraftsDb.getDrafts(userId)[0]?.queuedMessage, { content: 'keep', attachments: [] });
+  });
+});
+
+test('one broken broadcast socket cannot prevent provider submission or other pages receiving the snapshot', async () => {
+  await withIsolatedDatabase(async (userId) => {
+    const sessionId = 'broken-socket';
+    sessionsDb.createAppSession(sessionId, 'claude', '/tmp', 'Socket');
+    sessionDraftsDb.appendQueuedMessage(userId, sessionId, { content: 'send', attachments: [] });
+    connectedClients.add({ readyState: 1, send: () => { throw new Error('socket closed'); } });
+    const frames = watchBroadcasts();
+    const runs: RunCall[] = [];
+    assert.equal(await dispatchQueuedMessages(createRuntime(runs)), 1);
+    await settle();
+    assert.equal(runs[0]?.command, 'send');
+    assert.equal(frames[0]?.kind, 'queued_message_dispatched');
+    assert.deepEqual(sessionDraftsDb.getDrafts(userId), []);
   });
 });

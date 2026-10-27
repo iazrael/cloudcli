@@ -17,17 +17,19 @@ import { generateDisplayName } from '@/modules/projects/index.js';
 
 type WatcherEventType = 'add' | 'change';
 
-const WATCHER_IGNORED_PATTERNS = [
-  '**/node_modules/**',
-  '**/.git/**',
-  '**/dist/**',
-  '**/build/**',
-  '**/subagents/**',
-  '**/tool-results/**',
-  '**/*.tmp',
-  '**/*.swp',
-  '**/.DS_Store',
-];
+const IGNORED_DIRECTORY_NAMES = new Set(['node_modules', '.git', 'dist', 'build', 'subagents', 'tool-results']);
+
+/** Creates the path filter used by provider watchers and their integration tests. */
+export function createWatcherIgnoredMatcher(rootPath: string): (filePath: string) => boolean {
+  return (filePath) => {
+    const relativePath = path.relative(rootPath, filePath);
+    if (!relativePath || relativePath === '..' || relativePath.startsWith(`..${path.sep}`) || path.isAbsolute(relativePath)) return false;
+    const segments = relativePath.split(path.sep);
+    const basename = segments[segments.length - 1];
+    return basename === '.DS_Store' || basename.endsWith('.tmp') || basename.endsWith('.swp')
+      || segments.some((segment) => IGNORED_DIRECTORY_NAMES.has(segment));
+  };
+}
 
 const PROJECTS_UPDATE_DEBOUNCE_MS = 500;
 const PROJECTS_UPDATE_MAX_WAIT_MS = 2_000;
@@ -221,7 +223,7 @@ export async function initializeSessionsWatcher(): Promise<void> {
       await fsPromises.mkdir(rootPath, { recursive: true });
 
       const watcher = chokidar.watch(rootPath, {
-        ignored: WATCHER_IGNORED_PATTERNS,
+        ignored: createWatcherIgnoredMatcher(rootPath),
         persistent: true,
         ignoreInitial: true,
         followSymlinks: false,

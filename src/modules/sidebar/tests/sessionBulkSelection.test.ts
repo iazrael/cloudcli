@@ -74,7 +74,8 @@ const SESSIONS = [session('s1'), session('s2'), session('s3')];
 // Held outside the hook call: `projects` is an effect dependency in the
 // controller, so rebuilding the array per render would re-run those effects
 // forever instead of testing anything.
-const PROJECTS = [PROJECT];
+const SECOND_PROJECT = { ...PROJECT, projectId: 'project-2', name: 'different-name' };
+const PROJECTS = [PROJECT, SECOND_PROJECT];
 
 const NO_IDS: ReadonlySet<string> = new Set<string>();
 
@@ -134,6 +135,7 @@ const checkboxes = (container: HTMLElement): HTMLElement[] =>
 const jsonResponse = (data: unknown) => Promise.resolve({ ok: true, json: async () => ({ data }) });
 
 beforeEach(() => {
+  localStorage.clear();
   isCompactLayout = false;
   recordedOptionsProps.length = 0;
   deleteSession.mockReset();
@@ -332,36 +334,71 @@ test('the compact layout selects with the same rules and hides its options butto
 });
 
 type SessionActivity = {
+  selectedProject?: Project | null;
+  keepProjectsExpanded?: boolean;
+  projects?: Project[];
+  isLoading?: boolean;
   activeSessions: ReadonlySet<string>;
   backgroundSessionIds: ReadonlySet<string>;
 };
 
 const IDLE: SessionActivity = { activeSessions: NO_IDS, backgroundSessionIds: NO_IDS };
 
-const renderController = (onSessionDelete = vi.fn(), initialActivity: SessionActivity = IDLE) =>
+const renderController = (onSessionDelete = vi.fn(), initialActivity: SessionActivity = IDLE, onLoadMoreSessions: (projectId: string) => Promise<void> = async () => {}) =>
   renderHook(
-    ({ activeSessions, backgroundSessionIds }: SessionActivity) =>
+    ({ activeSessions, backgroundSessionIds, keepProjectsExpanded, selectedProject = null, projects = PROJECTS, isLoading = false }: SessionActivity) =>
       useSidebarController({
-        projects: PROJECTS,
-        selectedProject: null,
+        projects,
+        selectedProject,
         selectedSession: null,
         activeSessions,
         backgroundSessionIds,
-        isLoading: false,
+        isLoading,
         isMobile: false,
         t,
         onRefresh: noop,
         onProjectSelect: noop,
         onSessionSelect: noop,
         onSessionDelete,
-        onLoadMoreSessions: noop,
+        onLoadMoreSessions,
         onProjectDelete: noop,
         setCurrentProject: noop,
         setSidebarVisible: noop,
         sidebarVisible: true,
+        keepProjectsExpanded,
       }),
     { initialProps: initialActivity },
   );
+
+test('loading more deduplicates per project and permits retry', async () => {
+  const resolvers: Array<() => void> = [];
+  const load = vi.fn(() => new Promise<void>((resolve) => resolvers.push(resolve)));
+  const { result } = renderController(vi.fn(), IDLE, load);
+  act(() => {
+    void result.current.loadMoreSessionsForProject('one');
+    void result.current.loadMoreSessionsForProject('one');
+    void result.current.loadMoreSessionsForProject('two');
+  });
+  assert.deepEqual(load.mock.calls, [['one'], ['two']]);
+  await act(async () => { resolvers[0](); });
+  act(() => { void result.current.loadMoreSessionsForProject('one'); });
+  assert.equal(load.mock.calls.length, 3);
+  await act(async () => { resolvers[1](); resolvers[2](); });
+});
+
+test('loading more can retry after a failed request', async () => {
+  const load = vi.fn().mockRejectedValueOnce(new Error('offline')).mockResolvedValue(undefined);
+  const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    const { result } = renderController(vi.fn(), IDLE, load);
+    await act(async () => { await result.current.loadMoreSessionsForProject('one'); });
+    assert.equal(result.current.loadingMoreProjects.has('one'), false);
+    await act(async () => { await result.current.loadMoreSessionsForProject('one'); });
+    assert.equal(load.mock.calls.length, 2);
+  } finally {
+    error.mockRestore();
+  }
+});
 
 // A deleteSession response the test settles by hand, to look at the sidebar
 // while the requests are still out.
@@ -584,4 +621,139 @@ test('an empty selection opens no confirmation', () => {
   });
 
   assert.equal(result.current.pendingDeletion, null);
+});
+
+
+test('project expansion remains an accordion by default', () => {
+  const { result } = renderController();
+  act(() => result.current.toggleProject('project-1'));
+  act(() => result.current.toggleProject('project-2'));
+  assert.equal(result.current.isProjectExpanded('project-1'), false);
+  assert.equal(result.current.isProjectExpanded('project-2'), true);
+});
+
+test('opt-in multi-open groups survive reloads and toggle independently', () => {
+  const first = renderController(vi.fn(), { ...IDLE, keepProjectsExpanded: true });
+  act(() => first.result.current.toggleProject('project-1'));
+  act(() => first.result.current.toggleProject('project-2'));
+  assert.equal(first.result.current.isProjectExpanded('project-1'), true);
+  assert.equal(first.result.current.isProjectExpanded('project-2'), true);
+  first.unmount();
+  const restored = renderController(vi.fn(), { ...IDLE, keepProjectsExpanded: true });
+  assert.equal(restored.result.current.isProjectExpanded('project-1'), true);
+  assert.equal(restored.result.current.isProjectExpanded('project-2'), true);
+  act(() => restored.result.current.toggleProject('project-1'));
+  assert.equal(restored.result.current.isProjectExpanded('project-1'), false);
+  assert.equal(restored.result.current.isProjectExpanded('project-2'), true);
+});
+
+test('hydrating the preference restores groups before writing browser storage', () => {
+  localStorage.setItem('cloudcli-expanded-projects', JSON.stringify(['project-1', 'project-2']));
+  const controller = renderController();
+  controller.rerender({ ...IDLE, keepProjectsExpanded: true });
+  assert.equal(controller.result.current.isProjectExpanded('project-1'), true);
+  assert.equal(controller.result.current.isProjectExpanded('project-2'), true);
+  controller.rerender({ ...IDLE, keepProjectsExpanded: false });
+  assert.equal(controller.result.current.isProjectExpanded('project-2'), false);
+  assert.deepEqual(JSON.parse(localStorage.getItem('cloudcli-expanded-projects')!), ['project-1', 'project-2']);
+});
+
+test('invalid saved expansion data does not break navigation', () => {
+  localStorage.setItem('cloudcli-expanded-projects', 'invalid JSON');
+  const { result } = renderController(vi.fn(), { ...IDLE, keepProjectsExpanded: true });
+  act(() => result.current.toggleProject('project-1'));
+  assert.equal(result.current.isProjectExpanded('project-1'), true);
+});
+
+test('only string project IDs are restored from browser storage', () => {
+  localStorage.setItem('cloudcli-expanded-projects', JSON.stringify(['project-1', 5, null, {}, 'project-2']));
+  const { result } = renderController(vi.fn(), { ...IDLE, keepProjectsExpanded: true });
+  assert.equal(result.current.isProjectExpanded('project-1'), true);
+  assert.equal(result.current.isProjectExpanded('project-2'), true);
+  assert.deepEqual(JSON.parse(localStorage.getItem('cloudcli-expanded-projects')!), ['project-1', 'project-2']);
+});
+
+
+test('unavailable browser storage does not prevent opening projects', () => {
+  const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  vi.spyOn(localStorage, 'getItem').mockImplementation(() => { throw new Error('Storage disabled'); });
+  vi.spyOn(localStorage, 'setItem').mockImplementation(() => { throw new Error('Storage disabled'); });
+  const { result } = renderController(vi.fn(), { ...IDLE, keepProjectsExpanded: true });
+  act(() => result.current.toggleProject('project-1'));
+  act(() => result.current.toggleProject('project-2'));
+  assert.equal(result.current.isProjectExpanded('project-1'), true);
+  assert.equal(result.current.isProjectExpanded('project-2'), true);
+  assert.ok(warning.mock.calls.length > 0);
+});
+
+test('Running groups keep their independent collapse state in multi-open mode', () => {
+  const { result } = renderController(vi.fn(), { ...IDLE, keepProjectsExpanded: true });
+  act(() => result.current.toggleProject('project-1'));
+  act(() => result.current.setSearchMode('running'));
+  assert.equal(result.current.isProjectExpanded('project-1'), true);
+  act(() => result.current.toggleProject('project-1'));
+  assert.equal(result.current.isProjectExpanded('project-1'), false);
+  act(() => result.current.setSearchMode('projects'));
+  assert.equal(result.current.isProjectExpanded('project-1'), true);
+});
+
+
+test('a selected project intentionally collapsed before reload stays collapsed', () => {
+  localStorage.setItem('cloudcli-expanded-projects', JSON.stringify(['project-2']));
+  const controller = renderController(vi.fn(), { ...IDLE, keepProjectsExpanded: true, selectedProject: PROJECT });
+  assert.equal(controller.result.current.isProjectExpanded(PROJECT.projectId), false);
+  assert.equal(controller.result.current.isProjectExpanded('project-2'), true);
+  assert.deepEqual(JSON.parse(localStorage.getItem('cloudcli-expanded-projects')!), ['project-2']);
+  controller.rerender({ ...IDLE, keepProjectsExpanded: true, selectedProject: SECOND_PROJECT });
+  controller.rerender({ ...IDLE, keepProjectsExpanded: true, selectedProject: PROJECT });
+  assert.equal(controller.result.current.isProjectExpanded(PROJECT.projectId), true);
+});
+
+test('an empty saved set also preserves a collapsed selection restored after mount', () => {
+  localStorage.setItem('cloudcli-expanded-projects', '[]');
+  const controller = renderController(vi.fn(), { ...IDLE, keepProjectsExpanded: true });
+  controller.rerender({ ...IDLE, keepProjectsExpanded: true, selectedProject: PROJECT });
+  assert.equal(controller.result.current.isProjectExpanded(PROJECT.projectId), false);
+  assert.equal(localStorage.getItem('cloudcli-expanded-projects'), '[]');
+});
+
+test('without saved expansion, initial project selection still opens normally', () => {
+  const controller = renderController(vi.fn(), { ...IDLE, keepProjectsExpanded: true, selectedProject: PROJECT });
+  assert.equal(controller.result.current.isProjectExpanded(PROJECT.projectId), true);
+});
+
+
+test('disabling multi-open retains the selected expanded database project ID', () => {
+  localStorage.setItem('cloudcli-expanded-projects', JSON.stringify(['project-2', 'project-1']));
+  const controller = renderController(vi.fn(), { ...IDLE, keepProjectsExpanded: true, selectedProject: PROJECT });
+  controller.rerender({ ...IDLE, keepProjectsExpanded: false, selectedProject: PROJECT });
+  assert.equal(controller.result.current.isProjectExpanded('project-1'), true);
+  assert.equal(controller.result.current.isProjectExpanded('project-2'), false);
+});
+
+test('navigation in default mode retains at most one expanded project', () => {
+  const controller = renderController(vi.fn(), { ...IDLE, selectedProject: PROJECT });
+  controller.rerender({ ...IDLE, selectedProject: SECOND_PROJECT });
+  assert.equal(controller.result.current.isProjectExpanded('project-1'), false);
+  assert.equal(controller.result.current.isProjectExpanded('project-2'), true);
+});
+
+test('deleted projects are removed after loading completes', () => {
+  localStorage.setItem('cloudcli-expanded-projects', JSON.stringify(['project-1', 'project-2']));
+  const controller = renderController(vi.fn(), { ...IDLE, keepProjectsExpanded: true, isLoading: true, projects: [] });
+  assert.equal(controller.result.current.isProjectExpanded('project-2'), true);
+  controller.rerender({ ...IDLE, keepProjectsExpanded: true, projects: [PROJECT], isLoading: false });
+  assert.equal(controller.result.current.isProjectExpanded('project-1'), true);
+  assert.equal(controller.result.current.isProjectExpanded('project-2'), false);
+  assert.deepEqual(JSON.parse(localStorage.getItem('cloudcli-expanded-projects')!), ['project-1']);
+});
+
+test('hydrating an empty expansion preserves manual collapse and bulk selection', () => {
+  localStorage.setItem('cloudcli-expanded-projects', '[]');
+  const controller = renderController(vi.fn(), { ...IDLE, selectedProject: PROJECT });
+  act(() => controller.result.current.setProjectSessionSelection({ projectId: PROJECT.projectId, sessionIds: new Set(['s1']) }));
+  controller.rerender({ ...IDLE, selectedProject: PROJECT, keepProjectsExpanded: true });
+  assert.equal(controller.result.current.isProjectExpanded('project-1'), false);
+  assert.deepEqual([...controller.result.current.sessionSelection!.sessionIds], ['s1']);
+  assert.equal(localStorage.getItem('cloudcli-expanded-projects'), '[]');
 });

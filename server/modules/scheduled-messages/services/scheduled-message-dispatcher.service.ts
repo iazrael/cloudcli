@@ -4,6 +4,7 @@ import { scheduledMessagesDb, sessionDraftsDb, sessionsDb } from '@/modules/data
 import type { QueuedSessionMessageRecord, ScheduledMessageRow } from '@/modules/database/index.js';
 import { broadcastQueuedMessageDispatched, chatRunRegistry, runDetachedChatTurn } from '@/modules/websocket/index.js';
 import type { ProviderRuntimeGateway } from '@/modules/websocket/index.js';
+import { readQueuedChatMessage } from '@/shared/utils.js';
 import type { LLMProvider } from '@/shared/types.js';
 
 /**
@@ -41,12 +42,6 @@ const queuedSessionsInFlight = new Set<string>();
 /** Sessions currently running a scheduled message turn, so same-session schedules run one by one without blocking other sessions. */
 const scheduledSessionsInFlight = new Set<string>();
 
-type StoredQueuedMessage = {
-  content: string;
-  options: Record<string, unknown>;
-  attachments: unknown[];
-};
-
 function readOptions(raw: string): Record<string, unknown> {
   try {
     const parsed: unknown = JSON.parse(raw);
@@ -56,26 +51,6 @@ function readOptions(raw: string): Record<string, unknown> {
   } catch {
     return {};
   }
-}
-
-function readQueuedMessage(value: unknown): StoredQueuedMessage | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return null;
-  }
-  const record = value as Record<string, unknown>;
-  const content = typeof record.content === 'string' ? record.content : '';
-  const attachments = Array.isArray(record.attachments)
-    ? record.attachments
-    : Array.isArray(record.images)
-      ? record.images
-      : [];
-  if (!content.trim() && attachments.length === 0) {
-    return null;
-  }
-  const options = record.options && typeof record.options === 'object' && !Array.isArray(record.options)
-    ? record.options as Record<string, unknown>
-    : {};
-  return { content, options, attachments };
 }
 
 /**
@@ -89,7 +64,7 @@ async function sendClaimedQueuedMessage(
   claimOnAcceptance = false,
 ): Promise<void> {
   let claimed = !claimOnAcceptance;
-  const message = readQueuedMessage(candidate.queuedMessage);
+  const message = readQueuedChatMessage(candidate.queuedMessage);
   if (!message) {
     sessionDraftsDb.deleteEmptyDraft(candidate.userId, candidate.sessionId);
     return;
@@ -97,6 +72,7 @@ async function sendClaimedQueuedMessage(
 
   await new Promise<void>((resolve) => {
     let settled = false;
+    let started = false;
     const settle = () => {
       if (!settled) {
         settled = true;
@@ -116,18 +92,21 @@ async function sendClaimedQueuedMessage(
           return claimed;
         } } : {}),
         onRunStarted: () => {
+          sessionDraftsDb.completeQueuedMessage(candidate);
+          started = true;
           queuedRetryAt.delete(candidate.sessionId);
           const fingerprint = createHash('sha256')
             .update(JSON.stringify({ content: message.content, attachments: message.attachments }))
             .digest('hex');
-          broadcastQueuedMessageDispatched(candidate.sessionId, fingerprint);
-          settle();
+          try {
+            broadcastQueuedMessageDispatched(candidate.sessionId, fingerprint);
+          } finally { settle(); }
         },
       },
       { runtime },
     )
       .then((result) => {
-        if (result.started) {
+        if (started) {
           return;
         }
         // Never started, so nothing was sent: put the message back. A run that
@@ -145,7 +124,12 @@ async function sendClaimedQueuedMessage(
         }
       })
       .catch((error: unknown) => {
-        if (claimed && !settled) sessionDraftsDb.restoreQueuedMessage(candidate);
+        // Only failures before registration are safe to restore. Once started,
+        // retrying could duplicate provider work even if delivery later fails.
+        if (claimed && !started) {
+          sessionDraftsDb.restoreQueuedMessage(candidate);
+          queuedRetryAt.set(candidate.sessionId, Date.now() + QUEUED_RETRY_DELAY_MS);
+        }
         console.error('[QueuedMessages] Queued turn failed', {
           sessionId: candidate.sessionId,
           error: error instanceof Error ? error.message : String(error),

@@ -14,6 +14,8 @@ export type UiPreferences = {
   showThinking: boolean;
   sendByCtrlEnter: boolean;
   sidebarVisible: boolean;
+  /** Allows multiple project groups and restores their browser-local expansion. */
+  keepProjectsExpanded: boolean;
   voiceEnabled: boolean;
   /** Hides the workspace terminal tab entry while keeping the terminal itself functional. */
   showTerminalTab: boolean;
@@ -32,6 +34,7 @@ const DEFAULTS: UiPreferences = {
   showThinking: true,
   sendByCtrlEnter: false,
   sidebarVisible: true,
+  keepProjectsExpanded: false,
   voiceEnabled: false,
   showTerminalTab: true,
   showQuickSettingsPanel: true,
