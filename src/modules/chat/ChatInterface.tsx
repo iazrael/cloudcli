@@ -138,6 +138,24 @@ function ChatInterface({
     showThinking: Boolean(showThinking),
   });
 
+  const namedBackgroundTasks = useMemo(() => {
+    if (provider !== 'codex' || !backgroundTasks?.length) return backgroundTasks;
+    const names = new Map(chatMessages.flatMap((message) =>
+      message.toolId && message.subagent?.name ? [[message.toolId, message.subagent.name] as const] : [],
+    ));
+    return backgroundTasks.map((task) => {
+      if (task.toolName !== 'Agent') return task;
+      const detail = task.command || task.description || '';
+      const uuidPrefix = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?::\s*|$)/i;
+      const name = names.get(task.id);
+      if (!uuidPrefix.test(detail)) return task;
+      const description = detail.replace(uuidPrefix, '');
+      const label = name && !uuidPrefix.test(`${name}:`) ? name : '';
+      const command = label && description ? `${label}: ${description}` : label || description;
+      return { ...task, command: command || 'Agent', description: command || 'Agent' };
+    });
+  }, [provider, backgroundTasks, chatMessages]);
+
   // Brand-new conversation: the composer allocated a stable session id via
   // the session gateway before the first send. Record it locally and put it
   // in the URL — this id never changes again, so there is no later handoff.
@@ -547,7 +565,7 @@ function ChatInterface({
           placeholder={t('input.placeholder', { provider: selectedProviderLabel })}
           isTextareaExpanded={isTextareaExpanded}
           sendByCtrlEnter={sendByCtrlEnter}
-          backgroundTasks={backgroundTasks}
+          backgroundTasks={namedBackgroundTasks}
           hasActiveBackgroundTasks={hasActiveBackgroundTasks}
           isInputBlocked={isInputBlocked}
           isReplyInFlight={isReplyInFlight}
