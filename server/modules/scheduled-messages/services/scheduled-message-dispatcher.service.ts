@@ -33,6 +33,9 @@ let queuedDispatchInFlight = false;
 /** Sessions whose queued turn failed to start, and when they may be tried again. */
 const queuedRetryAt = new Map<string, number>();
 
+/** Sessions currently running a scheduled message turn, so same-session schedules run one by one without blocking other sessions. */
+const scheduledSessionsInFlight = new Set<string>();
+
 type StoredQueuedMessage = {
   content: string;
   options: Record<string, unknown>;
@@ -162,7 +165,11 @@ function isSessionBusy(sessionId: string, runtime: ProviderRuntimeGateway): bool
   return runtime.backgroundWorkQueuesInput(provider as LLMProvider, sessionId);
 }
 
-/** Sends every persisted queued turn whose session is currently idle. */
+/**
+ * Sends every persisted queued turn whose session is currently idle.
+ *
+ * Consumer: `initializeScheduledMessageDispatcher` and `queued-messages.test.ts`.
+ */
 export async function dispatchQueuedMessages(runtime: ProviderRuntimeGateway): Promise<number> {
   const candidates = sessionDraftsDb.listQueuedMessages();
   let claimed = 0;
@@ -185,61 +192,145 @@ export async function dispatchQueuedMessages(runtime: ProviderRuntimeGateway): P
   return claimed;
 }
 
-async function sendClaimedMessage(
+/**
+ * Starts one claimed scheduled message as a turn.
+ *
+ * - `dispatched` resolves as soon as the turn has entered `runtime.run` (or
+ *   settled early without starting), so a long turn on one session never holds
+ *   the poll pass open.
+ * - `completed` resolves only after the provider turn has settled and any
+ *   failure has been recorded on the row, so a second due message for the
+ *   same session waits its turn.
+ */
+function startClaimedMessage(
   row: ScheduledMessageRow,
   runtime: ProviderRuntimeGateway,
-): Promise<void> {
-  try {
-    const result = await runDetachedChatTurn(
-      {
-        sessionId: row.session_id,
-        userId: row.user_id,
-        content: row.content,
-        options: readOptions(row.options),
-        // The user picked this time on purpose; a run that happens to be going
-        // is aborted so the scheduled message lands when it was due, instead
-        // of being recorded as "not sent — session was busy".
-        interruptActiveRun: true,
-      },
-      { runtime },
-    );
+): { dispatched: Promise<void>; completed: Promise<void>; isCompleted: () => boolean } {
+  let done = false;
+  let settleDispatched!: () => void;
+  let immediateHandle: ReturnType<typeof setImmediate> | null = null;
 
-    // Recorded rather than retried, and recorded whether the run never started
-    // (deleted session, unavailable provider) or started and then failed.
-    // Silently dropping a message the user scheduled is worse than telling
-    // them it did not go.
-    if (!result.started || result.error) {
-      scheduledMessagesDb.markFailed(row.id, result.error ?? 'The session was unavailable when this was due.');
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    scheduledMessagesDb.markFailed(row.id, message);
-  }
+  const dispatched = new Promise<void>((resolve) => {
+    let settled = false;
+    settleDispatched = () => {
+      if (!settled) {
+        settled = true;
+        if (immediateHandle) {
+          clearImmediate(immediateHandle);
+          immediateHandle = null;
+        }
+        resolve();
+      }
+    };
+  });
+
+  const completed = runDetachedChatTurn(
+    {
+      sessionId: row.session_id,
+      userId: row.user_id,
+      content: row.content,
+      options: readOptions(row.options),
+      // The user picked this time on purpose; a run that happens to be going
+      // is aborted so the scheduled message lands when it was due, instead
+      // of being recorded as "not sent — session was busy".
+      interruptActiveRun: true,
+      onRunStarted: () => {
+        // Yield one immediate tick so `dispatchRun` steps past `beforeRun` and
+        // enters `runtime.run` before the pass considers the turn dispatched.
+        immediateHandle = setImmediate(settleDispatched);
+      },
+    },
+    { runtime },
+  )
+    .then((result) => {
+      // Recorded rather than retried, and recorded whether the run never started
+      // (deleted session, unavailable provider) or started and then failed.
+      // Silently dropping a message the user scheduled is worse than telling
+      // them it did not go.
+      if (!result.started || result.error) {
+        scheduledMessagesDb.markFailed(row.id, result.error ?? 'The session was unavailable when this was due.');
+      }
+    })
+    .catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      scheduledMessagesDb.markFailed(row.id, message);
+    })
+    .finally(() => {
+      done = true;
+      settleDispatched();
+    });
+
+  return {
+    dispatched,
+    completed,
+    isCompleted: () => done,
+  };
 }
 
 /**
- * Sends every message whose time has come.
+ * Sends every message whose time has come, dispatching distinct sessions in
+ * parallel while keeping same-session due messages sequential.
  *
- * Exported so a test can drive one pass without waiting on the timer.
+ * Consumer: `initializeScheduledMessageDispatcher` and `scheduled-messages.test.ts`.
  */
 export async function dispatchDueScheduledMessages(
   runtime: ProviderRuntimeGateway,
-  now: Date = new Date(),
+  now?: Date,
 ): Promise<number> {
-  // Claimed before any of them runs, so a long turn cannot let the next poll
-  // pick the same message up again.
-  const due = scheduledMessagesDb.claimDue(now);
+  const effectiveNow = () => now ?? new Date();
+  const due = scheduledMessagesDb.claimDue(effectiveNow(), scheduledSessionsInFlight);
   if (due.length === 0) {
     return 0;
   }
 
-  // Sequentially: a session can only have one run at a time, and two due
-  // messages for the same session must not race each other into it.
-  for (const row of due) {
-    await sendClaimedMessage(row, runtime);
-  }
+  let dispatchedCount = due.length;
 
-  return due.length;
+  await Promise.all(due.map(async (firstRow) => {
+    const sessionId = firstRow.session_id;
+    scheduledSessionsInFlight.add(sessionId);
+    let handedOffToBackground = false;
+
+    try {
+      let currentRow: ScheduledMessageRow | null = firstRow;
+      while (currentRow) {
+        const turn = startClaimedMessage(currentRow, runtime);
+        await turn.dispatched;
+
+        if (!turn.isCompleted()) {
+          handedOffToBackground = true;
+          void (async () => {
+            try {
+              await turn.completed;
+              let nextRow = scheduledMessagesDb.claimNextDueForSession(sessionId, effectiveNow());
+              while (nextRow) {
+                const nextTurn = startClaimedMessage(nextRow, runtime);
+                await nextTurn.completed;
+                nextRow = scheduledMessagesDb.claimNextDueForSession(sessionId, effectiveNow());
+              }
+            } catch (error: unknown) {
+              const message = error instanceof Error ? error.message : String(error);
+              console.error('[ScheduledMessages] Background session drain failed', { sessionId, error: message });
+            } finally {
+              scheduledSessionsInFlight.delete(sessionId);
+            }
+          })();
+          return;
+        }
+
+        await turn.completed;
+        currentRow = scheduledMessagesDb.claimNextDueForSession(sessionId, effectiveNow());
+        if (currentRow) {
+          dispatchedCount += 1;
+        }
+      }
+    } finally {
+      if (!handedOffToBackground) {
+        scheduledSessionsInFlight.delete(sessionId);
+      }
+    }
+  }));
+
+  return dispatchedCount;
 }
 
 /**
@@ -248,6 +339,8 @@ export async function dispatchDueScheduledMessages(
  * The schedule lives in the database, so a message stays scheduled across a
  * restart and one that came due while the server was down is sent on the first
  * poll after it comes back, rather than being skipped.
+ *
+ * Consumer: server startup (`server/index.ts`) via `@/modules/scheduled-messages/index.js`.
  */
 export function initializeScheduledMessageDispatcher(runtime: ProviderRuntimeGateway): void {
   if (pollTimer) {
@@ -299,6 +392,11 @@ export function initializeScheduledMessageDispatcher(runtime: ProviderRuntimeGat
   pollQueued();
 }
 
+/**
+ * Stops the scheduled and queued message poll timers.
+ *
+ * Consumer: server shutdown (`server/index.ts`) via `@/modules/scheduled-messages/index.js`.
+ */
 export function closeScheduledMessageDispatcher(): void {
   if (pollTimer) {
     clearInterval(pollTimer);
@@ -308,4 +406,5 @@ export function closeScheduledMessageDispatcher(): void {
     clearInterval(queuedPollTimer);
     queuedPollTimer = null;
   }
+  scheduledSessionsInFlight.clear();
 }

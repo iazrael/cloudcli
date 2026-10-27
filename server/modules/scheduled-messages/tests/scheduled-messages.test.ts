@@ -269,3 +269,194 @@ test('scheduling validates its input', async () => {
     );
   });
 });
+
+test('due messages across multiple sessions and projects start concurrently without waiting for a long turn to finish', async () => {
+  await withIsolatedDatabase(async (userId) => {
+    const sessionB = 'scheduled-session-project-b';
+    const sessionC = 'scheduled-session-project-c';
+    sessionsDb.createAppSession(sessionB, 'claude', '/tmp/project-b', 'Project B session');
+    sessionsDb.createAppSession(sessionC, 'claude', '/tmp/project-c', 'Project C session');
+
+    scheduledMessagesService.schedule({
+      userId,
+      sessionId: SESSION_ID,
+      content: 'long task in project a',
+      scheduledFor: new Date(Date.now() - 3_000).toISOString(),
+    });
+    scheduledMessagesService.schedule({
+      userId,
+      sessionId: sessionB,
+      content: 'task in project b',
+      scheduledFor: new Date(Date.now() - 2_000).toISOString(),
+    });
+    scheduledMessagesService.schedule({
+      userId,
+      sessionId: sessionC,
+      content: 'task in project c',
+      scheduledFor: new Date(Date.now() - 1_000).toISOString(),
+    });
+
+    let finishFirstTurn!: () => void;
+    const firstTurnBlocked = new Promise<void>((resolve) => {
+      finishFirstTurn = resolve;
+    });
+
+    const runs: RunCall[] = [];
+    const runtime = {
+      hasRuntime: () => true,
+      hasBackgroundWork: () => false,
+      run: async (provider: string, command: string, options: Record<string, unknown>) => {
+        runs.push({ provider, command, options });
+        if (command === 'long task in project a') {
+          await firstTurnBlocked;
+        }
+      },
+      abort: async () => true,
+    } as never;
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    try {
+      const sent = await Promise.race([
+        dispatchDueScheduledMessages(runtime),
+        new Promise<number>((_, reject) => {
+          timeoutHandle = setTimeout(
+            () => reject(new Error('dispatchDueScheduledMessages hung waiting for long turn')),
+            500,
+          );
+        }),
+      ]);
+
+      assert.equal(sent, 3);
+      assert.deepEqual(
+        runs.map((run) => run.command),
+        ['long task in project a', 'task in project b', 'task in project c'],
+      );
+    } finally {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+      finishFirstTurn();
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+  });
+});
+
+test('a subsequent poll pass dispatches newly due messages for other sessions while an earlier session turn is still running', async () => {
+  await withIsolatedDatabase(async (userId) => {
+    const sessionB = 'scheduled-session-next-poll';
+    sessionsDb.createAppSession(sessionB, 'claude', '/tmp/project-b', 'Project B session');
+
+    scheduledMessagesService.schedule({
+      userId,
+      sessionId: SESSION_ID,
+      content: 'first poll long turn',
+      scheduledFor: new Date(Date.now() - 2_000).toISOString(),
+    });
+
+    let finishFirstTurn!: () => void;
+    const firstTurnBlocked = new Promise<void>((resolve) => {
+      finishFirstTurn = resolve;
+    });
+
+    const runs: RunCall[] = [];
+    const runtime = {
+      hasRuntime: () => true,
+      hasBackgroundWork: () => false,
+      run: async (provider: string, command: string, options: Record<string, unknown>) => {
+        runs.push({ provider, command, options });
+        if (command === 'first poll long turn') {
+          await firstTurnBlocked;
+        }
+      },
+      abort: async () => true,
+    } as never;
+
+    try {
+      assert.equal(await dispatchDueScheduledMessages(runtime), 1);
+      assert.equal(runs.length, 1);
+      assert.equal(chatRunRegistry.isProcessing(SESSION_ID), true);
+
+      scheduledMessagesService.schedule({
+        userId,
+        sessionId: sessionB,
+        content: 'second poll other project',
+        scheduledFor: new Date(Date.now() - 1_000).toISOString(),
+      });
+
+      assert.equal(await dispatchDueScheduledMessages(runtime), 1);
+      assert.deepEqual(
+        runs.map((run) => run.command),
+        ['first poll long turn', 'second poll other project'],
+      );
+    } finally {
+      finishFirstTurn();
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+  });
+});
+
+test('multiple due messages for the same session run sequentially without aborting each other or marking queued-behind messages as sent early', async () => {
+  await withIsolatedDatabase(async (userId) => {
+    scheduledMessagesService.schedule({
+      userId,
+      sessionId: SESSION_ID,
+      content: 'step 1',
+      scheduledFor: new Date(Date.now() - 2_000).toISOString(),
+    });
+    scheduledMessagesService.schedule({
+      userId,
+      sessionId: SESSION_ID,
+      content: 'step 2',
+      scheduledFor: new Date(Date.now() - 1_000).toISOString(),
+    });
+
+    let finishStep1!: () => void;
+    const step1Blocked = new Promise<void>((resolve) => {
+      finishStep1 = resolve;
+    });
+
+    const runs: RunCall[] = [];
+    const aborts: string[] = [];
+    const runtime = {
+      hasRuntime: () => true,
+      hasBackgroundWork: () => false,
+      run: async (provider: string, command: string, options: Record<string, unknown>) => {
+        runs.push({ provider, command, options });
+        if (command === 'step 1') {
+          await step1Blocked;
+        }
+      },
+      abort: async (_provider: string, sessionId: string) => {
+        aborts.push(sessionId);
+        return true;
+      },
+    } as never;
+
+    try {
+      assert.equal(await dispatchDueScheduledMessages(runtime), 1);
+      assert.deepEqual(runs.map((run) => run.command), ['step 1']);
+      assert.deepEqual(aborts, []);
+
+      const rowsDuringStep1 = scheduledMessagesDb.listForSession(userId, SESSION_ID);
+      assert.equal(rowsDuringStep1[0].status, 'sent');
+      assert.equal(rowsDuringStep1[1].status, 'pending');
+
+      // An overlapping pass while step 1 is still running must not claim step 2 early or abort step 1.
+      assert.equal(await dispatchDueScheduledMessages(runtime), 0);
+      assert.deepEqual(runs.map((run) => run.command), ['step 1']);
+      assert.deepEqual(aborts, []);
+    } finally {
+      finishStep1();
+    }
+
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.deepEqual(runs.map((run) => run.command), ['step 1', 'step 2']);
+    assert.deepEqual(aborts, []);
+    const rowsAfterBoth = scheduledMessagesDb.listForSession(userId, SESSION_ID);
+    assert.equal(rowsAfterBoth[0].status, 'sent');
+    assert.equal(rowsAfterBoth[1].status, 'sent');
+  });
+});
+
