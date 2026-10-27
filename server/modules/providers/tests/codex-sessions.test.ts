@@ -1279,3 +1279,201 @@ test('Codex history restores user prompts from typed item_completed rows', { con
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+test('Codex history joins a spawn acknowledgement to the child transcript', { concurrency: false }, async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'codex-subagent-history-'));
+  const workspacePath = await createWorkspaceFixture();
+  const restoreHomeDir = patchHomeDir(tempRoot);
+
+  try {
+    const providerSessionId = 'codex-parent-2';
+    const agentThreadId = 'codex-agent-thread-2';
+    const transcriptPath = await writeCodexTranscript(tempRoot, providerSessionId, workspacePath);
+
+    await writeFile(transcriptPath, `${[
+      JSON.stringify({ type: 'session_meta', payload: { id: providerSessionId, cwd: workspacePath } }),
+      // A spawn reaches the item stream only as this lifecycle event, so the
+      // Agent row is built from it and keeps its id.
+      JSON.stringify({
+        type: 'event_msg',
+        payload: {
+          type: 'item_completed',
+          item: {
+            type: 'CollabAgentToolCall',
+            id: 'spawn-1',
+            tool: 'spawn_agent',
+            status: 'completed',
+            receiver_thread_ids: [agentThreadId],
+            receiver_agents: [{ thread_id: agentThreadId, agent_nickname: 'test_agent_1' }],
+          },
+        },
+      }),
+      JSON.stringify({
+        type: 'response_item',
+        payload: {
+          type: 'agent_message',
+          author: '/root/test_agent_1',
+          content: [{ type: 'input_text', text: 'Message Type: FINAL_ANSWER\nSender: /root/test_agent_1\nPayload:\nAll done.' }],
+        },
+      }),
+    ].join('\n')}\n`, 'utf8');
+
+    // Codex writes a spawned agent's rollout next to its parent's, named after
+    // the agent thread id.
+    await writeFile(
+      path.join(path.dirname(transcriptPath), `rollout-2026-07-07T00-00-00-${agentThreadId}.jsonl`),
+      `${[
+        JSON.stringify({
+          type: 'session_meta',
+          payload: { id: agentThreadId, cwd: workspacePath, thread_source: 'subagent', agent_nickname: 'Hegel' },
+        }),
+        JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete', turn_id: 'child-turn' } }),
+        JSON.stringify({
+          type: 'event_msg',
+          payload: {
+            type: 'item_completed',
+            item: {
+              type: 'CommandExecution',
+              id: 'exec-agent-call-1',
+              command: ['/bin/zsh', '-lc', 'ls'],
+              status: 'completed',
+              aggregated_output: 'README.md\n',
+              exit_code: 0,
+            },
+          },
+        }),
+      ].join('\n')}\n`,
+      'utf8',
+    );
+
+    await withIsolatedDatabase(async () => {
+      sessionsDb.createAppSession('app-parent-2', 'codex', workspacePath);
+      sessionsDb.assignProviderSessionId('app-parent-2', providerSessionId);
+      await new CodexSessionSynchronizer().synchronize();
+
+      const history = await new CodexSessionsProvider().fetchHistory('app-parent-2');
+      const task = history.messages.find((message) => message.kind === 'tool_use' && message.toolName === 'Agent');
+
+      assert.ok(task, 'a spawned agent must produce a Agent row');
+      assert.equal(task.subagent?.id, agentThreadId);
+      assert.equal(task.subagent?.name, 'Hegel');
+      assert.equal(task.subagent?.status, 'completed');
+      assert.equal((task.toolResult?.toolUseResult as any)?.isAsync, true);
+
+      // The agent's own shell call is translated exactly like the parent's.
+      assert.equal(task.subagentTools?.length, 1);
+      assert.equal(task.subagentTools?.[0].kind, 'tool');
+      assert.equal(task.subagentTools?.[0].toolName, 'Bash');
+      assert.equal(task.subagentTools?.[0].toolResult?.content, 'README.md\n');
+      assert.equal(task.id, 'spawn-1', 'the Agent row is named after the lifecycle item');
+    });
+  } finally {
+    restoreHomeDir();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+
+test('Codex history restores each child of a multi-agent spawn', { concurrency: false }, async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'codex-subagent-history-'));
+  const workspacePath = await createWorkspaceFixture();
+  const restoreHomeDir = patchHomeDir(tempRoot);
+
+  try {
+    const providerSessionId = 'codex-parent-2';
+    const agentThreadId = 'codex-agent-thread-2';
+    const transcriptPath = await writeCodexTranscript(tempRoot, providerSessionId, workspacePath);
+
+    await writeFile(transcriptPath, `${[
+      JSON.stringify({ type: 'session_meta', payload: { id: providerSessionId, cwd: workspacePath } }),
+      // A spawn reaches the item stream only as this lifecycle event, so the
+      // Agent row is built from it and keeps its id.
+      JSON.stringify({
+        type: 'event_msg',
+        payload: {
+          type: 'item_completed',
+          item: {
+            type: 'CollabAgentToolCall',
+            id: 'spawn-1',
+            tool: 'spawn_agent',
+            status: 'completed',
+            receiver_thread_ids: [agentThreadId, "codex-agent-thread-3"],
+            receiver_agents: [{ thread_id: agentThreadId, agent_nickname: 'test_agent_1' }],
+          },
+        },
+      }),
+      JSON.stringify({
+        type: 'response_item',
+        payload: {
+          type: 'agent_message',
+          author: '/root/test_agent_1',
+          content: [{ type: 'input_text', text: 'Message Type: FINAL_ANSWER\nSender: /root/test_agent_1\nPayload:\nAll done.' }],
+        },
+      }),
+    ].join('\n')}\n`, 'utf8');
+
+    // Codex writes a spawned agent's rollout next to its parent's, named after
+    // the agent thread id.
+    await writeFile(
+      path.join(path.dirname(transcriptPath), `rollout-2026-07-07T00-00-00-${agentThreadId}.jsonl`),
+      `${[
+        JSON.stringify({
+          type: 'session_meta',
+          payload: { id: agentThreadId, cwd: workspacePath, thread_source: 'subagent', agent_nickname: 'Hegel' },
+        }),
+        JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete', turn_id: 'child-turn' } }),
+        JSON.stringify({
+          type: 'event_msg',
+          payload: {
+            type: 'item_completed',
+            item: {
+              type: 'CommandExecution',
+              id: 'exec-agent-call-1',
+              command: ['/bin/zsh', '-lc', 'ls'],
+              status: 'completed',
+              aggregated_output: 'README.md\n',
+              exit_code: 0,
+            },
+          },
+        }),
+      ].join('\n')}\n`,
+      'utf8',
+    );
+
+    await writeFile(path.join(path.dirname(transcriptPath), 'rollout-2026-07-07T00-00-00-codex-agent-thread-3.jsonl'), `${[
+      JSON.stringify({ type: 'session_meta', payload: { id: 'codex-agent-thread-3', agent_nickname: 'Second' } }),
+      JSON.stringify({ type: 'event_msg', payload: { type: 'item_completed', item: { type: 'AgentMessage', id: 'second-result', content: [{ type: 'text', text: 'Second report' }] } } }),
+      JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete', turn_id: 'second-turn' } }),
+    ].join('\n')}\n`);
+
+    await withIsolatedDatabase(async () => {
+      sessionsDb.createAppSession('app-parent-2', 'codex', workspacePath);
+      sessionsDb.assignProviderSessionId('app-parent-2', providerSessionId);
+      await new CodexSessionSynchronizer().synchronize();
+
+      const history = await new CodexSessionsProvider().fetchHistory('app-parent-2');
+      const cards = history.messages.filter((message) => message.kind === 'tool_use' && message.toolName === 'Agent');
+      assert.equal(cards.length, 2);
+      const task = cards.find((message) => message.subagent?.id === agentThreadId);
+      const second = cards.find((message) => message.subagent?.id === 'codex-agent-thread-3');
+      assert.equal(second?.subagent?.status, 'completed');
+      assert.equal(second?.subagentTools?.[0]?.content, 'Second report');
+
+      assert.ok(task, 'a spawned agent must produce a Agent row');
+      assert.equal(task.subagent?.id, agentThreadId);
+      assert.equal(task.subagent?.name, 'Hegel');
+      assert.equal(task.subagent?.status, 'completed');
+      assert.equal((task.toolResult?.toolUseResult as any)?.isAsync, true);
+
+      // The agent's own shell call is translated exactly like the parent's.
+      assert.equal(task.subagentTools?.length, 1);
+      assert.equal(task.subagentTools?.[0].kind, 'tool');
+      assert.equal(task.subagentTools?.[0].toolName, 'Bash');
+      assert.equal(task.subagentTools?.[0].toolResult?.content, 'README.md\n');
+      assert.equal(task.id, `spawn-1:${agentThreadId}`,  'the Agent row is named after the lifecycle item');
+    });
+  } finally {
+    restoreHomeDir();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});

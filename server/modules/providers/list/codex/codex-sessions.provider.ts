@@ -1490,11 +1490,17 @@ async function getCodexSessionMessages(sessionId: string): Promise<CodexHistoryR
     }
 
     if (item.kind === 'collab_spawn' && rows.length > 0) {
-      indexSubagent({
-        toolCallId: item.id,
-        message: rows[0],
-        isComplete: rows.length > 1,
-      });
+      const receivers = item.receiverThreadIds?.length ? item.receiverThreadIds : [undefined];
+      for (const agentThreadId of receivers) {
+        const toolCallId = receivers.length > 1 ? `${item.id}:${agentThreadId}` : item.id;
+        const existing = agentThreadId ? subagentsByThread.get(agentThreadId) : undefined;
+        if (existing && existing.toolCallId !== toolCallId) {
+          for (let i = rows.length - 1; i >= 0; i--) if (rows[i].toolCallId === toolCallId) rows.splice(i, 1);
+          continue;
+        }
+        const message = rows.find((row) => row.type === 'tool_use' && row.toolCallId === toolCallId);
+        if (message) indexSubagent({ toolCallId, message, agentThreadId, isComplete: item.status === 'failed' || item.status === 'interrupted' });
+      }
     }
 
     messages.push(...rows);
@@ -1826,6 +1832,7 @@ export class CodexSessionsProvider implements IProviderSessions {
         toolId: raw.toolCallId || '',
         content: raw.output || '',
         isError: Boolean(raw.isError),
+        toolUseResult: raw.toolUseResult,
       })];
     }
 
@@ -1911,7 +1918,7 @@ export class CodexSessionsProvider implements IProviderSessions {
       if (msg.kind === 'tool_use' && msg.toolId && toolResultMap.has(msg.toolId)) {
         const toolResult = toolResultMap.get(msg.toolId);
         if (toolResult) {
-          msg.toolResult = { content: toolResult.content, isError: toolResult.isError };
+          msg.toolResult = { content: toolResult.content, isError: toolResult.isError, toolUseResult: toolResult.toolUseResult };
         }
       }
     }

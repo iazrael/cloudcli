@@ -515,6 +515,7 @@ type CodexAgentTurnEnd = { status: 'completed' | 'failed' | 'stopped'; summary?:
 const codexAgentTurns = new Map<string, {
   ended?: CodexAgentTurnEnd & { sessionKey: string };
   retired?: { sessionKey: string; task: BackgroundTaskSummary };
+  turnId?: string;
 }>();
 const MAX_TRACKED_CODEX_AGENT_THREADS = 500;
 
@@ -573,7 +574,10 @@ function trackCodexAgentTurn(
     return;
   }
   const turn = readObjectRecord(params.turn);
+  const turnId = readNonEmptyString(turn?.id) ?? readNonEmptyString(params.turnId);
   if (method === 'turn/completed') {
+    const current = codexAgentTurns.get(agentThreadId);
+    if (turnId && current?.turnId && turnId !== current.turnId) return;
     const status = turn?.status === 'failed' ? 'failed' : turn?.status === 'interrupted' ? 'stopped' : 'completed';
     const summary = readNonEmptyString(readObjectRecord(turn?.error)?.message);
     console.log(`[Codex] Agent thread ${agentThreadId} ended a turn (${String(turn?.status ?? 'unknown')}).`);
@@ -584,6 +588,7 @@ function trackCodexAgentTurn(
     rememberCodexAgentTurn(agentThreadId, {
       ...codexAgentTurns.get(agentThreadId),
       ended: { ...ended, sessionKey: backgroundWorkKey },
+      turnId,
     });
     const owner = codexBackgroundWork.find(agentThreadId);
     if (owner?.sessionKey === backgroundWorkKey) {
@@ -594,17 +599,14 @@ function trackCodexAgentTurn(
 
   console.log(`[Codex] Agent thread ${agentThreadId} started a turn.`);
   const state = codexAgentTurns.get(agentThreadId);
-  if (!state) {
-    return;
-  }
-  const retired = state.retired;
+  if (turnId && state?.turnId === turnId) return;
+  const retired = state?.retired;
   // A new turn makes the end of the last one stale.
-  rememberCodexAgentTurn(agentThreadId, retired ? { retired } : {});
+  rememberCodexAgentTurn(agentThreadId, { ...(retired ? { retired } : {}), turnId });
   if (!retired || !backgroundWorkKey || retired.sessionKey !== backgroundWorkKey
     || codexBackgroundWork.get(backgroundWorkKey, agentThreadId)) {
     return;
   }
-  codexAgentTurns.delete(agentThreadId);
   const { taskId, toolUseId, taskType, description } = retired.task;
   codexBackgroundWork.start(backgroundWorkKey, { taskId, toolUseId, taskType, description });
   broadcastCodexBackgroundTasks(target, backgroundWorkKey);
@@ -635,19 +637,11 @@ function emitCodexItem(
   if (!item) {
     return;
   }
-  if (item.kind === 'collab_spawn' && backgroundWorkKey) {
-    if (source === 'started') {
-      codexBackgroundWork.start(backgroundWorkKey, {
-        taskId: item.id,
-        toolUseId: item.id,
-        taskType: CODEX_BACKGROUND_TASK_TYPE,
-        description: item.prompt ? `${item.label}: ${item.prompt}` : item.label,
-      });
-      broadcastCodexBackgroundTasks(target, backgroundWorkKey);
-    } else if (codexBackgroundWork.end(backgroundWorkKey, item.id)) {
-      broadcastCodexBackgroundTasks(target, backgroundWorkKey);
-    }
-  }
+  // The receiver list can grow until the acknowledgement; wait for it before
+  // choosing stable card ids.
+  if (item.kind === 'collab_spawn' && source === 'started') return;
+  // An activity can identify the child before the spawn acknowledgement arrives.
+  // In that order its already-published card remains the child's card.
   if (item.kind === 'mcp_tool_call') {
     const args = readObjectRecord(item.toolArguments);
     if (args) target.registerToolCall?.({ callId: item.id, server: item.server, tool: item.tool, arguments: args });
@@ -657,14 +651,39 @@ function emitCodexItem(
     return;
   }
   for (const itemRow of codexThreadItemToRows(item, timestamp)) {
+    if (item.kind === 'collab_spawn' && backgroundWorkKey) {
+      const receiver = item.receiverThreadIds?.find((id) => itemRow.toolCallId === ((item.receiverThreadIds?.length ?? 0) > 1 ? `${item.id}:${id}` : item.id));
+      const existing = receiver ? codexBackgroundWork.get(backgroundWorkKey, receiver) : undefined;
+      if (existing && existing.toolUseId !== itemRow.toolCallId) continue;
+    }
+    if (item.kind === 'collab_spawn' && itemRow.type === 'tool_use' && target.approvalSubjects.has(String(itemRow.toolCallId))) continue;
     // A compaction that has started but not finished is the running row its
     // completion replaces (same id).
     const row = source === 'started' && itemRow.type === 'compaction' ? { ...itemRow, phase: 'running' } : itemRow;
-    if (row.type === 'tool_use' && !target.approvalSubjects.has(item.id)) {
-      target.approvalSubjects.set(item.id, { toolName: String(row.toolName), input: row.toolInput });
+    if (row.type === 'tool_use' && !target.approvalSubjects.has(String(row.toolCallId ?? item.id))) {
+      target.approvalSubjects.set(String(row.toolCallId ?? item.id), { toolName: String(row.toolName), input: row.toolInput });
     }
     for (const message of target.normalize(row, target.threadId() || target.appSessionId || null)) {
       target.deliver(message);
+    }
+  }
+  if (item.kind === 'collab_spawn' && backgroundWorkKey) {
+    {
+      codexBackgroundWork.end(backgroundWorkKey, item.id);
+      if (item.status !== 'failed' && item.status !== 'interrupted') {
+        for (const taskId of item.receiverThreadIds ?? []) {
+          if (codexBackgroundWork.get(backgroundWorkKey, taskId)) continue;
+          const toolUseId = (item.receiverThreadIds?.length ?? 0) > 1 ? `${item.id}:${taskId}` : item.id;
+          const state = codexAgentTurns.get(taskId);
+          if (state?.retired?.sessionKey === backgroundWorkKey && state.retired.task.toolUseId === toolUseId) continue;
+          const description = item.prompt ? `${item.label}: ${item.prompt}` : item.label;
+          codexBackgroundWork.start(backgroundWorkKey, { taskId, toolUseId, taskType: CODEX_BACKGROUND_TASK_TYPE, description });
+          target.deliver(codexTaskStatus(target.threadId() || target.appSessionId || null, taskId, toolUseId, { event: 'started', description }));
+          const ended: (CodexAgentTurnEnd & { sessionKey: string }) | undefined = state?.ended;
+          if (ended?.sessionKey === backgroundWorkKey) settleCodexAgentTurn(target, backgroundWorkKey, taskId, ended);
+        }
+      }
+      broadcastCodexBackgroundTasks(target, backgroundWorkKey);
     }
   }
 }
@@ -815,7 +834,11 @@ function settleCodexSessionAgents(
   if (outstanding.length === 0) {
     return;
   }
-  for (const task of outstanding) retireCodexAgent(appSessionId, task);
+  for (const task of outstanding) {
+    retireCodexAgent(appSessionId, task);
+    const state = codexAgentTurns.get(task.taskId);
+    if (state) rememberCodexAgentTurn(task.taskId, { ...state, turnId: undefined });
+  }
   deliver(createCodexStripMessage(appSessionId, appSessionId));
   for (const task of outstanding) {
     deliver(codexTaskStatus(appSessionId, task.taskId, task.toolUseId, {

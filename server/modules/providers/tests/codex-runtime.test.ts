@@ -1255,10 +1255,8 @@ test('subagent notifications with different threadId are ignored and do not sett
 // Background work tracking (collab agents that outlive their turn)
 // ---------------------------------------------------------------------------
 
-// Real engines never announce a spawn as a collab tool-call item: every
-// recorded `CollabAgentToolCall` is a `wait`. The only word of a new agent is
-// its `subAgentActivity` record, whose item id differs between the start and
-// the end of the same agent; the thread id is what pairs them.
+// Some engines announce a spawn with `subAgentActivity`; its start and end
+// item ids differ, so the thread id pairs them.
 const spawnActivity = { type: 'subAgentActivity', id: 'call_spawn_1', kind: 'started', agentThreadId: 'thread_child_1', agentPath: '/root/standards' };
 const doneActivity = { type: 'subAgentActivity', id: 'call_done_1', kind: 'completed', agentThreadId: 'thread_child_1', agentPath: '/root/standards' };
 
@@ -2003,4 +2001,113 @@ test('/compact with instructions is refused, because Codex compacts without them
   assert.ok(!server.calls.some((call) => ['thread/compact/start', 'turn/start', 'thread/queue/add'].includes(call.method)));
   assert.ok(messages.some((message) => message.kind === 'error' && /without instructions/.test(message.content)));
   assert.ok(messages.some((message) => message.kind === 'complete' && message.exitCode === 1));
+});
+
+test('spawn acknowledgement tracks the child until its own turn ends', async (t) => {
+  const snapshots: any[] = [];
+  installFakeAppServer(t, (fake) => {
+    const notify = (method: string, params: unknown) => fake.handlers.onNotification?.(method, params as any);
+    const spawn = { type: 'collabAgentToolCall', id: 'spawn-ack', tool: 'spawnAgent', status: 'completed', receiverThreadIds: ['child-ack'], receiverAgents: [{ threadId: 'child-ack', nickname: 'Boole' }], agentsStates: { 'child-ack': 'pending_init' } };
+    notify('turn/started', { threadId: THREAD_ID, turn: { id: TURN_ID, status: 'inProgress' } });
+    notify('item/started', { threadId: THREAD_ID, turnId: TURN_ID, item: { ...spawn, status: 'inProgress', receiverThreadIds: [] } });
+    notify('item/completed', { threadId: THREAD_ID, turnId: TURN_ID, item: spawn });
+    snapshots.push(codexRuntime.listBackgroundWork());
+    notify('item/completed', { threadId: 'child-ack', item: { type: 'agentMessage', id: 'answer', text: 'partial result' } });
+    notify('turn/completed', { threadId: 'child-ack', turn: { id: 'child-turn', status: 'completed' } });
+    snapshots.push(codexRuntime.listBackgroundWork());
+    notify('turn/completed', { threadId: THREAD_ID, turn: { id: TURN_ID, status: 'completed', error: null } });
+  });
+  const messages: any[] = [];
+  await codexRuntime.run('go', { sessionId: 'app-spawn-ack', cwd: process.cwd() }, { isWebSocketWriter: true, send: (message) => messages.push(message) }, runtimeContext(true));
+  assert.deepEqual(snapshots[0][0]?.tasks.map((task: any) => [task.taskId, task.toolUseId]), [['child-ack', 'spawn-ack']]);
+  assert.deepEqual(snapshots[1], []);
+  assert.ok(messages.some((message) => message.parentToolUseId === 'spawn-ack' && message.message?.content === 'partial result'));
+  assert.ok(messages.some((message) => message.kind === 'task_status' && message.taskId === 'child-ack' && message.status === 'completed'));
+});
+
+test('spawn acknowledgement and activity for the same child share one card', async (t) => {
+  let tasks: any[] = [];
+  installFakeAppServer(t, (fake) => {
+    const notify = (method: string, params: unknown) => fake.handlers.onNotification?.(method, params as any);
+    notify('turn/started', { threadId: THREAD_ID, turn: { id: TURN_ID, status: 'inProgress' } });
+    const spawn = { type: 'collabAgentToolCall', id: 'mixed-spawn', tool: 'spawnAgent', status: 'completed', receiverThreadIds: ['mixed-child'] };
+    notify('item/completed', { threadId: THREAD_ID, turnId: TURN_ID, item: spawn });
+    notify('item/completed', { threadId: THREAD_ID, turnId: TURN_ID, item: { type: 'subAgentActivity', id: 'mixed-activity', kind: 'started', agentThreadId: 'mixed-child' } });
+    notify('item/completed', { threadId: THREAD_ID, turnId: TURN_ID, item: spawn });
+    tasks = codexRuntime.listBackgroundWork()[0]?.tasks ?? [];
+    notify('turn/completed', { threadId: THREAD_ID, turn: { id: TURN_ID, status: 'completed' } });
+  });
+  const messages: any[] = [];
+  await codexRuntime.run('go', { sessionId: 'mixed-session', cwd: process.cwd() }, { isWebSocketWriter: true, send: (message) => messages.push(message) }, runtimeContext(true));
+  assert.deepEqual(tasks.map((task) => [task.taskId, task.toolUseId]), [['mixed-child', 'mixed-spawn']]);
+  assert.equal(messages.filter((message) => message.type === 'tool_use' && message.toolName === 'Agent').length, 1);
+});
+
+test('activity arriving before the spawn acknowledgement keeps its original card', async (t) => {
+  let tasks: any[] = [];
+  installFakeAppServer(t, (fake) => {
+    const notify = (method: string, params: unknown) => fake.handlers.onNotification?.(method, params as any);
+    notify('turn/started', { threadId: THREAD_ID, turn: { id: TURN_ID, status: 'inProgress' } });
+    notify('item/completed', { threadId: THREAD_ID, turnId: TURN_ID, item: { type: 'subAgentActivity', id: 'early-activity', kind: 'started', agentThreadId: 'early-child' } });
+    notify('item/completed', { threadId: THREAD_ID, turnId: TURN_ID, item: { type: 'collabAgentToolCall', id: 'late-spawn', tool: 'spawnAgent', status: 'completed', receiverThreadIds: ['early-child'] } });
+    tasks = codexRuntime.listBackgroundWork()[0]?.tasks ?? [];
+    notify('turn/completed', { threadId: THREAD_ID, turn: { id: TURN_ID, status: 'completed' } });
+  });
+  const messages: any[] = [];
+  await codexRuntime.run('go', { sessionId: 'early-mixed-session', cwd: process.cwd() }, { isWebSocketWriter: true, send: (message) => messages.push(message) }, runtimeContext(true));
+  assert.deepEqual(tasks.map((task) => [task.taskId, task.toolUseId]), [['early-child', 'early-activity']]);
+  assert.deepEqual(messages.filter((message) => message.type === 'tool_use' && message.toolName === 'Agent').map((message) => message.toolCallId), ['early-activity']);
+});
+
+test('a late end from an earlier child turn cannot settle its newer turn', async (t) => {
+  let tasks: any[] = [];
+  installFakeAppServer(t, (fake) => {
+    const notify = (method: string, params: unknown) => fake.handlers.onNotification?.(method, params as any);
+    notify('turn/started', { threadId: THREAD_ID, turn: { id: TURN_ID, status: 'inProgress' } });
+    notify('item/completed', { threadId: THREAD_ID, turnId: TURN_ID, item: { type: 'collabAgentToolCall', id: 'turn-spawn', tool: 'spawnAgent', status: 'completed', receiverThreadIds: ['turn-child'] } });
+    notify('turn/started', { threadId: 'turn-child', turn: { id: 'child-first' } });
+    notify('turn/completed', { threadId: 'turn-child', turn: { id: 'child-first', status: 'completed' } });
+    notify('turn/started', { threadId: 'turn-child', turn: { id: 'child-first' } });
+    notify('turn/started', { threadId: 'turn-child', turn: { id: 'child-second' } });
+    notify('turn/completed', { threadId: 'turn-child', turn: { id: 'child-first', status: 'completed' } });
+    tasks = codexRuntime.listBackgroundWork()[0]?.tasks ?? [];
+    notify('turn/completed', { threadId: 'turn-child', turn: { id: 'child-second', status: 'completed' } });
+    notify('turn/completed', { threadId: THREAD_ID, turn: { id: TURN_ID, status: 'completed' } });
+  });
+  const messages: any[] = [];
+  await codexRuntime.run('go', { sessionId: 'turn-order-session', cwd: process.cwd() }, { isWebSocketWriter: true, send: (message) => messages.push(message) }, runtimeContext(true));
+  assert.deepEqual(tasks.map((task) => [task.taskId, task.toolUseId]), [['turn-child', 'turn-spawn']]);
+  assert.equal(messages.filter((message) => message.kind === 'task_status' && message.event === 'notification' && message.status === 'completed').length, 2);
+});
+
+test('a spawn with two children keeps each card independent when one ends', async (t) => {
+  let active: any[] = [];
+  installFakeAppServer(t, (fake) => {
+    const notify = (method: string, params: unknown) => fake.handlers.onNotification?.(method, params as any);
+    notify('turn/started', { threadId: THREAD_ID, turn: { id: TURN_ID, status: 'inProgress' } });
+    notify('item/completed', { threadId: THREAD_ID, turnId: TURN_ID, item: { type: 'collabAgentToolCall', id: 'multi-spawn', tool: 'spawnAgent', status: 'completed', receiverThreadIds: ['multi-a', 'multi-b'] } });
+    notify('turn/completed', { threadId: 'multi-a', turn: { id: 'turn-a', status: 'completed' } });
+    active = codexRuntime.listBackgroundWork()[0]?.tasks ?? [];
+    notify('turn/completed', { threadId: THREAD_ID, turn: { id: TURN_ID, status: 'completed' } });
+  });
+  const messages: any[] = [];
+  await codexRuntime.run('go', { sessionId: 'multi-session', cwd: process.cwd() }, { isWebSocketWriter: true, send: (message) => messages.push(message) }, runtimeContext(true));
+  const cards = messages.filter((m) => m.type === 'tool_use' && m.toolName === 'Agent').map((m) => m.toolCallId);
+  assert.deepEqual(cards, ['multi-spawn:multi-a', 'multi-spawn:multi-b']);
+  assert.deepEqual(active.map((task) => [task.taskId, task.toolUseId]), [['multi-b', 'multi-spawn:multi-b']]);
+  assert.equal(messages.find((m) => m.kind === 'task_status' && m.taskId === 'multi-a' && m.status === 'completed')?.toolUseId, 'multi-spawn:multi-a');
+});
+
+test('a spawn announcement that later names more children creates only final child cards', async (t) => {
+  installFakeAppServer(t, (fake) => {
+    const notify = (method: string, params: unknown) => fake.handlers.onNotification?.(method, params as any);
+    notify('turn/started', { threadId: THREAD_ID, turn: { id: TURN_ID, status: 'inProgress' } });
+    const spawn = { type: 'collabAgentToolCall', id: 'growing-spawn', tool: 'spawnAgent', status: 'inProgress', receiverThreadIds: ['growing-a'] };
+    notify('item/started', { threadId: THREAD_ID, turnId: TURN_ID, item: spawn });
+    notify('item/completed', { threadId: THREAD_ID, turnId: TURN_ID, item: { ...spawn, status: 'completed', receiverThreadIds: ['growing-a', 'growing-b'] } });
+    notify('turn/completed', { threadId: THREAD_ID, turn: { id: TURN_ID, status: 'completed' } });
+  });
+  const messages: any[] = [];
+  await codexRuntime.run('go', { sessionId: 'growing-session', cwd: process.cwd() }, { isWebSocketWriter: true, send: (message) => messages.push(message) }, runtimeContext(true));
+  assert.deepEqual(messages.filter((m) => m.type === 'tool_use' && m.toolName === 'Agent').map((m) => m.toolCallId), ['growing-spawn:growing-a', 'growing-spawn:growing-b']);
 });

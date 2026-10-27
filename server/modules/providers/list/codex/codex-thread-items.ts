@@ -80,7 +80,7 @@ export type CodexThreadItem =
     status: CodexItemStatus;
   }
   | { kind: 'web_search'; id: string; query: string }
-  | { kind: 'collab_spawn'; id: string; label: string; prompt?: string; status: CodexItemStatus }
+  | { kind: 'collab_spawn'; id: string; label: string; prompt?: string; status: CodexItemStatus; receiverThreadIds?: string[] }
   | {
     kind: 'subagent_activity';
     id: string;
@@ -272,6 +272,20 @@ function readCollabAgentLabel(item: AnyRecord): string {
   return 'agent';
 }
 
+function readCollabReceiverThreadIds(item: AnyRecord): string[] {
+  const ids = item.receiver_thread_ids ?? item.receiverThreadIds;
+  const agents = item.receiver_agents ?? item.receiverAgents;
+  const candidates = [
+    ...(Array.isArray(ids) ? ids : []),
+    ...(Array.isArray(agents) ? agents.map((agent: unknown) => {
+      const record = readObjectRecord(agent);
+      return record?.thread_id ?? record?.threadId;
+    }) : []),
+    ...Object.keys(readObjectRecord(item.agents_states) ?? readObjectRecord(item.agentsStates) ?? {}),
+  ];
+  return [...new Set(candidates.map(readNonEmptyString).filter((id): id is string => Boolean(id)))];
+}
+
 /**
  * Whether a collaboration call is a spawn — `spawn_agent` in the rollout,
  * `spawnAgent` on the app-server.
@@ -418,6 +432,7 @@ export function readCodexRolloutItem(raw: unknown): CodexThreadItem | null {
         label: readCollabAgentLabel(item),
         prompt,
         status: readItemStatus(item.status),
+        receiverThreadIds: readCollabReceiverThreadIds(item),
       };
     }
 
@@ -540,6 +555,7 @@ export function readCodexAppServerItem(raw: unknown): CodexThreadItem | null {
         label: readCollabAgentLabel(item),
         prompt: readNonEmptyString(item.prompt),
         status: readItemStatus(item.status),
+        receiverThreadIds: readCollabReceiverThreadIds(item),
       };
     }
 
@@ -798,6 +814,11 @@ export function codexThreadItemToRows(item: CodexThreadItem, timestamp: string):
       }];
 
     case 'collab_spawn': {
+      if ((item.receiverThreadIds?.length ?? 0) > 1) {
+        return item.receiverThreadIds!.flatMap((threadId) => codexThreadItemToRows({
+          ...item, id: `${item.id}:${threadId}`, receiverThreadIds: [threadId],
+        }, timestamp));
+      }
       const rows: AnyRecord[] = [{
         uuid: item.id,
         type: 'tool_use',
@@ -812,9 +833,14 @@ export function codexThreadItemToRows(item: CodexThreadItem, timestamp: string):
           ...(item.prompt && !/^gAAAAA/.test(item.prompt) ? { prompt: item.prompt } : {}),
         }),
         toolCallId: item.id,
-        status: item.status,
+        status: item.status === 'completed' ? 'in_progress' : item.status,
       }];
       if (item.status === 'in_progress') {
+        return rows;
+      }
+      if (item.status === 'completed') {
+        rows.push({ uuid: `${item.id}_result`, type: 'tool_result', timestamp, toolCallId: item.id,
+          output: '', toolUseResult: { isAsync: true, agentId: item.receiverThreadIds?.[0] } });
         return rows;
       }
       const outcome = item.status === 'failed'
