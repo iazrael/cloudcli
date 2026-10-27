@@ -5,7 +5,7 @@ import { z } from 'zod';
 
 import { projectsDb, sessionsDb, userDb } from '@/modules/database/index.js';
 import { providerModelsService, providerRuntimeService, sessionsService } from '@/modules/providers/index.js';
-import { chatRunRegistry, broadcastSessionUpserted } from '@/modules/websocket/index.js';
+import { chatRunRegistry, broadcastSessionUpserted, emitRuntimeFailureFallback } from '@/modules/websocket/index.js';
 import type { LLMProvider, NormalizedMessage } from '@/shared/types.js';
 
 import { createExecutionRouter } from './execution.routes.js';
@@ -106,7 +106,15 @@ export function createExecutionModule(overrides: {
             failed = true;
             // RPC 请求可能已经送达引擎；异常不能证明它已停止。
           } finally { runtimeSettled = true; }
-          if (!terminal && error) return { success: false, stopped: false, error };
+          if (!terminal && error) {
+            // 与聊天网关的兜底同款：运行时没发 complete 就结束（RPC 报错、会话
+            // 身份被替换），补一条错误帧并释放网关 run，否则会话在所有客户端
+            // 永远卡在处理中，chat.send、定时消息和后续派发全被卡死。
+            // 执行记录仍按 stopped:false 记作中断——界面终态不能当停止凭据。
+            emitRuntimeFailureFallback(run, { provider, sessionId: input.sessionId, message: error });
+            chatRunRegistry.completeRunIfCurrent(run, { exitCode: 1, reason: 'dispatch_failed' });
+            return { success: false, stopped: false, error };
+          }
           // 静默移交和仍有后台任务的回合继续等待；provider 的监听器仍使用当前 writer。
           while (!terminal || !runtimeSettled || runtime.hasBackgroundWork(input.sessionId)
             || runtime.hasSessionWork(input.sessionId)) {

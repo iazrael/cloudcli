@@ -17,5 +17,8 @@ export {
 } from './services/session-upsert-broadcast.service.js';
 // runDetachedChatTurn: used by the scheduled-messages module to run a
 // scheduled or queued message with no socket to stream to or report errors on.
-export { runDetachedChatTurn } from './services/chat-websocket.service.js';
+// emitRuntimeFailureFallback: used by the execution module when a dispatched
+// engine run settles without its terminal `complete`, so the chat UI still
+// sees why the turn ended.
+export { emitRuntimeFailureFallback, runDetachedChatTurn } from './services/chat-websocket.service.js';
 export type { ProviderRuntimeGateway } from './services/chat-websocket.service.js';

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, mkdirSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -221,5 +221,19 @@ test('damaged history cannot turn an unknown request cancellation into stop conf
     const cancelled = await restarted.cancel({ requestId: f.request.requestId });
     assert.equal(cancelled.stopConfirmed, false);
     assert.equal(f.counts().cancels, 0);
+  } finally { f.cleanup(); }
+});
+
+test('a damaged cancellation tombstone blocks new work but keeps history queryable', async () => {
+  const f = fixture();
+  try {
+    const run = await f.service.start(f.request);
+    f.settle({ success: true, stopped: true });
+    await new Promise((resolve) => setImmediate(resolve));
+    writeFileSync(join(f.options.directory, '.cancellations', 'broken.json'), '{ not json');
+    // 与损坏的运行记录同策略：历史照常可查，新派发阻断，而不是整个服务瘫痪。
+    const restarted = createExecutionService(f.options);
+    assert.equal(restarted.get({ runId: run.runId }).state, 'succeeded');
+    await assert.rejects(restarted.start({ ...f.request, requestId: 'other' }), /恢复/);
   } finally { f.cleanup(); }
 });

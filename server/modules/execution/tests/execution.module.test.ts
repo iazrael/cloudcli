@@ -57,12 +57,18 @@ test('every registered provider shares dispatch, model, permission and original-
 test('runtime rejection after dispatch is not proof of stop', async () => {
   const execution = service(async () => { throw new Error('response lost after session/send'); });
   const run = await execution.start(request('zcode', 'response-lost'));
+  const gatewayRun = chatRunRegistry.getRun(run.sessionId)!;
   await tick();
   const state = execution.get({ runId: run.runId });
   assert.equal(state.stopConfirmed, false);
   assert.equal(state.state, 'interrupted');
   assert.match(state.error!, /response lost/);
   assert.equal((await execution.cancel({ requestId: 'response-lost' })).stopConfirmed, false);
+  // 网关侧同样必须收口：运行时没发 complete 就结束时，run 不能永远占着会话，
+  // 否则 chat.send、定时消息和后续派发都被卡死，只能靠用户手点停止恢复。
+  assert.equal(chatRunRegistry.isProcessing(run.sessionId), false);
+  assert.equal(gatewayRun.endReason, 'dispatch_failed');
+  assert.ok(gatewayRun.events.some((event) => event.kind === 'error'));
 });
 
 test('background work keeps both the execution and chat admission busy after turn complete', async () => {

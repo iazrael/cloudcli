@@ -57,10 +57,18 @@ export function createExecutionService(dependencies: Dependencies) {
   const cancelledRequests = new Set<string>();
   const cancellationDirectory = path.join(directory, '.cancellations');
   mkdirSync(cancellationDirectory, { recursive: true, mode: 0o700 });
-  for (const entry of readdirSync(cancellationDirectory)) {
-    if (entry.endsWith('.json')) cancelledRequests.add(identifier.parse(JSON.parse(readFileSync(path.join(cancellationDirectory, entry), 'utf8')).requestId));
-  }
   let recoveryBlocked = false;
+  // 损坏的墓碑与损坏的运行记录同策略：记日志指认坏文件并阻断新派发，
+  // 保留历史查询，而不是让构造失败把整个执行服务（含查询）拖垮。
+  for (const entry of readdirSync(cancellationDirectory)) {
+    if (!entry.endsWith('.json')) continue;
+    try {
+      cancelledRequests.add(identifier.parse(JSON.parse(readFileSync(path.join(cancellationDirectory, entry), 'utf8')).requestId));
+    } catch (error) {
+      recoveryBlocked = true;
+      console.error(`[Execution] 取消墓碑恢复失败：${entry}；新派发已阻断，正常历史仍可查询`, error);
+    }
+  }
   const file = (id: string, name: string) => path.join(directory, id, name);
   const persist = (record: RunRecord) => {
     const temporary = file(record.runId, 'state.next');
