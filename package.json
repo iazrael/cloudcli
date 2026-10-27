@@ -210,7 +210,7 @@
     "virtua": "^0.52.3",
     "web-push": "^3.6.7",
     "ws": "^8.14.2",
-    "zod": "3.25.76"
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@commitlint/cli": "^20.5.0",
