@@ -212,8 +212,9 @@ export async function dispatchQueuedMessages(runtime: ProviderRuntimeGateway): P
 function startClaimedMessage(
   row: ScheduledMessageRow,
   runtime: ProviderRuntimeGateway,
-): { dispatched: Promise<void>; completed: Promise<void>; isCompleted: () => boolean } {
+): { dispatched: Promise<void>; completed: Promise<void>; isCompleted: () => boolean; wasDeferred: () => boolean } {
   let done = false;
+  let deferred = false;
   let settleDispatched!: () => void;
   let immediateHandle: ReturnType<typeof setImmediate> | null = null;
 
@@ -250,6 +251,16 @@ function startClaimedMessage(
     { runtime },
   )
     .then((result) => {
+      // The engine deferred the turn to preserve live background work rather
+      // than kill it. Nothing was sent, so the message goes back to `pending`
+      // and the next pass retries — the same treatment queued messages get.
+      // Recording it as failed here would silently drop a message the user
+      // scheduled just because a background command happened to be running.
+      if (result.busy && !result.started) {
+        deferred = true;
+        scheduledMessagesDb.releaseClaimed(row.id);
+        return;
+      }
       // Recorded rather than retried, and recorded whether the run never started
       // (deleted session, unavailable provider) or started and then failed.
       // Silently dropping a message the user scheduled is worse than telling
@@ -271,6 +282,7 @@ function startClaimedMessage(
     dispatched,
     completed,
     isCompleted: () => done,
+    wasDeferred: () => deferred,
   };
 }
 
@@ -308,11 +320,19 @@ export async function dispatchDueScheduledMessages(
           void (async () => {
             try {
               await turn.completed;
-              let nextRow = scheduledMessagesDb.claimNextDueForSession(sessionId, effectiveNow());
-              while (nextRow) {
-                const nextTurn = startClaimedMessage(nextRow, runtime);
-                await nextTurn.completed;
-                nextRow = scheduledMessagesDb.claimNextDueForSession(sessionId, effectiveNow());
+              // A deferred turn goes back to `pending`; claiming again right
+              // here would loop on it until the background work ends. Leave
+              // the rest to the next pass.
+              if (!turn.wasDeferred()) {
+                let nextRow = scheduledMessagesDb.claimNextDueForSession(sessionId, effectiveNow());
+                while (nextRow) {
+                  const nextTurn = startClaimedMessage(nextRow, runtime);
+                  await nextTurn.completed;
+                  if (nextTurn.wasDeferred()) {
+                    break;
+                  }
+                  nextRow = scheduledMessagesDb.claimNextDueForSession(sessionId, effectiveNow());
+                }
               }
             } catch (error: unknown) {
               const message = error instanceof Error ? error.message : String(error);
@@ -325,6 +345,11 @@ export async function dispatchDueScheduledMessages(
         }
 
         await turn.completed;
+        // Same as above: a released message is still due, so claiming again
+        // in this pass would spin on it.
+        if (turn.wasDeferred()) {
+          return;
+        }
         currentRow = scheduledMessagesDb.claimNextDueForSession(sessionId, effectiveNow());
         if (currentRow) {
           dispatchedCount += 1;

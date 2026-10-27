@@ -164,6 +164,24 @@ export const scheduledMessagesDb = {
   },
 
   /**
+   * Puts a claimed message back to `pending` without recording a failure.
+   *
+   * Used when the engine deferred the turn because background work is still
+   * running: nothing was sent, so the message stays visible, cancellable, and
+   * due again on the next poll pass. The `sent` guard means only a row this
+   * pass actually claimed can be released.
+   */
+  releaseClaimed(id: string): void {
+    getConnection()
+      .prepare(
+        `UPDATE scheduled_messages
+         SET status = 'pending', failure_reason = NULL, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ? AND status = 'sent'`
+      )
+      .run(id);
+  },
+
+  /**
    * Cancels a pending message, or dismisses a failed one so its banner goes
    * away. Returns false when it had already fired successfully.
    */

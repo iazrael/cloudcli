@@ -8,6 +8,7 @@ import { closeConnection, initializeDatabase, scheduledMessagesDb, sessionsDb, u
 import { dispatchDueScheduledMessages } from '@/modules/scheduled-messages/services/scheduled-message-dispatcher.service.js';
 import { scheduledMessagesService } from '@/modules/scheduled-messages/services/scheduled-messages.service.js';
 import { chatRunRegistry } from '@/modules/websocket/index.js';
+import { AppError } from '@/shared/utils.js';
 
 const SESSION_ID = 'scheduled-session';
 
@@ -173,6 +174,44 @@ test('a provider failure is recorded on the message instead of vanishing', async
     const row = scheduledMessagesDb.listForSession(userId, SESSION_ID)[0];
     assert.equal(row.status, 'failed');
     assert.match(row.failure_reason ?? '', /provider exploded/);
+  });
+});
+
+test('a deferred turn keeps the scheduled message pending instead of failing it', async () => {
+  await withIsolatedDatabase(async (userId) => {
+    // Claude with live background work refuses to take the input rather than
+    // kill the work. Nothing was sent, so the message must stay deliverable —
+    // the same treatment queued messages get — instead of being recorded as
+    // failed and never retried.
+    scheduledMessagesService.schedule({
+      userId,
+      sessionId: SESSION_ID,
+      content: 'fires while background work runs',
+      scheduledFor: new Date(Date.now() - 1_000).toISOString(),
+    });
+
+    const deferred = {
+      hasRuntime: () => true,
+      hasBackgroundWork: () => true,
+      // The deferred rejection only surfaces for runtimes that declare input
+      // acceptance — the deferred throw is exactly that path's refusal.
+      supportsInputAcceptance: () => true,
+      run: async () => {
+        throw new AppError('Background work is still running.', { code: 'PROVIDER_INPUT_DEFERRED', statusCode: 409 });
+      },
+      abort: async () => true,
+    } as never;
+    await dispatchDueScheduledMessages(deferred);
+
+    const row = scheduledMessagesDb.listForSession(userId, SESSION_ID)[0];
+    assert.equal(row.status, 'pending');
+    assert.equal(row.failure_reason, null);
+
+    // The background work eventually ends; the next pass delivers.
+    const runs: RunCall[] = [];
+    assert.equal(await dispatchDueScheduledMessages(createRuntime(runs)), 1);
+    assert.equal(scheduledMessagesDb.listForSession(userId, SESSION_ID)[0].status, 'sent');
+    assert.equal(runs.length, 1);
   });
 });
 
