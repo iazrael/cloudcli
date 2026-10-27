@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -7,6 +8,7 @@ import test from 'node:test';
 import { closeConnection, initializeDatabase, sessionDraftsDb, sessionsDb, userDb } from '@/modules/database/index.js';
 import { dispatchQueuedMessages } from '@/modules/scheduled-messages/services/scheduled-message-dispatcher.service.js';
 import { chatRunRegistry, connectedClients } from '@/modules/websocket/index.js';
+import { AppError } from '@/shared/index.js';
 
 const SESSION_ID = 'queued-session';
 
@@ -41,10 +43,14 @@ function createRuntime(runs: RunCall[], overrides: {
   hasRuntime?: () => boolean;
   hasBackgroundWork?: (sessionId: string) => boolean;
   backgroundWorkQueuesInput?: (provider: string, sessionId: string) => boolean;
+  supportsInputAcceptance?: boolean;
+  acceptAfter?: Promise<void>;
+  deferInput?: boolean;
   /** Settles the run; by default it settles at once. */
   runSettles?: Promise<void>;
 } = {}) {
   return {
+    supportsInputAcceptance: () => overrides.supportsInputAcceptance ?? false,
     hasRuntime: overrides.hasRuntime ?? (() => true),
     hasBackgroundWork: overrides.hasBackgroundWork ?? (() => false),
     ...(overrides.backgroundWorkQueuesInput
@@ -52,6 +58,14 @@ function createRuntime(runs: RunCall[], overrides: {
       : {}),
     run: async (provider: string, command: string, options: Record<string, unknown>) => {
       runs.push({ provider, command, options });
+      if (overrides.supportsInputAcceptance) {
+        await overrides.acceptAfter;
+        if ((options.onBeforeInputAccepted as (() => boolean) | undefined)?.() === false) {
+          throw new AppError('Queued input changed.', { code: 'PROVIDER_INPUT_DEFERRED' });
+        }
+        if (overrides.deferInput) throw new AppError('The held process cannot take this input.', { code: 'PROVIDER_INPUT_DEFERRED' });
+        (options.onInputAccepted as (() => void) | undefined)?.();
+      }
       await overrides.runSettles;
     },
     abort: async () => true,
@@ -210,9 +224,84 @@ test('starting a queued turn tells every open page which session it went to', as
 
     assert.equal(await dispatchQueuedMessages(createRuntime([])), 1);
 
-    assert.deepEqual(frames, [{ kind: 'queued_message_dispatched', sessionId: SESSION_ID }]);
+    assert.deepEqual(frames, [{
+      kind: 'queued_message_dispatched', sessionId: SESSION_ID,
+      messageFingerprint: createHash('sha256').update(JSON.stringify({ content: 'private text', attachments: [] })).digest('hex'),
+    }]);
   });
 });
+
+test('queued input waits for engine acceptance before telling pages it was sent', async () => {
+  await withIsolatedDatabase(async (userId) => {
+    sessionDraftsDb.saveDraft(userId, SESSION_ID, { text: '', queuedMessage: { content: 'next prompt' } });
+    const frames = watchBroadcasts();
+    const runs: RunCall[] = [];
+    let accept!: () => void;
+    const runtime = createRuntime(runs, {
+      hasBackgroundWork: () => true,
+      backgroundWorkQueuesInput: () => true,
+      supportsInputAcceptance: true,
+      acceptAfter: new Promise<void>((resolve) => { accept = resolve; }),
+    });
+    const dispatched = dispatchQueuedMessages(runtime);
+    await settle();
+    assert.equal(runs.length, 1, 'the server can try the held process despite the page queueing input');
+    assert.equal(await dispatchQueuedMessages(runtime), 0, 'a second poll cannot attempt the same input');
+    assert.deepEqual(sessionDraftsDb.getDrafts(userId)[0]?.queuedMessage, { content: 'next prompt' });
+    assert.equal(frames.some((frame) => frame.kind === 'queued_message_dispatched'), false);
+    accept();
+    assert.equal(await dispatched, 1);
+    assert.equal(frames.filter((frame) => frame.kind === 'queued_message_dispatched').length, 1);
+    await settle();
+    assert.equal(sessionDraftsDb.getDrafts(userId).length, 0);
+  });
+});
+
+test('a deferred engine handover restores the queue without a sent notification or error', async () => {
+  await withIsolatedDatabase(async (userId) => {
+    const queuedMessage = { content: 'keep the agent running', options: { model: 'haiku' } };
+    sessionDraftsDb.saveDraft(userId, SESSION_ID, { text: '', queuedMessage });
+    const frames = watchBroadcasts();
+    const runtime = createRuntime([], {
+      hasBackgroundWork: () => true,
+      backgroundWorkQueuesInput: () => true,
+      supportsInputAcceptance: true,
+      deferInput: true,
+    });
+    assert.equal(await dispatchQueuedMessages(runtime), 1);
+    assert.deepEqual(sessionDraftsDb.getDrafts(userId)[0]?.queuedMessage, queuedMessage);
+    assert.equal(frames.some((frame) => frame.kind === 'queued_message_dispatched'), false);
+    assert.equal(chatRunRegistry.isProcessing(SESSION_ID), false);
+    // A busy handover is retried without the failure backoff.
+    assert.equal(await dispatchQueuedMessages(runtime), 1);
+    assert.deepEqual(sessionDraftsDb.getDrafts(userId)[0]?.queuedMessage, queuedMessage);
+  });
+});
+
+for (const replacement of [null, { content: 'edited prompt' }, { content: 'original\n追加内容' }]) {
+  test(`input changed during handover is not sent: ${JSON.stringify(replacement)}`, async () => {
+    await withIsolatedDatabase(async (userId) => {
+      sessionDraftsDb.saveDraft(userId, SESSION_ID, { text: '', queuedMessage: { content: 'original' } });
+      const frames = watchBroadcasts();
+      let accept!: () => void;
+      const runtime = createRuntime([], {
+        supportsInputAcceptance: true,
+        acceptAfter: new Promise<void>((resolve) => { accept = resolve; }),
+      });
+      const dispatched = dispatchQueuedMessages(runtime);
+      await settle();
+      sessionDraftsDb.saveDraft(userId, SESSION_ID, { text: '', queuedMessage: replacement });
+      accept();
+      await dispatched;
+      assert.equal(frames.some((frame) => frame.kind === 'queued_message_dispatched'), false);
+      assert.deepEqual(sessionDraftsDb.getDrafts(userId)[0]?.queuedMessage ?? null, replacement);
+      if (replacement) {
+        assert.equal(await dispatchQueuedMessages(runtime), 1);
+        assert.equal(frames.filter((frame) => frame.kind === 'queued_message_dispatched').length, 1);
+      }
+    });
+  });
+}
 
 test('a queued turn that cannot start is put back instead of being lost', async () => {
   await withIsolatedDatabase(async (userId) => {

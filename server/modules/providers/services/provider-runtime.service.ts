@@ -129,6 +129,11 @@ export function createProviderRuntimeService(
   return {
     run,
 
+    /** 供排队调度器判断能否安全尝试续轮，避免替换仍有后台任务的进程。 */
+    supportsInputAcceptance(providerName: LLMProvider): boolean {
+      return dependencies.resolveProvider(providerName).runtime.supportsInputAcceptance === true;
+    },
+
     /**
      * Installs the entry that publishes an event to a session outside any
      * run. The composition root calls it with the gateway's publisher, so the

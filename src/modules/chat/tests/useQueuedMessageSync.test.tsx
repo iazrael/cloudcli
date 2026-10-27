@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
+import { createHash, webcrypto } from 'node:crypto';
 
-import { act, renderHook } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, test, vi } from 'vitest';
 
 import type { ChatMessage } from '@/shared/types';
@@ -50,7 +51,7 @@ async function setup(activeSessionId: string | null) {
     onSessionProcessing: (sessionId) => { if (sessionId) processing.push(sessionId); },
   }));
 
-  const emit = async (event: { kind: string; sessionId?: string }) => {
+  const emit = async (event: { kind: string; sessionId?: string; messageFingerprint?: string }) => {
     await act(async () => {
       for (const listener of listeners) listener(event);
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -62,6 +63,7 @@ async function setup(activeSessionId: string | null) {
 
 beforeEach(() => {
   vi.resetModules();
+  vi.stubGlobal('crypto', webcrypto);
   localStorage.clear();
   serverDrafts = [];
   draftRequests = 0;
@@ -125,3 +127,15 @@ test('unrelated frames leave the queue alone', async () => {
   assert.equal(echoed.length, 0);
   assert.equal(drafts.readQueuedMessage('session-1')?.content, 'still waiting');
 });
+
+for (const localContent of ['sent text', 'sent text\nnew unsent text']) {
+  test(`dispatch confirmation only echoes the exact sent input: ${localContent}`, async () => {
+    const { drafts, echoed, emit } = await setup('session-1');
+    drafts.writeQueuedMessage('session-1', { content: localContent });
+    const messageFingerprint = createHash('sha256')
+      .update(JSON.stringify({ content: 'sent text', attachments: [] })).digest('hex');
+    await emit({ kind: 'queued_message_dispatched', sessionId: 'session-1', messageFingerprint });
+    await waitFor(() => assert.ok(draftRequests > 0));
+    assert.deepEqual(echoed.map((message) => message.content), localContent === 'sent text' ? ['sent text'] : []);
+  });
+}

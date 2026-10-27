@@ -78,12 +78,14 @@ export type LoadingProgressEvent = {
 };
 
 /**
- * The server started a session's queued message as a new turn. Only the id
- * travels: every connected page receives it, and pages already hold the text.
+ * The server submitted a session's queued message. Pages may echo their local
+ * copy only when its fingerprint matches; the text is never broadcast here.
  */
 export type QueuedMessageDispatchedEvent = {
   kind: 'queued_message_dispatched';
   sessionId: string;
+  /** 已提交正文和附件的 SHA-256 指纹；广播中不包含用户正文。 */
+  messageFingerprint?: string;
 };
 
 /**

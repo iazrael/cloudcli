@@ -16,6 +16,7 @@ vi.mock('@/shared/api', () => ({
       list: () => Promise.resolve(new Response(JSON.stringify({ commands: [] }))),
     },
     providers: {
+      capabilities: () => Promise.resolve(new Response('{}', { status: 503 })),
       skills: () => Promise.resolve(new Response(JSON.stringify({ data: { skills: [] } }))),
     },
     user: {
@@ -123,7 +124,7 @@ test('queues message when hasActiveBackgroundTasks is true even if isLoading is 
   assert.equal(readQueuedMessage('session-1')?.content, 'next command');
 });
 
-test('allows forceSendQueuedDraft to send message immediately with forceInterrupt', async () => {
+test.each(['claude', 'zcode'] as const)('%s only offers force send when it can preserve background work', async (provider) => {
   const { useChatComposerState } = await import('@/modules/chat/hooks/useChatComposerState');
 
   const sent: Array<Record<string, unknown>> = [];
@@ -133,7 +134,7 @@ test('allows forceSendQueuedDraft to send message immediately with forceInterrup
       selectedProject,
       selectedSession,
       currentSessionId: 'session-1',
-      provider: 'claude',
+      provider,
       permissionMode: 'bypassPermissions',
       cyclePermissionMode: () => undefined,
       resolvePermissionModeForProvider: () => 'bypassPermissions',
@@ -163,13 +164,18 @@ test('allows forceSendQueuedDraft to send message immediately with forceInterrup
 
   assert.equal(sent.length, 0);
   assert.ok(result.current.queuedDraft);
-  assert.equal(result.current.canForceSendQueuedDraft, true);
+  assert.equal(result.current.canForceSendQueuedDraft, provider !== 'claude');
 
   // User explicitly clicks force send
   await act(async () => {
     result.current.forceSendQueuedDraft();
   });
 
+  if (provider === 'claude') {
+    assert.equal(sent.length, 0);
+    assert.ok(result.current.queuedDraft);
+    return;
+  }
   await waitFor(() => {
     assert.equal(sent.length, 1, 'message sent after force send');
   });

@@ -1153,11 +1153,11 @@ export function useChatComposerState({
   // still in flight (RUN_IN_PROGRESS); only a session whose turn has ended
   // and that waits on background work alone can take one.
   const queueTargetActivity = processingSessions?.get(selectedSession?.id || currentSessionId || '');
-  const canForceSendQueuedDraft = Boolean(hasActiveBackgroundTasks)
+  const canForceSendQueuedDraft = provider !== 'claude' && Boolean(hasActiveBackgroundTasks)
     && !(queueTargetActivity && !queueTargetActivity.background);
 
   const forceSendQueuedDraft = useCallback(() => {
-    if (!queuedDraft) {
+    if (!canForceSendQueuedDraft || !queuedDraft) {
       return;
     }
     const draft = queuedDraft;
@@ -1172,7 +1172,7 @@ export function useChatComposerState({
         setQueuedDraft(draft);
       }
     });
-  }, [queuedDraft, sessionKey]);
+  }, [canForceSendQueuedDraft, queuedDraft, sessionKey]);
 
   // A voice transcript either fills the input (to edit before sending) or, when the
   // user tapped "stop and send", is submitted straight away. updateInput mirrors

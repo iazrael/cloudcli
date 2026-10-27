@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { scheduledMessagesDb, sessionDraftsDb, sessionsDb } from '@/modules/database/index.js';
 import type { QueuedSessionMessageRecord, ScheduledMessageRow } from '@/modules/database/index.js';
 import { broadcastQueuedMessageDispatched, chatRunRegistry, runDetachedChatTurn } from '@/modules/websocket/index.js';
@@ -32,6 +34,9 @@ let queuedDispatchInFlight = false;
 
 /** Sessions whose queued turn failed to start, and when they may be tried again. */
 const queuedRetryAt = new Map<string, number>();
+
+/** 正在准备排队消息的会话；最终领取前，消息仍在数据库中且允许编辑。 */
+const queuedSessionsInFlight = new Set<string>();
 
 /** Sessions currently running a scheduled message turn, so same-session schedules run one by one without blocking other sessions. */
 const scheduledSessionsInFlight = new Set<string>();
@@ -81,7 +86,9 @@ function readQueuedMessage(value: unknown): StoredQueuedMessage | null {
 async function sendClaimedQueuedMessage(
   candidate: QueuedSessionMessageRecord,
   runtime: ProviderRuntimeGateway,
+  claimOnAcceptance = false,
 ): Promise<void> {
+  let claimed = !claimOnAcceptance;
   const message = readQueuedMessage(candidate.queuedMessage);
   if (!message) {
     sessionDraftsDb.deleteEmptyDraft(candidate.userId, candidate.sessionId);
@@ -104,9 +111,16 @@ async function sendClaimedQueuedMessage(
         userId: candidate.userId,
         content: message.content,
         options: { ...message.options, attachments: message.attachments },
+        ...(claimOnAcceptance ? { onBeforeInputAccepted: () => {
+          claimed = sessionDraftsDb.claimQueuedMessage(candidate);
+          return claimed;
+        } } : {}),
         onRunStarted: () => {
           queuedRetryAt.delete(candidate.sessionId);
-          broadcastQueuedMessageDispatched(candidate.sessionId);
+          const fingerprint = createHash('sha256')
+            .update(JSON.stringify({ content: message.content, attachments: message.attachments }))
+            .digest('hex');
+          broadcastQueuedMessageDispatched(candidate.sessionId, fingerprint);
           settle();
         },
       },
@@ -121,7 +135,7 @@ async function sendClaimedQueuedMessage(
         // next pass; anything else (an unavailable provider, a deleted
         // session) waits a while, so a lasting failure does not repeat on
         // every pass.
-        sessionDraftsDb.restoreQueuedMessage(candidate);
+        if (claimed) sessionDraftsDb.restoreQueuedMessage(candidate);
         if (!result.busy) {
           queuedRetryAt.set(candidate.sessionId, Date.now() + QUEUED_RETRY_DELAY_MS);
           console.error('[QueuedMessages] Queued message could not start; kept for retry', {
@@ -131,6 +145,7 @@ async function sendClaimedQueuedMessage(
         }
       })
       .catch((error: unknown) => {
+        if (claimed && !settled) sessionDraftsDb.restoreQueuedMessage(candidate);
         console.error('[QueuedMessages] Queued turn failed', {
           sessionId: candidate.sessionId,
           error: error instanceof Error ? error.message : String(error),
@@ -147,9 +162,9 @@ async function sendClaimedQueuedMessage(
  * A reply in flight always holds it. A turn that ends with background work
  * still going (a backgrounded command, agent or workflow) is marked completed,
  * but its process stays open so that work can report back; a new turn would
- * replace that process and stop the work, so the message waits for it too —
- * unless the provider takes the next turn alongside that work (Claude's held
- * process), in which case sending at once disturbs nothing.
+ * replace that process and stop the work. A runtime with input acceptance
+ * reporting may try its held process while the queued card stays visible;
+ * if it cannot preserve that work, it must defer the input.
  */
 function isSessionBusy(sessionId: string, runtime: ProviderRuntimeGateway): boolean {
   if (chatRunRegistry.isProcessing(sessionId)) {
@@ -162,11 +177,14 @@ function isSessionBusy(sessionId: string, runtime: ProviderRuntimeGateway): bool
   if (!provider || !runtime.backgroundWorkQueuesInput) {
     return true;
   }
+  // 运行时尝试在原进程续轮时，页面继续保留排队卡；
+  // 无法安全续轮时，消息继续等待。
+  if (runtime.supportsInputAcceptance?.(provider as LLMProvider)) return false;
   return runtime.backgroundWorkQueuesInput(provider as LLMProvider, sessionId);
 }
 
 /**
- * Sends every persisted queued turn whose session is currently idle.
+ * 会话空闲或运行时支持安全输入确认时，尝试提交已保存的排队消息。
  *
  * Consumer: `initializeScheduledMessageDispatcher` and `queued-messages.test.ts`.
  */
@@ -176,17 +194,22 @@ export async function dispatchQueuedMessages(runtime: ProviderRuntimeGateway): P
   const now = Date.now();
 
   await Promise.all(candidates.map(async (candidate) => {
-    if ((queuedRetryAt.get(candidate.sessionId) ?? 0) > now) {
+    if (queuedSessionsInFlight.has(candidate.sessionId) || (queuedRetryAt.get(candidate.sessionId) ?? 0) > now) {
       return;
     }
     if (isSessionBusy(candidate.sessionId, runtime)) {
       return;
     }
-    if (!sessionDraftsDb.claimQueuedMessage(candidate)) {
-      return;
-    }
+    const provider = sessionsDb.getSessionById(candidate.sessionId)?.provider;
+    const claimOnAcceptance = Boolean(provider && runtime.supportsInputAcceptance?.(provider as LLMProvider));
+    if (!claimOnAcceptance && !sessionDraftsDb.claimQueuedMessage(candidate)) return;
+    queuedSessionsInFlight.add(candidate.sessionId);
     claimed += 1;
-    await sendClaimedQueuedMessage(candidate, runtime);
+    try {
+      await sendClaimedQueuedMessage(candidate, runtime, claimOnAcceptance);
+    } finally {
+      queuedSessionsInFlight.delete(candidate.sessionId);
+    }
   }));
 
   return claimed;

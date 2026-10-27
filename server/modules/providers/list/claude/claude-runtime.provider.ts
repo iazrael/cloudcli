@@ -44,7 +44,7 @@ import {
   getReportedClaudeContextWindow,
   rememberClaudeContextWindow
 } from '@/modules/providers/services/claude-usage.js';
-import { canonicalClaudeSubagentToolName, createCompleteMessage, createNormalizedMessage, resolveModelEffort } from '@/shared/utils.js';
+import { AppError, canonicalClaudeSubagentToolName, createCompleteMessage, createNormalizedMessage, resolveModelEffort } from '@/shared/utils.js';
 import type {
   ActiveBackgroundTask,
   NormalizedMessage,
@@ -213,6 +213,10 @@ type ClaudeRunOptions = {
   providerSessionId?: string | null;
   resumeAnchorId?: string;
   resumeFromScratch?: boolean;
+  /** 网关提供的可信领取回调；排队消息已修改或取消时返回 false。 */
+  onBeforeInputAccepted?: () => boolean;
+  /** 网关提供的可信确认回调，表示 SDK 已消费本轮输入。 */
+  onInputAccepted?: () => void;
   /** Internal: start a fresh process even when a held one could take the turn. */
   skipHeldProcess?: boolean;
   /** The caller drives this session's later turns through this runtime (the chat gateway). */
@@ -225,7 +229,7 @@ type ClaudeRunOptions = {
 type HeldPromptStream = {
   stream: AsyncGenerator<SDKUserMessage, void>;
   release: () => void;
-  push: (messages: SDKUserMessage[]) => void;
+  push: (messages: SDKUserMessage[], onConsumed?: () => void) => void;
 };
 
 //----------------- PROCESS REGISTRY ------------
@@ -1186,15 +1190,22 @@ function sessionTitleSource(command: unknown, slashCommands: Set<string>): strin
  * them as a new turn of the same process, so background work it is running
  * outlives the turn that started it.
  */
-function createHeldPromptStream(messages: SDKUserMessage[]): HeldPromptStream {
-  const queue = [...messages];
+function createHeldPromptStream(messages: SDKUserMessage[], onConsumed?: () => void): HeldPromptStream {
+  const entries = (more: SDKUserMessage[], consumed?: () => void) => more.map((message, index) => ({
+    message, consumed: index === more.length - 1 ? consumed : undefined,
+  }));
+  const queue = entries(messages, onConsumed);
   let wake: (() => void) | null = null;
   let released = false;
 
   const stream = (async function* () {
     for (;;) {
       while (queue.length > 0) {
-        yield queue.shift()!;
+        const next = queue.shift()!;
+        yield next.message;
+        // yield 恢复说明 SDK 已消费输入并继续读取下一条；
+        // 仅加入内存队列时不能清除页面的排队卡。
+        next.consumed?.();
       }
       // Keeps stdin open — the CLI stays alive until release() is called.
       if (released) return;
@@ -1206,7 +1217,7 @@ function createHeldPromptStream(messages: SDKUserMessage[]): HeldPromptStream {
   return {
     stream,
     release: () => { released = true; wake?.(); },
-    push: (more) => { queue.push(...more); wake?.(); },
+    push: (more, consumed) => { queue.push(...entries(more, consumed)); wake?.(); },
   };
 }
 
@@ -1469,6 +1480,12 @@ async function runClaudeProcess(
   // session's process open, so held runs cannot stack up across a conversation.
   const initialKey = sessionKey();
   if (initialKey) {
+    // 续轮失败时保留后台任务，不能因为普通消息而自动停止任务。
+    if (getSession(initialKey) && (backgroundWork.hasPending(initialKey) || getSession(initialKey)?.backgroundReplyPending)) {
+      throw new AppError('Background work is still running; input will wait for a safe handover.', {
+        code: 'PROVIDER_INPUT_DEFERRED', statusCode: 409,
+      });
+    }
     releaseHeldSession(initialKey);
   }
 
@@ -1488,8 +1505,8 @@ async function runClaudeProcess(
       text: 'background_tasks',
       backgroundTasks: list,
       backgroundWorkPending: lastBroadcastPending,
-      // The next message joins the held process as a turn of its own.
-      backgroundWorkQueuesInput: false,
+      // 页面保留排队卡，直到 SDK 消费原进程下一轮的输入。
+      backgroundWorkQueuesInput: true,
       sessionId: capturedSessionId || sessionId || null,
       provider: 'claude'
     }));
@@ -1680,7 +1697,10 @@ async function runClaudeProcess(
       context.createQuery
         ? (input) => context.createQuery!(input) as ClaudeQuery
         : query;
-    let heldPrompt = createHeldPromptStream(promptMessages);
+    if (options.onBeforeInputAccepted?.() === false) {
+      throw new AppError('Queued input changed before submission.', { code: 'PROVIDER_INPUT_DEFERRED', statusCode: 409 });
+    }
+    let heldPrompt = createHeldPromptStream(promptMessages, options.onInputAccepted);
     releasePromptStream = () => { leaveResidentIdle(); inputReleased = true; heldPrompt.release(); };
     try {
       queryInstance = createQuery({
@@ -1694,7 +1714,7 @@ async function runClaudeProcess(
       delete sdkOptions.hooks;
       // Discard the abandoned stream and build a fresh one for the retry.
       heldPrompt.release();
-      heldPrompt = createHeldPromptStream(promptMessages);
+      heldPrompt = createHeldPromptStream(promptMessages, options.onInputAccepted);
       queryInstance = createQuery({
         prompt: heldPrompt.stream,
         options: sdkOptions
@@ -1845,13 +1865,19 @@ async function runClaudeProcess(
       } catch (error) {
         if (pendingTurn !== next) return;
         pendingTurn = null;
-        console.warn('[Claude SDK] Held process could not switch to the next turn\'s settings; starting a fresh one:', (error as { message?: string })?.message || error);
+        console.warn('[Claude SDK] Held process could not switch to the next turn\'s settings:', (error as { message?: string })?.message || error);
         moveTurnToFreshProcess(next);
         return;
       }
       // Withdrawn by a stop, or already moved by the wind-down.
       if (pendingTurn !== next || processGoingAway()) return;
       pendingTurn = null;
+      if (next.options.onBeforeInputAccepted?.() === false) {
+        next.resolve(Promise.reject(new AppError('Queued input changed before submission.', {
+          code: 'PROVIDER_INPUT_DEFERRED', statusCode: 409,
+        })));
+        return;
+      }
       idleBeforeHandover = false;
       leaveResidentIdle();
       // Only the lines written from here on are compared against another writer.
@@ -1879,7 +1905,7 @@ async function runClaudeProcess(
       if (capturedSessionId && typeof ws.setSessionId === 'function') ws.setSessionId(capturedSessionId);
       // The new turn's writer starts from the strip as it stands.
       broadcastBackgroundTasks();
-      heldPrompt.push(next.promptMessages);
+      heldPrompt.push(next.promptMessages, next.options.onInputAccepted);
     };
     const runPendingTurn = () => {
       startPendingTurn().catch((error) => {
@@ -2258,6 +2284,7 @@ async function runClaudeProcess(
     // Complete
 
   } catch (error) {
+    if (error instanceof AppError && error.code === 'PROVIDER_INPUT_DEFERRED') throw error;
     console.error('SDK query error:', error);
 
     // Clean up session on error — only while this run still owns the map entry
@@ -2591,6 +2618,7 @@ export function getBackgroundTasksForSession(sessionId: string): ActiveBackgroun
  * permissions, background work, admission and release.
  */
 export const claudeRuntime = {
+  supportsInputAcceptance: true,
   run: queryClaudeSDK,
   abort: abortClaudeSDKSession,
   permissions: {
@@ -2604,8 +2632,8 @@ export const claudeRuntime = {
       return Boolean(session
         && (backgroundWork.hasPending(sessionId) || session.backgroundReplyPending));
     },
-    // A message sent during background work becomes a turn of the held process.
-    queuesInput: () => false,
+    // 保留页面排队卡，直到原进程的 SDK 消费输入。
+    queuesInput: () => true,
   },
   listBackgroundWork: listClaudeSDKBackgroundWork,
   stopBackgroundTask: stopClaudeSDKTask,

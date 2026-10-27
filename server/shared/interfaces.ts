@@ -39,6 +39,13 @@ import type {
  * execution context is supplied by the application service at call time.
  */
 export interface IProviderRuntime {
+  /**
+   * 网关可在后台任务执行时尝试提交排队消息，但运行时必须先调用可信的
+   * onBeforeInputAccepted 领取消息，再在 SDK 消费输入后调用 onInputAccepted。
+   * 无法安全续轮时抛出 code 为 PROVIDER_INPUT_DEFERRED 的 AppError；
+   * 确认前必须保留原进程及后台任务。
+   */
+  supportsInputAcceptance?: boolean;
   run(
     command: string,
     options: AnyRecord,
