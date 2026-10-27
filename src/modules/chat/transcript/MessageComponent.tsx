@@ -145,7 +145,7 @@ const MessageComponent = memo(({ message, prevMessage, turnAnchorMessage, isTurn
                       onClick={() => onForkFromMessage(message)}
                       title={t('message.forkFromHere', { defaultValue: 'Fork from here' })}
                       aria-label={t('message.forkFromHere', { defaultValue: 'Fork from here' })}
-                      className="rounded p-1 opacity-70 transition-opacity hover:bg-muted hover:opacity-100 focus-visible:opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
+                      className="rounded p-1 opacity-70 transition-opacity hover:bg-muted hover:opacity-100 focus-visible:opacity-100"
                     >
                       <GitBranchIcon className="h-3.5 w-3.5" />
                     </button>
@@ -559,7 +559,7 @@ const MessageComponent = memo(({ message, prevMessage, turnAnchorMessage, isTurn
                     onClick={() => onForkFromMessage(turnAnchorMessage)}
                     title={t('message.forkFromHere', { defaultValue: 'Fork from here' })}
                     aria-label={t('message.forkFromHere', { defaultValue: 'Fork from here' })}
-                    className="flex items-center gap-1 rounded px-1.5 py-1 text-xs opacity-70 transition-opacity hover:bg-muted hover:opacity-100 focus-visible:opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
+                    className="flex items-center gap-1 rounded px-1.5 py-1 text-xs opacity-70 transition-opacity hover:bg-muted hover:opacity-100 focus-visible:opacity-100"
                   >
                     <GitBranchIcon className="h-3.5 w-3.5" />
                     <span>{t('message.fork', { defaultValue: 'Fork' })}</span>
