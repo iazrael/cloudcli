@@ -12,6 +12,11 @@ import type * as ChatModule from '@/modules/chat';
  * blobs are no longer a source of truth in either direction.
  */
 
+// The first load() pays for the real `@/modules/chat` barrel (it drags xterm
+// and the webgl addon into jsdom), which alone takes ~3s on a quiet machine and
+// overshoots the 5s default when vitest workers share the CPU with other suites.
+vi.setConfig({ testTimeout: 15_000 });
+
 vi.mock('@/shared/api', () => ({
   authenticatedFetch: vi.fn(async () =>
     new Response(

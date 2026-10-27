@@ -4,7 +4,6 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, test, vi } from 'vitest';
 
 import type * as Api from '@/shared/api';
-
 import type { ChatMessage, Project } from '@/shared/types';
 
 /**

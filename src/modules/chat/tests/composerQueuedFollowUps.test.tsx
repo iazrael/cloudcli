@@ -4,7 +4,6 @@ import { act, renderHook } from '@testing-library/react';
 import { beforeEach, test, vi } from 'vitest';
 
 import type * as Api from '@/shared/api';
-
 import type { ChatMessage, Project, ProjectSession } from '@/shared/types';
 
 const queueRequest = vi.fn();
