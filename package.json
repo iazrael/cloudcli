@@ -157,6 +157,7 @@
     "@fontsource/encode-sans": "^5.3.0",
     "@fontsource/merriweather": "^5.3.0",
     "@iarna/toml": "^2.2.5",
+    "@modelcontextprotocol/sdk": "1.32.2",
     "@octokit/rest": "^22.0.0",
     "@openai/codex": "0.163.0",
     "@replit/codemirror-minimap": "^0.5.2",
@@ -208,7 +209,8 @@
     "tailwind-merge": "^3.3.1",
     "virtua": "^0.52.3",
     "web-push": "^3.6.7",
-    "ws": "^8.14.2"
+    "ws": "^8.14.2",
+    "zod": "3.25.76"
   },
   "devDependencies": {
     "@commitlint/cli": "^20.5.0",

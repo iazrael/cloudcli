@@ -179,3 +179,17 @@ test('background work holds back the next message unless the runtime holding it 
   assert.equal(service.backgroundWorkQueuesInput('claude', 'claude-session'), false);
   assert.equal(service.backgroundWorkQueuesInput('zcode', 'zcode-session'), true);
 });
+
+test('execution discovery reads registered runtimes and installation state without a second engine list', async () => {
+  const installed = createProvider('zcode', createRuntime({ supportsTaskExecution: true }));
+  const unavailable = createProvider('cursor', createRuntime());
+  unavailable.auth.getStatus = async () => ({ provider: 'cursor', installed: false } as Awaited<ReturnType<typeof unavailable.auth.getStatus>>);
+  const service = createService([installed, unavailable]);
+  assert.deepEqual(await service.listExecutionProviders(), [{ provider: 'zcode', installed: true, supportsTaskExecution: true }, { provider: 'cursor', installed: false, supportsTaskExecution: false }]);
+});
+
+
+test('only ZCode currently declares reliable task execution termination semantics', async () => {
+  const providers = providerRegistry.listProviders();
+  assert.deepEqual(providers.filter((provider) => provider.runtime.supportsTaskExecution).map((provider) => provider.id), ['zcode']);
+});

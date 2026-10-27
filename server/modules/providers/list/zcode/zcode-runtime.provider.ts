@@ -221,6 +221,8 @@ function toEngineAttachments(descriptors: ChatAttachmentDescriptor[]): ZcodeEngi
  * - Token usage aggregation
  */
 export class ZCodeRuntimeProvider implements IProviderRuntime {
+  /** execution 模块依赖引擎终态通知和 session/stop 确认，RPC 失败只发送 error。 */
+  readonly supportsTaskExecution = true;
   constructor() {
     // Installed once per process: the bridge is stateless over the lifecycle
     // registries, so a single installation serves every run. (Per-run
@@ -715,12 +717,19 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
       ? context.resolveProviderSessionId(appSessionId)
       : null;
 
+    if (options.strictResume === true && !existingSessionId) {
+      throw new Error('原会话缺少引擎映射，拒绝创建替代会话');
+    }
+
     if (existingSessionId) {
       const resumed = await this.tryResumeSession(existingSessionId);
       if (resumed) {
         console.debug(`[ZCodeRuntime] Resumed existing session: ${existingSessionId}`);
         await this.repairSessionModelSelection(existingSessionId, resumed, options, context);
         return { sessionId: existingSessionId, resumed: true };
+      }
+      if (options.strictResume === true) {
+        throw new Error('原会话已丢失，拒绝创建替代会话');
       }
       console.info(
         `[ZCodeRuntime] Session ${existingSessionId} is no longer available engine-side; creating a replacement session`

@@ -214,3 +214,18 @@ test('runtime falls back to a replacement session when resume fails', async () =
   assert.deepEqual(assignedIds, ['sess_stub_resume']);
   assert.equal(messages.filter((msg) => msg.kind === 'session_created').length, 1);
 });
+
+test('strict task resume refuses a lost engine session without creating a replacement', async () => {
+  fsSync.writeFileSync(modeFilePath, 'resume-fail\n');
+  const runtime = new ZCodeRuntimeProvider();
+  const { messages, writer } = createWriter();
+  await assert.rejects(runtime.run('hello', { sessionId: 'app-strict-lost', cwd: stubDir, strictResume: true }, writer, resumedContext), /原会话/);
+  assert.equal(messages.some((message) => message.kind === 'session_created'), false);
+});
+
+test('strict task resume refuses a missing native mapping', async () => {
+  const runtime = new ZCodeRuntimeProvider();
+  const { messages, writer } = createWriter();
+  await assert.rejects(runtime.run('hello', { sessionId: 'app-strict-unmapped', cwd: stubDir, strictResume: true }, writer, { ...resumedContext, resolveProviderSessionId: () => null }), /原会话/);
+  assert.equal(messages.some((message) => message.kind === 'session_created'), false);
+});

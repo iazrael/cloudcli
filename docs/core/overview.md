@@ -52,6 +52,7 @@ server/
     database/              better-sqlite3 连接、schema、migrations 与 repositories
     assets/                聊天上传资产（~/.cloudcli/assets）的上传与读取
     agent/                 无头 Agent API（API key / 平台模式鉴权）
+    execution/             本机执行 MCP（显式授权、持久化运行、异步查询与取消）
     notifications/         Web Push（VAPID）+ 桌面通知 WS
     plugins/               插件注册表、插件子进程、WS 代理
     scheduled-messages/    定时消息与排队消息（调度器 → 无附着 chat turn）
@@ -95,6 +96,7 @@ docs/
 ## 认证与安全边界
 
 - **JWT**：`server/modules/auth/auth.middleware.ts`。密钥取 env `JWT_SECRET`，否则自动生成入库（`app_config.jwt_secret`）。token 7 天有效，半衰期自动刷新（响应头 `X-Refreshed-Token`）。WS 走 query string 或 Authorization 头鉴权（`websocket-auth.service.ts`）。
+- **执行 MCP**：`/mcp/execution` 在通用 `/api` 鉴权之外单独挂载，默认关闭。专用令牌、本机连接、Host 和代理头校验由 execution 模块负责；执行目录、记录及生命周期见 providers.md「本机执行 MCP」。
 - **可选 API key**：`validateApiKey` 作用于全部 `/api`；agent 模块另走 API key / 平台双模鉴权。
 - **上传白名单**：`chat.send` 的附件只放行 `~/.cloudcli/assets` 直接子文件，防止任意路径读。
 - **`file:` 链接白名单**：会话里引擎产出的本地文件链接走只读端点，目录白名单含各引擎数据根与系统临时目录（`server` 侧 fileLink 相关服务），防止越权读盘。

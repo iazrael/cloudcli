@@ -39,6 +39,7 @@ import { taskmasterRoutes } from './modules/taskmaster/index.js';
 import { commandsRoutes } from './modules/commands/index.js';
 import { settingsRoutes } from './modules/settings/index.js';
 import { createSystemModule } from './modules/system/index.js';
+import { createExecutionModule } from './modules/execution/index.js';
 import { createAgentModule } from './modules/agent/index.js';
 import projectModuleRoutes from './modules/projects/projects.routes.js';
 import notificationRoutes from './modules/notifications/notifications.routes.js';
@@ -223,6 +224,9 @@ app.get('/health', (req, res) => {
 // mounted before the API-wide key check. Every other path keeps the usual
 // authentication.
 app.use('/api/tasks', taskBridgeRouter);
+
+// 本机执行使用显式配置的专用令牌，单独校验鉴权。
+app.use('/mcp/execution', createExecutionModule().router);
 
 // Optional API key validation (if configured)
 app.use('/api', validateApiKey);
