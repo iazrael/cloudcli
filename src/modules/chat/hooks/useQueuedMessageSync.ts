@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { hash } from 'fast-sha256';
 
 import type { ServerEvent } from '@/shared/context/WebSocketContext';
 import { hydrateChatDrafts, readQueuedMessage } from '@/shared/chatDrafts';
@@ -56,10 +57,11 @@ export function useQueuedMessageSync({
       const latest = latestRef.current;
       const queued = readQueuedMessage(sessionId);
       let matchesSubmitted = !event.messageFingerprint;
-      if (queued && event.messageFingerprint && globalThis.crypto?.subtle) {
+      if (queued && event.messageFingerprint) {
         const input = JSON.stringify({ content: queued.content, attachments: queued.attachments ?? [] });
-        const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(input));
-        const fingerprint = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+        // 局域网 HTTP 页面没有 crypto.subtle；同步核对也确保回显先于后续回复。
+        const digest = hash(new TextEncoder().encode(input));
+        const fingerprint = Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
         matchesSubmitted = fingerprint === event.messageFingerprint;
       }
       // 本地后续编辑不能冒充本轮已发送的内容；

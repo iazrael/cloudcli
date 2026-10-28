@@ -161,3 +161,29 @@ test('dispatch never echoes a stale card and hydrates the authoritative next que
   assert.deepEqual(processing, ['session-1']);
   assert.equal(drafts.readQueuedMessage('session-1')?.content, 'next message from another tab');
 });
+
+for (const browserCrypto of [{}, undefined]) {
+  for (const matches of [true, false]) {
+    test(`HTTP dispatch echoes only matching input without ${browserCrypto ? 'crypto.subtle' : 'crypto'}: ${matches}`, async () => {
+      vi.stubGlobal('crypto', browserCrypto);
+      const { drafts, echoed, processing, emit } = await setup('session-1');
+      const attachments = [
+        { name: '截图.png', path: '/uploads/shot.png', mimeType: 'image/png' },
+        { name: '说明.txt', path: '/uploads/notes.txt', mimeType: 'text/plain' },
+      ];
+      await drafts.appendQueuedMessage('session-1', { content: '继续处理 🚀', attachments });
+      const messageFingerprint = createHash('sha256')
+        .update(JSON.stringify({ content: matches ? '继续处理 🚀' : '之前的消息', attachments })).digest('hex');
+
+      await emit({ kind: 'queued_message_dispatched', sessionId: 'session-1', messageFingerprint });
+
+      assert.deepEqual(echoed.map((message) => message.content), matches ? ['继续处理 🚀'] : []);
+      if (matches) {
+        assert.deepEqual(echoed[0].images?.map((file) => file.name), ['截图.png']);
+        assert.deepEqual(echoed[0].files?.map((file) => file.name), ['说明.txt']);
+      }
+      assert.deepEqual(processing, ['session-1']);
+      assert.equal(drafts.readQueuedMessage('session-1'), null);
+    });
+  }
+}
