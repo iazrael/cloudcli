@@ -2,11 +2,13 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { useTranslation } from 'react-i18next';
 import type { ReactNode } from 'react';
 
+import { AUTH_ACCOUNT_CHANGED_EVENT } from '@/shared/constants';
 import { IS_PLATFORM } from '@/shared/utils';
 import { api, readApiErrorMessage } from '@/shared/api';
 import { AUTH_SESSION_EXPIRED_EVENT, AUTH_TOKEN_REFRESHED_EVENT, getAuthTokenRefreshDelay, isValidRefreshedToken, storeAuthToken } from '@/shared/authToken';
 import { hydrateChatDrafts, resetChatDrafts } from '@/shared/chatDrafts';
 import { hydrateUserPreferences, resetUserPreferences } from '@/shared/userSettings';
+
 /** The signed-in account held by AuthContext - a required `username` plus an optional id and any additional fields the auth API returns - and should be read through `useAuth()` rather than re-derived from raw auth responses. */
 type AuthUser = {
   id?: number | string;
@@ -78,6 +80,7 @@ const persistToken = (token: string) => {
 
 const clearStoredToken = () => {
   localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
+  window.dispatchEvent(new Event(AUTH_ACCOUNT_CHANGED_EVENT));
 };
 
 export function useAuth(): AuthContextValue {

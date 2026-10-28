@@ -21,6 +21,7 @@ function createFakeServices(overrides: Partial<FileTreeServices> = {}): FileTree
     readExternalTextFile: unexpectedOperation,
     openExternalFile: unexpectedOperation,
     openFile: unexpectedOperation,
+    resolveImagePath: unexpectedOperation,
     saveTextFile: unexpectedOperation,
     listProjectFiles: unexpectedOperation,
     createEntry: unexpectedOperation,

@@ -710,3 +710,29 @@ test('reading through a symlink out of the temp directory is still refused', { s
     await fsPromises.rm(outsideDirectory, { recursive: true, force: true });
   }
 });
+
+test('image inspection canonicalizes project files and rejects symlink escapes, traversal and directories', async () => {
+  const root = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'cloudcli-image-policy-'));
+  try {
+    const project = path.join(root, 'project');
+    const outside = path.join(root, 'outside');
+    await fsPromises.mkdir(project);
+    await fsPromises.mkdir(outside);
+    await fsPromises.writeFile(path.join(project, 'ok.png'), 'PNG');
+    await fsPromises.writeFile(path.join(outside, 'secret.png'), 'SECRET');
+    await fsPromises.symlink(path.join(outside, 'secret.png'), path.join(project, 'escape.png'));
+    await fsPromises.symlink(path.join(project, 'ok.png'), path.join(project, 'inside.png'));
+    const dependencies = createDependencies(createFakeFileSystem({ realpath: fsPromises.realpath, stat: fsPromises.stat }), project, [outside]);
+    dependencies.resolveMimeType = () => 'image/png';
+    const service = createFileTreeService(dependencies);
+    assert.equal((await service.resolveImagePath({ path: 'inside.png', projectId: 'p', external: false })).path, await fsPromises.realpath(path.join(project, 'ok.png')));
+    for (const candidate of ['escape.png', '../outside/secret.png', '.']) {
+      await assert.rejects(service.resolveImagePath({ path: candidate, projectId: 'p', external: false }));
+    }
+    assert.equal((await service.resolveImagePath({ path: path.join(outside, 'secret.png'), external: true })).path, await fsPromises.realpath(path.join(outside, 'secret.png')));
+    await assert.rejects(service.resolveImagePath({ path: 'secret.png', external: true }));
+    await fsPromises.unlink(path.join(project, 'inside.png'));
+    await fsPromises.symlink(path.join(outside, 'secret.png'), path.join(project, 'inside.png'));
+    await assert.rejects(service.resolveImagePath({ path: 'inside.png', projectId: 'p', external: false }));
+  } finally { await fsPromises.rm(root, { recursive: true, force: true }); }
+});

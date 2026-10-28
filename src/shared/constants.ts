@@ -225,3 +225,7 @@ export const PROVIDER_PERMISSION_PREFERENCE_KEYS: Record<LLMProvider, UserPrefer
   zcode: 'zcodePermissions',
   antigravity: 'antigravityPermissions',
 };
+
+//----------------- ACCOUNT LIFECYCLE ------------
+/** 退出登录或切换账号时清除临时图片票据，平台模式也适用。 */
+export const AUTH_ACCOUNT_CHANGED_EVENT = 'auth-account-changed';

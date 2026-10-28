@@ -1,4 +1,4 @@
-import React, { memo, useContext, useEffect, useMemo, useState } from 'react';
+import React, { memo, useContext, useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
@@ -7,11 +7,12 @@ import rehypeKatex from 'rehype-katex';
 import { oneDark, oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { useTranslation } from 'react-i18next';
 
+import { useSignedImage } from '@/shared/hooks/useSignedImage';
 import { SyntaxHighlighter, isRegisteredLanguage } from '@/modules/chat/composer/codeHighlightLanguages';
 import { MermaidDiagram } from '@/modules/code-editor';
 import { normalizeInlineCodeFences } from '@/modules/chat/utils/chatFormatting';
 import { normalizeLatexDelimiters } from '@/modules/chat/utils/latexDelimiters';
-import { api, readApiJson, readExternalFileContent } from '@/shared/api';
+import { api, readApiJson } from '@/shared/api';
 import { MarkdownWorkspaceContext } from '@/modules/chat/context/MarkdownWorkspaceContext';
 import { shouldProxyLocalHref } from '@/modules/chat/utils/localProxyLink';
 import {
@@ -303,12 +304,12 @@ function resolveImageTarget(src: string): MarkdownImageTarget {
 
 type MarkdownImageProps = { node?: unknown } & React.ImgHTMLAttributes<HTMLImageElement>;
 type ImageLoadError = 'unauthorized' | 'forbidden' | 'notFound' | 'failed' | 'decode' | 'unresolved';
-type LoadedMarkdownImage = { key: string; url?: string; error?: ImageLoadError };
+
 
 // 历史消息与流式回复共用此入口，本地文件复用鉴权接口，失败时保留引用。
 function MarkdownImage(props: MarkdownImageProps) {
   const { projectId } = useContext(MarkdownWorkspaceContext);
-  // 引用或项目变化时销毁旧状态，切回原引用也不能复用已释放的 Blob URL。
+  // 引用或项目变化时销毁旧的展开及错误状态。
   return <MarkdownImageContent key={JSON.stringify([projectId, props.src])} {...props} projectId={projectId} />;
 }
 
@@ -318,71 +319,23 @@ function MarkdownImageContent({ src = '', alt, node: _node, projectId, ...props 
   const localPath = target.kind === 'absolute' ? target.path : undefined;
   const workspaceRelative = target.kind === 'relative' ? target.path : undefined;
   const browserSrc = target.kind === 'browser' ? target.src : undefined;
-  // 重试发起新请求，并释放上一次的 Blob URL。
-  const [attempt, setAttempt] = useState(0);
-  const key = JSON.stringify([projectId, src, attempt]);
-  // 只使用本次请求的结果，重试时不展示旧图片或旧错误。
-  const [loaded, setLoaded] = useState<LoadedMarkdownImage | null>(null);
+  const { observe, ...signed } = useSignedImage(localPath
+    ? { kind: 'external', path: localPath, ...(projectId ? { projectId, projectFallback: true } : {}) }
+    : workspaceRelative && projectId ? { kind: 'project', path: workspaceRelative, projectId } : null);
+  const key = JSON.stringify([projectId, src]);
+  // 网页图片保留自己的加载错误；本地错误由签名 Hook 提供。
+  const [browserFailed, setBrowserFailed] = useState(false);
   // 显示复制结果，让用户知道是否需要手动复制路径。
   const [copyResult, setCopyResult] = useState<{ key: string; success: boolean } | null>(null);
   // 仅用户点击时打开查看器，加载或切换图片不能自动打开。
   const [expanded, setExpanded] = useState<string | null>(null);
-  const current = loaded?.key === key ? loaded : null;
   const unresolved = target.kind === 'unresolved' || (target.kind === 'relative' && !projectId);
-  const error = current?.error ?? (unresolved ? 'unresolved' : undefined);
-  const imageSrc = browserSrc ?? current?.url;
-
-  useEffect(() => {
-    if (!localPath && !(workspaceRelative && projectId)) return;
-    const controller = new AbortController();
-    let objectUrl: string | null = null;
-    const revokeObjectUrl = () => {
-      if (objectUrl) {
-        URL.revokeObjectURL(objectUrl);
-        objectUrl = null;
-      }
-    };
-    const load = async () => {
-      try {
-        let response = localPath
-          ? projectId
-            ? await readExternalFileContent(localPath, { signal: controller.signal }, projectId)
-            : await readExternalFileContent(localPath, { signal: controller.signal })
-          : await api.readFileBlob(projectId!, workspaceRelative!, { signal: controller.signal });
-        if (controller.signal.aborted) return;
-        // 非 Git 项目不在外部工作树目录中；交给项目接口校验同一路径。
-        if (localPath && projectId && response.status === 403) {
-          response = await api.readFileBlob(projectId, localPath, { signal: controller.signal });
-          if (controller.signal.aborted) return;
-        }
-        if (!response.ok) {
-          const reason: ImageLoadError = response.status === 401 ? 'unauthorized'
-            : response.status === 403 ? 'forbidden'
-              : response.status === 404 ? 'notFound' : 'failed';
-          setLoaded({ key, error: reason });
-          return;
-        }
-        const blob = await response.blob();
-        if (controller.signal.aborted) return;
-        objectUrl = URL.createObjectURL(blob);
-        setLoaded({ key, url: objectUrl });
-      } catch (caught) {
-        if (!controller.signal.aborted) {
-          console.error('[MarkdownImage] load failed:', caught);
-          setLoaded({ key, error: 'failed' });
-        }
-      }
-    };
-    void load();
-    return () => {
-      controller.abort();
-      revokeObjectUrl();
-    };
-  }, [key, localPath, workspaceRelative, projectId]);
+  const error: ImageLoadError | undefined = browserFailed ? 'failed' : signed.error ?? (unresolved ? 'unresolved' : undefined);
+  const imageSrc = browserSrc ?? signed.url;
 
   if (error) {
     return (
-      <span role="status" className="my-2 inline-flex max-w-full flex-col gap-1 rounded-lg border p-3 text-sm">
+      <span ref={observe} role="status" className="my-2 inline-flex max-w-full flex-col gap-1 rounded-lg border p-3 text-sm">
         {alt && <span>{alt}</span>}
         <span>{t(`imageLoad.${error}`)}</span>
         {src && <code className="whitespace-pre-wrap break-all text-xs">{src}</code>}
@@ -395,7 +348,7 @@ function MarkdownImageContent({ src = '', alt, node: _node, projectId, ...props 
           {!unresolved && <button type="button" onClick={(event) => {
             event.preventDefault();
             event.stopPropagation();
-            setAttempt((value) => value + 1);
+            if (browserSrc) setBrowserFailed(false); else signed.retry();
           }}>{t('common:buttons.retry')}</button>}
         </span>
         {copyResult?.key === key && <span>{t(copyResult.success ? 'imageLoad.copied' : 'imageLoad.copyFailed')}</span>}
@@ -404,15 +357,15 @@ function MarkdownImageContent({ src = '', alt, node: _node, projectId, ...props 
   }
 
   if (!imageSrc) {
-    return <span aria-hidden className="my-1 block h-28 max-w-sm animate-pulse rounded-lg bg-muted" />;
+    return <span ref={observe} aria-hidden className="my-1 block h-28 max-w-sm animate-pulse rounded-lg bg-muted" />;
   }
 
   const image = <img {...props} src={imageSrc} alt={alt} loading="lazy" decoding="async" className="rounded-lg"
-    onError={() => setLoaded({ key, error: browserSrc ? 'failed' : 'decode' })} />;
+    referrerPolicy="no-referrer" onLoad={signed.onLoad} onError={() => browserSrc ? setBrowserFailed(true) : signed.onError()} />;
   if (browserSrc) return image;
   return (
     <>
-      <button type="button" onClick={(event) => {
+      <button ref={observe} type="button" onClick={(event) => {
         event.preventDefault();
         event.stopPropagation();
         setExpanded(key);
@@ -421,7 +374,7 @@ function MarkdownImageContent({ src = '', alt, node: _node, projectId, ...props 
       </button>
       {expanded === key && (
         <UnifiedImageViewer src={imageSrc} alt={alt ?? ''} title={alt ?? ''}
-          filePath={localPath ?? workspaceRelative} onClose={() => setExpanded(null)} />
+          resolveSrc={signed.ensureFresh} onImageError={signed.onError} onImageLoad={signed.onLoad} filePath={localPath ?? workspaceRelative} onClose={() => setExpanded(null)} />
       )}
     </>
   );
@@ -429,8 +382,7 @@ function MarkdownImageContent({ src = '', alt, node: _node, projectId, ...props 
 
 const markdownComponents = {
   code: CodeBlock,
-  // Workspace image paths are fetched through the authenticated files route;
-  // a bare <img src> would resolve against the web origin and 404.
+  // 工作区引用转换为短期签名 URL，浏览器直接加载字节。
   img: MarkdownImage,
   // Fenced/indented code arrives as <pre><code>. Re-render the child CodeBlock
   // with `forceBlock` so it always gets the block treatment (react-markdown v9+

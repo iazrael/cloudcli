@@ -97,7 +97,7 @@ docs/
 
 - **JWT**：`server/modules/auth/auth.middleware.ts`。密钥取 env `JWT_SECRET`，否则自动生成入库（`app_config.jwt_secret`）。token 7 天有效，半衰期自动刷新（响应头 `X-Refreshed-Token`）。WS 走 query string 或 Authorization 头鉴权（`websocket-auth.service.ts`）。
 - **执行 MCP**：`/mcp/execution` 在通用 `/api` 鉴权之外单独挂载，默认关闭。专用令牌、本机连接、Host 和代理头校验由 execution 模块负责；执行目录、记录及生命周期见 providers.md「本机执行 MCP」。
-- **可选 API key**：`validateApiKey` 作用于全部 `/api`；agent 模块另走 API key / 平台双模鉴权。
+- **可选 API key**：普通 `/api` 请求受 `validateApiKey` 保护；任务桥接和签名图片读取入口在此前挂载并使用各自专用凭据；agent 模块另走 API key / 平台双模鉴权。
 - **上传白名单**：`chat.send` 的附件只放行 `~/.cloudcli/assets` 直接子文件，防止任意路径读。
 - **`file:` 链接白名单**：会话里引擎产出的本地文件链接走只读端点，目录白名单含各引擎数据根与系统临时目录（`server` 侧 fileLink 相关服务），防止越权读盘。
 - **本机服务代理**（`server/modules/local-proxy`）：聊天里出现的 `http://localhost:<port>/…` 只在服务器那台机器上可达，远程浏览器打不开。前端（`src/modules/chat/utils/localProxyLink.ts`）在"链接指向本机、而页面自身不是本机地址"时改走代理：先用 JWT 换一张 60 秒一次性票据，首个文档请求用票据换 `HttpOnly` 会话 cookie（`Path=/api/local-proxy`，8 小时）并 302 把票据从地址栏抹掉，之后页面的子资源靠该 cookie 放行——浏览器不会给它们带 Authorization 头。转发只允许 GET/HEAD，目标 host 固定 `127.0.0.1`，禁服务自身端口；请求侧丢掉 `cookie`/`authorization`，响应侧剥掉 `set-cookie`/CSP/HSTS 并把 `Location` 改写回代理前缀。页面里写死的根绝对路径资源由 `localProxyAbsolutePathFallback` 按 `Referer` 送回对应端口，该中间件必须排在静态资源处理之前。
@@ -127,3 +127,9 @@ npm run typecheck    # 前后端双 tsconfig --noEmit
 | 新增引擎 | [providers.md](./providers.md) 的六步清单 |
 | 新增 WS 消息类型 | [chat.md](./chat.md) 的扩展检查单 |
 | 新增前端大块 UI | [frontend.md](./frontend.md) + `.agents/skills/frontend-module-standards` |
+
+## 图片签名直连
+
+`media` 模块把图片授权与字节传输分开。申请入口沿用 API key、登录和平台用户规则，批量校验资源并返回短期 URL；图片读取入口只接受专用签名票据，挂在通用 API key 中间件之前。图片票据使用从安装密钥按专用用途派生的密钥，绑定用户、用途及规范化资源，不能作为登录令牌；有效期不超过登录令牌剩余期。具体协议类型以 `shared/protocol/imageMedia.ts` 为准。
+
+签发和读取都经文件服务校验项目、外部白名单和 realpath；图片读取还校验用户存在、图片类型及打开文件的身份。`304` 前也完成授权检查。响应使用私有 ETag 再验证，不刷新登录令牌；SVG 以 sandbox CSP 和 `nosniff` 限制主动内容。持有者在有效期内可访问对应图片，退出登录不主动撤销已签发票据，已传输字节不能收回。路径与文件仍保存在现有位置，不迁移数据。

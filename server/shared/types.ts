@@ -1,5 +1,6 @@
 import type { IncomingMessage } from 'node:http';
 import type { Readable } from 'node:stream';
+import type { ImageMediaSource } from '../../shared/protocol/imageMedia.js';
 
 //----------------- HTTP RESPONSE SHAPES ------------
 /**
@@ -1368,6 +1369,8 @@ export type FileTreeServices = {
    * linked worktree of `projectId` when provided.
    */
   openExternalFile(filePath: string, projectId?: string): Promise<{ contentType: string; stream: Readable }>;
+  /** 媒体检查重新校验项目和外部目录的规范路径，不创建传输流。 */
+  resolveImagePath(input: { path: string; projectId?: string; external: boolean }): Promise<{ path: string; contentType: string }>;
   openFile(projectId: string, filePath: string): Promise<{ contentType: string; stream: Readable }>;
   saveTextFile(projectId: string, filePath: string, content: string): Promise<{
     success: true;
@@ -1798,4 +1801,25 @@ export type QueuedChatMessage = {
   content: string;
   options?: Record<string, unknown>;
   attachments: unknown[];
+};
+
+//----------------- SIGNED IMAGE MEDIA ------------
+/** 媒体服务、HTTP 路由和前端共用的持久图片引用。 */
+export type { ImageMediaSource, ImageMediaRequest, ImageMediaResult } from '../../shared/protocol/imageMedia.js';
+
+/** 规范化图片元数据；来源经过 realpath 和文件边界校验，检查阶段不创建传输流。 */
+export type ImageMediaFile = {
+  source: ImageMediaSource;
+  contentType: string;
+  etag: string;
+  size: number;
+};
+
+/** 媒体服务依赖，由生产装配或文件及账号测试适配器提供；时间单位为 Unix 秒。 */
+export type ImageMediaDependencies = {
+  secret: string;
+  now?: () => number;
+  userExists: (id: string) => boolean | Promise<boolean>;
+  resolveImage: (source: ImageMediaSource) => Promise<ImageMediaFile>;
+  openImage: (file: ImageMediaFile) => Promise<Readable>;
 };

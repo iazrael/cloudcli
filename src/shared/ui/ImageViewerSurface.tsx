@@ -16,6 +16,8 @@ type ImageViewerSurfaceProps = {
   src: string;
   alt: string;
   onScaleChange?: (scale: number) => void;
+  onError?: () => void;
+  onLoad?: () => void;
   viewerRef?: React.MutableRefObject<ImageViewerHandle | null>;
 };
 
@@ -29,6 +31,8 @@ export function ImageViewerSurface({
   src,
   alt,
   onScaleChange,
+  onError,
+  onLoad,
   viewerRef,
 }: ImageViewerSurfaceProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -370,6 +374,7 @@ export function ImageViewerSurface({
       >
         <img
           src={src}
+          referrerPolicy="no-referrer" decoding="async" onError={onError} onLoad={onLoad}
           alt={alt}
           draggable={false}
           className="pointer-events-none max-h-full max-w-full select-none object-contain drop-shadow-sm"

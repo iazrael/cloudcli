@@ -1,54 +1,20 @@
 import assert from 'node:assert/strict';
 
-import { fireEvent, render, waitFor } from '@testing-library/react';
-import { beforeEach, describe, it, vi } from 'vitest';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { MarkdownImageContext } from '@/shared/types';
+import type * as sharedApi from '@/shared/api';
+import type { ImageMediaRequest, MarkdownImageContext } from '@/shared/types';
 import MarkdownPreview from '@/modules/code-editor/markdown/MarkdownPreview';
-import {
-  imageBaseDirFromFilePath,
-  resolveDocumentRelativePath,
-  resolveMarkdownImageTarget,
-} from '@/modules/code-editor/utils/markdownImagePath';
+import { imageBaseDirFromFilePath, resolveDocumentRelativePath, resolveMarkdownImageTarget } from '@/modules/code-editor/utils/markdownImagePath';
 
-const readFileBlob = vi.fn();
-const readExternalFileContent = vi.fn();
-vi.mock('@/shared/api', () => ({
-  api: {
-    readFileBlob: (...args: unknown[]) => readFileBlob(...args),
-  },
-  readExternalFileContent: (...args: unknown[]) => readExternalFileContent(...args),
-}));
-
-/**
- * A markdown preview that shows `![](../images/x.png)` has to resolve the path
- * against the document's own directory and fetch the bytes through the
- * authenticated files route: a bare <img src> resolves against the page URL and
- * 404s, and the route needs an auth header an <img> cannot carry.
- */
-
-const OBJECT_URL = 'blob:mock-image';
-// jsdom has no object URLs at all, so these are stubbed for the whole file.
-const createObjectURL = vi.fn(() => OBJECT_URL);
-const revokeObjectURL = vi.fn();
-URL.createObjectURL = createObjectURL;
-URL.revokeObjectURL = revokeObjectURL;
-
-const okResponse = () => ({ ok: true, blob: async () => new Blob(['png']) });
-const failedResponse = () => ({ ok: false, blob: async () => new Blob() });
-
+const { requestImageUrls } = vi.hoisted(() => ({ requestImageUrls: vi.fn() }));
+vi.mock('@/shared/api', async (original) => ({ ...await original<typeof sharedApi>(), requestImageUrls }));
 beforeEach(() => {
-  readFileBlob.mockReset();
-  readExternalFileContent.mockReset();
-  createObjectURL.mockClear();
-  revokeObjectURL.mockClear();
+  localStorage.setItem('auth-token', crypto.randomUUID());
+  requestImageUrls.mockReset().mockImplementation(async (images: ImageMediaRequest[]) => ({ ok: true, json: async () => ({ images: images.map(({ id }) => ({ id, url: '/api/media/images?ticket=preview', expiresAt: Date.now() + 600_000 })) }) }));
 });
-
-const projectContext: MarkdownImageContext = {
-  projectId: 'project-1',
-  baseDir: '/repo/docs',
-  isExternal: false,
-};
+const projectContext: MarkdownImageContext = { projectId: 'project-1', baseDir: '/repo/docs', isExternal: false };
 
 describe('resolveDocumentRelativePath', () => {
   it('climbs out of the document directory for ../ references', () => {
@@ -154,100 +120,43 @@ describe('resolveMarkdownImageTarget', () => {
 });
 
 describe('MarkdownPreview images', () => {
-  it('fetches a document-relative image and shows the blob', async () => {
-    readFileBlob.mockResolvedValue(okResponse());
-
-    const { findByRole } = render(
-      <MarkdownPreview content={'![gato](../public/gato.png)'} imageContext={projectContext} />,
-    );
-
-    const img = (await findByRole('img')) as HTMLImageElement;
-    assert.equal(img.getAttribute('src'), OBJECT_URL);
-    assert.deepEqual(readFileBlob.mock.calls[0].slice(0, 2), ['project-1', '/repo/public/gato.png']);
+  it.each([
+    ['../public/gato.png', '/repo/public/gato.png'],
+    ['file:///repo/images/gato.png', '/repo/images/gato.png'],
+  ])('signs the resolved document path %s', async (source, path) => {
+    render(<MarkdownPreview content={`![gato](${source})`} imageContext={projectContext} />);
+    expect((await screen.findByRole('img')).getAttribute('src')).toBe('/api/media/images?ticket=preview');
+    expect(requestImageUrls).toHaveBeenCalledWith([expect.objectContaining({ kind: 'project', projectId: 'project-1', path })]);
   });
-
-  it('keeps a file:// image source through the default url transform', async () => {
-    // ReactMarkdown's default urlTransform blanks `file:` URLs, so the preview
-    // has to pass markdownUrlTransform explicitly or this never reaches a route.
-    readFileBlob.mockResolvedValue(okResponse());
-
-    const { findByRole } = render(
-      <MarkdownPreview content={'![gato](file:///repo/images/gato.png)'} imageContext={projectContext} />,
-    );
-
-    await findByRole('img');
-    assert.deepEqual(readFileBlob.mock.calls[0].slice(0, 2), ['project-1', '/repo/images/gato.png']);
-  });
-
   it('leaves web images to the browser', () => {
-    const { getByRole } = render(
-      <MarkdownPreview content={'![logo](https://example.com/logo.png)'} imageContext={projectContext} />,
-    );
-
-    const img = getByRole('img') as HTMLImageElement;
-    assert.equal(img.getAttribute('src'), 'https://example.com/logo.png');
-    assert.equal(readFileBlob.mock.calls.length, 0);
+    render(<MarkdownPreview content="![logo](https://example.com/logo.png)" imageContext={projectContext} />);
+    expect(screen.getByRole('img').getAttribute('src')).toBe('https://example.com/logo.png');
+    expect(requestImageUrls).not.toHaveBeenCalled();
   });
-
-  it('reads an external document image through the external route', async () => {
-    readExternalFileContent.mockResolvedValue(okResponse());
-
-    const { findByRole } = render(
-      <MarkdownPreview
-        content={'![plan](img/plan.png)'}
-        imageContext={{ baseDir: '/ext/docs', isExternal: true }}
-      />,
-    );
-
-    await findByRole('img');
-    assert.equal(readExternalFileContent.mock.calls[0][0], '/ext/docs/img/plan.png');
-    assert.equal(readFileBlob.mock.calls.length, 0);
+  it('signs external references relative to the external document', async () => {
+    render(<MarkdownPreview content="![plan](img/plan.png)" imageContext={{ baseDir: '/ext/docs', isExternal: true }} />);
+    await screen.findByRole('img');
+    expect(requestImageUrls).toHaveBeenCalledWith([expect.objectContaining({ kind: 'external', path: '/ext/docs/img/plan.png' })]);
   });
-
-  it('shows the alt text instead of a broken image when the read fails', async () => {
-    readFileBlob.mockResolvedValue(failedResponse());
-
-    const { findByText, queryByRole } = render(
-      <MarkdownPreview content={'![gato](images/gato.png)'} imageContext={projectContext} />,
-    );
-
-    await findByText('gato');
-    assert.equal(queryByRole('img'), null);
+  it('shows alt text and allows retry when signing fails', async () => {
+    requestImageUrls.mockResolvedValueOnce({ ok: false, status: 403 });
+    render(<MarkdownPreview content="![gato](images/gato.png)" imageContext={projectContext} />);
+    await screen.findByText('gato');
+    expect(screen.queryByRole('img')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'common:buttons.retry' }));
+    await screen.findByRole('img');
+    expect(requestImageUrls).toHaveBeenCalledTimes(2);
   });
-
-  it('shows the alt text when no context can resolve the path', async () => {
-    const { findByText } = render(<MarkdownPreview content={'![gato](images/gato.png)'} />);
-
-    await findByText('gato');
-    assert.equal(readFileBlob.mock.calls.length, 0);
+  it('shows alt text without a workspace context', () => {
+    render(<MarkdownPreview content="![gato](images/gato.png)" />);
+    expect(screen.getByText('gato')).toBeTruthy();
+    expect(requestImageUrls).not.toHaveBeenCalled();
   });
-
-  it('opens the shared image viewer when the resolved image is clicked', async () => {
-    readFileBlob.mockResolvedValue(okResponse());
-
-    const { findByRole, queryByRole } = render(
-      <MarkdownPreview content={'![gato](images/gato.png)'} imageContext={projectContext} />,
-    );
-
-    const img = await findByRole('img');
-    assert.equal(queryByRole('dialog'), null);
-
-    fireEvent.click(img);
-    await waitFor(() => assert.ok(queryByRole('dialog')));
-
-    fireEvent.click(queryByRole('dialog')!.querySelector('[aria-label="关闭图片预览"]')!);
-    await waitFor(() => assert.equal(queryByRole('dialog'), null));
-  });
-
-  it('revokes the object URL when the preview unmounts', async () => {
-    readFileBlob.mockResolvedValue(okResponse());
-
-    const { findByRole, unmount } = render(
-      <MarkdownPreview content={'![gato](images/gato.png)'} imageContext={projectContext} />,
-    );
-    await findByRole('img');
-    unmount();
-
-    await waitFor(() => assert.equal(revokeObjectURL.mock.calls[0]?.[0], OBJECT_URL));
+  it('opens and closes the shared viewer without downloading image bytes in JS', async () => {
+    render(<MarkdownPreview content="![gato](images/gato.png)" imageContext={projectContext} />);
+    fireEvent.click(await screen.findByRole('img'));
+    await screen.findByRole('dialog');
+    fireEvent.click(screen.getByRole('button', { name: '关闭图片预览' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   });
 });

@@ -1902,3 +1902,7 @@ export type RunOutcomeRecord = {
   eventCount: number;
   lastSeq: number;
 };
+
+//----------------- SIGNED IMAGE MEDIA ------------
+/** 前后端共用的持久图片引用与临时签名响应。 */
+export type { ImageMediaSource, ImageMediaRequest, ImageMediaResult } from '@shared/protocol/imageMedia';

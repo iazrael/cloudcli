@@ -7,3 +7,6 @@ export { authenticateToken } from './auth.middleware.js';
 export { authenticateWebSocket } from './auth.middleware.js';
 // validateApiKey: used by the server entrypoint for optional API-wide key validation.
 export { validateApiKey } from './auth.middleware.js';
+
+// 媒体装配从安装级持久密钥派生专用图片票据密钥。
+export { JWT_SECRET } from './auth.middleware.js';

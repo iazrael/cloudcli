@@ -1,4 +1,4 @@
-export { expireAuthSession, isAuthTokenExpired, TOKEN_EXPIRY_SKEW_MS } from '@/shared/authToken';
+import type { ImageMediaRequest } from '@/shared/types';
 import {
   expireAuthSession,
   getStoredAuthToken,
@@ -6,6 +6,8 @@ import {
 } from '@/shared/authToken';
 import { collectStoredOutputAssets, IS_PLATFORM } from '@/shared/utils';
 import { readVoiceConfig, voiceConfigHeaders } from '@/shared/voiceConfig';
+
+export { expireAuthSession, isAuthTokenExpired, TOKEN_EXPIRY_SKEW_MS } from '@/shared/authToken';
 
 // Headers are a plain record rather than the full `HeadersInit` union so the
 // defaults below can be merged with a caller's headers by spreading.
@@ -761,3 +763,7 @@ export const readExternalFileContent = (
     `/api/file-tree/external-file/content?path=${encodeURIComponent(filePath)}${projectId ? `&projectId=${encodeURIComponent(projectId)}` : ''}`,
     options,
   );
+
+/** 鉴权申请图片地址；返回 URL 后由浏览器直接加载图片字节。 */
+export const requestImageUrls = (images: ImageMediaRequest[], options: ApiRequestOptions = {}) =>
+  post('/api/media/image-urls', { images }, options);

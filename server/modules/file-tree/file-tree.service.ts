@@ -569,6 +569,29 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
       }
     },
 
+    async resolveImagePath(input) {
+      let canonical: string;
+      if (input.external) {
+        canonical = await resolvePathInsideExternalRoots(fileSystem, await resolveExternalAllowedRoots(input.projectId), input.path);
+      } else {
+        if (!input.projectId) throw createFileTreeError('Project is required', 400, 'PROJECT_REQUIRED');
+        const root = await resolveProjectRoot(input.projectId);
+        const candidate = await resolveReadablePath(root, input.path);
+        // 图片票据同时校验 realpath，防止项目内符号链接授权外部文件。
+        if (candidate.startsWith(path.resolve(root) + path.sep)) {
+          canonical = await resolvePathInsideExternalRoots(fileSystem, [root], candidate);
+        } else {
+          canonical = await fileSystem.realpath(candidate);
+          await resolveReadablePath(root, canonical);
+        }
+      }
+      const stats = await fileSystem.stat(canonical);
+      if ((stats.mode & 0o170000) !== 0o100000) {
+        throw createFileTreeError('Image must be a regular file', 403, 'INVALID_IMAGE_FILE');
+      }
+      return { path: canonical, contentType: dependencies.resolveMimeType(canonical) };
+    },
+
     async openExternalFile(filePath, projectId) {
       const allowedRoots = await resolveExternalAllowedRoots(projectId);
       const resolvedPath = await resolvePathInsideExternalRoots(

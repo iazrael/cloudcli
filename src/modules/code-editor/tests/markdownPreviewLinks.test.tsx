@@ -5,16 +5,12 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import CodeEditorSurface from '@/modules/code-editor/CodeEditorSurface';
 import MarkdownPreview from '@/modules/code-editor/markdown/MarkdownPreview';
 import { PaletteOpsProvider, usePaletteOpsRegister } from '@/modules/command-palette';
-import type { MarkdownImageContext } from '@/shared/types';
+import type { ImageMediaRequest, MarkdownImageContext } from '@/shared/types';
 import type * as sharedApi from '@/shared/api';
 
-const { readFileBlob, readExternalFileContent } = vi.hoisted(() => ({
-  readFileBlob: vi.fn(), readExternalFileContent: vi.fn(),
-}));
-vi.mock('@/shared/api', async (importOriginal) => {
-  const actual = await importOriginal<typeof sharedApi>();
-  return { ...actual, api: { ...actual.api, readFileBlob }, readExternalFileContent };
-});
+const { requestImageUrls } = vi.hoisted(() => ({ requestImageUrls: vi.fn() }));
+vi.mock('@/shared/api', async (importOriginal) => ({ ...await importOriginal<typeof sharedApi>(), requestImageUrls }));
+const ok = async (images: ImageMediaRequest[]) => ({ ok: true, json: async () => ({ images: images.map(({ id }) => ({ id, url: '/api/media/images?ticket=preview-link', expiresAt: Date.now() + 600_000 })) }) });
 const openFileInEditor = vi.fn();
 const openDirectory = vi.fn();
 function RegisteredOperations({ children }: { children: ReactNode }) {
@@ -35,21 +31,21 @@ const renderPreview = (content: string, imageContext: MarkdownImageContext | nul
 const clickLocal = (name = 'Fast 原图') => fireEvent.click(screen.getByText(name));
 
 beforeEach(() => {
-  readFileBlob.mockReset().mockResolvedValue({ ok: true, blob: async () => new Blob(['png']) });
-  readExternalFileContent.mockReset().mockResolvedValue({ ok: true, blob: async () => new Blob(['png']) });
+  localStorage.setItem('auth-token', crypto.randomUUID());
+  requestImageUrls.mockReset().mockImplementation(ok);
   openFileInEditor.mockReset();
   openDirectory.mockReset();
-  URL.createObjectURL = vi.fn(() => 'blob:preview-link');
+  URL.createObjectURL = vi.fn(() => '/api/media/images?ticket=preview-link');
   URL.revokeObjectURL = vi.fn();
 });
 
-it('opens the report image through the authenticated API only after clicking, keeping the report mounted', async () => {
+it('opens the report image through a signed URL only after clicking, keeping the report mounted', async () => {
   renderPreview('# 报告\n\n[Fast 原图](../../out/benchmark/512_fast.png)');
-  expect(readFileBlob).not.toHaveBeenCalled();
+  expect(requestImageUrls).not.toHaveBeenCalled();
   clickLocal();
   await screen.findByRole('dialog');
-  expect(readFileBlob).toHaveBeenCalledWith('qwen-project', imagePath, expect.anything());
-  expect(screen.getByRole('dialog').querySelector('img')?.getAttribute('src')).toBe('blob:preview-link');
+  expect(requestImageUrls).toHaveBeenCalledWith([expect.objectContaining({ kind: 'project', projectId: 'qwen-project', path: imagePath })]);
+  expect(screen.getByRole('dialog').querySelector('img')?.getAttribute('src')).toBe('/api/media/images?ticket=preview-link');
   expect(screen.getByRole('heading', { name: '报告' })).toBeDefined();
   expect(openFileInEditor).not.toHaveBeenCalled();
   expect(screen.queryByRole('link', { name: 'Fast 原图' })).toBeNull();
@@ -63,7 +59,7 @@ it('closes and reopens the image without replacing the report or fetching it aga
   expect(screen.queryByRole('dialog')).toBeNull();
   clickLocal();
   await screen.findByRole('dialog');
-  expect(readFileBlob).toHaveBeenCalledTimes(1);
+  expect(requestImageUrls).toHaveBeenCalledTimes(1);
 });
 
 it.each([
@@ -75,7 +71,7 @@ it.each([
   renderPreview(`[文件](${href})`);
   clickLocal('文件');
   expect(openFileInEditor).toHaveBeenCalledWith(expectedPath, undefined);
-  expect(readFileBlob).not.toHaveBeenCalled();
+  expect(requestImageUrls).not.toHaveBeenCalled();
 });
 
 it.each([
@@ -88,19 +84,18 @@ it.each([
   renderPreview(`[Fast 原图](${href})`);
   clickLocal();
   await screen.findByRole('dialog');
-  expect(readFileBlob).toHaveBeenCalledWith('qwen-project', expectedPath, expect.anything());
+  expect(requestImageUrls).toHaveBeenCalledWith([expect.objectContaining({ kind: 'project', projectId: 'qwen-project', path: expectedPath })]);
 });
 
-it('reads links from external documents through the existing read-only endpoint', async () => {
+it('signs links from external documents using the read-only policy', async () => {
   renderPreview('[Fast 原图](images/a.png)', { projectId: 'qwen-project', isExternal: true, baseDir: '/ext/report' });
   clickLocal();
   await screen.findByRole('dialog');
-  expect(readExternalFileContent).toHaveBeenCalledWith('/ext/report/images/a.png', expect.anything(), 'qwen-project');
-  expect(readFileBlob).not.toHaveBeenCalled();
+  expect(requestImageUrls).toHaveBeenCalledWith([expect.objectContaining({ kind: 'external', projectId: 'qwen-project', path: '/ext/report/images/a.png' })]);
 });
 
 it.each([403, 404, 500])('shows a recoverable failure for HTTP %s without navigating to the web origin', async (status) => {
-  readFileBlob.mockResolvedValueOnce({ ok: false, status });
+  requestImageUrls.mockResolvedValueOnce({ ok: false, status });
   renderPreview('[Fast 原图](../../out/benchmark/512_fast.png)');
   clickLocal();
   await waitFor(() => expect(screen.getByRole('status').textContent).toContain(
@@ -117,7 +112,7 @@ it('leaves external, protocol-relative and email links to the browser', () => {
   expect(screen.getByRole('link', { name: '网站' }).getAttribute('href')).toBe('https://example.com/a');
   expect(screen.getByRole('link', { name: '网络' }).getAttribute('href')).toBe('//example.com/a');
   expect(screen.getByRole('link', { name: '邮件' }).getAttribute('href')).toBe('mailto:hello@example.com');
-  expect(readFileBlob).not.toHaveBeenCalled();
+  expect(requestImageUrls).not.toHaveBeenCalled();
 });
 
 it('keeps a same-document fragment in the current document', () => {
@@ -137,38 +132,30 @@ it('does not navigate local references when no document context is available', (
   renderPreview('[Fast 原图](out/a.png)', null);
   clickLocal();
   expect(screen.queryByRole('link')).toBeNull();
-  expect(readFileBlob).not.toHaveBeenCalled();
+  expect(requestImageUrls).not.toHaveBeenCalled();
   expect(openFileInEditor).not.toHaveBeenCalled();
 });
 
-it('aborts a pending request and never creates an object URL after the preview unmounts', async () => {
+it('ignores a pending signing response after the document unmounts', async () => {
   let finish!: (response: unknown) => void;
-  readFileBlob.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+  requestImageUrls.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
   const { unmount } = renderPreview('[Fast 原图](../../out/benchmark/512_fast.png)');
   clickLocal();
-  await waitFor(() => expect(readFileBlob).toHaveBeenCalledTimes(1));
-  const signal = readFileBlob.mock.calls[0][2].signal;
+  await waitFor(() => expect(requestImageUrls).toHaveBeenCalledTimes(1));
+  const requests = requestImageUrls.mock.calls[0][0];
   unmount();
-  expect(signal.aborted).toBe(true);
-  await act(async () => { finish({ ok: true, blob: async () => new Blob(['png']) }); });
+  await act(async () => { finish(await ok(requests)); });
+  expect(screen.queryByRole('dialog')).toBeNull();
   expect(URL.createObjectURL).not.toHaveBeenCalled();
-});
-
-it('releases the image object URL when the document is closed', async () => {
-  const { unmount } = renderPreview('[Fast 原图](../../out/benchmark/512_fast.png)');
-  clickLocal();
-  await screen.findByRole('dialog');
-  unmount();
-  expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:preview-link');
 });
 
 it('keeps inline-image behavior when the same document also contains a linked image', async () => {
   render(<MarkdownPreview content={'![内嵌](../../out/benchmark/512_default.png)\n\n[Fast 原图](../../out/benchmark/512_fast.png)'} imageContext={context} />);
   await screen.findByRole('img', { name: '内嵌' });
-  expect(readFileBlob).toHaveBeenCalledTimes(1);
+  expect(requestImageUrls).toHaveBeenCalledTimes(1);
   clickLocal();
   await screen.findByRole('dialog');
-  expect(readFileBlob).toHaveBeenCalledTimes(2);
+  expect(requestImageUrls).toHaveBeenCalledTimes(2);
 });
 
 it('a linked thumbnail opens only its linked original image', async () => {
@@ -177,25 +164,25 @@ it('a linked thumbnail opens only its linked original image', async () => {
   fireEvent.click(thumbnail);
   await screen.findByRole('dialog');
   expect(screen.getAllByRole('dialog')).toHaveLength(1);
-  expect(readFileBlob).toHaveBeenLastCalledWith('qwen-project', imagePath, expect.anything());
+  expect(requestImageUrls).toHaveBeenLastCalledWith([expect.objectContaining({ projectId: 'qwen-project', path: imagePath })]);
 });
 
 it('does not duplicate a pending image request on repeated clicks', async () => {
-  readFileBlob.mockImplementation(() => new Promise(() => {}));
+  requestImageUrls.mockImplementation(() => new Promise(() => {}));
   renderPreview('[Fast 原图](../../out/benchmark/512_fast.png)');
   clickLocal();
   clickLocal();
-  await waitFor(() => expect(readFileBlob).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(requestImageUrls).toHaveBeenCalledTimes(1));
 });
 
-it('changing the document closes its old image and releases the old URL', async () => {
+it('changing the document closes its old image and signs the new reference', async () => {
   const { rerender } = render(<MarkdownPreview content={'[Fast 原图](pic.png)'} imageContext={context} />);
   clickLocal();
   await screen.findByRole('dialog');
   rerender(<MarkdownPreview content={'[Fast 原图](pic.png)'} imageContext={{ ...context, baseDir: '/repo/other' }} />);
   expect(screen.queryByRole('dialog')).toBeNull();
-  expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:preview-link');
+  expect(URL.createObjectURL).not.toHaveBeenCalled();
   clickLocal();
   await screen.findByRole('dialog');
-  expect(readFileBlob).toHaveBeenLastCalledWith('qwen-project', '/repo/other/pic.png', expect.anything());
+  expect(requestImageUrls).toHaveBeenLastCalledWith([expect.objectContaining({ projectId: 'qwen-project', path: '/repo/other/pic.png' })]);
 });

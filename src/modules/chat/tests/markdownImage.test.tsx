@@ -1,97 +1,44 @@
-import assert from 'node:assert/strict';
+import { render, screen } from '@testing-library/react';
+import { beforeEach, expect, test, vi } from 'vitest';
 
-import { render, waitFor } from '@testing-library/react';
-import { beforeEach, test, vi } from 'vitest';
-
+import type * as sharedApi from '@/shared/api';
 import { Markdown } from '@/modules/chat/transcript/Markdown';
 import { MarkdownWorkspaceContext } from '@/modules/chat/context/MarkdownWorkspaceContext';
+import type { ImageMediaRequest } from '@/shared/types';
 
-const readFileBlob = vi.fn();
-vi.mock('@/shared/api', () => ({
-  api: {
-    readFileBlob: (...args: unknown[]) => readFileBlob(...args),
-  },
-}));
-
-/**
- * Chat markdown that references an image by workspace path has to be fetched
- * through the authenticated files route: a bare <img src="imagenes/x.png">
- * resolves against the web origin and 404s. Web URLs keep loading directly.
- */
-
-const OBJECT_URL = 'blob:mock-image';
-// jsdom has no object URLs at all, so these are stubbed for the whole file
-// rather than restored per test: React's unmount cleanup, which revokes the
-// URL, runs from the setup file's afterEach after this file's hooks.
-const createObjectURL = vi.fn(() => OBJECT_URL);
-const revokeObjectURL = vi.fn();
-URL.createObjectURL = createObjectURL;
-URL.revokeObjectURL = revokeObjectURL;
-
+const { requestImageUrls } = vi.hoisted(() => ({ requestImageUrls: vi.fn() }));
+vi.mock('@/shared/api', async (original) => ({ ...await original<typeof sharedApi>(), requestImageUrls }));
 beforeEach(() => {
-  readFileBlob.mockReset();
-  createObjectURL.mockClear();
-  revokeObjectURL.mockClear();
+  localStorage.setItem('auth-token', crypto.randomUUID());
+  requestImageUrls.mockReset().mockImplementation(async (images: ImageMediaRequest[]) => ({ ok: true, json: async () => ({ images: images.map(({ id }) => ({ id, url: '/api/media/images?ticket=markdown', expiresAt: Date.now() + 600_000 })) }) }));
 });
+const renderInProject = (markdown: string, projectId: string | null = 'project-1') => render(
+  <MarkdownWorkspaceContext.Provider value={{ projectId }}><Markdown>{markdown}</Markdown></MarkdownWorkspaceContext.Provider>,
+);
 
-const renderInProject = (markdown: string, projectId: string | null = 'project-1') =>
-  render(
-    <MarkdownWorkspaceContext.Provider value={{ projectId }}>
-      <Markdown>{markdown}</Markdown>
-    </MarkdownWorkspaceContext.Provider>,
-  );
-
-test('a workspace image path is fetched through the project files route and shown as a blob', async () => {
-  readFileBlob.mockResolvedValue({ ok: true, blob: async () => new Blob(['png']) });
-
-  const { findByRole } = renderInProject('Aquí la tienes:\n\n![gato naranja](imagenes/gato.png)\n');
-
-  const img = (await findByRole('img')) as HTMLImageElement;
-  assert.equal(img.getAttribute('src'), OBJECT_URL);
-  assert.equal(img.alt, 'gato naranja');
-  assert.equal(readFileBlob.mock.calls.length, 1);
-  assert.deepEqual(readFileBlob.mock.calls[0].slice(0, 2), ['project-1', 'imagenes/gato.png']);
+test('workspace images use a signed direct URL with their project and decoded reference', async () => {
+  renderInProject('![gato naranja](imagenes/gato.png)');
+  expect((await screen.findByRole('img')).getAttribute('src')).toBe('/api/media/images?ticket=markdown');
+  expect(requestImageUrls).toHaveBeenCalledWith([expect.objectContaining({ kind: 'project', projectId: 'project-1', path: 'imagenes/gato.png' })]);
 });
-
-test('a leading ./ is dropped before asking the server', async () => {
-  readFileBlob.mockResolvedValue({ ok: true, blob: async () => new Blob(['png']) });
-
-  const { findByRole } = renderInProject('![captura](./out/captura.png)');
-
-  await findByRole('img');
-  assert.equal(readFileBlob.mock.calls[0][1], 'out/captura.png');
+test('a leading ./ is dropped before requesting a ticket', async () => {
+  renderInProject('![captura](./out/captura.png)');
+  await screen.findByRole('img');
+  expect(requestImageUrls).toHaveBeenCalledWith([expect.objectContaining({ path: 'out/captura.png' })]);
 });
-
 test('web URLs are left to the browser', () => {
-  const { getByRole } = renderInProject('![logo](https://example.com/logo.png)');
-
-  const img = getByRole('img') as HTMLImageElement;
-  assert.equal(img.getAttribute('src'), 'https://example.com/logo.png');
-  assert.equal(readFileBlob.mock.calls.length, 0);
+  renderInProject('![logo](https://example.com/logo.png)');
+  expect(screen.getByRole('img').getAttribute('src')).toBe('https://example.com/logo.png');
+  expect(requestImageUrls).not.toHaveBeenCalled();
 });
-
-test('a missing file falls back to the alt text instead of a broken image', async () => {
-  readFileBlob.mockResolvedValue({ ok: false, blob: async () => new Blob() });
-
-  const { findByText, queryByRole } = renderInProject('![gato](imagenes/nada.png)');
-
-  await findByText('gato');
-  assert.equal(queryByRole('img'), null);
+test('a missing file keeps alt text and a recoverable error', async () => {
+  requestImageUrls.mockImplementation(async (images: ImageMediaRequest[]) => ({ ok: true, json: async () => ({ images: images.map(({ id }) => ({ id, status: 404, error: 'notFound' })) }) }));
+  renderInProject('![gato](imagenes/nada.png)');
+  expect((await screen.findByRole('status')).textContent).toContain('gato');
+  expect(screen.queryByRole('img')).toBeNull();
 });
-
-test('without a project the path cannot be resolved and the alt text is shown', async () => {
-  const { findByText } = renderInProject('![gato](imagenes/gato.png)', null);
-
-  await findByText('gato');
-  assert.equal(readFileBlob.mock.calls.length, 0);
-});
-
-test('the image is revoked when the markdown unmounts', async () => {
-  readFileBlob.mockResolvedValue({ ok: true, blob: async () => new Blob(['png']) });
-
-  const { findByRole, unmount } = renderInProject('![gato](imagenes/gato.png)');
-  await findByRole('img');
-  unmount();
-
-  await waitFor(() => assert.equal(revokeObjectURL.mock.calls[0]?.[0], OBJECT_URL));
+test('without a project a relative path remains unresolved', () => {
+  renderInProject('![gato](imagenes/gato.png)', null);
+  expect(screen.getByRole('status').textContent).toContain('gato');
+  expect(requestImageUrls).not.toHaveBeenCalled();
 });
