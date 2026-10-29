@@ -5,7 +5,7 @@ import { act, fireEvent, render } from '@testing-library/react';
 import { afterEach, beforeEach, test, vi } from 'vitest';
 
 import type { PermissionMode } from '@/shared/types';
-import { i18n } from '@/modules/i18n';
+import { i18n, switchLanguage } from '@/modules/i18n';
 import ComposerPermissionMenu from '@/modules/chat/composer/ComposerPermissionMenu';
 import { PromptInputFooter, PromptInputTools } from '@/modules/chat/composer/PromptInputFork';
 
@@ -15,7 +15,7 @@ import { PromptInputFooter, PromptInputTools } from '@/modules/chat/composer/Pro
  * as "nothing will be changed" and is the one users most need to see.
  */
 
-beforeEach(async () => { await i18n.changeLanguage('en'); });
+beforeEach(async () => { await switchLanguage('en'); });
 
 const frChat = JSON.parse(readFileSync('src/modules/i18n/locales/fr/chat.json', 'utf8'));
 
@@ -234,7 +234,7 @@ test('typing the first character neither takes the name away nor brings it in', 
 
 test('the trigger and the menu speak the user\'s language', async () => {
   await act(async () => {
-    await i18n.changeLanguage('fr');
+    await switchLanguage('fr');
   });
   try {
     const { getByRole, getAllByRole } = renderMenu('plan');
@@ -257,7 +257,7 @@ test('the trigger and the menu speak the user\'s language', async () => {
     assert.equal(getByRole('menu').lastElementChild?.textContent, frChat.composer.permissionCycleHint);
   } finally {
     await act(async () => {
-      await i18n.changeLanguage('en');
+      await switchLanguage('en');
     });
   }
 });
@@ -288,7 +288,7 @@ test('long model names and repeated observer callbacks keep the decision stable'
 });
 
 test('Chinese mode names and accessible punctuation come from real translations', async () => {
-  await act(async () => { await i18n.changeLanguage('zh-CN'); });
+  await act(async () => { await switchLanguage('zh-CN'); });
   layOutComposer(678);
   const view = renderInFooter('plan');
   const name = i18n.t('codex.modes.plan', { ns: 'chat' });

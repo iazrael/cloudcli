@@ -257,8 +257,6 @@ export const api = {
       `/api/projects/${encodeURIComponent(projectId)}/sessions${query({ limit, offset })}`,
       options,
     ),
-  projectTaskmaster: (projectId: string) =>
-    get(`/api/projects/${encodeURIComponent(projectId)}/taskmaster`),
   renameProject: (projectId: string, displayName: string) =>
     put(`/api/projects/${projectId}/rename`, { displayName }),
   restoreProject: (projectId: string) =>
@@ -542,23 +540,6 @@ export const api = {
     file: (storedName: string) => get(`/api/assets/files/${encodeURIComponent(storedName)}`),
     image: (filename: string, options: ApiRequestOptions = {}) =>
       get(`/api/assets/images/${encodeURIComponent(filename)}`, options),
-  },
-
-  // TaskMaster endpoints — all addressed by DB projectId post-migration.
-  taskmaster: {
-    // Update a task
-    updateTask: (projectId: string, taskId: string | number, updates: unknown) =>
-      put(`/api/taskmaster/update-task/${projectId}/${taskId}`, updates),
-
-    tasks: (projectId: string) => get(`/api/taskmaster/tasks/${encodeURIComponent(projectId)}`),
-    mcpStatus: () => get('/api/taskmaster/mcp-status'),
-    installationStatus: () => get('/api/taskmaster/installation-status'),
-
-    prdFiles: (projectId: string) => get(`/api/taskmaster/prd/${encodeURIComponent(projectId)}`),
-    prdFile: (projectId: string, fileName: string) =>
-      get(`/api/taskmaster/prd/${encodeURIComponent(projectId)}/${encodeURIComponent(fileName)}`),
-    savePrd: (projectId: string, { fileName, content }: { fileName: string; content: string }) =>
-      post(`/api/taskmaster/prd/${encodeURIComponent(projectId)}`, { fileName, content }),
   },
 
   // User endpoints

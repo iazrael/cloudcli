@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ArrowDownIcon } from 'lucide-react';
 
-import { useTasksSettings } from '@/modules/task-master';
 import { useWebSocket } from '@/shared/context/WebSocketContext';
 import PermissionContext from '@/modules/chat/context/PermissionContext';
 import type { ChatInterfaceProps, PermissionMode } from '@/shared/types';
@@ -42,9 +41,7 @@ function ChatInterface({
   sendByCtrlEnter,
   externalMessageUpdate,
   newSessionTrigger,
-  onShowAllTasks,
 }: ChatInterfaceProps) {
-  const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings();
   const { subscribe, isConnected } = useWebSocket();
   const { t } = useTranslation('chat');
   const { providerAuthStatus, refreshProviderAuthStatuses } = useProviderAuthStatus();
@@ -443,9 +440,6 @@ function ChatInterface({
               providerModelActions={providerModelActions}
               providerModelsLoading={providerModelsLoading}
               providerAuthStatus={providerAuthStatus}
-              tasksEnabled={tasksEnabled}
-              isTaskMasterInstalled={isTaskMasterInstalled}
-              onShowAllTasks={onShowAllTasks}
               setInput={setInput}
             />
           )

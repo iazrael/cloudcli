@@ -68,7 +68,7 @@ src/
     project-workspace/     工作区外壳（布局、标签页、项目/会话列表状态）
     sidebar/  settings/  auth/  provider-auth/  mcp/  skills/  git-panel/  file-tree/
     code-editor/  shell/  standalone-shell/  i18n/  plugins/  browser-use/
-    voice/  task-master/  command-palette/  onboarding/  quick-settings-panel/  …
+    voice/  command-palette/  onboarding/  quick-settings-panel/  …
   shared/                  api.ts（fetch 封装）、types.ts、context/（全局 Context）、ui/（通用组件 + 引擎 Logo）
   App.tsx                  路由：/ 与 /session/:sessionId 两个工作区路由
 docs/

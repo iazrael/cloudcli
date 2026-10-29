@@ -362,7 +362,6 @@ const renderController = (onSessionDelete = vi.fn(), initialActivity: SessionAct
         onSessionDelete,
         onLoadMoreSessions,
         onProjectDelete: noop,
-        setCurrentProject: noop,
         setSidebarVisible: noop,
         sidebarVisible: true,
         keepProjectsExpanded,

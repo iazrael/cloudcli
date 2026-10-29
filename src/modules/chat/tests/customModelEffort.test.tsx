@@ -6,6 +6,11 @@ import { beforeEach, test, vi } from 'vitest';
 import '@/modules/i18n';
 import ModelLibraryPanel from '@/modules/chat/modals/ModelLibraryPanel';
 import { resetUserPreferences } from '@/shared/userSettings';
+import { initI18n } from '@/modules/i18n';
+
+// Copy assertions need real translations; bundles load per language (see docs/design/i18n按语言懒加载.md).
+await initI18n();
+
 import type {
   CustomProviderModelInput,
   LLMProvider,

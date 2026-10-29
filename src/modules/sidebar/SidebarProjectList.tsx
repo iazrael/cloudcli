@@ -17,8 +17,6 @@ export default function SidebarProjectList({
   currentTime,
 
   deletingProjects,
-  tasksEnabled,
-  mcpServerStatus,
   getProjectSessions,
   onLoadMoreSessions,
   loadingMoreProjects,
@@ -102,8 +100,6 @@ export default function SidebarProjectList({
                 currentTime={currentTime}
                 sessionRenameId={renamingSession?.id ?? null}
                 sessionRenameDraft={renamingSession?.draft ?? ''}
-                tasksEnabled={tasksEnabled}
-                mcpServerStatus={mcpServerStatus}
                 onRenameDraftChange={onRenameDraftChange}
                 onToggleProject={onToggleProject}
                 onProjectSelect={onProjectSelect}

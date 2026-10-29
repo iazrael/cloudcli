@@ -1,4 +1,4 @@
-import { MessageSquare, Terminal, Folder, GitBranch, ClipboardCheck, MonitorPlay, type LucideIcon } from 'lucide-react';
+import { MessageSquare, Terminal, Folder, GitBranch, MonitorPlay, type LucideIcon } from 'lucide-react';
 import { Fragment } from 'react';
 import type { Dispatch, KeyboardEvent, SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -10,7 +10,6 @@ import { usePlugins,PluginIcon } from '@/modules/plugins';
 type WorkspaceTabsProps = {
   activeTab: AppTab;
   setActiveTab: Dispatch<SetStateAction<AppTab>>;
-  shouldShowTasksTab: boolean;
   shouldShowBrowserTab: boolean;
   /** Defaults to true so callers that predate the terminal-tab preference keep the tab. */
   shouldShowShellTab?: boolean;
@@ -53,18 +52,10 @@ const BROWSER_TAB: BuiltInTab = {
   icon: MonitorPlay,
 };
 
-const TASKS_TAB: BuiltInTab = {
-  kind: 'builtin',
-  id: 'tasks',
-  labelKey: 'tabs.tasks',
-  icon: ClipboardCheck,
-};
-
 /** Rendered by WorkspaceHeader to show the built-in workspace tabs plus any enabled plugin tabs. */
 export default function WorkspaceTabs({
   activeTab,
   setActiveTab,
-  shouldShowTasksTab,
   shouldShowBrowserTab,
   shouldShowShellTab = true,
 }: WorkspaceTabsProps) {
@@ -75,7 +66,6 @@ export default function WorkspaceTabs({
     ...BASE_TABS,
     ...(shouldShowShellTab ? [SHELL_TAB] : []),
     ...(shouldShowBrowserTab ? [BROWSER_TAB] : []),
-    ...(shouldShowTasksTab ? [TASKS_TAB] : []),
   ];
 
   const pluginTabs: PluginTab[] = plugins

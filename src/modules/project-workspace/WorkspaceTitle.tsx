@@ -10,12 +10,11 @@ type WorkspaceTitleProps = {
   activeTab: AppTab;
   selectedProject: Project;
   selectedSession: ProjectSession | null;
-  shouldShowTasksTab: boolean;
   /** Persists a new title for a session; resolves false when the backend refuses it. */
   onRenameSession: (sessionId: string, summary: string) => Promise<boolean>;
 };
 
-function getTabTitle(activeTab: AppTab, shouldShowTasksTab: boolean, t: (key: string) => string, pluginDisplayName?: string) {
+function getTabTitle(activeTab: AppTab, t: (key: string) => string, pluginDisplayName?: string) {
   if (activeTab.startsWith('plugin:') && pluginDisplayName) {
     return pluginDisplayName;
   }
@@ -26,10 +25,6 @@ function getTabTitle(activeTab: AppTab, shouldShowTasksTab: boolean, t: (key: st
 
   if (activeTab === 'git') {
     return t('tabs.git');
-  }
-
-  if (activeTab === 'tasks' && shouldShowTasksTab) {
-    return 'TaskMaster';
   }
 
   if (activeTab === 'browser') {
@@ -48,7 +43,6 @@ export default function WorkspaceTitle({
   activeTab,
   selectedProject,
   selectedSession,
-  shouldShowTasksTab,
   onRenameSession,
 }: WorkspaceTitleProps) {
   const { t } = useTranslation();
@@ -125,7 +119,7 @@ export default function WorkspaceTitle({
         ) : (
           <div className="min-w-0">
             <h2 className="truncate text-sm font-semibold leading-tight text-foreground">
-              {getTabTitle(activeTab, shouldShowTasksTab, t, pluginDisplayName)}
+              {getTabTitle(activeTab, t, pluginDisplayName)}
             </h2>
             <div className="truncate text-[11px] leading-tight text-muted-foreground">{selectedProject.displayName}</div>
           </div>

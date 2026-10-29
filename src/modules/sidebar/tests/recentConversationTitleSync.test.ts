@@ -59,7 +59,6 @@ const renderController = (initialProjects: Project[]) => renderHook(
     onRefresh: vi.fn(),
     onProjectSelect: vi.fn(),
     onSessionSelect: vi.fn(),
-    setCurrentProject: vi.fn(),
     setSidebarVisible: vi.fn(),
     sidebarVisible: true,
   }),

@@ -6,6 +6,10 @@ import { test } from 'vitest';
 import '@/modules/i18n';
 import AgentsSettingsTab from '@/modules/settings/tabs/agents-settings/AgentsSettingsTab';
 import type { AgentProvider, ProviderAuthStatus } from '@/shared/types';
+import { initI18n } from '@/modules/i18n';
+
+// Copy assertions need real translations; bundles load per language (see docs/design/i18n按语言懒加载.md).
+await initI18n();
 
 /**
  * The agents tab shows a "Permissions" tab for every provider, so a provider

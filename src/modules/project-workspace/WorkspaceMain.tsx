@@ -7,7 +7,6 @@ import { GitPanel } from '@/modules/git-panel';
 import { PluginTabContent } from '@/modules/plugins';
 import { BrowserUsePanel, useBrowserUseEnabled } from '@/modules/browser-use';
 import { usePaletteOpsRegister } from '@/modules/command-palette';
-import { TaskMasterPanel, useTaskMasterProjectSync, useTasksSettings } from '@/modules/task-master';
 import type { AppTab, DirectoryRevealRequest, Project, ProjectSession, SessionEstablishedContext, SessionNavigationOptions, SettingsMainTab } from '@/shared/types';
 import { useUiPreferences } from '@/shared/context/UiPreferencesContext';
 import {
@@ -43,7 +42,7 @@ type WorkspaceMainProps = {
   onRenameSession: (sessionId: string, summary: string) => Promise<boolean>;
 };
 
-/** Rendered by ProjectMainRegion to show the selected project's active tab: chat, files, shell, git, tasks, browser or a plugin. */
+/** Rendered by ProjectMainRegion to show the selected project's active tab: chat, files, shell, git, browser or a plugin. */
 function WorkspaceMain({
   selectedProject,
   selectedSession,
@@ -72,16 +71,13 @@ function WorkspaceMain({
   const processingSessions = useProcessingSessions();
   const { markSessionProcessing, markSessionIdle } = useSessionProtectionActions();
 
-  const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings();
   const browserUseEnabled = useBrowserUseEnabled();
   const { showTerminalTab } = useUiPreferences();
 
-  useTaskMasterProjectSync(selectedProject);
   // The folder an in-chat `path/` reference asked to reveal. Held as an object
   // so that re-clicking the same folder is a new request the tree acts on.
   const [revealDirectory, setRevealDirectory] = useState<DirectoryRevealRequest | null>(null);
 
-  const shouldShowTasksTab = Boolean(tasksEnabled && isTaskMasterInstalled);
   const shouldShowBrowserTab = browserUseEnabled;
   const shouldShowShellTab = showTerminalTab;
 
@@ -106,12 +102,6 @@ function WorkspaceMain({
   const resolvedFileOpen = useFileOpenResolver(selectedProject, handleFileOpen);
 
   useEffect(() => {
-    if (!shouldShowTasksTab && activeTab === 'tasks') {
-      setActiveTab('chat');
-    }
-  }, [shouldShowTasksTab, activeTab, setActiveTab]);
-
-  useEffect(() => {
     if (!shouldShowBrowserTab && activeTab === 'browser') {
       setActiveTab('chat');
     }
@@ -126,10 +116,6 @@ function WorkspaceMain({
   // Stable so React.memo(ChatInterface) can bail out: an inline arrow here made
   // every WorkspaceMain render re-render the whole chat tree, including during
   // an editor-divider drag.
-  const showAllTasks = useCallback(() => {
-    setActiveTab('tasks');
-  }, [setActiveTab]);
-
   const openFile = useCallback((filePath: string) => {
     if (handleFileOpen(filePath)) {
       setActiveTab('files');
@@ -166,7 +152,6 @@ function WorkspaceMain({
         setActiveTab={setActiveTab}
         selectedProject={selectedProject}
         selectedSession={selectedSession}
-        shouldShowTasksTab={shouldShowTasksTab}
         shouldShowBrowserTab={shouldShowBrowserTab}
         shouldShowShellTab={shouldShowShellTab}
         isMobile={isMobile}
@@ -196,7 +181,6 @@ function WorkspaceMain({
                 sendByCtrlEnter={sendByCtrlEnter}
                 externalMessageUpdate={externalMessageUpdate}
                 newSessionTrigger={newSessionTrigger}
-                onShowAllTasks={tasksEnabled ? showAllTasks : null}
               />
             </WorkspaceErrorBoundary>
           </div>
@@ -233,8 +217,6 @@ function WorkspaceMain({
               />
             </div>
           )}
-
-          {shouldShowTasksTab && <TaskMasterPanel isVisible={activeTab === 'tasks'} />}
 
           {shouldShowBrowserTab && activeTab === 'browser' && (
             <div className="h-full overflow-hidden">

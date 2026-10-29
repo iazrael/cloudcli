@@ -28,7 +28,7 @@ function getArrowClasses(position: TooltipPosition): string {
   }
 }
 
-/** Used by the project-workspace, sidebar and task-master modules and by the shared PromptInput primitive. */
+/** Used by the project-workspace and sidebar modules and by the shared PromptInput primitive. */
 export function Tooltip({
   children,
   content,

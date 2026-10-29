@@ -5,6 +5,10 @@ import { afterEach, beforeEach, test, vi } from 'vitest';
 
 import '@/modules/i18n';
 import type { AppTab, Project } from '@/shared/types';
+import { initI18n } from '@/modules/i18n';
+
+// Copy assertions need real translations; bundles load per language (see docs/design/i18n按语言懒加载.md).
+await initI18n();
 
 /**
  * Issue #582: a dropped chat socket changed nothing on screen, so the user kept
@@ -81,7 +85,6 @@ const header = (activeTab: AppTab) => (
       setActiveTab={() => undefined}
       selectedProject={PROJECT}
       selectedSession={null}
-      shouldShowTasksTab={false}
       shouldShowBrowserTab={false}
       shouldShowShellTab={false}
       isMobile={false}

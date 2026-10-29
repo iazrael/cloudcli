@@ -161,8 +161,7 @@ export default defineConfig(({ mode }) => {
             if (localeLanguage) {
               return `locale-${localeLanguage}`;
             }
-            // settings and task-master cross-import each other; keep them in the same chunk to prevent cycle
-            if (id.includes('/src/modules/settings/') || id.includes('/src/modules/task-master/')) {
+            if (id.includes('/src/modules/settings/')) {
               return 'module-settings';
             }
             if (id.includes('/src/modules/git-panel/')) {

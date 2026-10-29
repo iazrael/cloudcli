@@ -37,7 +37,7 @@ type ShellProps = {
   isActive?: boolean;
 };
 
-/** Exported through the shell barrel: the standalone-shell module renders it as a full-page terminal and the task-master module embeds it in its setup modal to run TaskMaster's init command. */
+/** Exported through the shell barrel; the standalone-shell module renders it as a full-page terminal. */
 export default function Shell({
   selectedProject = null,
   selectedSession = null,

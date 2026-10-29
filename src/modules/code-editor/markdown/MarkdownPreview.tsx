@@ -49,7 +49,7 @@ const markdownPreviewComponents: Components = {
   ),
 };
 
-/** Used by the prd-editor module, and by CodeEditorSurface inside code-editor, to render markdown source as formatted preview output. */
+/** Used by CodeEditorSurface inside code-editor to render markdown source as formatted preview output. */
 export default function MarkdownPreview({ content, imageContext = null }: MarkdownPreviewProps) {
   const remarkPlugins = useMemo(() => [remarkGfm, [remarkMath, { singleDollarTextMath: false }]] as any, []);
   const rehypePlugins = useMemo(() => [rehypeKatex], []);

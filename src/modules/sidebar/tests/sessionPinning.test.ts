@@ -53,7 +53,6 @@ const renderController = (onRefresh = vi.fn()) => {
   const callbacks = {
     onProjectSelect: vi.fn(),
     onSessionSelect: vi.fn(),
-    setCurrentProject: vi.fn(),
     setSidebarVisible: vi.fn(),
   };
   return renderHook(() => useSidebarController({

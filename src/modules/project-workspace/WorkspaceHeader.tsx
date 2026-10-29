@@ -14,7 +14,6 @@ type WorkspaceHeaderProps = {
   setActiveTab: Dispatch<SetStateAction<AppTab>>;
   selectedProject: Project;
   selectedSession: ProjectSession | null;
-  shouldShowTasksTab: boolean;
   shouldShowBrowserTab: boolean;
   shouldShowShellTab: boolean;
   isMobile: boolean;
@@ -29,7 +28,6 @@ export default function WorkspaceHeader({
   setActiveTab,
   selectedProject,
   selectedSession,
-  shouldShowTasksTab,
   shouldShowBrowserTab,
   shouldShowShellTab,
   isMobile,
@@ -106,7 +104,6 @@ export default function WorkspaceHeader({
             activeTab={activeTab}
             selectedProject={selectedProject}
             selectedSession={selectedSession}
-            shouldShowTasksTab={shouldShowTasksTab}
             onRenameSession={onRenameSession}
           />
           <WorkspaceConnectionStatus />
@@ -128,7 +125,6 @@ export default function WorkspaceHeader({
               <WorkspaceTabs
                 activeTab={activeTab}
                 setActiveTab={setActiveTab}
-                shouldShowTasksTab={shouldShowTasksTab}
                 shouldShowBrowserTab={shouldShowBrowserTab}
                 shouldShowShellTab={shouldShowShellTab}
               />
