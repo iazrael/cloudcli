@@ -154,8 +154,12 @@ export default defineConfig(({ mode }) => {
                 return 'vendor-utils';
               }
             }
-            if (id.includes('/src/modules/i18n/locales/')) {
-              return 'i18n-locales';
+            // Locale JSON is reachable only through the dynamic loader in
+            // resources.ts, so each language becomes its own lazy chunk and
+            // startup downloads just the saved language plus en.
+            const localeLanguage = /\/src\/modules\/i18n\/locales\/([^/]+)\//.exec(id)?.[1];
+            if (localeLanguage) {
+              return `locale-${localeLanguage}`;
             }
             // settings and task-master cross-import each other; keep them in the same chunk to prevent cycle
             if (id.includes('/src/modules/settings/') || id.includes('/src/modules/task-master/')) {

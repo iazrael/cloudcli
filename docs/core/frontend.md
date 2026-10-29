@@ -1,6 +1,6 @@
 # 前端架构（Frontend）
 
-> 基准：2.11.0 / 2026-10-24
+> 基准：2.11.0 / 2026-10-24（i18n 节 2026-10-29 核对）
 > **核心文档**：改动 `src/shared/**` 或聊天渲染/性能相关代码时**必须同步更新本文**。
 > 普通 bug 修复不动架构的不需要更新（提交时走 `--no-verify`，见 `AGENTS.md`）。
 
@@ -152,8 +152,9 @@ MCP 服务器表单按 `useProviderMcpCapabilities()` 渲染。首屏与请求�
 
 ## i18n
 
-- 目录 `src/modules/i18n/`：11 种语言 × 7 个命名空间（auth/chat/codeEditor/common/settings/sidebar/tasks）= 77 个 JSON。
-- 新增用户可见文案必须走 i18n key；**en / zh-CN / zh-TW 三份必须给全**，其余语言可暂缺（回退英文）——这是当前维护约定，翻译覆盖面以 `src/modules/i18n/locales/` 现状为准。
+- 目录 `src/modules/i18n/`：15 种语言目录，命名空间按文件存在（8 种：auth/chat/codeEditor/common/git/settings/sidebar/tasks），覆盖面以 `src/modules/i18n/locales/` 现状为准；语言清单在 `languages.ts`。
+- **翻译按语言懒加载**：`resources.ts` 用 `import.meta.glob` 动态引用全部 JSON，Vite 按 `vite.config.js` 的 `locale-<lang>` 规则切成每语言一个懒 chunk；启动只加载当前语言 + en（`initI18n`，在 `main.tsx` 首帧渲染前完成），切换语言走 `switchLanguage`（先载 bundle 再 `changeLanguage`），跨设备偏好同步同样走它。bundle 加载失败降级为显示 key，不阻塞启动。
+- 新增用户可见文案必须走 i18n key；**en / zh-CN / zh-TW 三份必须给全**，其余语言可暂缺（回退英文）——这是当前维护约定。
 
 ## PWA 与版本
 
