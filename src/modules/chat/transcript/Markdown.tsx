@@ -12,6 +12,7 @@ import { SyntaxHighlighter, isRegisteredLanguage } from '@/modules/chat/composer
 import { MermaidDiagram } from '@/modules/code-editor';
 import { normalizeInlineCodeFences } from '@/modules/chat/utils/chatFormatting';
 import { normalizeLatexDelimiters } from '@/modules/chat/utils/latexDelimiters';
+import { remarkImageReferences } from '@/modules/chat/utils/remarkImageReferences';
 import { api, readApiJson } from '@/shared/api';
 import { MarkdownWorkspaceContext } from '@/modules/chat/context/MarkdownWorkspaceContext';
 import { shouldProxyLocalHref } from '@/modules/chat/utils/localProxyLink';
@@ -20,6 +21,7 @@ import {
   filePathFromFileUrl,
   fileReferenceFromMarkdownHref,
   isFileUrl,
+  isImageReference,
   markdownUrlTransform,
 } from '@/shared/utils';
 import { UnifiedImageViewer } from '@/shared/ui';
@@ -380,6 +382,49 @@ function MarkdownImageContent({ src = '', alt, node: _node, projectId, ...props 
   );
 }
 
+function ImageReferenceLink({ source, projectId, children }: { source: string; projectId: string | null; children: React.ReactNode }) {
+  const { t } = useTranslation('chat');
+  const target = resolveImageTarget(source);
+  // 只有用户点击才申请签名和显示查看器。
+  const [expanded, setExpanded] = useState(false);
+  // 远程图片的解码失败不属于本地签名请求，单独保留以提供重试。
+  const [browserFailed, setBrowserFailed] = useState(false);
+  const signed = useSignedImage(expanded && target.kind === 'absolute'
+    ? { kind: 'external', path: target.path, ...(projectId ? { projectId, projectFallback: true } : {}) }
+    : expanded && target.kind === 'relative' && projectId ? { kind: 'project', path: target.path, projectId } : null, { eager: true });
+  const unresolved = target.kind === 'unresolved' || (target.kind === 'relative' && !projectId);
+  const error = expanded ? unresolved ? 'unresolved' : browserFailed ? 'failed' : signed.error : undefined;
+  const imageSrc = target.kind === 'browser' ? target.src : signed.url;
+  const path = target.kind === 'absolute' || target.kind === 'relative' ? target.path : source;
+  const loading = expanded && !imageSrc && !error;
+  const open = () => {
+    setExpanded(true);
+    setBrowserFailed(false);
+    if (signed.error) signed.retry();
+  };
+
+  return <>
+    <button type="button" title={source} disabled={loading} aria-busy={loading || undefined}
+      className="max-w-full break-all text-left text-blue-600 hover:underline dark:text-blue-400 [&_code]:text-inherit"
+      onClickCapture={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        open();
+      }}>{children}</button>
+    {loading && <span role="status" className="ml-2 text-xs text-muted-foreground">{t('codeEditor:filePreview.loading')}</span>}
+    {error && <span role="status" className="ml-2 inline-flex max-w-full flex-wrap items-center gap-2 text-xs text-muted-foreground">
+      <span>{t(`imageLoad.${error}`)}</span>
+      <code className="break-all">{path}</code>
+      {!unresolved && <button type="button" onClick={open}>{t('common:buttons.retry')}</button>}
+    </span>}
+    {expanded && imageSrc && !error && <UnifiedImageViewer src={imageSrc} alt={source} title={source} filePath={path}
+      resolveSrc={target.kind === 'browser' ? undefined : signed.ensureFresh}
+      onImageError={target.kind === 'browser' ? () => setBrowserFailed(true) : signed.onError}
+      onImageLoad={target.kind === 'browser' ? undefined : signed.onLoad}
+      onClose={() => setExpanded(false)} />}
+  </>;
+}
+
 const markdownComponents = {
   code: CodeBlock,
   // 工作区引用转换为短期签名 URL，浏览器直接加载字节。
@@ -455,12 +500,13 @@ export const MarkdownBody = memo(function MarkdownBody({ children, breaks = fals
   const exceedsParseBudget = useMemo(() => longestInlineRun(content) > INLINE_RUN_PARSE_LIMIT, [content]);
   const remarkPlugins = useMemo(
     () => (breaks
-      ? [remarkGfm, [remarkMath, { singleDollarTextMath: false }], remarkBreaks]
-      : [remarkGfm, [remarkMath, { singleDollarTextMath: false }]]) as any,
+      ? [remarkGfm, [remarkMath, { singleDollarTextMath: false }], remarkBreaks, remarkImageReferences]
+      : [remarkGfm, [remarkMath, { singleDollarTextMath: false }], remarkImageReferences]) as any,
     [breaks],
   );
   const rehypePlugins = useMemo(() => (hasMath ? [rehypeKatex] : EMPTY_PLUGINS), [hasMath]);
   const { openFileInEditor, openDirectory } = usePaletteOps();
+  const { projectId } = useContext(MarkdownWorkspaceContext);
   const { t } = useTranslation('chat');
 
   const components = useMemo(
@@ -474,6 +520,11 @@ export const MarkdownBody = memo(function MarkdownBody({ children, breaks = fals
         const linkText = childrenToText(linkChildren);
         const pathHref = fileReferenceFromMarkdownHref(href);
         const fileRef = looksLikeFilePath(pathHref) ? pathHref : looksLikeFilePath(linkText) ? linkText : undefined;
+
+        const imageSource = href?.trim() || linkText.trim();
+        if (isImageReference(imageSource) && !shouldProxyLocalHref(imageSource, window.location.origin)) {
+          return <ImageReferenceLink key={JSON.stringify([projectId, imageSource])} source={imageSource} projectId={projectId}>{linkChildren}</ImageReferenceLink>;
+        }
 
         if (fileRef && !isExternalHref(pathHref)) {
           return (
@@ -527,7 +578,7 @@ export const MarkdownBody = memo(function MarkdownBody({ children, breaks = fals
         );
       },
     }),
-    [openFileInEditor, t],
+    [openFileInEditor, openDirectory, projectId, t],
   );
 
   if (exceedsParseBudget) {

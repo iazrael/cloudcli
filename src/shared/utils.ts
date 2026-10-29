@@ -550,6 +550,24 @@ export function isImageAttachment(attachment: ChatAttachment): boolean {
 
 //----------------- MARKDOWN URLS ------------
 
+/** 聊天渲染与地址识别共用：仅识别带明确图片扩展名的文件引用或 HTTP 地址，不读取文件。 */
+export function isImageReference(value: string): boolean {
+  const reference = value.trim();
+  const imageExtension = /\.(?:apng|avif|bmp|gif|ico|jpe?g|png|svg|tiff?|webp)$/i;
+  if (!reference || /[\r\n<>"'`|]/.test(reference)) return false;
+  if (/^(?:https?:\/\/|\/\/)/i.test(reference)) {
+    try {
+      return imageExtension.test(new URL(reference, window.location.href).pathname);
+    } catch {
+      return false;
+    }
+  }
+  if (/^[a-z][a-z0-9+.-]*:/i.test(reference) && !/^(?:file:\/\/|[a-z]:[/\\])/i.test(reference)) return false;
+  if (/\s/.test(reference) && !/^(?:[/\\]|\.{1,2}[/\\]|[a-z]:[/\\]|file:\/\/)/i.test(reference)) return false;
+  if (/^[^/\\]*=/.test(reference)) return false;
+  return imageExtension.test(reference) || imageExtension.test(reference.split(/[?#]/)[0]);
+}
+
 /**
  * Whether a URL points at a local file (`file://`). Providers such as
  * Antigravity link workspace-external documents and their images this way.
