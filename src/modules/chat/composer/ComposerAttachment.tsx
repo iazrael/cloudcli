@@ -76,7 +76,7 @@ const ComposerAttachment = ({ file, onRemove, error, uploadProgress }: ComposerA
         <XIcon className="h-3 w-3" aria-hidden />
       </button>
       {expanded && preview && (
-        <ImageLightbox src={preview} alt={file.name} onClose={() => setExpanded(false)} />
+        <ImageLightbox src={preview} alt={file.name} filePath={file.name} onClose={() => setExpanded(false)} />
       )}
     </div>
   );

@@ -28,8 +28,8 @@ function useChatImageSrc(image: ChatImage, projectId?: string | null) {
  * Used by chat's ComposerAttachment to expand an attachment preview to full size
  * using the unified image viewer.
  */
-export function ImageLightbox({ src, alt, onClose }: { src: string; alt: string; onClose: () => void }) {
-  return <UnifiedImageViewer src={src} alt={alt} title={alt} onClose={onClose} />;
+export function ImageLightbox({ src, alt, filePath, onClose }: { src: string; alt: string; filePath?: string; onClose: () => void }) {
+  return <UnifiedImageViewer src={src} alt={alt} title={alt} filePath={filePath} onClose={onClose} />;
 }
 
 /** 聊天时间线用此组件显示签名附件预览并打开统一查看器。 */
@@ -77,7 +77,7 @@ export function ChatMessageImage({ image, projectId }: { image: ChatImage; proje
           title={alt}
           resolveSrc={image.data && !image.data.startsWith('/api/') ? undefined : signed.ensureFresh}
           onImageError={signed.onError} onImageLoad={signed.onLoad}
-          filePath={image.path || undefined}
+          filePath={image.path || (image.data?.startsWith('/api/assets/images/') ? image.data : undefined)}
           onClose={() => setExpanded(false)}
         />
       )}

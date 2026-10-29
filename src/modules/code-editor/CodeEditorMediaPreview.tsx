@@ -187,6 +187,7 @@ export default function CodeEditorMediaPreview({
         return (
           <CodeEditorImageViewer
             src={currentUrl}
+            filePath={file.path}
             alt={file.name}
             viewerRef={imageViewerRef}
             onScaleChange={setImageScale}
@@ -220,7 +221,7 @@ export default function CodeEditorMediaPreview({
   };
 
   const previewBody = (
-    <div className={`relative flex h-full w-full flex-col items-center justify-center bg-muted/30 ${kind === 'image' ? 'overflow-hidden p-0' : 'p-2'}`}>
+    <div className={`relative flex min-h-0 w-full flex-1 flex-col items-center justify-center bg-muted/30 ${kind === 'image' ? 'overflow-hidden p-0' : 'p-2'}`}>
       {currentLoading && (
         <div className="text-sm text-muted-foreground">{labels.loading}</div>
       )}

@@ -111,7 +111,7 @@ export function UnifiedImageViewer({
       role="dialog"
       aria-modal="true"
       aria-label={displayName}
-      className="fixed inset-0 z-[100] flex touch-none select-none flex-col bg-black/90 backdrop-blur-md"
+      className="fixed inset-0 z-[100] flex flex-col bg-black/90 backdrop-blur-md"
       onClick={(e) => {
         // Close if clicking outside the image container
         if (e.target === e.currentTarget) {
@@ -222,6 +222,8 @@ export function UnifiedImageViewer({
       <main className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden">
         <ImageViewerSurface
           src={src}
+          filePath={filePath}
+          dark
           onError={onImageError} onLoad={onImageLoad}
           alt={displayName}
           viewerRef={viewerRef}
@@ -229,14 +231,6 @@ export function UnifiedImageViewer({
         />
       </main>
 
-      {/* Bottom Path Indicator if available */}
-      {filePath && (
-        <footer className="pointer-events-none relative z-10 flex shrink-0 justify-center px-4 py-2">
-          <span className="max-w-[90vw] truncate rounded-full border border-white/10 bg-black/60 px-3 py-1 font-mono text-[11px] text-white/70 shadow backdrop-blur-md">
-            {filePath}
-          </span>
-        </footer>
-      )}
     </div>,
     document.body,
   );

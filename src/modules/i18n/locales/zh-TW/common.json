@@ -1,4 +1,9 @@
 {
+  "imageViewer": {
+    "noPath": "無檔案路徑",
+    "copied": "路徑已複製。",
+    "copyFailed": "複製失敗，請選取上方路徑手動複製。"
+  },
   "buttons": {
     "save": "儲存",
     "cancel": "取消",

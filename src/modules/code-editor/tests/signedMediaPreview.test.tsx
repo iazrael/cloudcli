@@ -39,3 +39,18 @@ it('renews an expired ticket before opening an image in a new tab', async () => 
   await waitFor(() => expect(replace).toHaveBeenCalledWith('/api/media/images?ticket=renewed'));
   expect(popup.opener).toBeNull();
 });
+
+it('shows dimensions and copies the file path in the editor preview', async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+  render(<CodeEditorMediaPreview file={{ name: 'metadata.png', path: '/repo/metadata.png' }}
+    kind="image" projectId="editor-p" isSidebar={false} isFullscreen onClose={() => {}} onToggleFullscreen={() => {}}
+    labels={{ loading: 'loading', error: 'error', openInNewTab: 'open', fullscreen: 'full', exitFullscreen: 'exit', close: 'close' }} />);
+  const image = await screen.findByRole('img');
+  Object.defineProperties(image, { naturalWidth: { value: 640 }, naturalHeight: { value: 480 } });
+  fireEvent.load(image);
+  expect(screen.getByText('640 × 480 px')).toBeTruthy();
+  expect(screen.getByText('/repo/metadata.png')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: '复制路径' }));
+  await waitFor(() => expect(writeText).toHaveBeenCalledWith('/repo/metadata.png'));
+});
