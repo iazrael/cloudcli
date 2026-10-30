@@ -291,8 +291,10 @@ test('paths/exists forwards the batch and echoes per-path statuses', async () =>
   });
 
   assert.deepEqual(inputs, [[
-    { id: 'a', path: 'src/a.ts', projectId: 'p1' },
-    { id: 'b', path: '/tmp/b.txt' },
+    [
+      { id: 'a', path: 'src/a.ts', projectId: 'p1' },
+      { id: 'b', path: '/tmp/b.txt' },
+    ],
   ]]);
 });
 
