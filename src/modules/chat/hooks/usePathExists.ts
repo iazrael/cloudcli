@@ -124,3 +124,23 @@ export function usePathExists(source: PathExistenceSource | null): PathExistence
   if (!sourceKey) return 'unknown';
   return verdictState?.key === sourceKey ? verdictState.verdict : 'pending';
 }
+
+/**
+ * 双候选探测（会话工作树优先、项目根兜底）：任一候选存在即算存在并给出
+ * 该候选路径；全部非空候选都明确缺失才算缺失；有待定结论保持 pending，
+ * 有未知结论保持 unknown，调用方据此维持可点。
+ */
+export function usePathExistsCandidates(
+  primary: PathExistenceSource | null,
+  fallback: PathExistenceSource | null,
+): { verdict: PathExistenceVerdict; existsPath: string | null } {
+  const primaryVerdict = usePathExists(primary);
+  const fallbackVerdict = usePathExists(fallback);
+  if (primary && primaryVerdict === 'exists') return { verdict: 'exists', existsPath: primary.path };
+  if (fallback && fallbackVerdict === 'exists') return { verdict: 'exists', existsPath: fallback.path };
+  const verdicts = [primary ? primaryVerdict : null, fallback ? fallbackVerdict : null].filter((v): v is PathExistenceVerdict => v !== null);
+  if (verdicts.length === 0) return { verdict: 'unknown', existsPath: null };
+  if (verdicts.every((verdict) => verdict === 'missing')) return { verdict: 'missing', existsPath: null };
+  if (verdicts.some((verdict) => verdict === 'unknown')) return { verdict: 'unknown', existsPath: null };
+  return { verdict: 'pending', existsPath: null };
+}

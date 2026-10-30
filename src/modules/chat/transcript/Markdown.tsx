@@ -7,15 +7,16 @@ import rehypeKatex from 'rehype-katex';
 import { oneDark, oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { useTranslation } from 'react-i18next';
 
-import { useSignedImage } from '@/shared/hooks/useSignedImage';
-import { usePathExists } from '@/modules/chat/hooks/usePathExists';
+import { useSignedImageCandidates } from '@/modules/chat/hooks/useSignedImageCandidates';
+import { usePathExistsCandidates } from '@/modules/chat/hooks/usePathExists';
 import { SyntaxHighlighter, isRegisteredLanguage } from '@/modules/chat/composer/codeHighlightLanguages';
 import { MermaidDiagram } from '@/modules/code-editor';
 import { normalizeInlineCodeFences } from '@/modules/chat/utils/chatFormatting';
 import { normalizeLatexDelimiters } from '@/modules/chat/utils/latexDelimiters';
 import { remarkImageReferences } from '@/modules/chat/utils/remarkImageReferences';
 import { remarkFileReferences } from '@/modules/chat/utils/remarkFileReferences';
-import { lineFromRef, looksLikeFilePath, stripLineSuffix } from '@/modules/chat/utils/fileReference';
+import { isLocalAbsolutePath, joinWorktreePath, lineFromRef, looksLikeFilePath, referenceProbeCandidates, stripLineSuffix } from '@/modules/chat/utils/fileReference';
+import type { ImageMediaSource } from '@/shared/types';
 import { api, readApiJson } from '@/shared/api';
 import { MarkdownWorkspaceContext } from '@/modules/chat/context/MarkdownWorkspaceContext';
 import { shouldProxyLocalHref } from '@/modules/chat/utils/localProxyLink';
@@ -253,16 +254,33 @@ const CodeBlock = memo(function CodeBlock({ node: _node, className, children, fo
 // 不按目录层级或扩展名猜测是否可读，权限由后端校验。
 const COMMON_STATIC_WEB_PREFIX_RE = /^\/(assets|static|public|icons|images|favicon|logo)[/.?#]/i;
 const BROWSER_LOADABLE_IMAGE_SRC = /^(https?:|data:|blob:)/i;
-const WINDOWS_ABSOLUTE_PATH_RE = /^[a-z]:[/\\]/i;
-
-// 判断引用是否为本机绝对路径；`\\` 覆盖 Windows UNC 写法。
-const isLocalAbsolutePath = (value: string): boolean =>
-  value.startsWith('/') || value.startsWith('\\\\') || WINDOWS_ABSOLUTE_PATH_RE.test(value);
 
 type MarkdownImageTarget =
   | { kind: 'browser'; src: string }
   | { kind: 'absolute' | 'relative'; path: string }
   | { kind: 'unresolved' };
+
+/** 相对图片引用的双候选签名源：会话工作树拼接路径优先（外部接口 + 项目回退），项目根兜底；绝对路径维持单一候选。 */
+function signedImageSources(
+  target: MarkdownImageTarget,
+  projectId: string | null,
+  worktreePath: string | null,
+): { primary: ImageMediaSource | null; fallback: ImageMediaSource | null } {
+  const absolute = target.kind === 'absolute' ? target.path : null;
+  if (absolute) {
+    return {
+      primary: { kind: 'external', path: absolute, ...(projectId ? { projectId, projectFallback: true } : {}) },
+      fallback: null,
+    };
+  }
+  if (target.kind !== 'relative' || !projectId) return { primary: null, fallback: null };
+  const projectSource: ImageMediaSource = { kind: 'project', projectId, path: target.path };
+  if (!worktreePath) return { primary: projectSource, fallback: null };
+  return {
+    primary: { kind: 'external', path: joinWorktreePath(worktreePath, target.path), projectId, projectFallback: true },
+    fallback: projectSource,
+  };
+}
 
 function resolveImageTarget(src: string): MarkdownImageTarget {
   const value = src.trim();
@@ -294,21 +312,20 @@ type ImageLoadError = 'unauthorized' | 'forbidden' | 'notFound' | 'failed' | 'de
 
 // 历史消息与流式回复共用此入口，本地文件复用鉴权接口，失败时保留引用。
 function MarkdownImage(props: MarkdownImageProps) {
-  const { projectId } = useContext(MarkdownWorkspaceContext);
-  // 引用或项目变化时销毁旧的展开及错误状态。
-  return <MarkdownImageContent key={JSON.stringify([projectId, props.src])} {...props} projectId={projectId} />;
+  const { projectId, worktreePath } = useContext(MarkdownWorkspaceContext);
+  // 引用、项目或工作树变化时销毁旧的展开及错误状态。
+  return <MarkdownImageContent key={JSON.stringify([projectId, worktreePath, props.src])} {...props} projectId={projectId} worktreePath={worktreePath ?? null} />;
 }
 
-function MarkdownImageContent({ src = '', alt, node: _node, projectId, ...props }: MarkdownImageProps & { projectId: string | null }) {
+function MarkdownImageContent({ src = '', alt, node: _node, projectId, worktreePath, ...props }: MarkdownImageProps & { projectId: string | null; worktreePath: string | null }) {
   const { t } = useTranslation('chat');
   const target = resolveImageTarget(src);
   const localPath = target.kind === 'absolute' ? target.path : undefined;
   const workspaceRelative = target.kind === 'relative' ? target.path : undefined;
   const browserSrc = target.kind === 'browser' ? target.src : undefined;
-  const { observe, ...signed } = useSignedImage(localPath
-    ? { kind: 'external', path: localPath, ...(projectId ? { projectId, projectFallback: true } : {}) }
-    : workspaceRelative && projectId ? { kind: 'project', path: workspaceRelative, projectId } : null);
-  const key = JSON.stringify([projectId, src]);
+  const sources = signedImageSources(target, projectId, worktreePath);
+  const { observe, ...signed } = useSignedImageCandidates(sources.primary, sources.fallback);
+  const key = JSON.stringify([projectId, worktreePath, src]);
   // 网页图片保留自己的加载错误；本地错误由签名 Hook 提供。
   const [browserFailed, setBrowserFailed] = useState(false);
   // 显示复制结果，让用户知道是否需要手动复制路径。
@@ -366,16 +383,20 @@ function MarkdownImageContent({ src = '', alt, node: _node, projectId, ...props 
   );
 }
 
-function ImageReferenceLink({ source, projectId, children }: { source: string; projectId: string | null; children: React.ReactNode }) {
+function ImageReferenceLink({ source, projectId, worktreePath, children }: {
+  source: string;
+  projectId: string | null;
+  worktreePath: string | null;
+  children: React.ReactNode;
+}) {
   const { t } = useTranslation('chat');
   const target = resolveImageTarget(source);
   // 查看器仍由用户点击打开；签名同时承担挂载时的存在性探测。
   const [expanded, setExpanded] = useState(false);
   // 远程图片的解码失败不属于本地签名请求，单独保留以提供重试。
   const [browserFailed, setBrowserFailed] = useState(false);
-  const signed = useSignedImage(target.kind === 'absolute'
-    ? { kind: 'external', path: target.path, ...(projectId ? { projectId, projectFallback: true } : {}) }
-    : target.kind === 'relative' && projectId ? { kind: 'project', path: target.path, projectId } : null, { eager: true });
+  const sources = signedImageSources(target, projectId, worktreePath);
+  const signed = useSignedImageCandidates(sources.primary, sources.fallback, { eager: true });
   const unresolved = target.kind === 'unresolved' || (target.kind === 'relative' && !projectId);
   const error = expanded ? unresolved ? 'unresolved' : browserFailed ? 'failed' : signed.error : undefined;
   const imageSrc = target.kind === 'browser' ? target.src : signed.url;
@@ -415,18 +436,24 @@ function ImageReferenceLink({ source, projectId, children }: { source: string; p
 }
 
 /** 聊天 Markdown 用它渲染本地文件与目录引用，探测明确不可读时退回普通文字。 */
-function FileReferenceLink({ href, reference, projectId, children }: {
+function FileReferenceLink({ href, reference, projectId, worktreePath, children }: {
   href: string;
   reference: string;
   projectId: string | null;
+  worktreePath: string | null;
   children: React.ReactNode;
 }) {
   const { openFileInEditor, openDirectory } = usePaletteOps();
   // 与点击目标保持一致：目录引用保留结尾斜杠，文件引用去掉行号后缀再探测。
   const probePath = reference.endsWith('/') ? reference : stripLineSuffix(reference);
-  const verdict = usePathExists(isLocalAbsolutePath(probePath) || projectId
-    ? { path: probePath, projectId: projectId ?? undefined }
-    : null);
+  const resolvable = isLocalAbsolutePath(probePath) || !!projectId;
+  const candidates = resolvable
+    ? referenceProbeCandidates(probePath, projectId, worktreePath)
+    : { primary: null, fallback: null };
+  const toProbeSource = (path: string | null) => path !== null && (isLocalAbsolutePath(path) || projectId)
+    ? { path, projectId: projectId ?? undefined }
+    : null;
+  const { verdict, existsPath } = usePathExistsCandidates(toProbeSource(candidates.primary), toProbeSource(candidates.fallback));
   if (verdict === 'missing') return <>{children}</>;
   return (
     <a
@@ -434,11 +461,13 @@ function FileReferenceLink({ href, reference, projectId, children }: {
       className="cursor-pointer text-blue-600 hover:underline dark:text-blue-400 [&_code]:text-inherit"
       onClick={(event) => {
         event.preventDefault();
+        // 工作树候选命中时打开那份副本，否则维持项目根语义的原始引用。
+        const target = verdict === 'exists' && existsPath ? existsPath : reference;
         if (reference.endsWith('/')) {
-          openDirectory(reference);
+          openDirectory(target);
           return;
         }
-        openFileInEditor(stripLineSuffix(reference), lineFromRef(reference));
+        openFileInEditor(stripLineSuffix(target), lineFromRef(reference));
       }}
     >
       {children}
@@ -526,7 +555,7 @@ export const MarkdownBody = memo(function MarkdownBody({ children, breaks = fals
     [breaks],
   );
   const rehypePlugins = useMemo(() => (hasMath ? [rehypeKatex] : EMPTY_PLUGINS), [hasMath]);
-  const { projectId } = useContext(MarkdownWorkspaceContext);
+  const { projectId, worktreePath } = useContext(MarkdownWorkspaceContext);
   const { t } = useTranslation('chat');
 
   const components = useMemo(
@@ -543,14 +572,14 @@ export const MarkdownBody = memo(function MarkdownBody({ children, breaks = fals
 
         const imageSource = href?.trim() || linkText.trim();
         if (isImageReference(imageSource) && !shouldProxyLocalHref(imageSource, window.location.origin)) {
-          return <ImageReferenceLink key={JSON.stringify([projectId, imageSource])} source={imageSource} projectId={projectId}>{linkChildren}</ImageReferenceLink>;
+          return <ImageReferenceLink key={JSON.stringify([projectId, worktreePath, imageSource])} source={imageSource} projectId={projectId} worktreePath={worktreePath ?? null}>{linkChildren}</ImageReferenceLink>;
         }
 
         if (fileRef && !isExternalHref(pathHref)) {
           return (
             // fileRef 来自链接文字回退时可能带尾随空格（``[`src/foo.ts:12` ]()``），
             // 会破坏按 `$` 锚定的行号后缀剥离，这里与点击时一样先归一化。
-            <FileReferenceLink href={pathHref || fileRef} reference={fileRef.trim()} projectId={projectId}>
+            <FileReferenceLink key={JSON.stringify([projectId, worktreePath, fileRef])} href={pathHref || fileRef} reference={fileRef.trim()} projectId={projectId} worktreePath={worktreePath ?? null}>
               {linkChildren}
             </FileReferenceLink>
           );
@@ -584,7 +613,7 @@ export const MarkdownBody = memo(function MarkdownBody({ children, breaks = fals
         );
       },
     }),
-    [projectId, t],
+    [projectId, worktreePath, t],
   );
 
   if (exceedsParseBudget) {

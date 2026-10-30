@@ -33,12 +33,22 @@ const resolveStatuses = (status: number) => async (items: PathExistenceRequest[]
 // every render in the provider so the components under test see one. The
 // workspace context supplies the project that relative references resolve
 // against — without it they stay unprobed and always clickable.
-const renderWithTheme = (ui: React.ReactElement, projectId: string | null = 'project-links') =>
+const renderWithTheme = (
+  ui: React.ReactElement,
+  projectId: string | null = 'project-links',
+  worktreePath: string | null = null,
+) =>
   render(
     <ThemeProvider>
-      <MarkdownWorkspaceContext.Provider value={{ projectId }}>{ui}</MarkdownWorkspaceContext.Provider>
+      <MarkdownWorkspaceContext.Provider value={{ projectId, worktreePath }}>{ui}</MarkdownWorkspaceContext.Provider>
     </ThemeProvider>,
   );
+
+// 按请求路径给出结论：命中集合里的路径算存在，其余一律 404。
+const resolveExistingPaths = (existing: string[]) => async (items: PathExistenceRequest[]) => ({
+  ok: true,
+  json: async () => ({ results: items.map(({ id, path }) => ({ id, status: existing.includes(path) ? 200 : 404 })) }),
+});
 
 
 describe('Markdown file links', () => {
@@ -102,6 +112,38 @@ describe('Markdown file links', () => {
     await waitFor(() => expect(screen.queryByRole('link')).toBeNull());
 
     expect(screen.getByText('AGENTS.md')).toBeTruthy();
+    expect(openFileInEditor).not.toHaveBeenCalled();
+  });
+
+  it('prefers the session worktree copy of a relative reference', async () => {
+    requestPathsExist.mockImplementation(resolveExistingPaths(['/repo/.worktrees/feat/reports/a.md']));
+
+    renderWithTheme(<Markdown>{'改了 [reports/a.md](reports/a.md)。'}</Markdown>, 'p', '/repo/.worktrees/feat');
+    fireEvent.click(await screen.findByRole('link', { name: 'reports/a.md' }));
+
+    expect(openFileInEditor).toHaveBeenCalledWith('/repo/.worktrees/feat/reports/a.md', null);
+    // 两个候选进同一次批量探测：工作树拼接路径优先，项目根相对路径兜底。
+    expect(requestPathsExist).toHaveBeenCalledWith([
+      expect.objectContaining({ path: '/repo/.worktrees/feat/reports/a.md' }),
+      expect.objectContaining({ path: 'reports/a.md' }),
+    ]);
+  });
+
+  it('falls back to the project root copy when the worktree one is missing', async () => {
+    requestPathsExist.mockImplementation(resolveExistingPaths(['docs/plan.md']));
+
+    renderWithTheme(<Markdown>{'见 `docs/plan.md`。'}</Markdown>, 'p', '/repo/.worktrees/feat');
+    fireEvent.click(await screen.findByRole('link', { name: 'docs/plan.md' }));
+
+    expect(openFileInEditor).toHaveBeenCalledWith('docs/plan.md', null);
+  });
+
+  it('renders a relative reference plain when neither worktree nor project root has it', async () => {
+    requestPathsExist.mockImplementation(resolveExistingPaths([]));
+
+    renderWithTheme(<Markdown>{'见 `docs/gone.md`。'}</Markdown>, 'p', '/repo/.worktrees/feat');
+    await waitFor(() => expect(screen.queryByRole('link')).toBeNull());
+
     expect(openFileInEditor).not.toHaveBeenCalled();
   });
 });

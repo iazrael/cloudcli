@@ -109,8 +109,11 @@ function ChatMessagesPane({
   selectedProject,
 }: ChatMessagesPaneProps) {
   const { t } = useTranslation('chat');
-  // 真实聊天入口统一提供项目身份，普通消息、流式消息和工具结果都继承它。
-  const markdownWorkspace = useMemo(() => ({ projectId: selectedProject.projectId }), [selectedProject.projectId]);
+  // 真实聊天入口统一提供项目身份与会话记录的运行工作树，普通消息、流式消息和工具结果都继承它们。
+  const markdownWorkspace = useMemo(
+    () => ({ projectId: selectedProject.projectId, worktreePath: selectedSession?.worktreePath ?? null }),
+    [selectedProject.projectId, selectedSession?.worktreePath],
+  );
 
   // Screens the touches that should have scrolled the transcript but did not,
   // so a report taken after "the list won't scroll" says which cause it was.

@@ -24,11 +24,20 @@ beforeEach(() => {
   }) }));
 });
 
-function renderMessage(content: string, projectId: string | null = 'project-images') {
-  return render(<ThemeProvider><MarkdownWorkspaceContext.Provider value={{ projectId }}>
+function renderMessage(content: string, projectId: string | null = 'project-images', worktreePath: string | null = null) {
+  return render(<ThemeProvider><MarkdownWorkspaceContext.Provider value={{ projectId, worktreePath }}>
     <Markdown>{content}</Markdown>
   </MarkdownWorkspaceContext.Provider></ThemeProvider>);
 }
+
+// 按签名请求里的路径区分候选：工作树拼接路径给 wt 票，其余给 root 票。
+const mockTicketsByPath = (wtPrefix: string) => async (images: ImageMediaRequest[]) => ({ ok: true, json: async () => ({
+  images: images.map((image) => ({
+    id: image.id,
+    url: 'path' in image && image.path?.startsWith(wtPrefix) ? '/api/media/images?ticket=wt' : '/api/media/images?ticket=root',
+    expiresAt: Date.now() + 600_000,
+  })),
+}) });
 
 test.each([
   ['`/Users/test/project/composite-2048.png`', '/Users/test/project/composite-2048.png', 'external'],
@@ -109,4 +118,41 @@ test('closes the previous viewer when the message reference changes', async () =
     <Markdown>{'`out/second.png`'}</Markdown>
   </MarkdownWorkspaceContext.Provider></ThemeProvider>);
   expect(screen.queryByRole('dialog')).toBeNull();
+});
+
+test('probes relative image references against the session worktree first', async () => {
+  requestImageUrls.mockImplementation(mockTicketsByPath('/repo/.worktrees/feat'));
+  renderMessage('`out/海岸.png`', 'project-images', '/repo/.worktrees/feat');
+
+  await waitFor(() => expect(requestImageUrls).toHaveBeenCalled());
+  expect(requestImageUrls).toHaveBeenCalledWith([
+    expect.objectContaining({ kind: 'external', path: '/repo/.worktrees/feat/out/海岸.png', projectFallback: true }),
+    expect.objectContaining({ kind: 'project', path: 'out/海岸.png', projectId: 'project-images' }),
+  ]);
+
+  fireEvent.click(screen.getByRole('button'));
+  const dialog = await screen.findByRole('dialog');
+  expect(within(dialog).getByRole('img').getAttribute('src')).toBe('/api/media/images?ticket=wt');
+});
+
+test('falls back to the project copy when the worktree image is missing', async () => {
+  requestImageUrls.mockImplementation(async (images: ImageMediaRequest[]) => ({ ok: true, json: async () => ({
+    images: images.map(({ id, kind }) => ({
+      id,
+      ...(kind === 'external' ? { status: 404, error: 'notFound' } : { url: '/api/media/images?ticket=root', expiresAt: Date.now() + 600_000 }),
+    })),
+  }) }));
+  renderMessage('`out/海岸.png`', 'project-images', '/repo/.worktrees/feat');
+
+  fireEvent.click(await screen.findByRole('button'));
+  const dialog = await screen.findByRole('dialog');
+  expect(within(dialog).getByRole('img').getAttribute('src')).toBe('/api/media/images?ticket=root');
+});
+
+test('renders a relative image reference plain when both candidates are missing', async () => {
+  requestImageUrls.mockResolvedValue({ ok: false, status: 404 });
+  renderMessage('`out/gone.png`', 'project-images', '/repo/.worktrees/feat');
+
+  await waitFor(() => expect(screen.queryByRole('button')).toBeNull());
+  expect(screen.getByText('out/gone.png')).toBeTruthy();
 });
