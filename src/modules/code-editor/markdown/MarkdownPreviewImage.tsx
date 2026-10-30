@@ -22,8 +22,7 @@ type MarkdownPreviewImageProps = {
  * image opens the shared image viewer.
  *
  * Used by code-editor's MarkdownPreview, which serves the code editor's file
- * viewer and the PRD editor; chat renders markdown through its own Markdown
- * component instead.
+ * viewer; chat renders markdown through its own Markdown component instead.
  */
 export default function MarkdownPreviewImage({ src, alt, title, context }: MarkdownPreviewImageProps) {
   const { t } = useTranslation();

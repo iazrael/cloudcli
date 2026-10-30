@@ -41,7 +41,8 @@ TaskMaster 是上游（claude-task-master 集成）的功能，本仓库不使�
 **i18n**
 
 - 删除 `tasks` 命名空间（仅 task-master 使用）×15 语言文件，`config.ts` ns 列表
-  同步移除。
+  同步移除；`settings.json` 的顶层 `tasks` 设置段与 `mainTabs.tasks` 侧栏文案
+  一并删除。
 
 **构建**
 

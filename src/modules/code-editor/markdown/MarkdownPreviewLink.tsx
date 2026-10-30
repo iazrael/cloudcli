@@ -17,7 +17,7 @@ type MarkdownPreviewLinkProps = {
   context: MarkdownImageContext;
 };
 
-/** 文件查看器和 PRD 编辑器通过 MarkdownPreview 使用；本地链接按文档目录解析。 */
+/** 代码编辑器的文件查看器通过 MarkdownPreview 使用；本地链接按文档目录解析。 */
 export default function MarkdownPreviewLink({ href = '', title, children, context }: MarkdownPreviewLinkProps) {
   const reference = href.trim();
   const nativeLink = !isFileUrl(reference) && !isWindowsAbsolutePath(reference)

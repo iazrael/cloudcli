@@ -493,7 +493,7 @@ export function formatBuildVersion(version: string, commit: string): string {
  * Share API is the platform answer there (Save to Files, AirDrop, …) and
  * never navigates away. Environments that cannot share files keep the
  * classic download link. Used by the chat file cards and transcript export,
- * the file tree, the code editor, the PRD editor, and the diagnostics report.
+ * the file tree, the code editor, and the diagnostics report.
  */
 export async function saveOrShareBlob(blob: Blob, filename: string): Promise<void> {
   const file = new File([blob], filename, { type: blob.type });
