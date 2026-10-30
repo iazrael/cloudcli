@@ -109,7 +109,6 @@
     "git": "Git",
     "apiTokens": "API a tokeny",
     "voice": "Hlas",
-    "tasks": "Úkoly",
     "browser": "Prohlížeč",
     "notifications": "Oznámení",
     "plugins": "Pluginy",
@@ -326,25 +325,6 @@
     "loading": "Načítání...",
     "version": {
       "updateAvailable": "K dispozici je aktualizace: v{{version}}"
-    }
-  },
-  "tasks": {
-    "checking": "Kontrola instalace TaskMaster...",
-    "notInstalled": {
-      "title": "Nástroj TaskMaster AI CLI není nainstalován",
-      "description": "Ke správě úkolů je potřeba nástroj TaskMaster CLI. Začněte jeho instalací:",
-      "installCommand": "npm install -g task-master-ai",
-      "viewOnGitHub": "Zobrazit na GitHubu",
-      "afterInstallation": "Po instalaci:",
-      "steps": {
-        "restart": "Restartujte tuto aplikaci",
-        "autoAvailable": "Funkce TaskMaster budou automaticky k dispozici",
-        "initCommand": "V adresáři projektu spusťte task-master init"
-      }
-    },
-    "settings": {
-      "enableLabel": "Zapnout integraci TaskMaster",
-      "enableDescription": "Zobrazovat v celém rozhraní úkoly TaskMaster, bannery a indikátory v postranním panelu"
     }
   },
   "agents": {

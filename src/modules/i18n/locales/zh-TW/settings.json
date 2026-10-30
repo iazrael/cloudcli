@@ -111,7 +111,6 @@
     "appearance": "外觀",
     "git": "Git",
     "apiTokens": "API 和權杖",
-    "tasks": "任務",
     "computer": "電腦使用",
     "notifications": "通知",
     "plugins": "外掛",
@@ -324,25 +323,6 @@
     "loading": "載入中...",
     "version": {
       "updateAvailable": "有可用更新：v{{version}}"
-    }
-  },
-  "tasks": {
-    "checking": "正在檢查 TaskMaster 安裝...",
-    "notInstalled": {
-      "title": "未安裝 TaskMaster AI CLI",
-      "description": "需要 TaskMaster CLI 才能使用任務管理功能。安裝它以開始使用：",
-      "installCommand": "npm install -g task-master-ai",
-      "viewOnGitHub": "在 GitHub 上查看",
-      "afterInstallation": "安裝後：",
-      "steps": {
-        "restart": "重新啟動此應用程式",
-        "autoAvailable": "TaskMaster 功能將自動啟用",
-        "initCommand": "在專案目錄中使用 task-master init"
-      }
-    },
-    "settings": {
-      "enableLabel": "啟用 TaskMaster 整合",
-      "enableDescription": "在整個介面中顯示 TaskMaster 任務、橫幅和側邊欄指示器"
     }
   },
   "agents": {

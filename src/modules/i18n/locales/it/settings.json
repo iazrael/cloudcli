@@ -111,7 +111,6 @@
     "appearance": "Aspetto",
     "git": "Git",
     "apiTokens": "API e Token",
-    "tasks": "Attività",
     "notifications": "Notifiche",
     "plugins": "Plugin",
     "about": "Informazioni",
@@ -311,25 +310,6 @@
     "loading": "Caricamento...",
     "version": {
       "updateAvailable": "Aggiornamento disponibile: v{{version}}"
-    }
-  },
-  "tasks": {
-    "checking": "Verifica installazione TaskMaster...",
-    "notInstalled": {
-      "title": "TaskMaster AI CLI non installato",
-      "description": "TaskMaster CLI è necessario per usare le funzionalità di gestione attività. Installalo per iniziare:",
-      "installCommand": "npm install -g task-master-ai",
-      "viewOnGitHub": "Vedi su GitHub",
-      "afterInstallation": "Dopo l'installazione:",
-      "steps": {
-        "restart": "Riavvia questa applicazione",
-        "autoAvailable": "Le funzionalità TaskMaster saranno automaticamente disponibili",
-        "initCommand": "Usa task-master init nella directory del tuo progetto"
-      }
-    },
-    "settings": {
-      "enableLabel": "Abilita integrazione TaskMaster",
-      "enableDescription": "Mostra attività TaskMaster, banner e indicatori nella barra laterale nell'interfaccia"
     }
   },
   "agents": {

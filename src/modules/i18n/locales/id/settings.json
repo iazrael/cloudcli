@@ -129,7 +129,6 @@
     "git": "Git",
     "apiTokens": "API & Token",
     "voice": "Suara",
-    "tasks": "Tugas",
     "browser": "Browser",
     "notifications": "Notifikasi",
     "plugins": "Plugin",
@@ -353,25 +352,6 @@
     "loading": "Memuat...",
     "version": {
       "updateAvailable": "Pembaruan tersedia: v{{version}}"
-    }
-  },
-  "tasks": {
-    "checking": "Memeriksa instalasi TaskMaster...",
-    "notInstalled": {
-      "title": "TaskMaster AI CLI Belum Terpasang",
-      "description": "TaskMaster CLI diperlukan untuk menggunakan fitur manajemen tugas. Instal untuk memulai:",
-      "installCommand": "npm install -g task-master-ai",
-      "viewOnGitHub": "Lihat di GitHub",
-      "afterInstallation": "Setelah instalasi:",
-      "steps": {
-        "restart": "Mulai ulang aplikasi ini",
-        "autoAvailable": "Fitur TaskMaster akan otomatis tersedia",
-        "initCommand": "Gunakan task-master init di direktori proyek"
-      }
-    },
-    "settings": {
-      "enableLabel": "Aktifkan Integrasi TaskMaster",
-      "enableDescription": "Tampilkan tugas, banner, dan indikator sidebar TaskMaster di seluruh antarmuka"
     }
   },
   "agents": {

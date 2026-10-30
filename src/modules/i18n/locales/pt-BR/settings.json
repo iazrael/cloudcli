@@ -129,7 +129,6 @@
     "git": "Git",
     "apiTokens": "API & Tokens",
     "voice": "Voz",
-    "tasks": "Tarefas",
     "browser": "Navegador",
     "notifications": "Notificações",
     "plugins": "Plugins",
@@ -353,25 +352,6 @@
     "loading": "Carregando...",
     "version": {
       "updateAvailable": "Atualização disponível: v{{version}}"
-    }
-  },
-  "tasks": {
-    "checking": "Verificando instalação do TaskMaster...",
-    "notInstalled": {
-      "title": "TaskMaster AI CLI não instalado",
-      "description": "O CLI do TaskMaster é necessário para usar recursos de gerenciamento de tarefas. Instale-o para começar:",
-      "installCommand": "npm install -g task-master-ai",
-      "viewOnGitHub": "Ver no GitHub",
-      "afterInstallation": "Após a instalação:",
-      "steps": {
-        "restart": "Reinicie este aplicativo",
-        "autoAvailable": "Os recursos do TaskMaster ficarão disponíveis automaticamente",
-        "initCommand": "Use task-master init no diretório do seu projeto"
-      }
-    },
-    "settings": {
-      "enableLabel": "Ativar integração com TaskMaster",
-      "enableDescription": "Mostrar tarefas, banners e indicadores da barra lateral do TaskMaster em toda a interface"
     }
   },
   "agents": {
