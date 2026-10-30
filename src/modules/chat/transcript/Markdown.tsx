@@ -14,6 +14,8 @@ import { MermaidDiagram } from '@/modules/code-editor';
 import { normalizeInlineCodeFences } from '@/modules/chat/utils/chatFormatting';
 import { normalizeLatexDelimiters } from '@/modules/chat/utils/latexDelimiters';
 import { remarkImageReferences } from '@/modules/chat/utils/remarkImageReferences';
+import { remarkFileReferences } from '@/modules/chat/utils/remarkFileReferences';
+import { lineFromRef, looksLikeFilePath, stripLineSuffix } from '@/modules/chat/utils/fileReference';
 import { api, readApiJson } from '@/shared/api';
 import { MarkdownWorkspaceContext } from '@/modules/chat/context/MarkdownWorkspaceContext';
 import { shouldProxyLocalHref } from '@/modules/chat/utils/localProxyLink';
@@ -70,29 +72,6 @@ async function openThroughLocalProxy(
 // everything else is treated as a workspace file reference.
 const isExternalHref = (href?: string): boolean =>
   !!href && (/^(https?:|mailto:|tel:|data:)/i.test(href) || href.startsWith('#'));
-
-// Read the trailing `:line` / `:line:col` suffix so the editor can reveal it.
-// Both this and stripLineSuffix are anchored at the end, so callers pass an
-// already-trimmed reference.
-const lineFromRef = (value: string): number | null => {
-  const match = value.match(/:(\d+)(?::\d+)?$/);
-  return match ? Number(match[1]) : null;
-};
-
-// Strip a trailing `:line` / `:line:col` suffix (e.g. `src/foo.ts:130`).
-const stripLineSuffix = (value: string): string => value.replace(/:\d+(?::\d+)?$/, '');
-
-// A usable file path contains a separator or a filename with an extension.
-const looksLikeFilePath = (value?: string): value is string => {
-  if (!value) {
-    return false;
-  }
-  const cleaned = stripLineSuffix(value.trim());
-  if (!cleaned || cleaned === '#') {
-    return false;
-  }
-  return /[\\/]/.test(cleaned) || /\.[a-z0-9]+$/i.test(cleaned);
-};
 
 // Extract plain text from link children so a reference rendered only as link
 // text (e.g. `[src/foo.ts]()` with an empty href) can still be opened.
@@ -452,7 +431,7 @@ function FileReferenceLink({ href, reference, projectId, children }: {
   return (
     <a
       href={href}
-      className="cursor-pointer text-blue-600 hover:underline dark:text-blue-400"
+      className="cursor-pointer text-blue-600 hover:underline dark:text-blue-400 [&_code]:text-inherit"
       onClick={(event) => {
         event.preventDefault();
         if (reference.endsWith('/')) {
@@ -542,8 +521,8 @@ export const MarkdownBody = memo(function MarkdownBody({ children, breaks = fals
   const exceedsParseBudget = useMemo(() => longestInlineRun(content) > INLINE_RUN_PARSE_LIMIT, [content]);
   const remarkPlugins = useMemo(
     () => (breaks
-      ? [remarkGfm, [remarkMath, { singleDollarTextMath: false }], remarkBreaks, remarkImageReferences]
-      : [remarkGfm, [remarkMath, { singleDollarTextMath: false }], remarkImageReferences]) as any,
+      ? [remarkGfm, [remarkMath, { singleDollarTextMath: false }], remarkBreaks, remarkImageReferences, remarkFileReferences]
+      : [remarkGfm, [remarkMath, { singleDollarTextMath: false }], remarkImageReferences, remarkFileReferences]) as any,
     [breaks],
   );
   const rehypePlugins = useMemo(() => (hasMath ? [rehypeKatex] : EMPTY_PLUGINS), [hasMath]);
