@@ -736,3 +736,44 @@ test('image inspection canonicalizes project files and rejects symlink escapes, 
     await assert.rejects(service.resolveImagePath({ path: 'inside.png', projectId: 'p', external: false }));
   } finally { await fsPromises.rm(root, { recursive: true, force: true }); }
 });
+
+test('checkPathsExist applies read boundaries without reading contents', async () => {
+  const root = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'cloudcli-path-exists-'));
+  try {
+    const project = path.join(root, 'project');
+    const outside = path.join(root, 'outside');
+    await fsPromises.mkdir(path.join(project, 'reports'), { recursive: true });
+    await fsPromises.mkdir(outside);
+    await fsPromises.writeFile(path.join(project, 'readme.md'), 'doc');
+    await fsPromises.writeFile(path.join(outside, 'secret.txt'), 'SECRET');
+    await fsPromises.writeFile(path.join(root, 'secret.txt'), 'SECRET');
+    const dependencies = createDependencies(createFakeFileSystem({ realpath: fsPromises.realpath, stat: fsPromises.stat }), project, [outside]);
+    const service = createFileTreeService(dependencies);
+
+    const results = await service.checkPathsExist([
+      { id: 'relative-file', path: 'readme.md', projectId: 'p' },
+      { id: 'relative-directory', path: 'reports/', projectId: 'p' },
+      { id: 'relative-missing', path: 'nope.md', projectId: 'p' },
+      { id: 'external-file', path: path.join(outside, 'secret.txt') },
+      { id: 'external-missing', path: path.join(outside, 'gone.txt') },
+      { id: 'outside-every-root', path: path.join(root, 'secret.txt'), projectId: 'p' },
+      { id: 'project-absolute', path: path.join(project, 'readme.md'), projectId: 'p' },
+      { id: 'relative-without-project', path: 'readme.md' },
+      { id: 'traversal', path: '../outside/secret.txt', projectId: 'p' },
+      { id: 'absolute-missing-outside-project', path: path.join(project, 'gone.md') },
+    ]);
+
+    assert.deepEqual(Object.fromEntries(results.map(({ id, status }) => [id, status])), {
+      'relative-file': 200,
+      'relative-directory': 200,
+      'relative-missing': 404,
+      'external-file': 200,
+      'external-missing': 404,
+      'outside-every-root': 403,
+      'project-absolute': 200,
+      'relative-without-project': 400,
+      traversal: 403,
+      'absolute-missing-outside-project': 404,
+    });
+  } finally { await fsPromises.rm(root, { recursive: true, force: true }); }
+});

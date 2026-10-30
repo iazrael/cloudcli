@@ -8,6 +8,7 @@ import { oneDark, oneLight } from 'react-syntax-highlighter/dist/esm/styles/pris
 import { useTranslation } from 'react-i18next';
 
 import { useSignedImage } from '@/shared/hooks/useSignedImage';
+import { usePathExists } from '@/modules/chat/hooks/usePathExists';
 import { SyntaxHighlighter, isRegisteredLanguage } from '@/modules/chat/composer/codeHighlightLanguages';
 import { MermaidDiagram } from '@/modules/code-editor';
 import { normalizeInlineCodeFences } from '@/modules/chat/utils/chatFormatting';
@@ -275,6 +276,10 @@ const COMMON_STATIC_WEB_PREFIX_RE = /^\/(assets|static|public|icons|images|favic
 const BROWSER_LOADABLE_IMAGE_SRC = /^(https?:|data:|blob:)/i;
 const WINDOWS_ABSOLUTE_PATH_RE = /^[a-z]:[/\\]/i;
 
+// 判断引用是否为本机绝对路径；`\\` 覆盖 Windows UNC 写法。
+const isLocalAbsolutePath = (value: string): boolean =>
+  value.startsWith('/') || value.startsWith('\\\\') || WINDOWS_ABSOLUTE_PATH_RE.test(value);
+
 type MarkdownImageTarget =
   | { kind: 'browser'; src: string }
   | { kind: 'absolute' | 'relative'; path: string }
@@ -296,7 +301,7 @@ function resolveImageTarget(src: string): MarkdownImageTarget {
   } catch {
     // 无效百分号编码可能是文件名中的字面字符，保留原文。
   }
-  if (decoded.startsWith('/') || decoded.startsWith('\\\\') || WINDOWS_ABSOLUTE_PATH_RE.test(decoded)) {
+  if (isLocalAbsolutePath(decoded)) {
     return { kind: 'absolute', path: decoded };
   }
   // 未知协议不能作为工作区文件名读取。
@@ -385,13 +390,13 @@ function MarkdownImageContent({ src = '', alt, node: _node, projectId, ...props 
 function ImageReferenceLink({ source, projectId, children }: { source: string; projectId: string | null; children: React.ReactNode }) {
   const { t } = useTranslation('chat');
   const target = resolveImageTarget(source);
-  // 只有用户点击才申请签名和显示查看器。
+  // 查看器仍由用户点击打开；签名同时承担挂载时的存在性探测。
   const [expanded, setExpanded] = useState(false);
   // 远程图片的解码失败不属于本地签名请求，单独保留以提供重试。
   const [browserFailed, setBrowserFailed] = useState(false);
-  const signed = useSignedImage(expanded && target.kind === 'absolute'
+  const signed = useSignedImage(target.kind === 'absolute'
     ? { kind: 'external', path: target.path, ...(projectId ? { projectId, projectFallback: true } : {}) }
-    : expanded && target.kind === 'relative' && projectId ? { kind: 'project', path: target.path, projectId } : null, { eager: true });
+    : target.kind === 'relative' && projectId ? { kind: 'project', path: target.path, projectId } : null, { eager: true });
   const unresolved = target.kind === 'unresolved' || (target.kind === 'relative' && !projectId);
   const error = expanded ? unresolved ? 'unresolved' : browserFailed ? 'failed' : signed.error : undefined;
   const imageSrc = target.kind === 'browser' ? target.src : signed.url;
@@ -402,6 +407,11 @@ function ImageReferenceLink({ source, projectId, children }: { source: string; p
     setBrowserFailed(false);
     if (signed.error) signed.retry();
   };
+
+  // 探测明确不存在或不可读的本地引用按默认样式显示，不提供点击；其余保持原有可点行为。
+  if (!unresolved && target.kind !== 'browser' && (signed.error === 'notFound' || signed.error === 'forbidden')) {
+    return <>{children}</>;
+  }
 
   return <>
     <button type="button" title={source} disabled={loading} aria-busy={loading || undefined}
@@ -423,6 +433,38 @@ function ImageReferenceLink({ source, projectId, children }: { source: string; p
       onImageLoad={target.kind === 'browser' ? undefined : signed.onLoad}
       onClose={() => setExpanded(false)} />}
   </>;
+}
+
+/** 聊天 Markdown 用它渲染本地文件与目录引用，探测明确不可读时退回普通文字。 */
+function FileReferenceLink({ href, reference, projectId, children }: {
+  href: string;
+  reference: string;
+  projectId: string | null;
+  children: React.ReactNode;
+}) {
+  const { openFileInEditor, openDirectory } = usePaletteOps();
+  // 与点击目标保持一致：目录引用保留结尾斜杠，文件引用去掉行号后缀再探测。
+  const probePath = reference.endsWith('/') ? reference : stripLineSuffix(reference);
+  const verdict = usePathExists(isLocalAbsolutePath(probePath) || projectId
+    ? { path: probePath, projectId: projectId ?? undefined }
+    : null);
+  if (verdict === 'missing') return <>{children}</>;
+  return (
+    <a
+      href={href}
+      className="cursor-pointer text-blue-600 hover:underline dark:text-blue-400"
+      onClick={(event) => {
+        event.preventDefault();
+        if (reference.endsWith('/')) {
+          openDirectory(reference);
+          return;
+        }
+        openFileInEditor(stripLineSuffix(reference), lineFromRef(reference));
+      }}
+    >
+      {children}
+    </a>
+  );
 }
 
 const markdownComponents = {
@@ -505,7 +547,6 @@ export const MarkdownBody = memo(function MarkdownBody({ children, breaks = fals
     [breaks],
   );
   const rehypePlugins = useMemo(() => (hasMath ? [rehypeKatex] : EMPTY_PLUGINS), [hasMath]);
-  const { openFileInEditor, openDirectory } = usePaletteOps();
   const { projectId } = useContext(MarkdownWorkspaceContext);
   const { t } = useTranslation('chat');
 
@@ -528,25 +569,11 @@ export const MarkdownBody = memo(function MarkdownBody({ children, breaks = fals
 
         if (fileRef && !isExternalHref(pathHref)) {
           return (
-            <a
-              href={pathHref || fileRef}
-              className="cursor-pointer text-blue-600 hover:underline dark:text-blue-400"
-              onClick={(event) => {
-                event.preventDefault();
-                // Normalized once for every branch below: the href arrives
-                // trimmed from the parser, but the link-text fallback keeps a
-                // trailing space (``[`src/foo.ts:12` ]()``), and that space
-                // defeats the `$`-anchored suffix strip.
-                const reference = fileRef.trim();
-                if (reference.endsWith('/')) {
-                  openDirectory(reference);
-                  return;
-                }
-                openFileInEditor(stripLineSuffix(reference), lineFromRef(reference));
-              }}
-            >
+            // fileRef 来自链接文字回退时可能带尾随空格（``[`src/foo.ts:12` ]()``），
+            // 会破坏按 `$` 锚定的行号后缀剥离，这里与点击时一样先归一化。
+            <FileReferenceLink href={pathHref || fileRef} reference={fileRef.trim()} projectId={projectId}>
               {linkChildren}
-            </a>
+            </FileReferenceLink>
           );
         }
 
@@ -578,7 +605,7 @@ export const MarkdownBody = memo(function MarkdownBody({ children, breaks = fals
         );
       },
     }),
-    [openFileInEditor, openDirectory, projectId, t],
+    [projectId, t],
   );
 
   if (exceedsParseBudget) {

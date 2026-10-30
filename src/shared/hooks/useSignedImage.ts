@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 
 import { requestImageUrls } from '@/shared/api';
-import { AUTH_SESSION_EXPIRED_EVENT, AUTH_TOKEN_REFRESHED_EVENT } from '@/shared/authToken';
+import { AUTH_SESSION_EXPIRED_EVENT, AUTH_TOKEN_REFRESHED_EVENT, getAuthTokenAccountScope } from '@/shared/authToken';
 import { AUTH_ACCOUNT_CHANGED_EVENT } from '@/shared/constants';
 import type { ImageMediaSource, ImageMediaResult } from '@/shared/types';
 
@@ -17,19 +17,11 @@ let scheduled = false;
 let batchSequence = 0;
 let accountEpoch = 0;
 
-function accountId(): string {
-  const token = localStorage.getItem('auth-token');
-  if (!token) return 'anonymous-or-platform';
-  try {
-    const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
-    return String(payload.userId ?? payload.sub ?? token);
-  } catch { return token; }
-}
-const snapshot = () => `${accountEpoch}:${accountId()}`;
+const snapshot = () => `${accountEpoch}:${getAuthTokenAccountScope()}`;
 let lastAccount = '';
 function accountChanged(event: Event) {
   if (event instanceof StorageEvent && event.key !== 'auth-token' && event.key !== null) return;
-  const account = accountId();
+  const account = getAuthTokenAccountScope();
   if (account !== lastAccount || event.type === AUTH_ACCOUNT_CHANGED_EVENT || event.type === AUTH_SESSION_EXPIRED_EVENT) {
     lastAccount = account;
     accountEpoch++;
@@ -49,7 +41,7 @@ if (typeof window !== 'undefined') {
 }
 function subscribe(notify: () => void) {
   if (subscribers.size === 0) {
-    if (lastAccount !== accountId()) { cache.clear(); lastAccount = accountId(); }
+    if (lastAccount !== getAuthTokenAccountScope()) { cache.clear(); lastAccount = getAuthTokenAccountScope(); }
   }
   subscribers.add(notify);
   return () => { subscribers.delete(notify); };

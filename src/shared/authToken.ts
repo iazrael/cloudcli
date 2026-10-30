@@ -87,6 +87,22 @@ export const getStoredAuthToken = (): string | null => {
   return token;
 };
 
+/**
+ * Stable per-account scope for client-side caches: the token's user claim when
+ * parseable, else the raw token, else a fixed anonymous scope. Cache owners
+ * compare this value across auth events and drop their entries on change.
+ * Reads the raw stored token on purpose, so an expired token still scopes
+ * in-flight cache entries without triggering the session-expiry side effect.
+ */
+export const getAuthTokenAccountScope = (): string => {
+  const token = localStorage.getItem('auth-token');
+  if (!token) return 'anonymous-or-platform';
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+    return String(payload.userId ?? payload.sub ?? token);
+  } catch { return token; }
+};
+
 export const storeAuthToken = (token: unknown): boolean => {
   if (!isValidRefreshedToken(token)) {
     return false;

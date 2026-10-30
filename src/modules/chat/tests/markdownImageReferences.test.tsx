@@ -2,15 +2,15 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { beforeEach, expect, test, vi } from 'vitest';
 
 import type * as sharedApi from '@/shared/api';
-import type { ImageMediaRequest } from '@/shared/types';
+import type { ImageMediaRequest, PathExistenceRequest } from '@/shared/types';
 import { ThemeProvider } from '@/shared/context/ThemeContext';
 import { Markdown } from '@/modules/chat/transcript/Markdown';
 import { MarkdownWorkspaceContext } from '@/modules/chat/context/MarkdownWorkspaceContext';
 
-const { requestImageUrls, openFileInEditor, openDirectory } = vi.hoisted(() => ({
-  requestImageUrls: vi.fn(), openFileInEditor: vi.fn(), openDirectory: vi.fn(),
+const { requestImageUrls, requestPathsExist, openFileInEditor, openDirectory } = vi.hoisted(() => ({
+  requestImageUrls: vi.fn(), requestPathsExist: vi.fn(), openFileInEditor: vi.fn(), openDirectory: vi.fn(),
 }));
-vi.mock('@/shared/api', async (original) => ({ ...await original<typeof sharedApi>(), requestImageUrls }));
+vi.mock('@/shared/api', async (original) => ({ ...await original<typeof sharedApi>(), requestImageUrls, requestPathsExist }));
 vi.mock('@/modules/command-palette', () => ({ usePaletteOps: () => ({ openFileInEditor, openDirectory }) }));
 
 beforeEach(() => {
@@ -18,6 +18,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   requestImageUrls.mockImplementation(async (images: ImageMediaRequest[]) => ({ ok: true, json: async () => ({
     images: images.map(({ id }) => ({ id, url: '/api/media/images?ticket=reference', expiresAt: Date.now() + 600_000 })),
+  }) }));
+  requestPathsExist.mockImplementation(async (items: PathExistenceRequest[]) => ({ ok: true, json: async () => ({
+    results: items.map(({ id }) => ({ id, status: 200 })),
   }) }));
 });
 
@@ -37,14 +40,16 @@ test.each([
   ['`file:///repo/crop.png`', '/repo/crop.png', 'external'],
 ])('opens %s only when clicked', async (content, path, kind) => {
   renderMessage(content);
-  expect(requestImageUrls).not.toHaveBeenCalled();
   expect(screen.queryByRole('img')).toBeNull();
+  // 挂载即探测存在性；确认存在后引用保持可点，点击复用已签名的地址。
+  await waitFor(() => expect(requestImageUrls).toHaveBeenCalledTimes(1));
   fireEvent.click(screen.getByRole('button'));
   const dialog = await screen.findByRole('dialog');
   expect(within(dialog).getByRole('img').getAttribute('src')).toBe('/api/media/images?ticket=reference');
   expect(within(within(dialog).getByRole('contentinfo')).getByText(path)).toBeTruthy();
   expect(requestImageUrls).toHaveBeenCalledWith([expect.objectContaining({ kind, path, projectId: 'project-images' })]);
   expect(openFileInEditor).not.toHaveBeenCalled();
+  expect(requestImageUrls).toHaveBeenCalledTimes(1);
   fireEvent.click(within(dialog).getByRole('button', { name: '关闭图片预览' }));
   expect(screen.queryByRole('dialog')).toBeNull();
 });
@@ -70,18 +75,30 @@ test('does not link code blocks, commands, non-image files or links nested insid
   expect(requestImageUrls).not.toHaveBeenCalled();
 });
 
-test('reports a missing project and allows retry after a failed file request', async () => {
+test('reports a missing project without requesting a ticket', () => {
   const view = renderMessage('`out/missing.png`', null);
   fireEvent.click(screen.getByRole('button'));
   expect(screen.getByRole('status').textContent).toContain('imageLoad.unresolved');
   expect(requestImageUrls).not.toHaveBeenCalled();
   view.unmount();
-  requestImageUrls.mockResolvedValueOnce({ ok: false, status: 404 });
-  renderMessage('`out/missing.png`');
-  fireEvent.click(screen.getByRole('button'));
-  await waitFor(() => expect(screen.getByRole('status').textContent).toContain('imageLoad.notFound'));
-  fireEvent.click(screen.getByRole('button', { name: 'common:buttons.retry' }));
+});
+
+test.each([404, 403])('renders a local image reference as plain text when the probe reports %i', async (status) => {
+  requestImageUrls.mockResolvedValue({ ok: false, status });
+  renderMessage('`/Users/test/project/gone.png`');
+  // 默认样式：只保留原引用文字，不追加提示、路径或重试入口。
+  await waitFor(() => expect(screen.queryByRole('button')).toBeNull());
+  expect(screen.queryByRole('img')).toBeNull();
+  expect(screen.getByText('/Users/test/project/gone.png')).toBeTruthy();
+});
+
+test('keeps a local image reference clickable when the probe fails transiently', async () => {
+  requestImageUrls.mockResolvedValueOnce({ ok: false, status: 500 });
+  renderMessage('`/Users/test/project/flaky.png`');
+  // 探测失败但非明确不存在：引用保持可点，点击后自动重试并打开查看器。
+  fireEvent.click(await screen.findByRole('button'));
   await screen.findByRole('dialog');
+  expect(requestImageUrls).toHaveBeenCalledTimes(2);
 });
 
 test('closes the previous viewer when the message reference changes', async () => {

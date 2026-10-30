@@ -1,6 +1,7 @@
 import type { IncomingMessage } from 'node:http';
 import type { Readable } from 'node:stream';
 import type { ImageMediaSource } from '../../shared/protocol/imageMedia.js';
+import type { PathExistenceRequest, PathExistenceResult } from '../../shared/protocol/pathExistence.js';
 
 //----------------- HTTP RESPONSE SHAPES ------------
 /**
@@ -1372,6 +1373,15 @@ export type FileTreeServices = {
   /** 媒体检查重新校验项目和外部目录的规范路径，不创建传输流。 */
   resolveImagePath(input: { path: string; projectId?: string; external: boolean }): Promise<{ path: string; contentType: string }>;
   openFile(projectId: string, filePath: string): Promise<{ contentType: string; stream: Readable }>;
+  /**
+   * Checks whether chat Markdown path references resolve under the same rules
+   * as file reads without reading file contents. Absolute paths must sit
+   * inside an external read-only root or a linked worktree, with the project
+   * boundary as fallback when `projectId` is supplied; relative paths resolve
+   * inside the project root. Never rejects for a single path: each item gets
+   * one HTTP-style status as described on `FileTreePathExistenceResult`.
+   */
+  checkPathsExist(items: PathExistenceRequest[]): Promise<PathExistenceResult[]>;
   saveTextFile(projectId: string, filePath: string, content: string): Promise<{
     success: true;
     path: string;
@@ -1806,6 +1816,7 @@ export type QueuedChatMessage = {
 //----------------- SIGNED IMAGE MEDIA ------------
 /** 媒体服务、HTTP 路由和前端共用的持久图片引用。 */
 export type { ImageMediaSource, ImageMediaRequest, ImageMediaResult } from '../../shared/protocol/imageMedia.js';
+export type { PathExistenceRequest, PathExistenceResult } from '../../shared/protocol/pathExistence.js';
 
 /** 规范化图片元数据；来源经过 realpath 和文件边界校验，检查阶段不创建传输流。 */
 export type ImageMediaFile = {

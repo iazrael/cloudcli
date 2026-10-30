@@ -1768,3 +1768,7 @@ export type RunOutcomeRecord = {
 //----------------- SIGNED IMAGE MEDIA ------------
 /** 前后端共用的持久图片引用与临时签名响应。 */
 export type { ImageMediaSource, ImageMediaRequest, ImageMediaResult } from '@shared/protocol/imageMedia';
+
+//----------------- PATH EXISTENCE PROBE ------------
+/** 前后端共用的本地路径可读性探测契约。 */
+export type { PathExistenceRequest, PathExistenceResult } from '@shared/protocol/pathExistence';

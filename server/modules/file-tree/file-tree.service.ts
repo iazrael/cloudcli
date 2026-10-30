@@ -626,6 +626,43 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
       };
     },
 
+    async checkPathsExist(items) {
+      return Promise.all(items.map(async ({ id, path: requestedPath, projectId }) => {
+        try {
+          if (path.isAbsolute(requestedPath)) {
+            try {
+              await fileSystem.stat(await resolvePathInsideExternalRoots(
+                fileSystem,
+                await resolveExternalAllowedRoots(projectId),
+                requestedPath,
+              ));
+              return { id, status: 200 };
+            } catch (error) {
+              // 与图片签名一致：外部白名单拒绝且给了项目时，再按项目边界校验同一路径。
+              if (!(error instanceof AppError && error.statusCode === 403) || !projectId) throw error;
+            }
+          } else if (!projectId) {
+            throw createFileTreeError('Project is required', 400, 'PROJECT_REQUIRED');
+          }
+          const projectRoot = await resolveProjectRoot(projectId);
+          const candidate = await resolveReadablePath(projectRoot, requestedPath);
+          // 项目内路径同样核对 realpath，防止项目内符号链接把探测放行到外部文件。
+          const canonical = candidate.startsWith(path.resolve(projectRoot) + path.sep)
+            ? await resolvePathInsideExternalRoots(fileSystem, [projectRoot], candidate)
+            : await fileSystem.realpath(candidate);
+          await fileSystem.stat(canonical);
+          return { id, status: 200 };
+        } catch (error) {
+          return {
+            id,
+            status: error instanceof AppError
+              ? error.statusCode
+              : Number((error as { statusCode?: number }).statusCode) || 500,
+          };
+        }
+      }));
+    },
+
     async saveTextFile(projectId, filePath, content) {
       const projectRoot = await resolveProjectRoot(projectId);
       const resolvedPath = resolvePathInsideProject(projectRoot, filePath);

@@ -1,5 +1,6 @@
 import express from 'express';
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
+import { z } from 'zod';
 
 import type {
   FileTreeLogger,
@@ -7,6 +8,18 @@ import type {
   FileTreeUploadedFile,
 } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
+
+const pathExistenceText = z.string().min(1).max(8192).refine((value) => !value.includes('\0'));
+
+/** Chat Markdown references arrive as one batch; ids correlate the per-path verdicts. */
+const pathExistenceBatchSchema = z.object({
+  items: z.array(z.object({
+    id: pathExistenceText,
+    path: pathExistenceText,
+    projectId: pathExistenceText.optional(),
+  }).strict()).min(1).max(50),
+}).strict()
+  .refine(({ items }) => new Set(items.map(({ id }) => id)).size === items.length);
 
 type FileTreeUploadLimits = {
   maximumFileSizeMegabytes: number;
@@ -153,6 +166,17 @@ export function createFileTreeRouter(
         response.status(500).json({ error: 'Error reading file' });
       }
     });
+  }, logger));
+
+  // Batched readability probe for chat Markdown path references; the service
+  // applies the same allowlist and project boundaries as reads and returns one
+  // HTTP-style status per id, so routes stay thin.
+  router.post('/paths/exists', createRouteHandler(async (request, response) => {
+    const parsed = pathExistenceBatchSchema.safeParse(readBody(request));
+    if (!parsed.success) {
+      throw new AppError('Invalid path batch', { code: 'INVALID_FILE_TREE_REQUEST', statusCode: 400 });
+    }
+    response.json({ results: await services.checkPathsExist(parsed.data.items) });
   }, logger));
 
   router.get('/projects/:projectId/files/content', createRouteHandler(async (request, response) => {
