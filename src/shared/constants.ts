@@ -227,3 +227,7 @@ export const PROVIDER_PERMISSION_PREFERENCE_KEYS: Record<LLMProvider, UserPrefer
 //----------------- ACCOUNT LIFECYCLE ------------
 /** 退出登录或切换账号时清除临时图片票据，平台模式也适用。 */
 export const AUTH_ACCOUNT_CHANGED_EVENT = 'auth-account-changed';
+
+//----------------- MARKDOWN REFERENCE PLUGINS ------------
+/** remark 引用插件（remarkFileReferences / remarkImageReferences）遇到这些节点类型时跳过整棵子树：链接、代码块、公式和 HTML 内部不做转换。 */
+export const REMARK_SKIP_CONTAINER_RE = /^(?:link|linkReference|image|imageReference|code|math|inlineMath|html)$/;

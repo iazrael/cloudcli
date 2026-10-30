@@ -1768,7 +1768,18 @@ export type RunOutcomeRecord = {
 //----------------- SIGNED IMAGE MEDIA ------------
 /** 前后端共用的持久图片引用与临时签名响应。 */
 export type { ImageMediaSource, ImageMediaRequest, ImageMediaResult } from '@shared/protocol/imageMedia';
+/** 签名图片加载失败原因，驱动图片占位与重试 UI；useSignedImage 对外暴露。 */
+export type ImageFailure = 'unauthorized' | 'forbidden' | 'notFound' | 'failed' | 'decode';
 
 //----------------- PATH EXISTENCE PROBE ------------
 /** 前后端共用的本地路径可读性探测契约。 */
 export type { PathExistenceRequest, PathExistenceResult } from '@shared/protocol/pathExistence';
+
+//----------------- MARKDOWN AST NODE ------------
+/** remark 引用转换插件（聊天模块）读写的最小 Markdown 节点形状，只声明插件用到的字段。 */
+export type MarkdownNode = {
+  type: string;
+  value?: string;
+  url?: string;
+  children?: MarkdownNode[];
+};

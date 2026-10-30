@@ -1,9 +1,7 @@
 import { useCallback } from 'react';
 
 import { useSignedImage } from '@/shared/hooks/useSignedImage';
-import type { ImageMediaSource } from '@/shared/types';
-
-type ImageFailure = 'unauthorized' | 'forbidden' | 'notFound' | 'failed' | 'decode';
+import type { ImageFailure, ImageMediaSource } from '@/shared/types';
 
 /**
  * 双候选签名（会话工作树优先、项目根兜底）：任一候选拿到票据就用它；只有

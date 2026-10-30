@@ -1,110 +1,45 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 
 import { requestImageUrls } from '@/shared/api';
-import { AUTH_SESSION_EXPIRED_EVENT, AUTH_TOKEN_REFRESHED_EVENT, getAuthTokenAccountScope } from '@/shared/authToken';
-import { AUTH_ACCOUNT_CHANGED_EVENT } from '@/shared/constants';
-import type { ImageMediaSource, ImageMediaResult } from '@/shared/types';
+import { createBatchedAccountRequester } from '@/shared/batchedRequester';
+import type { ImageFailure, ImageMediaResult, ImageMediaSource } from '@/shared/types';
 
-type ImageFailure = 'unauthorized' | 'forbidden' | 'notFound' | 'failed' | 'decode';
 type Ticket = { url: string; expiresAt: number };
-type Pending = { scope: string; source: ImageMediaSource; resolve: (ticket: Ticket) => void; reject: (error: Error) => void };
-const CACHE_LIMIT = 256;
+type TicketItem = { source: ImageMediaSource; scope: string; failedUrl?: string };
 const EXPIRY_MARGIN_MS = 30_000;
-const cache = new Map<string, { promise: Promise<Ticket>; ticket?: Ticket }>();
-const pending = new Map<string, Pending>();
-const subscribers = new Set<() => void>();
-let scheduled = false;
-let batchSequence = 0;
-let accountEpoch = 0;
 
-const snapshot = () => `${accountEpoch}:${getAuthTokenAccountScope()}`;
-let lastAccount = '';
-function accountChanged(event: Event) {
-  if (event instanceof StorageEvent && event.key !== 'auth-token' && event.key !== null) return;
-  const account = getAuthTokenAccountScope();
-  if (account !== lastAccount || event.type === AUTH_ACCOUNT_CHANGED_EVENT || event.type === AUTH_SESSION_EXPIRED_EVENT) {
-    lastAccount = account;
-    accountEpoch++;
-    cache.clear();
-    for (const item of pending.values()) item.reject(new Error('unauthorized'));
-    pending.clear();
-  }
-  for (const notify of subscribers) notify();
-}
-const accountEvents = [AUTH_ACCOUNT_CHANGED_EVENT, AUTH_SESSION_EXPIRED_EVENT, AUTH_TOKEN_REFRESHED_EVENT, 'storage'];
-// 缓存比图片组件活得久，注销监听也必须在没有订阅者时保留。
-if (typeof window !== 'undefined') {
-  for (const event of accountEvents) window.addEventListener(event, accountChanged);
-  import.meta.hot?.dispose(() => {
-    for (const event of accountEvents) window.removeEventListener(event, accountChanged);
-  });
-}
-function subscribe(notify: () => void) {
-  if (subscribers.size === 0) {
-    if (lastAccount !== getAuthTokenAccountScope()) { cache.clear(); lastAccount = getAuthTokenAccountScope(); }
-  }
-  subscribers.add(notify);
-  return () => { subscribers.delete(notify); };
-}
 function errorFromStatus(status: number): Error {
   return new Error(status === 401 ? 'unauthorized' : status === 403 ? 'forbidden' : status === 404 ? 'notFound' : status === 415 ? 'decode' : 'failed');
 }
-async function flush() {
-  scheduled = false;
-  const entries = [...pending.entries()];
-  pending.clear();
-  for (let offset = 0; offset < entries.length; offset += 50) {
-    const batch = entries.slice(offset, offset + 50);
-    const id = String(++batchSequence);
-    const requests = batch.map(([, item], index) => ({ ...item.source, id: `${id}-${index}` }));
-    try {
-      if (batch.some(([, item]) => item.scope !== snapshot())) throw new Error('unauthorized');
-      const response = await requestImageUrls(requests);
-      if (!response.ok) throw errorFromStatus(response.status);
-      const payload = await response.json() as { images: ImageMediaResult[] };
-      for (const [index, [key, item]] of batch.entries()) {
-        const result = payload.images.find((image) => image.id === requests[index].id);
-        if (item.scope !== snapshot()) { item.reject(new Error('unauthorized')); continue; }
-        if (!result || !('url' in result)) { cache.delete(key); item.reject(errorFromStatus(result && 'status' in result ? result.status : 500)); continue; }
-        // 只接受同源签名路径，不能把异常响应中的地址当作外部凭据使用。
-        if (!result.url.startsWith('/api/media/images?ticket=') || !Number.isFinite(result.expiresAt) || result.expiresAt <= Date.now()) {
-          cache.delete(key); item.reject(new Error('failed')); continue;
-        }
-        const ticket = { url: result.url, expiresAt: result.expiresAt };
-        const entry = cache.get(key);
-        if (entry) entry.ticket = ticket;
-        for (const [oldKey, oldEntry] of cache) {
-          if (cache.size <= CACHE_LIMIT) break;
-          if (oldEntry.ticket) cache.delete(oldKey);
-        }
-        item.resolve(ticket);
+
+const imageTickets = createBatchedAccountRequester<TicketItem, Ticket, Error>({
+  cacheKey: (item) => JSON.stringify([item.scope, item.source]),
+  // 票据未过期且不是刚失败的那个地址时复用；过期或图片加载失败重试都重新申请。
+  reusable: (entry, item) => !entry.value || (entry.value.expiresAt > Date.now() + EXPIRY_MARGIN_MS && entry.value.url !== item.failedUrl),
+  // 线上契约是扁平的 { ...source, id }；scope 与 failedUrl 只用于客户端缓存键。
+  send: (items) => requestImageUrls(items.map(({ source, id }) => ({ ...source, id }))),
+  httpError: errorFromStatus,
+  settle: (batch, payload) => {
+    const { images } = payload as { images: ImageMediaResult[] };
+    for (const item of batch) {
+      const result = images.find((image) => image.id === item.id);
+      if (!result || !('url' in result)) { item.drop(); item.reject(errorFromStatus(result && 'status' in result ? result.status : 500)); continue; }
+      // 只接受同源签名路径，不能把异常响应中的地址当作外部凭据使用。
+      if (!result.url.startsWith('/api/media/images?ticket=') || !Number.isFinite(result.expiresAt) || result.expiresAt <= Date.now()) {
+        item.drop(); item.reject(new Error('failed')); continue;
       }
-    } catch (error) {
-      for (const [key, item] of batch) { cache.delete(key); item.reject(error instanceof Error ? error : new Error('failed')); }
+      const ticket: Ticket = { url: result.url, expiresAt: result.expiresAt };
+      item.entry.value = ticket;
+      item.resolve(ticket);
     }
-  }
-}
-function requestTicket(source: ImageMediaSource, scope: string, failedUrl?: string): Promise<Ticket> {
-  const key = JSON.stringify([scope, source]);
-  const existing = cache.get(key);
-  if (existing && (!existing.ticket || (existing.ticket.expiresAt > Date.now() + EXPIRY_MARGIN_MS && existing.ticket.url !== failedUrl))) {
-    return existing.promise;
-  }
-  cache.delete(key);
-  const promise = new Promise<Ticket>((resolve, reject) => pending.set(key, { source, scope, resolve, reject }));
-  cache.set(key, { promise });
-  // 仅淘汰已完成条目，进行中的请求仍有调用方等待结果。
-  for (const [oldKey, entry] of cache) {
-    if (cache.size <= CACHE_LIMIT) break;
-    if (entry.ticket) cache.delete(oldKey);
-  }
-  if (!scheduled) { scheduled = true; queueMicrotask(() => { void flush(); }); }
-  return promise;
-}
+  },
+  fail: (batch, error) => { for (const item of batch) { item.drop(); item.reject(error instanceof Error ? error : new Error('failed')); } },
+  invalidationError: () => new Error('unauthorized'),
+});
 
 /** 聊天、编辑器和文件树共用；只为可见图片申请签名，字节加载和缓存交给浏览器。 */
 export function useSignedImage(source: ImageMediaSource | null, { eager = false }: { eager?: boolean } = {}) {
-  const scope = useSyncExternalStore(subscribe, snapshot, () => 'server');
+  const scope = useSyncExternalStore(imageTickets.subscribe, imageTickets.snapshot, () => 'server');
   const sourceKey = source ? JSON.stringify(source) : '';
   const key = `${scope}:${sourceKey}`;
   // 跟踪实际占位或容器节点，让签名申请跟随视口位置。
@@ -136,7 +71,7 @@ export function useSignedImage(source: ImageMediaSource | null, { eager = false 
     if (!sourceKey) return null;
     const serial = ++active.current.serial;
     try {
-      const ticket = await requestTicket(JSON.parse(sourceKey) as ImageMediaSource, scope, failedUrl);
+      const ticket = await imageTickets.request({ source: JSON.parse(sourceKey) as ImageMediaSource, scope, failedUrl });
       if (active.current.key !== key || active.current.serial !== serial) return null;
       setLoaded({ key, ticket });
       return ticket.url;

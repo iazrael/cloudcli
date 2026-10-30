@@ -1,11 +1,6 @@
 import { looksLikeFilePath } from '@/modules/chat/utils/fileReference';
-
-type MarkdownNode = {
-  type: string;
-  value?: string;
-  url?: string;
-  children?: MarkdownNode[];
-};
+import { REMARK_SKIP_CONTAINER_RE } from '@/shared/constants';
+import type { MarkdownNode } from '@/shared/types';
 
 // 命令片段（如 `cat out/a.png`）含空格但不以路径锚点开头，不能当文件引用。
 const PATH_ANCHORED_WITH_SPACE_RE = /^(?:[/\\]|\.{1,2}[/\\]|[a-z]:[/\\]|file:\/\/)/i;
@@ -19,7 +14,7 @@ const PATH_ANCHORED_WITH_SPACE_RE = /^(?:[/\\]|\.{1,2}[/\\]|[a-z]:[/\\]|file:\/\
 export function remarkFileReferences() {
   return (tree: MarkdownNode) => {
     const visit = (node: MarkdownNode) => {
-      if (!node.children || /^(?:link|linkReference|image|imageReference|code|math|inlineMath|html)$/.test(node.type)) return;
+      if (!node.children || REMARK_SKIP_CONTAINER_RE.test(node.type)) return;
       node.children = node.children.flatMap((child): MarkdownNode[] => {
         if (child.type !== 'inlineCode' || !child.value) {
           visit(child);
