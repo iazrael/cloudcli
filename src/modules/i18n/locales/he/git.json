@@ -160,7 +160,8 @@
     "switchToScroll": "מעבר לגלילה אופקית",
     "switchToWrap": "מעבר לגלישת טקסט",
     "scroll": "גלילה",
-    "wrap": "גלישה"
+    "wrap": "גלישה",
+    "loadingDiff": "טוען את ה-diff…"
   },
   "selection": {
     "selectedOfFiles": "נבחרו {{selected}} מתוך {{total}} קבצים",
