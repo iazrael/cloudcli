@@ -5,7 +5,7 @@ import type { RequestHandler } from 'express';
 import { z } from 'zod';
 
 import type { createImageMediaService } from '@/modules/media/image-media.service.js';
-import { AppError } from '@/shared/utils.js';
+import { errorStatusCode } from '@/shared/utils.js';
 
 const text = z.string().min(1).max(8192).refine((value) => !value.includes('\0'));
 const sourceSchema = z.discriminatedUnion('kind', [
@@ -21,7 +21,7 @@ export function createMediaRouter(service: ReturnType<typeof createImageMediaSer
   const images = express.Router();
   const signing = express.Router();
   const fail = (error: unknown, response: express.Response) => {
-    const status = error instanceof AppError ? error.statusCode : Number((error as { statusCode?: number }).statusCode) || 500;
+    const status = errorStatusCode(error);
     if (response.headersSent) { response.destroy(); return; }
     response.setHeader('Cache-Control', 'no-store');
     if (status >= 500) console.error('[Media] Request failed', error instanceof Error ? error.name : 'Unknown error');

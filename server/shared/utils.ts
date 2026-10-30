@@ -319,6 +319,19 @@ export class AppError extends Error {
 }
 
 /**
+ * Normalizes an unknown thrown value into an HTTP status code: `AppError`
+ * instances contribute their own status; anything else is read as an optional
+ * `statusCode` field (raw fs errors, wrapped route failures) and falls back
+ * to 500.
+ *
+ * Used by the media and file-tree failure paths to map per-item batch errors
+ * onto batch response statuses.
+ */
+export function errorStatusCode(error: unknown): number {
+  return error instanceof AppError ? error.statusCode : Number((error as { statusCode?: number }).statusCode) || 500;
+}
+
+/**
  * Flattens a failed `git` invocation into one searchable string: the error
  * message followed by whatever stderr/stdout the process runner attached.
  *

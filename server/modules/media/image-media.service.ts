@@ -3,7 +3,7 @@ import { createHmac, randomUUID } from 'node:crypto';
 import jwt from 'jsonwebtoken';
 
 import type { ImageMediaDependencies, ImageMediaRequest, ImageMediaResult, ImageMediaSource } from '@/shared/types.js';
-import { AppError } from '@/shared/utils.js';
+import { AppError, errorStatusCode } from '@/shared/utils.js';
 
 const ISSUER = 'cloudcli-media';
 const AUDIENCE = 'image-read';
@@ -34,7 +34,7 @@ export function createImageMediaService(dependencies: ImageMediaDependencies) {
           });
           results.push({ id, url: `/api/media/images?ticket=${encodeURIComponent(ticket)}`, expiresAt: expiresAt * 1000 });
         } catch (error) {
-          const status = error instanceof AppError ? error.statusCode : Number((error as { statusCode?: number }).statusCode) || 500;
+          const status = errorStatusCode(error);
           if (status >= 500) console.error('[Media] Image inspection failed', error instanceof Error ? error.name : 'Unknown error');
           results.push({ id, status, error: status === 404 ? 'notFound' : status === 403 ? 'forbidden' : status === 415 ? 'decode' : 'failed' });
         }

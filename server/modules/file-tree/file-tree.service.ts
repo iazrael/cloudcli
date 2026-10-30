@@ -10,7 +10,7 @@ import type {
   FileTreeServices,
   FileTreeUploadedFile,
 } from '@/shared/types.js';
-import { AppError, FORBIDDEN_WORKSPACE_PATHS, normalizeProjectPath } from '@/shared/utils.js';
+import { AppError, errorStatusCode, FORBIDDEN_WORKSPACE_PATHS, normalizeProjectPath } from '@/shared/utils.js';
 
 const HARD_EXCLUDED_DIRECTORY_NAMES = new Set([
   'node_modules', '.git', '.svn', '.hg',
@@ -655,9 +655,7 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
         } catch (error) {
           return {
             id,
-            status: error instanceof AppError
-              ? error.statusCode
-              : Number((error as { statusCode?: number }).statusCode) || 500,
+            status: errorStatusCode(error),
           };
         }
       }));
