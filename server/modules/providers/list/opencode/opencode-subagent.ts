@@ -18,6 +18,8 @@
 import type { AnyRecord } from '@/shared/types.js';
 import { SUBAGENT_TOOL_NAME, readObjectRecord, readOptionalString } from '@/shared/utils.js';
 
+import { QUESTION_CARD_TOOL_NAME, isOpenCodeQuestionTool } from './opencode-question.js';
+
 const OPENCODE_SUBAGENT_TOOL = 'subagent';
 
 /** Whether an engine tool name is OpenCode's agent-spawning tool. */
@@ -27,10 +29,14 @@ export function isOpenCodeSubagentTool(engineToolName: string): boolean {
 
 /**
  * The name the client knows an engine tool by: the spawn tool becomes
- * `Agent`; every other tool keeps its engine name.
+ * `Agent` and the question tool `AskUserQuestion`, the two cards the client
+ * draws by name; every other tool keeps its engine name.
  */
 export function toClientToolName(engineToolName: string): string {
-  return isOpenCodeSubagentTool(engineToolName) ? SUBAGENT_TOOL_NAME : engineToolName;
+  if (isOpenCodeSubagentTool(engineToolName)) {
+    return SUBAGENT_TOOL_NAME;
+  }
+  return isOpenCodeQuestionTool(engineToolName) ? QUESTION_CARD_TOOL_NAME : engineToolName;
 }
 
 /**

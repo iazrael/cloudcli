@@ -335,10 +335,10 @@ function ChatComposer({
   const submitHint = canQueueDraft
     ? hasQueuedDraft
       ? sendByCtrlEnter
-        ? t('input.hintText.updateQueuedCtrl', {
-            defaultValue: t('input.hintText.updateQueued', { defaultValue: 'Enter to update queued message' }).replace(/^Enter/, 'Ctrl+Enter'),
+        ? t('input.hintText.appendQueuedCtrl', {
+            defaultValue: t('input.hintText.appendQueued', { defaultValue: 'Enter to add to the queued message' }).replace(/^Enter/, 'Ctrl+Enter'),
           })
-        : t('input.hintText.updateQueued', { defaultValue: 'Enter to update queued message' })
+        : t('input.hintText.appendQueued', { defaultValue: 'Enter to add to the queued message' })
       : sendByCtrlEnter
         ? t('input.hintText.queueCtrl', {
             defaultValue: t('input.hintText.queue', { defaultValue: 'Enter to queue your next message' }).replace(/^Enter/, 'Ctrl+Enter'),
@@ -352,7 +352,7 @@ function ChatComposer({
     ? t('input.sending')
     : canQueueDraft
     ? hasQueuedDraft
-      ? t('input.queue.update', { defaultValue: 'Update queued message' })
+      ? t('input.queue.append', { defaultValue: 'Add to queued message' })
       : t('input.queue.sendNext', { defaultValue: 'Queue next message' })
     : isLoading && !canSendDuringTurn
       ? t('input.stop')
@@ -439,6 +439,7 @@ function ChatComposer({
       {queuedDraft && (
         <QueuedMessageCard
           content={queuedDraft.content}
+          permissionMode={typeof queuedDraft.options?.permissionMode === 'string' ? queuedDraft.options.permissionMode : undefined}
           attachmentCount={
             queuedDraft.uploadedAttachments?.length ?? queuedDraft.attachments.length
           }

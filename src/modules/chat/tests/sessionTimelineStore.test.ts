@@ -1748,3 +1748,21 @@ test('a settled task_status retires its strip entry without waiting for the back
   emit(store, { id: 'ts_3', kind: 'task_status', sessionId: SESSION_ID, timestamp: '2026-01-01T00:00:02Z', provider: 'claude', event: 'notification', status: 'completed', taskId: 't_bash', toolUseId: 'toolu_bash' });
   assert.deepEqual(store.getBackgroundTasks(SESSION_ID).map((task) => task.id), ['toolu_agent']);
 });
+
+test('gateway frames that are not about the timeline add no rows to the viewed session', () => {
+  const store = new SessionTimelineStore({});
+  store.setActiveSession('session-1');
+  store.appendRealtime('session-1', {
+    id: 'u1', kind: 'text', role: 'user', content: 'hi', sessionId: 'session-1',
+    timestamp: '2026-10-24T00:00:00.000Z', provider: 'claude',
+  } as NormalizedMessage);
+
+  for (const frame of [
+    { kind: 'session_removed', sessionIds: ['other'], timestamp: '2026-10-24T00:00:01.000Z' },
+    { kind: 'queued_message_dispatched', sessionId: 'session-1' },
+  ]) {
+    store.applyServerEvent(frame as ServerEvent, { provider: 'claude', fallbackSessionId: 'session-1' });
+  }
+
+  assert.deepEqual(store.getMessages('session-1').map((message) => message.id), ['u1']);
+});

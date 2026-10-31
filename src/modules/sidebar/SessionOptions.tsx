@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { Check, Edit2, GitBranch, MoreHorizontal, Trash2, X } from 'lucide-react';
+import { Check, Edit2, GitBranch, MoreHorizontal, Pin, PinOff, Trash2, X } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
 import { ActionMenu } from '@/shared/ui';
@@ -32,6 +32,9 @@ type SessionOptionsProps = {
   onFork?: () => void;
   /** Withheld where the row has nowhere to send a delete. */
   canDelete?: boolean;
+  isPinned?: boolean;
+  /** Pins or unpins the session; the menu item is withheld without it. */
+  onSetPinned?: (sessionId: string, isPinned: boolean) => void;
   className?: string;
   t: TFunction;
 };
@@ -60,13 +63,15 @@ export default function SessionOptions({
   onDeleteSession,
   onFork,
   canDelete = true,
+  isPinned = false,
+  onSetPinned,
   className,
   t,
 }: SessionOptionsProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const providerLabel = getProviderDisplayName(provider);
   const { copyState, copyLabel, setOptionsOpen, handleCopyAction, isCopyPending, CopyStateIcon } =
-    useProviderSessionIdCopy(sessionId, providerLabel);
+    useProviderSessionIdCopy(sessionId, providerLabel, t);
 
   // Read from the backend capability matrix rather than branching on the
   // provider id here; the request is cached module-side, so every row shares one.
@@ -166,8 +171,8 @@ export default function SessionOptions({
         </>
       ) : (
         <ActionMenu
-          label="Session options"
-          ariaLabel={`Session options for ${sessionName}`}
+          label={t('sessions.optionsTitle')}
+          ariaLabel={t('sessions.optionsFor', { name: sessionName })}
           icon={MoreHorizontal}
           iconOnly
           portal
@@ -181,20 +186,26 @@ export default function SessionOptions({
               <p className="truncate text-xs font-medium text-foreground" title={sessionName}>
                 {sessionName}
               </p>
-              <p className="mt-0.5 text-[11px] text-muted-foreground">{providerLabel} session</p>
+              <p className="mt-0.5 text-[11px] text-muted-foreground">{t('sessions.providerSession', { provider: providerLabel })}</p>
             </div>
           )}
           items={[
             ...(projectId !== null ? [{
               key: 'rename',
-              label: 'Rename session',
+              label: t('sessions.renameSession'),
               icon: Edit2,
               onSelect: () => onStartEditingSession(projectId, sessionId, sessionName),
+            }] : []),
+            ...(onSetPinned ? [{
+              key: 'pin',
+              label: isPinned ? t('sessions.unpinSession') : t('sessions.pinSession'),
+              icon: isPinned ? PinOff : Pin,
+              onSelect: () => onSetPinned(sessionId, !isPinned),
             }] : []),
             {
               key: 'copy',
               label: copyLabel,
-              description: copyState === 'error' ? 'Click to try again.' : undefined,
+              description: copyState === 'error' ? t('sessions.clickToRetry') : undefined,
               icon: CopyStateIcon,
               loading: isCopyPending,
               closeOnSelect: false,
@@ -202,10 +213,12 @@ export default function SessionOptions({
             },
             ...(onFork && (canFork || isForking) ? [{
               key: 'fork',
-              label: isForking ? 'Forking…' : 'Fork session',
+              label: isForking
+                ? t('sessions.forking', { defaultValue: 'Forking…' })
+                : t('sessions.forkSession'),
               description: isForking
-                ? 'Creating a copy of this conversation…'
-                : 'Continue from a copy, leaving this one untouched.',
+                ? t('sessions.forkingDescription', { defaultValue: 'Creating a copy of this conversation…' })
+                : t('sessions.forkSessionDescription'),
               icon: GitBranch,
               loading: isForking,
               disabled: isForking,
@@ -214,7 +227,7 @@ export default function SessionOptions({
             }] : []),
             ...(canDelete && !isProcessing ? [{
               key: 'delete',
-              label: 'Archive or delete session',
+              label: t('sessions.archiveOrDelete'),
               icon: Trash2,
               isDanger: true,
               showDividerBefore: true,

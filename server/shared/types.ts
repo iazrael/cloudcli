@@ -1,5 +1,7 @@
 import type { IncomingMessage } from 'node:http';
 import type { Readable } from 'node:stream';
+import type { ImageMediaSource } from '../../shared/protocol/imageMedia.js';
+import type { PathExistenceRequest, PathExistenceResult } from '../../shared/protocol/pathExistence.js';
 
 //----------------- HTTP RESPONSE SHAPES ------------
 /**
@@ -1464,7 +1466,18 @@ export type FileTreeServices = {
    * linked worktree of `projectId` when provided.
    */
   openExternalFile(filePath: string, projectId?: string): Promise<{ contentType: string; stream: Readable }>;
+  /** 媒体检查重新校验项目和外部目录的规范路径，不创建传输流。 */
+  resolveImagePath(input: { path: string; projectId?: string; external: boolean }): Promise<{ path: string; contentType: string }>;
   openFile(projectId: string, filePath: string): Promise<{ contentType: string; stream: Readable }>;
+  /**
+   * Checks whether chat Markdown path references resolve under the same rules
+   * as file reads without reading file contents. Absolute paths must sit
+   * inside an external read-only root or a linked worktree, with the project
+   * boundary as fallback when `projectId` is supplied; relative paths resolve
+   * inside the project root. Never rejects for a single path: each item gets
+   * one HTTP-style status as described on `FileTreePathExistenceResult`.
+   */
+  checkPathsExist(items: PathExistenceRequest[]): Promise<PathExistenceResult[]>;
   saveTextFile(projectId: string, filePath: string, content: string): Promise<{
     success: true;
     path: string;
@@ -1890,4 +1903,46 @@ export type ClaimPendingEventInput = {
   leaseDurationMs: number;
   /** Injected by deterministic lease tests; production callers should omit it. */
   nowMs?: number;
+};
+
+// ---------------------------
+//----------------- CHAT DRAFT QUEUE TYPES ------------
+/**
+ * A chat message queued to be sent when its session is next idle, in the shape
+ * the composer submits it and `session_drafts.queued_message` stores it.
+ *
+ * `content` is the message text, `attachments` the JSON-safe descriptors
+ * returned by POST /api/assets/files, and `options` the composer's send options
+ * (model, effort, permission mode, ...) captured when it was queued. A session
+ * has at most one: a message queued while another is waiting is merged into it
+ * by the drafts repository. The User module accepts it, the Database module
+ * stores and merges it, and the Scheduled Messages dispatcher sends it (read
+ * through `readQueuedChatMessage`).
+ */
+export type QueuedChatMessage = {
+  content: string;
+  options?: Record<string, unknown>;
+  attachments: unknown[];
+};
+
+//----------------- SIGNED IMAGE MEDIA ------------
+/** 媒体服务、HTTP 路由和前端共用的持久图片引用。 */
+export type { ImageMediaSource, ImageMediaRequest, ImageMediaResult } from '../../shared/protocol/imageMedia.js';
+export type { PathExistenceRequest, PathExistenceResult } from '../../shared/protocol/pathExistence.js';
+
+/** 规范化图片元数据；来源经过 realpath 和文件边界校验，检查阶段不创建传输流。 */
+export type ImageMediaFile = {
+  source: ImageMediaSource;
+  contentType: string;
+  etag: string;
+  size: number;
+};
+
+/** 媒体服务依赖，由生产装配或文件及账号测试适配器提供；时间单位为 Unix 秒。 */
+export type ImageMediaDependencies = {
+  secret: string;
+  now?: () => number;
+  userExists: (id: string) => boolean | Promise<boolean>;
+  resolveImage: (source: ImageMediaSource) => Promise<ImageMediaFile>;
+  openImage: (file: ImageMediaFile) => Promise<Readable>;
 };

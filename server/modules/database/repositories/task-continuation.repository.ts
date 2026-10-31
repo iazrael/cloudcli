@@ -183,6 +183,21 @@ export const taskContinuationDb = {
     return row ? mapTaskRow(row) : null;
   },
 
+  /**
+   * A chat's tasks whose worker reported start and has not reported trouble.
+   *
+   * Consumer: the host task cards of the task-continuations module.
+   */
+  listRunningTasksForSession(sessionId: string): AsyncTaskRecord[] {
+    const db = getConnection();
+    const rows = db.prepare(`
+      SELECT * FROM async_tasks
+      WHERE session_id = ? AND status = 'running' AND last_error IS NULL
+      ORDER BY created_at, task_id
+    `).all(sessionId);
+    return rows.map(mapTaskRow);
+  },
+
   /** Marks a newly spawned task as running without overwriting a terminal result. */
   markTaskRunning(taskId: string): boolean {
     const db = getConnection();

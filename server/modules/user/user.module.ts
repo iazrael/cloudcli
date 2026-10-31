@@ -1,6 +1,8 @@
 import spawn from 'cross-spawn';
 
-import { sessionDraftsDb, userDb, userPreferencesDb } from '@/modules/database/index.js';
+import { sessionDraftsDb, sessionsDb, userDb, userPreferencesDb } from '@/modules/database/index.js';
+import { chatRunRegistry } from '@/modules/websocket/index.js';
+import type { LLMProvider } from '@/shared/types.js';
 
 import { createUserRouter } from './user.routes.js';
 import { createUserService } from './user.service.js';
@@ -51,7 +53,9 @@ const userService = createUserService({
   },
   drafts: {
     getDrafts: (userId) => sessionDraftsDb.getDrafts(userId),
-    saveDraft: (userId, scope, draft) => sessionDraftsDb.saveDraft(userId, scope, draft),
+    saveDraftText: (userId, scope, text) => sessionDraftsDb.saveDraftText(userId, scope, text),
+    appendQueuedMessage: (userId, scope, message) => sessionDraftsDb.appendQueuedMessage(userId, scope, message),
+    clearQueuedMessage: (userId, scope, expected) => sessionDraftsDb.clearQueuedMessage(userId, scope, expected),
     deleteDraft: (userId, scope) => sessionDraftsDb.deleteDraft(userId, scope),
   },
   readSystemGitConfig,
@@ -61,6 +65,21 @@ const userService = createUserService({
   },
   logInfo: (message) => console.log(message),
   logError: (message, error) => console.error(message, error),
+  notifyLegacyQueueWrite: (userId, scope) => {
+    const session = sessionsDb.getSessionById(scope);
+    if (!session) return;
+    const language = userPreferencesDb.getPreferences(userId).language;
+    chatRunRegistry.publishSessionEvent(scope, {
+      id: `legacy-queue-refresh:${scope}`,
+      sessionId: scope,
+      provider: session.provider as LLMProvider,
+      timestamp: new Date().toISOString(),
+      kind: 'error',
+      content: typeof language === 'string' && language.startsWith('zh')
+        ? '当前页面版本已过期，排队操作没有生效。请先复制输入文字和排队内容，再刷新页面确认队列后重新操作。'
+        : 'This page is out of date and the queue operation was not applied. Copy both the input text and queued content, then refresh and check the queue before trying again.',
+    });
+  },
 });
 
 /** User router assembled for the authenticated server mount. */

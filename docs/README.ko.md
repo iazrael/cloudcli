@@ -1,5 +1,5 @@
 <div align="center">
- <img src="../public/logo.svg" alt="CloudCLI UI" width="64" height="64">
+ <img src="../public/logo.svg" alt="CloudCLI" width="64" height="64">
  <h1>Cloud CLI (일명 Claude Code UI)</h1>
  <p><a href="https://docs.anthropic.com/en/docs/claude-code">Claude Code</a>, <a href="https://docs.cursor.com/en/cli/overview">Cursor CLI</a>, <a href="https://developers.openai.com/codex">Codex</a>, 용 데스크톱 및 모바일 UI입니다.<br>로컬 또는 원격에서 실행하여 어디서나 활성 프로젝트와 세션을 확인하세요.</p>
 </div>
@@ -74,7 +74,7 @@
 
 #### npm
 
-**npx**로 즉시 CloudCLI UI를 실행하세요 (Node.js v22+ 필요):
+**npx**로 즉시 CloudCLI를 실행하세요 (Node.js v22+ 필요):
 
 ```bash
 npx @cloudcli-ai/cloudcli
@@ -105,9 +105,9 @@ Claude Code, Codex를 지원합니다. 자세한 내용은 [샌드박스 문서]
 
 ## 어느 옵션이 적합한가요?
 
-CloudCLI UI는 CloudCLI Cloud를 구동하는 오픈 소스 UI 계층입니다. 로컬 머신에서 직접 셀프 호스트하거나, CloudCLI Cloud(완전 관리형 클라우드 환경, 팀 기능, 심화 통합 제공)를 사용할 수 있습니다.
+CloudCLI는 CloudCLI Cloud를 구동하는 오픈 소스 UI 계층입니다. 로컬 머신에서 직접 셀프 호스트하거나, CloudCLI Cloud(완전 관리형 클라우드 환경, 팀 기능, 심화 통합 제공)를 사용할 수 있습니다.
 
-| | CloudCLI UI (셀프 호스트) | CloudCLI Cloud |
+| | CloudCLI (셀프 호스트) | CloudCLI Cloud |
 |---|---|---|
 | **적합한 대상** | 로컬 에이전트 세션을 위한 전체 UI가 필요한 개발자 | 어디서든 접근 가능한 클라우드에서 에이전트를 운영하고자 하는 팀 및 개발자 |
 | **접근 방법** | `[yourip]:port`를 통해 브라우저 접속 | 브라우저, IDE, REST API, n8n |
@@ -181,10 +181,10 @@ CloudCLI는 커스텀 탭과 선택적 Node.js 백엔드가 포함된 플러그�
 
 Claude Code Remote Control은 이미 로컬 터미널에서 실행 중인 세션으로 메시지를 전송합니다. 이 경우 기계가 켜져 있어야 하고 터미널을 열어 둬야 하며, 네트워크 연결 없이 약 10분 후 타임아웃됩니다.
 
-CloudCLI UI와 CloudCLI Cloud는 Claude Code를 확장하며 별도로 존재하지 않습니다 — MCP 서버, 권한, 설정, 세션은 Claude Code에서 그대로 사용됩니다.
+CloudCLI와 CloudCLI Cloud는 Claude Code를 확장하며 별도로 존재하지 않습니다 — MCP 서버, 권한, 설정, 세션은 Claude Code에서 그대로 사용됩니다.
 
-- **모든 세션을 다룬다** — CloudCLI UI는 `~/.claude` 폴더에서 모든 세션을 자동 발견합니다. Remote Control은 단일 활성 세션만 노출합니다.
-- **설정은 그대로** — CloudCLI UI에서 변경한 MCP, 도구 권한, 프로젝트 설정은 Claude Code에 즉시 반영됩니다.
+- **모든 세션을 다룬다** — CloudCLI는 `~/.claude` 폴더에서 모든 세션을 자동 발견합니다. Remote Control은 단일 활성 세션만 노출합니다.
+- **설정은 그대로** — CloudCLI에서 변경한 MCP, 도구 권한, 프로젝트 설정은 Claude Code에 즉시 반영됩니다.
 - **지원 에이전트가 더 많음** — Claude Code, Cursor CLI, Codex 지원.
 - **전체 UI 제공** — 단일 채팅 창이 아닌 파일 탐색기, Git 통합, MCP 관리 및 셸 터미널 포함.
 - **CloudCLI Cloud는 클라우드에서 실행** — 노트북을 닫아도 에이전트가 실행됩니다. 터미널을 계속 확인할 필요 없음.
@@ -199,7 +199,7 @@ CloudCLI UI와 CloudCLI Cloud는 Claude Code를 확장하며 별도로 존재하
 </details>
 
 <details>
-<summary>CloudCLI UI를 휴대폰에서 사용할 수 있나요?</summary>
+<summary>CloudCLI를 휴대폰에서 사용할 수 있나요?</summary>
 
 네. 셀프 호스트인 경우 기계에서 서버를 실행하고 네트워크의 아무 브라우저에서 `[yourip]:port`를 열면 됩니다. CloudCLI Cloud는 어떤 기기에서도 열 수 있으며, 네이티브 앱도 준비 중입니다.
 
@@ -208,7 +208,7 @@ CloudCLI UI와 CloudCLI Cloud는 Claude Code를 확장하며 별도로 존재하
 <details>
 <summary>UI에서 변경하면 로컬 Claude Code 설정에 영향을 주나요?</summary>
 
-네, 셀프 호스트에서는 그렇습니다. CloudCLI UI는 Claude Code가 사용하는 동일한 `~/.claude` 설정을 읽고 씁니다. UI에서 추가한 MCP 서버가 Claude Code에 즉시 나타납니다.
+네, 셀프 호스트에서는 그렇습니다. CloudCLI는 Claude Code가 사용하는 동일한 `~/.claude` 설정을 읽고 씁니다. UI에서 추가한 MCP 서버가 Claude Code에 즉시 나타납니다.
 
 </details>
 

@@ -52,7 +52,6 @@ const NAV_TABS: Array<{ id: AppTab; labelKey: string; keywords: string }> = [
   { id: 'files', labelKey: 'commandPalette.navFiles', keywords: 'files file tree explorer' },
   { id: 'shell', labelKey: 'commandPalette.navShell', keywords: 'shell terminal console' },
   { id: 'git', labelKey: 'commandPalette.navGit', keywords: 'git diff branches' },
-  { id: 'tasks', labelKey: 'commandPalette.navTasks', keywords: 'tasks taskmaster' },
 ];
 
 /** Rendered by the project-workspace module to search projects, sessions, files, branches and commits and run their actions. */

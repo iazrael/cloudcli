@@ -79,6 +79,17 @@ export type LoadingProgressEvent = {
 };
 
 /**
+ * The server submitted a session's queued message. Pages may echo their local
+ * copy only when its fingerprint matches; the text is never broadcast here.
+ */
+export type QueuedMessageDispatchedEvent = {
+  kind: 'queued_message_dispatched';
+  sessionId: string;
+  /** 已提交正文和附件的 SHA-256 指纹；广播中不包含用户正文。 */
+  messageFingerprint?: string;
+};
+
+/**
  * Synthesized by the client when the socket re-opens after a drop; no server
  * sends it. It is in this union because every subscriber sees it on the same
  * channel and has to account for it.
@@ -97,6 +108,7 @@ export type ServerEvent =
   | ScheduledJobsChangedEvent
   | LoadingProgressEvent
   | ProtocolErrorEvent
+  | QueuedMessageDispatchedEvent
   | WebsocketReconnectedEvent;
 
 /** Shared transport budgets used by the gateway replay log and client gap buffer. */

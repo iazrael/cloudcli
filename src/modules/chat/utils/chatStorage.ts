@@ -1,5 +1,5 @@
 import { PROVIDER_PERMISSION_PREFERENCE_KEYS } from '@/shared/constants';
-import type { ClaudeSettings, LLMProvider, PermissionMode } from '@/shared/types';
+import type { ClaudeSettings, LLMProvider, PermissionMode, QueuedSendOptions } from '@/shared/types';
 import { readUserPreference, writeUserPreference } from '@/shared/userSettings';
 
 import { safeLocalStorage } from '@/shared/utils';
@@ -65,67 +65,23 @@ export function readProviderToolsSettings(provider: LLMProvider): Record<string,
   );
 }
 
-export type StoredQueuedMessage = {
-  content: string;
-  options?: QueuedSendOptions;
-  /** Legacy image-only descriptors retained for queued draft compatibility. */
-  images?: unknown[];
-  /**
-   * JSON-safe descriptors returned by POST /api/assets/files. Unlike browser
-   * File objects, they can follow a queued message across session switches.
-   */
-  attachments?: unknown[];
-}
 
-export function readQueuedMessage(sessionId: string): StoredQueuedMessage | null {
-  const raw = safeLocalStorage.getItem(queuedMessageKey(sessionId));
-  if (!raw) {
-    return null;
-  }
-
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (parsed && typeof parsed === 'object' && typeof (parsed as StoredQueuedMessage).content === 'string') {
-      const { content, options, images, attachments } = parsed as StoredQueuedMessage;
-      const normalizedAttachments = Array.isArray(attachments)
-        ? attachments
-        : Array.isArray(images)
-          ? images
-          : [];
-      return content.trim() || normalizedAttachments.length > 0
-        ? { content, options, attachments: normalizedAttachments }
-        : null;
-    }
-  } catch {
-    // Legacy format: the raw draft text itself.
-  }
-
-  return raw.trim() ? { content: raw } : null;
-}
-
-export function writeQueuedMessage(sessionId: string, message: StoredQueuedMessage): void {
-  safeLocalStorage.setItem(queuedMessageKey(sessionId), JSON.stringify(message));
-}
-
-export function clearQueuedMessage(sessionId: string): void {
-  safeLocalStorage.removeItem(queuedMessageKey(sessionId));
-}
-
-export type QueuedSendOptions = Record<string, unknown>;
-
-export const queuedMessageKey = (sessionId: string) => `queued_message_${sessionId}`;
+//----------------- QUEUED COMPACTION ------------
 
 /**
  * A `/compact` the user asked for while the session was still generating.
  * Compaction starts its own run, and the gateway refuses one while a run holds
- * the session, so the request is parked here and dispatched when that run ends
- * — in this tab or, via the app-level auto-send, in another one.
+ * the session, so the request is parked here and dispatched when that run ends.
  */
 export type StoredQueuedCompact = {
   /** Composer preferences snapshotted at request time, replayed with the frame. */
   options?: QueuedSendOptions;
 };
 
+/** Stable localStorage key for a session's parked compaction request. */
+export const queuedCompactKey = (sessionId: string) => `queued_compact_${sessionId}`;
+
+/** Reads the parked compaction request for a session; null when none is parked. */
 export function readQueuedCompact(sessionId: string): StoredQueuedCompact | null {
   const raw = safeLocalStorage.getItem(queuedCompactKey(sessionId));
   if (!raw) {
@@ -143,12 +99,12 @@ export function readQueuedCompact(sessionId: string): StoredQueuedCompact | null
   }
 }
 
+/** Parks a compaction request for the session that asked for it. */
 export function writeQueuedCompact(sessionId: string, compact: StoredQueuedCompact = {}): void {
   safeLocalStorage.setItem(queuedCompactKey(sessionId), JSON.stringify(compact));
 }
 
+/** Removes a parked compaction request once it is dispatched or cancelled. */
 export function clearQueuedCompact(sessionId: string): void {
   safeLocalStorage.removeItem(queuedCompactKey(sessionId));
 }
-
-export const queuedCompactKey = (sessionId: string) => `queued_compact_${sessionId}`;

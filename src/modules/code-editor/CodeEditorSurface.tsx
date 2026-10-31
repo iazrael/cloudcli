@@ -4,7 +4,7 @@ import { EditorView } from '@codemirror/view';
 import { oneDark } from '@codemirror/theme-one-dark';
 import type { Extension } from '@codemirror/state';
 
-import type { CodeEditorGotoTarget } from '@/shared/types';
+import type { CodeEditorGotoTarget, MarkdownImageContext } from '@/shared/types';
 
 import MarkdownPreview from '@/modules/code-editor/markdown/MarkdownPreview';
 
@@ -19,6 +19,8 @@ type CodeEditorSurfaceProps = {
   extensions: Extension[];
   // Line to reveal once the document is loaded (`path:line` references).
   gotoTarget?: CodeEditorGotoTarget | null;
+  /** Where the markdown preview resolves relative image paths from; omitted for callers with no workspace document. */
+  markdownImageContext?: MarkdownImageContext | null;
 };
 
 /** Rendered by CodeEditor inside the code-editor module to show either the CodeMirror editing surface or the markdown preview. */
@@ -32,6 +34,7 @@ export default function CodeEditorSurface({
   showLineNumbers,
   extensions,
   gotoTarget = null,
+  markdownImageContext = null,
 }: CodeEditorSurfaceProps) {
   // Tracked as state, not a ref: the editor view is created after the first
   // render, and a ref would not re-run the effect once it lands.
@@ -61,7 +64,7 @@ export default function CodeEditorSurface({
     return (
       <div className="h-full overflow-y-auto bg-white dark:bg-gray-900">
         <div className="prose prose-sm mx-auto max-w-4xl px-8 py-6 dark:prose-invert prose-headings:font-semibold prose-a:text-blue-600 prose-code:text-sm prose-pre:bg-gray-900 prose-img:rounded-lg dark:prose-a:text-blue-400">
-          <MarkdownPreview content={content} />
+          <MarkdownPreview content={content} imageContext={markdownImageContext} />
         </div>
       </div>
     );

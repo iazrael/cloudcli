@@ -8,6 +8,10 @@ import MessageComponent from '@/modules/chat/transcript/MessageComponent';
 import { ToolRenderer } from '@/modules/chat/tools/ToolRenderer';
 import { UiPreferencesProvider } from '@/shared/context/UiPreferencesContext';
 import type { NormalizedMessage } from '@/shared/types';
+import { initI18n } from '@/modules/i18n';
+
+// Copy assertions need real translations; bundles load per language (see docs/design/i18n按语言懒加载.md).
+await initI18n();
 
 // `toolUseResult` values recorded by Claude Code 2.1.280 with
 // CLAUDE_CODE_BASH_EDIT_DIFF=1, copied from real transcript lines with the

@@ -39,7 +39,24 @@
     "clearSelection": "Limpar",
     "deleteSelected_one": "Excluir {{count}} sessão",
     "deleteSelected_other": "Excluir {{count}} sessões",
-    "deleteSelected_many": "Excluir {{count}} de sessões"
+    "deleteSelected_many": "Excluir {{count}} de sessões",
+    "pinSession": "Fixar sessão",
+    "unpinSession": "Desafixar sessão",
+    "pinned": "Fixada",
+    "optionsTitle": "Opções da sessão",
+    "optionsFor": "Opções da sessão {{name}}",
+    "providerSession": "Sessão {{provider}}",
+    "forkSession": "Fazer fork da sessão",
+    "forkSessionDescription": "Continuar a partir de uma cópia, sem alterar esta.",
+    "archiveOrDelete": "Arquivar ou excluir sessão",
+    "clickToRetry": "Clique para tentar novamente.",
+    "tapToRetry": "Toque para tentar novamente.",
+    "sessionName": "Nome da sessão",
+    "copyId": "Copiar ID da sessão {{provider}}",
+    "copyIdLoading": "Carregando ID da sessão {{provider}}…",
+    "copyIdCopied": "ID da sessão {{provider}} copiado",
+    "copyIdFailed": "Não foi possível copiar o ID da sessão {{provider}}",
+    "copyIdUnavailable": "ID da sessão {{provider}} indisponível"
   },
   "tooltips": {
     "viewEnvironments": "Ver ambientes",
@@ -125,7 +142,8 @@
     "forkSessionError": "Não foi possível fazer fork desta sessão. Tente novamente.",
     "deleteSessionsPartialFailure_one": "{{count}} sessão de {{total}} não pôde ser excluída. Tente novamente.",
     "deleteSessionsPartialFailure_other": "{{count}} de {{total}} sessões não puderam ser excluídas. Tente novamente.",
-    "deleteSessionsPartialFailure_many": "{{count}} de {{total}} sessões não puderam ser excluídas. Tente novamente."
+    "deleteSessionsPartialFailure_many": "{{count}} de {{total}} sessões não puderam ser excluídas. Tente novamente.",
+    "pinSessionError": "Não foi possível fixar esta sessão. Tente novamente."
   },
   "version": {
     "updateAvailable": "Atualização disponível",

@@ -32,7 +32,24 @@
     "loadingSessions": "Načítání relací...",
     "unnamed": "Bez názvu",
     "loading": "Načítání...",
-    "showMore": "Zobrazit další relace"
+    "showMore": "Zobrazit další relace",
+    "pinSession": "Připnout relaci",
+    "unpinSession": "Odepnout relaci",
+    "pinned": "Připnuto",
+    "optionsTitle": "Možnosti relace",
+    "optionsFor": "Možnosti relace {{name}}",
+    "providerSession": "Relace {{provider}}",
+    "forkSession": "Forknout relaci",
+    "forkSessionDescription": "Pokračovat z kopie, tato relace zůstane beze změny.",
+    "archiveOrDelete": "Archivovat nebo smazat relaci",
+    "clickToRetry": "Klikněte pro opakování.",
+    "tapToRetry": "Klepněte pro opakování.",
+    "sessionName": "Název relace",
+    "copyId": "Kopírovat ID relace {{provider}}",
+    "copyIdLoading": "Načítání ID relace {{provider}}…",
+    "copyIdCopied": "ID relace {{provider}} zkopírováno",
+    "copyIdFailed": "ID relace {{provider}} se nepodařilo zkopírovat",
+    "copyIdUnavailable": "ID relace {{provider}} není k dispozici"
   },
   "tooltips": {
     "viewEnvironments": "Zobrazit prostředí",
@@ -125,7 +142,8 @@
     "restoreProjectError": "Při obnovování projektu došlo k chybě. Zkuste to prosím znovu.",
     "restoreSessionFailed": "Nepodařilo se obnovit relaci. Zkuste to prosím znovu.",
     "restoreSessionError": "Při obnovování relace došlo k chybě. Zkuste to prosím znovu.",
-    "forkSessionError": "Tuto relaci se nepodařilo forknout. Zkuste to prosím znovu."
+    "forkSessionError": "Tuto relaci se nepodařilo forknout. Zkuste to prosím znovu.",
+    "pinSessionError": "Tuto relaci se nepodařilo připnout. Zkuste to prosím znovu."
   },
   "version": {
     "updateAvailable": "Je dostupná aktualizace",

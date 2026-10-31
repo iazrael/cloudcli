@@ -38,7 +38,24 @@
     "selectAllLoaded": "全選已載入",
     "clearSelection": "清除選取",
     "deleteSelected_one": "刪除 {{count}} 個工作階段",
-    "deleteSelected_other": "刪除 {{count}} 個工作階段"
+    "deleteSelected_other": "刪除 {{count}} 個工作階段",
+    "pinSession": "置頂工作階段",
+    "unpinSession": "取消置頂",
+    "pinned": "已置頂",
+    "optionsTitle": "工作階段選項",
+    "optionsFor": "{{name}} 的工作階段選項",
+    "providerSession": "{{provider}} 工作階段",
+    "forkSession": "分支工作階段",
+    "forkSessionDescription": "從副本繼續，原工作階段保持不變。",
+    "archiveOrDelete": "封存或刪除工作階段",
+    "clickToRetry": "點擊重試。",
+    "tapToRetry": "輕觸重試。",
+    "sessionName": "工作階段名稱",
+    "copyId": "複製 {{provider}} 工作階段 ID",
+    "copyIdLoading": "正在取得 {{provider}} 工作階段 ID…",
+    "copyIdCopied": "已複製 {{provider}} 工作階段 ID",
+    "copyIdFailed": "無法複製 {{provider}} 工作階段 ID",
+    "copyIdUnavailable": "{{provider}} 工作階段 ID 無法使用"
   },
   "tooltips": {
     "viewEnvironments": "查看環境",
@@ -121,7 +138,8 @@
     "restoreSessionError": "還原工作階段時出錯，請重試。",
     "forkSessionError": "無法分支此工作階段，請再試一次。",
     "deleteSessionsPartialFailure_one": "{{total}} 個工作階段中有 {{count}} 個刪除失敗，請重試。",
-    "deleteSessionsPartialFailure_other": "{{total}} 個工作階段中有 {{count}} 個刪除失敗，請重試。"
+    "deleteSessionsPartialFailure_other": "{{total}} 個工作階段中有 {{count}} 個刪除失敗，請重試。",
+    "pinSessionError": "無法置頂此工作階段，請再試一次。"
   },
   "version": {
     "updateAvailable": "有可用更新",

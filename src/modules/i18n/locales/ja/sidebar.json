@@ -37,7 +37,24 @@
     "selectAll": "すべて選択",
     "selectAllLoaded": "読み込み済みをすべて選択",
     "clearSelection": "選択を解除",
-    "deleteSelected": "{{count}}件のセッションを削除"
+    "deleteSelected": "{{count}}件のセッションを削除",
+    "pinSession": "セッションをピン留め",
+    "unpinSession": "ピン留めを解除",
+    "pinned": "ピン留め済み",
+    "optionsTitle": "セッションオプション",
+    "optionsFor": "{{name}} のセッションオプション",
+    "providerSession": "{{provider}} セッション",
+    "forkSession": "セッションを分岐",
+    "forkSessionDescription": "コピーから続行し、このセッションはそのまま残します。",
+    "archiveOrDelete": "セッションをアーカイブまたは削除",
+    "clickToRetry": "クリックして再試行。",
+    "tapToRetry": "タップして再試行。",
+    "sessionName": "セッション名",
+    "copyId": "{{provider}} セッション ID をコピー",
+    "copyIdLoading": "{{provider}} セッション ID を読み込み中…",
+    "copyIdCopied": "{{provider}} セッション ID をコピーしました",
+    "copyIdFailed": "{{provider}} セッション ID をコピーできませんでした",
+    "copyIdUnavailable": "{{provider}} セッション ID を取得できません"
   },
   "tooltips": {
     "viewEnvironments": "環境を表示",
@@ -119,7 +136,8 @@
     "restoreSessionFailed": "セッションの復元に失敗しました。もう一度お試しください。",
     "restoreSessionError": "セッションの復元でエラーが発生しました。もう一度お試しください。",
     "forkSessionError": "このセッションを分岐できませんでした。もう一度お試しください。",
-    "deleteSessionsPartialFailure": "{{total}}件中{{count}}件のセッションを削除できませんでした。もう一度お試しください。"
+    "deleteSessionsPartialFailure": "{{total}}件中{{count}}件のセッションを削除できませんでした。もう一度お試しください。",
+    "pinSessionError": "このセッションをピン留めできませんでした。もう一度お試しください。"
   },
   "version": {
     "updateAvailable": "アップデートあり",

@@ -10,9 +10,11 @@ import type {
   ProviderModelsDefinition,
   ProviderModelOption,
 } from '@/shared/types.js';
+import type { StaleWhileRefreshValue } from '@/shared/utils.js';
 import {
   AppError,
   buildDefaultProviderCurrentActiveModel,
+  createStaleWhileRefreshValue,
   readObjectRecord,
   readOptionalString,
 } from '@/shared/utils.js';
@@ -51,9 +53,19 @@ function parseModel(value: unknown): ProviderModelOption | null {
 
 /** Provider registry consumer: discovers models from the same bundled CLI used for conversations. */
 export class CodexProviderModels implements IProviderModels {
-  private cachedModels: ProviderModelsDefinition | null = null;
-  private cacheExpiry = 0;
-  private pending: Promise<ProviderModelsDefinition> | null = null;
+  /**
+   * Every turn reads the catalog, and listing it opens an app-server
+   * connection, so only the first read waits; an expired catalog keeps serving
+   * while it is re-listed. A failed refresh never replaces discovered models
+   * with static guesses: the last catalog serves and the listing is retried
+   * after a short back-off.
+   */
+  private readonly catalog: StaleWhileRefreshValue<ProviderModelsDefinition> = createStaleWhileRefreshValue({
+    load: () => this.fetchModels(),
+    ttlMs: () => 5 * 60_000,
+    failureRetryMs: 10_000,
+    onRefreshError: (error) => console.error('[Codex] Model catalog refresh failed:', error),
+  });
 
   private async fetchModels(): Promise<ProviderModelsDefinition> {
     const connection = await codexAppServerTransport.open();
@@ -87,21 +99,7 @@ export class CodexProviderModels implements IProviderModels {
   }
 
   async getSupportedModels(): Promise<ProviderModelsDefinition> {
-    const now = Date.now();
-    if (this.cachedModels && now < this.cacheExpiry) return this.cachedModels;
-    if (this.pending) return this.pending;
-    this.pending = this.fetchModels().then((models) => {
-      this.cachedModels = models;
-      this.cacheExpiry = Date.now() + 5 * 60_000;
-      return models;
-    }).catch((error: unknown) => {
-      console.error('[Codex] Model catalog refresh failed:', error);
-      if (!this.cachedModels) throw error;
-      // Briefly back off after failure; never replace discovered models with static guesses.
-      this.cacheExpiry = Date.now() + 10_000;
-      return this.cachedModels;
-    }).finally(() => { this.pending = null; });
-    return this.pending;
+    return this.catalog.get();
   }
 
   async getCurrentActiveModel(): Promise<ProviderCurrentActiveModel> {

@@ -1,6 +1,8 @@
+import { useTranslation } from 'react-i18next';
 import { useEffect, useRef, useState } from 'react';
 
-import { api, authenticatedFetch } from '@/shared/api';
+import { useSignedImage } from '@/shared/hooks/useSignedImage';
+import { authenticatedFetch } from '@/shared/api';
 import type { CodeEditorFile, PreviewKind } from '@/shared/types';
 import { getPreviewMimeType } from '@/modules/code-editor/utils/previewableFile';
 import CodeEditorImageViewer, {
@@ -53,8 +55,12 @@ export default function CodeEditorMediaPreview({
   onToggleFullscreen,
   labels,
 }: CodeEditorMediaPreviewProps) {
+  const { t } = useTranslation();
+  // 其他媒体仍使用校验后的 Blob URL，支持原生播放与 PDF 查看。
   const [url, setUrl] = useState<string | null>(null);
+  // 保留其他媒体的传输和格式校验错误。
   const [error, setError] = useState<string | null>(null);
+  // 其他媒体的加载生命周期独立于签名图片请求。
   const [loading, setLoading] = useState(true);
   // Identifies which file the current `url` was loaded for. Rendering is gated on
   // this so a blob from a previously-opened file can never show under the new
@@ -69,7 +75,12 @@ export default function CodeEditorMediaPreview({
   const isExternal = Boolean(file.isReadOnlyExternal);
   const sourceKey = `${isExternal ? 'external' : (projectId ?? '')}:${file.path}:${kind}`;
 
+  const signed = useSignedImage(kind === 'image' ? isExternal
+    ? { kind: 'external', path: file.path, ...(projectId ? { projectId } : {}) }
+    : projectId ? { kind: 'project', projectId, path: file.path } : null : null, { eager: true });
+
   useEffect(() => {
+    if (kind === 'image') return;
     if (!isExternal && !projectId) {
       setUrl(null);
       setLoadedKey(null);
@@ -158,7 +169,9 @@ export default function CodeEditorMediaPreview({
 
   // Only expose the blob once it matches the file currently being shown, so a
   // stale URL from the previous file is never rendered during a switch.
-  const currentUrl = url && loadedKey === sourceKey ? url : null;
+  const currentUrl = kind === 'image' ? signed.url : url && loadedKey === sourceKey ? url : null;
+  const currentError = kind === 'image' ? (signed.error || (!isExternal && !projectId) ? labels.error : null) : error;
+  const currentLoading = kind === 'image' ? !currentUrl && !currentError : loading;
 
   // SVGs render safely inline via <img> (scripts don't execute there), but the
   // open-in-new-tab link is a top-level navigation. A blob URL inherits the
@@ -174,9 +187,11 @@ export default function CodeEditorMediaPreview({
         return (
           <CodeEditorImageViewer
             src={currentUrl}
+            filePath={file.path}
             alt={file.name}
             viewerRef={imageViewerRef}
             onScaleChange={setImageScale}
+            onError={signed.onError} onLoad={signed.onLoad}
           />
         );
       case 'pdf':
@@ -206,16 +221,17 @@ export default function CodeEditorMediaPreview({
   };
 
   const previewBody = (
-    <div className={`relative flex h-full w-full flex-col items-center justify-center bg-muted/30 ${kind === 'image' ? 'p-0 overflow-hidden' : 'p-2'}`}>
-      {loading && (
+    <div className={`relative flex min-h-0 w-full flex-1 flex-col items-center justify-center bg-muted/30 ${kind === 'image' ? 'overflow-hidden p-0' : 'p-2'}`}>
+      {currentLoading && (
         <div className="text-sm text-muted-foreground">{labels.loading}</div>
       )}
 
-      {!loading && currentUrl && renderMedia()}
+      {!currentLoading && currentUrl && renderMedia()}
 
-      {!loading && !currentUrl && (
+      {!currentLoading && !currentUrl && (
         <div className="flex flex-col items-center gap-3 p-8 text-center text-muted-foreground">
-          <p className="text-sm">{error || labels.error}</p>
+          <p className="text-sm">{currentError || labels.error}</p>
+          {kind === 'image' && <button type="button" onClick={signed.retry}>{t('common:buttons.retry')}</button>}
           <p className="break-all text-xs">{file.path}</p>
         </div>
       )}
@@ -236,7 +252,7 @@ export default function CodeEditorMediaPreview({
             className={`flex items-center justify-center rounded-md p-1.5 ${
               canZoomOut
                 ? 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white'
-                : 'cursor-not-allowed opacity-30 text-gray-400 dark:text-gray-600'
+                : 'cursor-not-allowed text-gray-400 opacity-30 dark:text-gray-600'
             }`}
             aria-label={labels.zoomOut ?? 'Zoom out'}
             title={labels.zoomOut ?? 'Zoom out'}
@@ -249,7 +265,7 @@ export default function CodeEditorMediaPreview({
           <button
             type="button"
             onClick={() => imageViewerRef.current?.resetZoom()}
-            className="px-1.5 py-0.5 text-xs font-mono font-medium text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white rounded"
+            className="rounded px-1.5 py-0.5 font-mono text-xs font-medium text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white"
             aria-label={labels.resetZoom ?? 'Reset zoom'}
             title={labels.resetZoom ?? 'Reset zoom'}
           >
@@ -262,7 +278,7 @@ export default function CodeEditorMediaPreview({
             className={`flex items-center justify-center rounded-md p-1.5 ${
               canZoomIn
                 ? 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white'
-                : 'cursor-not-allowed opacity-30 text-gray-400 dark:text-gray-600'
+                : 'cursor-not-allowed text-gray-400 opacity-30 dark:text-gray-600'
             }`}
             aria-label={labels.zoomIn ?? 'Zoom in'}
             title={labels.zoomIn ?? 'Zoom in'}
@@ -278,6 +294,23 @@ export default function CodeEditorMediaPreview({
       {canOpenInNewTab && currentUrl && (
         <a
           href={currentUrl}
+          onClick={(event) => {
+            if (kind !== 'image') return;
+            event.preventDefault();
+            // 同步打开空白页以保留浏览器的用户手势，再按需续签跳转。
+            const popup = window.open('about:blank', '_blank');
+            if (!popup) return;
+            popup.opener = null;
+            popup.document.title = labels.loading;
+            void signed.ensureFresh().then((freshUrl) => {
+              if (popup.closed) return;
+              if (freshUrl) popup.location.replace(freshUrl);
+              else popup.close();
+            }).catch(() => {
+              console.error('[Media] Unable to open image preview');
+              if (!popup.closed) popup.close();
+            });
+          }}
           target="_blank"
           rel="noopener noreferrer"
           className="flex items-center justify-center rounded-md p-1.5 text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white"

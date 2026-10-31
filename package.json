@@ -1,6 +1,6 @@
 {
   "name": "cloudcli",
-  "version": "2.13.0",
+  "version": "2.17.0",
   "productName": "CloudCLI",
   "description": "A web-based UI for Claude Code CLI",
   "type": "module",
@@ -142,7 +142,7 @@
     "ui",
     "mobile IDE"
   ],
-  "author": "CloudCLI UI Contributors",
+  "author": "CloudCLI Contributors",
   "license": "AGPL-3.0-or-later",
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.303",
@@ -157,8 +157,9 @@
     "@fontsource/encode-sans": "^5.3.0",
     "@fontsource/merriweather": "^5.3.0",
     "@iarna/toml": "^2.2.5",
+    "@modelcontextprotocol/sdk": "1.32.2",
     "@octokit/rest": "^22.0.0",
-    "@openai/codex": "0.163.0",
+    "@openai/codex": "0.166.0",
     "@replit/codemirror-minimap": "^0.5.2",
     "@uiw/react-codemirror": "^4.23.13",
     "@vscode/ripgrep": "^1.17.1",
@@ -179,6 +180,7 @@
     "cross-spawn": "^7.0.3",
     "dompurify": "^3.4.7",
     "express": "^4.18.2",
+    "fast-sha256": "^1.3.0",
     "fuse.js": "^7.0.0",
     "gray-matter": "^4.0.3",
     "i18next": "^25.7.4",
@@ -210,7 +212,8 @@
     "undici": "^7.29.1",
     "virtua": "^0.52.3",
     "web-push": "^3.6.7",
-    "ws": "^8.14.2"
+    "ws": "^8.14.2",
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@commitlint/cli": "^20.5.0",
@@ -223,6 +226,7 @@
     "@types/cors": "^2.8.19",
     "@types/cross-spawn": "^6.0.6",
     "@types/express": "^5.0.6",
+    "@types/jsonwebtoken": "^9.0.10",
     "@types/mime-types": "^3.0.1",
     "@types/multer": "^2.2.0",
     "@types/node": "^22.19.7",

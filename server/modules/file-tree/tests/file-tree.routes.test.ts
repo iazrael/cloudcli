@@ -21,6 +21,8 @@ function createFakeServices(overrides: Partial<FileTreeServices> = {}): FileTree
     readExternalTextFile: unexpectedOperation,
     openExternalFile: unexpectedOperation,
     openFile: unexpectedOperation,
+    resolveImagePath: unexpectedOperation,
+    checkPathsExist: unexpectedOperation,
     saveTextFile: unexpectedOperation,
     listProjectFiles: unexpectedOperation,
     createEntry: unexpectedOperation,
@@ -261,4 +263,59 @@ test('external-file routes forward optional projectId to services', async () => 
 
   assert.deepEqual(textCalls, [{ path: '/worktrees/feat/file.txt', projectId: 'proj-123' }]);
   assert.deepEqual(contentCalls, [{ path: '/worktrees/feat/img.png', projectId: 'proj-123' }]);
+});
+
+test('paths/exists forwards the batch and echoes per-path statuses', async () => {
+  const inputs: Parameters<FileTreeServices['checkPathsExist']>[] = [];
+  const services = createFakeServices({
+    checkPathsExist: async (...input) => {
+      inputs.push(input);
+      return input[0].map(({ id }) => ({ id, status: 200 }));
+    },
+  });
+
+  await withFileTreeServer(services, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/file-tree/paths/exists`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        items: [
+          { id: 'a', path: 'src/a.ts', projectId: 'p1' },
+          { id: 'b', path: '/tmp/b.txt' },
+        ],
+      }),
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { results: [{ id: 'a', status: 200 }, { id: 'b', status: 200 }] });
+  });
+
+  assert.deepEqual(inputs, [[
+    [
+      { id: 'a', path: 'src/a.ts', projectId: 'p1' },
+      { id: 'b', path: '/tmp/b.txt' },
+    ],
+  ]]);
+});
+
+test('paths/exists rejects malformed, duplicate and oversized batches', async () => {
+  const services = createFakeServices({
+    checkPathsExist: async () => {
+      throw new Error('checkPathsExist must not run for invalid batches');
+    },
+  });
+
+  await withFileTreeServer(services, async (baseUrl) => {
+    const post = (body: unknown) => fetch(`${baseUrl}/api/file-tree/paths/exists`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    assert.equal((await post({})).status, 400);
+    assert.equal((await post({ items: [] })).status, 400);
+    assert.equal((await post({ items: [{ id: 'a', path: 5 }] })).status, 400);
+    assert.equal((await post({ items: [{ id: 'a', path: 'a' }, { id: 'a', path: 'b' }] })).status, 400);
+    assert.equal((await post({ items: Array.from({ length: 51 }, (_, index) => ({ id: `id-${index}`, path: 'a.ts' })) })).status, 400);
+  });
 });

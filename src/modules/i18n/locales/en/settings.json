@@ -130,7 +130,6 @@
     "git": "Git",
     "apiTokens": "API & Tokens",
     "voice": "Voice",
-    "tasks": "Tasks",
     "browser": "Browser",
     "scheduled": "Scheduled tasks",
     "notifications": "Notifications",
@@ -251,6 +250,11 @@
       "light": "Light",
       "dark": "Dark",
       "system": "Follow the system appearance"
+    },
+    "keepProjectsExpanded": {
+      "section": "Sidebar",
+      "label": "Keep projects expanded",
+      "description": "Open several projects together and remember them in this browser after reloading."
     }
   },
   "mcpForm": {
@@ -395,25 +399,6 @@
       "viewLink": "View API Documentation →"
     },
     "loading": "Loading..."
-  },
-  "tasks": {
-    "checking": "Checking TaskMaster installation...",
-    "notInstalled": {
-      "title": "TaskMaster AI CLI Not Installed",
-      "description": "TaskMaster CLI is required to use task management features. Install it to get started:",
-      "installCommand": "npm install -g task-master-ai",
-      "viewOnGitHub": "View on GitHub",
-      "afterInstallation": "After installation:",
-      "steps": {
-        "restart": "Restart this application",
-        "autoAvailable": "TaskMaster features will automatically become available",
-        "initCommand": "Use task-master init in your project directory"
-      }
-    },
-    "settings": {
-      "enableLabel": "Enable TaskMaster Integration",
-      "enableDescription": "Show TaskMaster tasks, banners, and sidebar indicators across the interface"
-    }
   },
   "agents": {
     "authStatus": {
@@ -828,13 +813,7 @@
     "disable": "Disable",
     "installAriaLabel": "Plugin git repository URL",
     "tab": "tab",
-    "runningStatus": "running",
-    "glmUsagePlugin": {
-      "name": "GLM Usage",
-      "badge": "unofficial",
-      "description": "Track live GLM/Zhipu coding-plan quotas and 30-day token history.",
-      "install": "Install"
-    }
+    "runningStatus": "running"
   },
   "skillsPage": {
     "description": "Manage {{provider}} skills from local files, complete folders, and project-aware locations.",

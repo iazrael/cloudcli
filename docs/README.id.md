@@ -1,5 +1,5 @@
 <div align="center">
- <img src="../public/logo.svg" alt="CloudCLI UI" width="64" height="64">
+ <img src="../public/logo.svg" alt="CloudCLI" width="64" height="64">
  <h1>Cloud CLI (alias Claude Code UI)</h1>
  <p>UI desktop dan mobile untuk <a href="https://docs.anthropic.com/en/docs/claude-code">Claude Code</a>, <a href="https://docs.cursor.com/en/cli/overview">Cursor CLI</a>, dan <a href="https://developers.openai.com/codex">Codex</a>.<br>Gunakan secara lokal atau remote untuk melihat project dan session aktif Anda dari mana saja.</p>
 </div>
@@ -78,7 +78,7 @@ Cara tercepat untuk memulai — tanpa setup lokal. Dapatkan lingkungan pengemban
 
 #### npm
 
-Coba CloudCLI UI langsung dengan **npx** (memerlukan **Node.js** v22+):
+Coba CloudCLI langsung dengan **npx** (memerlukan **Node.js** v22+):
 
 ```
 npx @cloudcli-ai/cloudcli
@@ -120,7 +120,7 @@ Gunakan untuk membuka lingkungan CloudCLI Cloud, berpindah antara workspace loka
 
 ## Opsi mana yang tepat untuk Anda?
 
-CloudCLI UI adalah lapisan UI open source yang menjadi dasar CloudCLI Cloud. Anda dapat menjalankannya secara self-hosted di mesin sendiri, menjalankannya dalam Docker sandbox untuk isolasi, atau menggunakan CloudCLI Cloud untuk lingkungan yang dikelola sepenuhnya.
+CloudCLI adalah lapisan UI open source yang menjadi dasar CloudCLI Cloud. Anda dapat menjalankannya secara self-hosted di mesin sendiri, menjalankannya dalam Docker sandbox untuk isolasi, atau menggunakan CloudCLI Cloud untuk lingkungan yang dikelola sepenuhnya.
 
 | | Self-Hosted (npm) | Self-Hosted (Docker Sandbox) *(Eksperimental)* | CloudCLI Cloud |
 |---|---|---|---|
@@ -196,12 +196,12 @@ CloudCLI memiliki sistem plugin yang memungkinkan Anda menambahkan tab kustom de
 
 Claude Code Remote Control memungkinkan Anda mengirim pesan ke session yang sudah berjalan di terminal lokal. Mesin Anda harus tetap menyala, terminal harus tetap terbuka, dan session akan timeout setelah sekitar 10 menit tanpa koneksi jaringan.
 
-CloudCLI UI dan CloudCLI Cloud memperluas Claude Code, bukan berjalan sebagai sistem terpisah di sampingnya — MCP server, izin, pengaturan, dan session Anda sama persis dengan yang digunakan Claude Code secara native. Tidak ada yang diduplikasi atau dikelola secara terpisah.
+CloudCLI dan CloudCLI Cloud memperluas Claude Code, bukan berjalan sebagai sistem terpisah di sampingnya — MCP server, izin, pengaturan, dan session Anda sama persis dengan yang digunakan Claude Code secara native. Tidak ada yang diduplikasi atau dikelola secara terpisah.
 
 Dalam praktiknya, ini berarti:
 
-- **Semua session Anda, bukan hanya satu** — CloudCLI UI secara otomatis menemukan setiap session dari folder `~/.claude`. Remote Control hanya mengekspos satu session aktif agar tersedia di aplikasi mobile Claude.
-- **Pengaturan Anda tetap menjadi sumber utama** — MCP server, izin tool, dan konfigurasi project yang Anda ubah di CloudCLI UI ditulis langsung ke konfigurasi Claude Code dan langsung berlaku, begitu pula sebaliknya.
+- **Semua session Anda, bukan hanya satu** — CloudCLI secara otomatis menemukan setiap session dari folder `~/.claude`. Remote Control hanya mengekspos satu session aktif agar tersedia di aplikasi mobile Claude.
+- **Pengaturan Anda tetap menjadi sumber utama** — MCP server, izin tool, dan konfigurasi project yang Anda ubah di CloudCLI ditulis langsung ke konfigurasi Claude Code dan langsung berlaku, begitu pula sebaliknya.
 - **Mendukung lebih banyak agent** — Claude Code, Cursor CLI, dan Codex, bukan hanya Claude Code.
 - **UI lengkap, bukan sekadar jendela chat** — file explorer, integrasi Git, manajemen MCP, dan terminal shell semuanya sudah tersedia.
 - **CloudCLI Cloud berjalan di cloud** — tutup laptop Anda dan agent tetap berjalan. Tidak ada terminal yang harus terus dipantau, dan tidak ada mesin yang harus terus menyala.
@@ -216,7 +216,7 @@ Ya. CloudCLI menyediakan lingkungan, bukan AI. Anda menggunakan langganan Claude
 </details>
 
 <details>
-<summary>Bisakah saya menggunakan CloudCLI UI di ponsel?</summary>
+<summary>Bisakah saya menggunakan CloudCLI di ponsel?</summary>
 
 Ya. Untuk self-hosted, jalankan server di mesin Anda lalu buka `[yourip]:port` di browser apa pun pada jaringan Anda. Untuk CloudCLI Cloud, buka dari perangkat apa pun — tanpa VPN, tanpa port forwarding, tanpa setup. Aplikasi native juga sedang dikembangkan.
 
@@ -225,7 +225,7 @@ Ya. Untuk self-hosted, jalankan server di mesin Anda lalu buka `[yourip]:port` d
 <details>
 <summary>Apakah perubahan yang saya buat di UI akan memengaruhi setup Claude Code lokal saya?</summary>
 
-Ya, untuk self-hosted. CloudCLI UI membaca dan menulis konfigurasi `~/.claude` yang sama dengan yang digunakan Claude Code secara native. MCP server yang Anda tambahkan melalui UI akan langsung muncul di Claude Code, begitu pula sebaliknya.
+Ya, untuk self-hosted. CloudCLI membaca dan menulis konfigurasi `~/.claude` yang sama dengan yang digunakan Claude Code secara native. MCP server yang Anda tambahkan melalui UI akan langsung muncul di Claude Code, begitu pula sebaliknya.
 
 </details>
 
@@ -244,7 +244,7 @@ GNU Affero General Public License v3.0 atau yang lebih baru (AGPL-3.0-or-later) 
 
 Project ini bersifat open source dan bebas digunakan, dimodifikasi, serta didistribusikan berdasarkan lisensi AGPL-3.0-or-later. Jika Anda memodifikasi software ini dan menjalankannya sebagai layanan jaringan, Anda harus menyediakan kode sumber hasil modifikasi kepada pengguna layanan tersebut.
 
-CloudCLI UI - (https://cloudcli.ai).
+CloudCLI - (https://cloudcli.ai).
 
 ## Ucapan Terima Kasih
 

@@ -2,8 +2,18 @@ import { randomUUID } from 'node:crypto';
 
 import { getConnection } from '@/modules/database/connection.js';
 
+/**
+ * Status lifecycle of a persisted scheduled message row.
+ *
+ * Consumer: scheduled-messages service and database repository barrel.
+ */
 export type ScheduledMessageStatus = 'pending' | 'sent' | 'failed' | 'cancelled';
 
+/**
+ * Raw SQLite row shape for `scheduled_messages`.
+ *
+ * Consumer: scheduled-messages service and dispatcher via `@/modules/database/index.js`.
+ */
 export type ScheduledMessageRow = {
   id: string;
   user_id: number;
@@ -20,6 +30,11 @@ export type ScheduledMessageRow = {
 const COLUMNS =
   'id, user_id, session_id, content, options, scheduled_for, status, failure_reason, created_at, updated_at';
 
+/**
+ * Persistence operations for `scheduled_messages`.
+ *
+ * Consumer: scheduled-messages service, dispatcher, and tests via `@/modules/database/index.js`.
+ */
 export const scheduledMessagesDb = {
   create(input: {
     userId: number;
@@ -68,15 +83,15 @@ export const scheduledMessagesDb = {
   },
 
   /**
-   * Claims every message whose time has passed, marking them in the same
-   * statement that selects them.
+   * Claims the earliest due message for each session that is not already
+   * running a scheduled turn, marking only those claimed rows in the same
+   * transaction that selects them.
    *
-   * Claiming is what makes a missed schedule work: the server can be down at
-   * the moment a message was due, and the next poll after it starts picks the
-   * message up instead of skipping it. Doing it in one transaction is what
-   * stops two overlapping polls from sending the same message twice.
+   * Leaving later due messages for the same session as `pending` until the
+   * earlier turn finishes keeps them visible, cancellable, and recoverable
+   * across a server restart.
    */
-  claimDue(now: Date): ScheduledMessageRow[] {
+  claimDue(now: Date, busySessionIds: ReadonlySet<string> = new Set()): ScheduledMessageRow[] {
     const db = getConnection();
     const nowIso = now.toISOString();
 
@@ -85,17 +100,56 @@ export const scheduledMessagesDb = {
         .prepare(
           `SELECT ${COLUMNS} FROM scheduled_messages
            WHERE status = 'pending' AND scheduled_for <= ?
-           ORDER BY scheduled_for ASC`
+           ORDER BY scheduled_for ASC, rowid ASC`
         )
         .all(nowIso) as ScheduledMessageRow[];
 
+      const claimed: ScheduledMessageRow[] = [];
+      const seenSessions = new Set<string>(busySessionIds);
+      const markSent = db.prepare(
+        `UPDATE scheduled_messages SET status = 'sent', updated_at = CURRENT_TIMESTAMP WHERE id = ?`
+      );
+
       for (const row of due) {
-        db.prepare(
-          `UPDATE scheduled_messages SET status = 'sent', updated_at = CURRENT_TIMESTAMP WHERE id = ?`
-        ).run(row.id);
+        if (seenSessions.has(row.session_id)) {
+          continue;
+        }
+        seenSessions.add(row.session_id);
+        markSent.run(row.id);
+        claimed.push(row);
       }
 
-      return due;
+      return claimed;
+    })();
+  },
+
+  /**
+   * Claims the next due pending message for one session, or returns null when
+   * that session has nothing else due yet.
+   */
+  claimNextDueForSession(sessionId: string, now: Date): ScheduledMessageRow | null {
+    const db = getConnection();
+    const nowIso = now.toISOString();
+
+    return db.transaction(() => {
+      const row = db
+        .prepare(
+          `SELECT ${COLUMNS} FROM scheduled_messages
+           WHERE session_id = ? AND status = 'pending' AND scheduled_for <= ?
+           ORDER BY scheduled_for ASC, rowid ASC
+           LIMIT 1`
+        )
+        .get(sessionId, nowIso) as ScheduledMessageRow | undefined;
+
+      if (!row) {
+        return null;
+      }
+
+      db.prepare(
+        `UPDATE scheduled_messages SET status = 'sent', updated_at = CURRENT_TIMESTAMP WHERE id = ?`
+      ).run(row.id);
+
+      return row;
     })();
   },
 
@@ -107,6 +161,24 @@ export const scheduledMessagesDb = {
          WHERE id = ?`
       )
       .run(reason.slice(0, 500), id);
+  },
+
+  /**
+   * Puts a claimed message back to `pending` without recording a failure.
+   *
+   * Used when the engine deferred the turn because background work is still
+   * running: nothing was sent, so the message stays visible, cancellable, and
+   * due again on the next poll pass. The `sent` guard means only a row this
+   * pass actually claimed can be released.
+   */
+  releaseClaimed(id: string): void {
+    getConnection()
+      .prepare(
+        `UPDATE scheduled_messages
+         SET status = 'pending', failure_reason = NULL, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ? AND status = 'sent'`
+      )
+      .run(id);
   },
 
   /**

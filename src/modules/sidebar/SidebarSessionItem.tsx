@@ -1,6 +1,6 @@
 import { memo, useState } from 'react';
 import type { KeyboardEvent } from 'react';
-import { Check, CheckSquare, Edit2, GitBranch, Loader2, MoreHorizontal, Square, Trash2, X } from 'lucide-react';
+import { Check, CheckSquare, Edit2, GitBranch, Loader2, MoreHorizontal, Pin, PinOff, Square, Trash2, X } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
 import { Badge, Dialog, DialogContent, DialogTitle, LLMProviderLogo, Tooltip, buttonVariants } from '@/shared/ui';
@@ -33,6 +33,7 @@ type SidebarSessionItemProps = {
   onDeleteSession: (sessionId: string, sessionTitle: string) => void;
   /** Branches this session into an independent one; absent when its provider cannot. */
   onForkSession?: (session: SessionWithProvider) => void;
+  onSetSessionPinned?: (sessionId: string, isPinned: boolean) => void;
   /** This project's list is in bulk-selection mode: the row acts as a checkbox and hides its options. */
   isSelecting: boolean;
   /** Ticked for the pending bulk delete. Resolved by the list, which never ticks a running row. */
@@ -61,6 +62,7 @@ function SidebarSessionItem({
   onSessionSelect,
   onDeleteSession,
   onForkSession,
+  onSetSessionPinned,
   isSelecting,
   isChecked,
   onToggleSessionSelected,
@@ -94,11 +96,16 @@ function SidebarSessionItem({
     </Tooltip>
   ) : null;
 
+  const isPinned = Boolean(session.isPinned);
+  const pinIndicator = isPinned ? (
+    <Pin aria-label={t('sessions.pinned')} className="h-3 w-3 flex-shrink-0 text-muted-foreground" />
+  ) : null;
+
   // The desktop controls live in SessionOptions, which owns the rename panel and
   // its outside-click dismissal. The mobile rename sits inside the bottom sheet,
   // which owns its own.
   const { copyState, copyLabel, setOptionsOpen, handleCopyAction, isCopyPending, CopyStateIcon } =
-    useProviderSessionIdCopy(session.id, providerLabel);
+    useProviderSessionIdCopy(session.id, providerLabel, t);
 
   // Sessions are owned by a project identified by `projectId` (DB primary key)
   // after the projectName → projectId migration.
@@ -226,6 +233,7 @@ function SidebarSessionItem({
 
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
+                {pinIndicator}
                 <div
                   className="min-w-0 flex-1 truncate text-sm font-normal text-foreground"
                   title={sessionView.sessionName}
@@ -257,7 +265,7 @@ function SidebarSessionItem({
             {!isSelecting && (
               <button
                 type="button"
-                aria-label={`Session options for ${sessionView.sessionName}`}
+                aria-label={t('sessions.optionsFor', { name: sessionView.sessionName })}
                 aria-haspopup="dialog"
                 aria-expanded={isMobileOptionsOpen}
                 className="ml-1 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted active:scale-95"
@@ -278,7 +286,7 @@ function SidebarSessionItem({
             animationClassName="animate-bottom-sheet-content-show motion-reduce:animate-none"
             className="bottom-0 left-0 top-auto max-w-none translate-x-0 translate-y-0 rounded-b-none rounded-t-2xl border-x-0 border-b-0 px-4 pb-safe-area-inset-bottom pt-3"
           >
-            <DialogTitle>Session options</DialogTitle>
+            <DialogTitle>{t('sessions.optionsTitle')}</DialogTitle>
             <div className="mx-auto mb-4 h-1 w-10 rounded-full bg-muted-foreground/30" aria-hidden="true" />
 
             <div className="mb-4 flex items-center gap-3 px-1">
@@ -290,7 +298,7 @@ function SidebarSessionItem({
                   {sessionView.sessionName}
                 </p>
                 <p id="mobile-session-options-description" className="text-xs text-muted-foreground">
-                  {providerLabel} session
+                  {t('sessions.providerSession', { provider: providerLabel })}
                 </p>
               </div>
             </div>
@@ -298,7 +306,7 @@ function SidebarSessionItem({
             {isEditing ? (
               <div className="mb-3 space-y-2">
                 <label htmlFor={`mobile-session-rename-${session.id}`} className="block px-1 text-xs font-medium text-muted-foreground">
-                  Session name
+                  {t('sessions.sessionName')}
                 </label>
                 <input
                   id={`mobile-session-rename-${session.id}`}
@@ -324,7 +332,7 @@ function SidebarSessionItem({
                     className="flex min-h-12 flex-1 items-center justify-center gap-2 rounded-xl bg-primary px-4 py-3 text-sm font-medium text-primary-foreground transition-transform active:scale-95"
                   >
                     <Check className="h-5 w-5 flex-shrink-0" />
-                    Save
+                    {t('actions.save')}
                   </button>
                   <button
                     type="button"
@@ -332,7 +340,7 @@ function SidebarSessionItem({
                     className="flex min-h-12 flex-1 items-center justify-center gap-2 rounded-xl border border-border bg-muted/35 px-4 py-3 text-sm font-medium text-foreground transition-colors active:bg-muted"
                   >
                     <X className="h-5 w-5 flex-shrink-0" />
-                    Cancel
+                    {t('actions.cancel')}
                   </button>
                 </div>
               </div>
@@ -344,8 +352,24 @@ function SidebarSessionItem({
                   className="flex min-h-12 w-full items-center gap-3 rounded-xl border border-border bg-muted/35 px-4 py-3 text-left text-foreground transition-colors active:bg-muted"
                 >
                   <Edit2 className="h-5 w-5 flex-shrink-0" />
-                  <span className="text-sm font-medium">Rename session</span>
+                  <span className="text-sm font-medium">{t('sessions.renameSession')}</span>
                 </button>
+
+                {onSetSessionPinned && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMobileOptionsOpen(false);
+                      onSetSessionPinned(session.id, !isPinned);
+                    }}
+                    className="flex min-h-12 w-full items-center gap-3 rounded-xl border border-border bg-muted/35 px-4 py-3 text-left text-foreground transition-colors active:bg-muted"
+                  >
+                    {isPinned ? <PinOff className="h-5 w-5 flex-shrink-0" /> : <Pin className="h-5 w-5 flex-shrink-0" />}
+                    <span className="text-sm font-medium">
+                      {isPinned ? t('sessions.unpinSession') : t('sessions.pinSession')}
+                    </span>
+                  </button>
+                )}
 
                 <button
                   type="button"
@@ -368,7 +392,7 @@ function SidebarSessionItem({
                   <span className="min-w-0 flex-1">
                     <span className="block text-sm font-medium">{copyLabel}</span>
                     {copyState === 'error' && (
-                      <span className="mt-0.5 block text-xs">Tap to try again.</span>
+                      <span className="mt-0.5 block text-xs">{t('sessions.tapToRetry')}</span>
                     )}
                   </span>
                 </button>
@@ -383,7 +407,7 @@ function SidebarSessionItem({
                     className="flex min-h-12 w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-red-600 transition-colors active:bg-red-500/10 dark:text-red-400"
                   >
                     <Trash2 className="h-5 w-5 flex-shrink-0" />
-                    <span className="text-sm font-medium">Archive or delete session</span>
+                    <span className="text-sm font-medium">{t('sessions.archiveOrDelete')}</span>
                   </button>
                 )}
               </div>
@@ -395,7 +419,7 @@ function SidebarSessionItem({
                 onClick={() => setMobileOptionsOpen(false)}
                 className="mb-3 mt-2 min-h-11 w-full rounded-xl text-sm font-medium text-muted-foreground transition-colors active:bg-muted"
               >
-                Cancel
+                {t('actions.cancel')}
               </button>
             )}
           </DialogContent>
@@ -452,6 +476,7 @@ function SidebarSessionItem({
             </div>
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
+                {pinIndicator}
                 <div
                   className="min-w-0 flex-1 truncate text-sm font-normal text-foreground"
                   title={sessionView.sessionName}
@@ -506,6 +531,8 @@ function SidebarSessionItem({
             onSaveEditingSession={onSaveEditingSession}
             onDeleteSession={onDeleteSession}
             onFork={onForkSession ? () => onForkSession(session) : undefined}
+            isPinned={isPinned}
+            onSetPinned={onSetSessionPinned}
             t={t}
           />
         )}

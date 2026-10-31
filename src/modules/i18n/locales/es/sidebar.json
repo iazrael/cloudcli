@@ -38,7 +38,25 @@
     "selectAllLoaded": "Seleccionar las cargadas",
     "clearSelection": "Quitar selección",
     "deleteSelected_one": "Eliminar {{count}} sesión",
-    "deleteSelected_other": "Eliminar {{count}} sesiones"
+    "deleteSelected_other": "Eliminar {{count}} sesiones",
+    "pinSession": "Fijar sesión",
+    "unpinSession": "Desfijar sesión",
+    "pinned": "Fijada",
+    "optionsTitle": "Opciones de la sesión",
+    "optionsFor": "Opciones de la sesión {{name}}",
+    "providerSession": "Sesión de {{provider}}",
+    "forkSession": "Bifurcar sesión",
+    "forkSessionDescription": "Continuar desde una copia, sin tocar esta.",
+    "archiveOrDelete": "Archivar o eliminar sesión",
+    "clickToRetry": "Haz clic para reintentar.",
+    "tapToRetry": "Toca para reintentar.",
+    "sessionName": "Nombre de la sesión",
+    "copyId": "Copiar ID de sesión de {{provider}}",
+    "copyIdLoading": "Cargando ID de sesión de {{provider}}…",
+    "copyIdCopied": "ID de sesión de {{provider}} copiado",
+    "copyIdFailed": "No se pudo copiar el ID de sesión de {{provider}}",
+    "copyIdUnavailable": "ID de sesión de {{provider}} no disponible",
+    "deleteSelected_many": "Eliminar {{count}} sesiones"
   },
   "tooltips": {
     "viewEnvironments": "Ver entornos",
@@ -56,7 +74,9 @@
     "cancel": "Cancelar",
     "clearSearch": "Limpiar búsqueda",
     "openCommandPalette": "Abrir paleta de comandos",
-    "attentionRequiredIndicator": "La sesión requiere atención"
+    "attentionRequiredIndicator": "La sesión requiere atención",
+    "backgroundWorkIndicator": "Trabajo en segundo plano en curso",
+    "processingSessionIndicator": "Procesando sesión"
   },
   "navigation": {
     "chat": "Chat",
@@ -96,7 +116,13 @@
     "oneHourAgo": "hace 1 hora",
     "hoursAgo": "hace {{count}} horas",
     "oneDayAgo": "hace 1 día",
-    "daysAgo": "hace {{count}} días"
+    "daysAgo": "hace {{count}} días",
+    "hoursAgo_one": "hace {{count}} hora",
+    "hoursAgo_other": "hace {{count}} horas",
+    "hoursAgo_many": "hace {{count}} horas",
+    "daysAgo_one": "hace {{count}} día",
+    "daysAgo_other": "hace {{count}} días",
+    "daysAgo_many": "hace {{count}} días"
   },
   "messages": {
     "deleteConfirm": "¿Seguro que quieres eliminar esto?",
@@ -122,7 +148,9 @@
     "restoreSessionError": "Error al restaurar la sesión. Inténtalo de nuevo.",
     "forkSessionError": "No se pudo bifurcar esta sesión. Inténtalo de nuevo.",
     "deleteSessionsPartialFailure_one": "No se pudo eliminar {{count}} sesión de {{total}}. Inténtalo de nuevo.",
-    "deleteSessionsPartialFailure_other": "No se pudieron eliminar {{count}} de {{total}} sesiones. Inténtalo de nuevo."
+    "deleteSessionsPartialFailure_other": "No se pudieron eliminar {{count}} de {{total}} sesiones. Inténtalo de nuevo.",
+    "pinSessionError": "No se pudo fijar esta sesión. Inténtalo de nuevo.",
+    "deleteSessionsPartialFailure_many": "No se pudieron eliminar {{count}} de {{total}} sesiones. Inténtalo de nuevo."
   },
   "version": {
     "updateAvailable": "Actualización disponible",
@@ -141,7 +169,13 @@
     "matches_one": "{{count}} coincidencia",
     "matches_other": "{{count}} coincidencias",
     "projectsScanned_one": "{{count}} proyecto examinado",
-    "projectsScanned_other": "{{count}} proyectos examinados"
+    "projectsScanned_other": "{{count}} proyectos examinados",
+    "runningTooltip": "Sesiones en ejecución",
+    "archiveOnlyTooltip": "Solo archivados",
+    "runningPlaceholder": "Buscar sesiones en ejecución...",
+    "archivedPlaceholder": "Buscar sesiones archivadas...",
+    "matches_many": "{{count}} coincidencias",
+    "projectsScanned_many": "{{count}} proyectos examinados"
   },
   "deleteConfirmation": {
     "deleteProject": "Quitar proyecto",
@@ -166,6 +200,39 @@
     "archiveSessions_one": "Archivar {{count}} sesión",
     "archiveSessions_other": "Archivar {{count}} sesiones",
     "archiveSessionsNotice_one": "Archivar mantiene la sesión fuera de la lista activa y conserva su historial.",
-    "archiveSessionsNotice_other": "Archivar mantiene las sesiones fuera de la lista activa y conserva su historial."
+    "archiveSessionsNotice_other": "Archivar mantiene las sesiones fuera de la lista activa y conserva su historial.",
+    "sessionCount_many": "Este proyecto contiene {{count}} conversaciones.",
+    "deleteSessions_many": "Eliminar {{count}} sesiones",
+    "selectedSessions_many": "{{count}} sesiones seleccionadas",
+    "archiveSessions_many": "Archivar {{count}} sesiones",
+    "archiveSessionsNotice_many": "Archivar mantiene las sesiones fuera de la lista activa y conserva su historial."
+  },
+  "recent": {
+    "title": "Conversaciones recientes",
+    "emptyTitle": "Aún no hay conversaciones",
+    "emptyDescription": "Aquí aparecerán tus conversaciones más recientes.",
+    "loadFailed": "No se pudieron cargar las conversaciones recientes",
+    "loadMore": "Cargar conversaciones anteriores",
+    "loadingMore": "Cargando más..."
+  },
+  "running": {
+    "title": "En ejecución",
+    "emptyTitle": "No hay sesiones en ejecución",
+    "emptyDescription": "El trabajo activo aparecerá aquí mientras un proveedor lo esté procesando.",
+    "noMatchingSessions": "Ninguna sesión en ejecución coincide con esta búsqueda."
+  },
+  "archived": {
+    "title": "Archivados",
+    "restoreHint": "Restaura elementos cuando los necesites",
+    "loadingTitle": "Cargando archivados...",
+    "loadingDescription": "Obteniendo los proyectos y sesiones ocultos que puedes restaurar más tarde.",
+    "emptyTitle": "No hay elementos archivados",
+    "emptyDescription": "Los proyectos y sesiones archivados aparecerán aquí cuando los ocultes de la lista activa.",
+    "noMatchingSessions": "No hay elementos archivados que coincidan",
+    "tryDifferentSearch": "Prueba con otro término de búsqueda.",
+    "restoreAction": "Restaurar",
+    "restoreProject": "Restaurar proyecto",
+    "restore": "Restaurar sesión",
+    "deletePermanently": "Eliminar permanentemente"
   }
 }

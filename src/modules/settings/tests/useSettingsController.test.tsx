@@ -14,7 +14,15 @@ import type * as ChatModule from '@/modules/chat';
  * blobs are no longer a source of truth in either direction.
  */
 
-vi.mock('@/shared/api', () => ({
+// The first load() pays for the real `@/modules/chat` barrel (it drags xterm
+// and the webgl addon into jsdom), which alone takes ~3s on a quiet machine and
+// overshoots the 5s default when vitest workers share the CPU with other suites.
+vi.setConfig({ testTimeout: 15_000 });
+
+// 其余导出保留真实实现：chat barrel 会经 usePathExists 等真实模块读取它们，
+// 全量 mock 会在模块初始化时抛缺失导出。
+vi.mock('@/shared/api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/shared/api')>()),
   authenticatedFetch: vi.fn(async () =>
     new Response(
       JSON.stringify({ success: true, preferences: null }),

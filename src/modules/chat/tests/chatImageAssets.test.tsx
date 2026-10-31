@@ -1,29 +1,29 @@
-import React from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
-import { afterEach, expect, it, vi } from 'vitest';
+import { render, screen } from '@testing-library/react';
+import { beforeEach, expect, it, vi } from 'vitest';
 
+import type * as sharedApi from '@/shared/api';
 import { ChatMessageImage } from '@/modules/chat/transcript/ChatMessageImages';
-import { api } from '@/shared/api';
+import type { ImageMediaRequest } from '@/shared/types';
 
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
-
-it('loads a stored reference in the legacy data field through the authenticated asset API', async () => {
-  const filename = `inline-${'a'.repeat(64)}.png`;
-  const image = vi.spyOn(api.assets, 'image').mockResolvedValue({ ok: true, blob: async () => new Blob(['image']) } as Response);
-  const createObjectURL = vi.fn(() => 'blob:authenticated-image');
-  const revokeObjectURL = vi.fn();
-  vi.stubGlobal('URL', class extends URL { static createObjectURL = createObjectURL; static revokeObjectURL = revokeObjectURL; });
-  const view = render(<ChatMessageImage image={{ data: `/api/assets/images/${filename}`, name: 'screenshot' }} />);
-  await waitFor(() => expect(screen.getByRole('img').getAttribute('src')).toBe('blob:authenticated-image'));
-  expect(image).toHaveBeenCalledWith(filename, expect.objectContaining({ signal: expect.any(AbortSignal) }));
-  expect(createObjectURL).toHaveBeenCalledTimes(1);
-  view.unmount();
-  expect(revokeObjectURL).toHaveBeenCalledWith('blob:authenticated-image');
+const { requestImageUrls } = vi.hoisted(() => ({ requestImageUrls: vi.fn() }));
+vi.mock('@/shared/api', async (original) => ({ ...await original<typeof sharedApi>(), requestImageUrls }));
+beforeEach(() => {
+  localStorage.setItem('auth-token', crypto.randomUUID());
+  requestImageUrls.mockReset().mockImplementation(async (images: ImageMediaRequest[]) => ({ ok: true, json: async () => ({ images: images.map(({ id }) => ({ id, url: '/api/media/images?ticket=attachment', expiresAt: Date.now() + 600_000 })) }) }));
 });
-
+it('loads a stored reference in the legacy data field through a signed asset URL', async () => {
+  const filename = `inline-${'a'.repeat(64)}.png`;
+  render(<ChatMessageImage image={{ data: `/api/assets/images/${filename}`, name: 'screenshot' }} />);
+  expect((await screen.findByRole('img')).getAttribute('src')).toBe('/api/media/images?ticket=attachment');
+  expect(requestImageUrls).toHaveBeenCalledWith([expect.objectContaining({ kind: 'asset', filename })]);
+});
 it('keeps existing inline images usable without an API request', () => {
-  const image = vi.spyOn(api.assets, 'image');
   render(<ChatMessageImage image={{ data: 'data:image/png;base64,QUJD', name: 'inline' }} />);
   expect(screen.getByRole('img').getAttribute('src')).toBe('data:image/png;base64,QUJD');
-  expect(image).not.toHaveBeenCalled();
+  expect(requestImageUrls).not.toHaveBeenCalled();
+});
+it('preserves legacy project attachment fallback information when signing', async () => {
+  render(<ChatMessageImage image={{ path: '/old/project/image.png', name: 'old' }} projectId="legacy" />);
+  await screen.findByRole('img');
+  expect(requestImageUrls).toHaveBeenCalledWith([expect.objectContaining({ kind: 'asset', filename: 'image.png', projectId: 'legacy', fallbackPath: '/old/project/image.png' })]);
 });

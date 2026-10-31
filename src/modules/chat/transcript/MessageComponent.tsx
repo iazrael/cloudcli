@@ -13,7 +13,7 @@ import type {
 } from '@/shared/types';
 import { formatUsageLimitText } from '@/modules/chat/utils/chatFormatting';
 import { parseErrorCardContent } from '@/modules/chat/utils/errorCardContent';
-import { getToolConfig, isCommandTool, SubagentPanel, ToolRenderer, ToolErrorDisplay, WorkflowPanel, shouldHideToolResult } from '@/modules/chat/tools';
+import { canonicalToolName, getToolConfig, isCommandTool, SubagentPanel, ToolRenderer, ToolErrorDisplay, WorkflowPanel, shouldHideToolResult } from '@/modules/chat/tools';
 import { useIsExportingTranscript } from '@/modules/chat/context/TranscriptRenderContext';
 import { Reasoning, ReasoningTrigger, ReasoningContent } from '@/shared/ui/ReasoningFork';
 import ChatMessageImages from '@/modules/chat/transcript/ChatMessageImages';
@@ -58,7 +58,7 @@ type InteractiveOption = {
   isSelected: boolean;
 };
 
-const COPY_HIDDEN_TOOL_NAMES = new Set(['Bash', 'Edit', 'Write', 'ApplyPatch']);
+const COPY_HIDDEN_TOOL_NAMES = new Set(['Bash', 'Edit', 'Write']);
 
 const MessageComponent = memo(({ message, prevMessage, turnAnchorMessage, isTurnFinalAssistant = true, createDiff, onFileOpen, showRawParameters, showThinking, isThinkingStreaming, selectedProject, provider, onEditMessage, onForkFromMessage, isForking = false }: MessageComponentProps) => {
   const { t } = useTranslation('chat');
@@ -83,7 +83,7 @@ const MessageComponent = memo(({ message, prevMessage, turnAnchorMessage, isTurn
     ? String(message.displayText || message.content || '')
     : formattedMessageContent;
   const isCommandOrFileEditToolResponse = Boolean(
-    message.isToolUse && COPY_HIDDEN_TOOL_NAMES.has(String(message.toolName || ''))
+    message.isToolUse && COPY_HIDDEN_TOOL_NAMES.has(canonicalToolName(String(message.toolName || '')))
   );
   const shouldShowUserCopyControl = message.type === 'user' && userCopyContent.trim().length > 0;
   const shouldShowAssistantCopyControl = message.type === 'assistant' &&
@@ -149,7 +149,7 @@ const MessageComponent = memo(({ message, prevMessage, turnAnchorMessage, isTurn
                       title={isForking ? t('message.forking', { defaultValue: 'Forking…' }) : t('message.forkFromHere', { defaultValue: 'Fork from here' })}
                       aria-label={t('message.forkFromHere', { defaultValue: 'Fork from here' })}
                       aria-busy={isForking}
-                      className={`rounded p-1 transition-opacity hover:bg-muted disabled:cursor-not-allowed ${isForking ? 'opacity-100' : 'opacity-70 hover:opacity-100 focus-visible:opacity-100 sm:opacity-0 sm:group-hover:opacity-100'}`}
+                      className={`rounded p-1 transition-opacity hover:bg-muted hover:opacity-100 focus-visible:opacity-100 disabled:cursor-not-allowed ${isForking ? 'opacity-100' : 'opacity-70'}`}
                     >
                       {isForking
                         ? <LoaderCircleIcon className="h-3.5 w-3.5 animate-spin" />
@@ -312,7 +312,7 @@ const MessageComponent = memo(({ message, prevMessage, turnAnchorMessage, isTurn
                   // Bash draws its output inside this row rather than in the
                   // result section below, so for a backgrounded command this is
                   // the row the background-tasks strip scrolls to.
-                  <div id={message.toolName === 'Bash' ? `tool-result-${message.toolId}` : undefined} className="scroll-mt-4">
+                  <div id={isCommandTool(message.toolName || '') ? `tool-result-${message.toolId}` : undefined} className="scroll-mt-4">
                     <ToolRenderer
                       toolName={message.toolName || 'UnknownTool'}
                       toolInput={message.toolInput}
@@ -567,7 +567,7 @@ const MessageComponent = memo(({ message, prevMessage, turnAnchorMessage, isTurn
                     title={isForking ? t('message.forking', { defaultValue: 'Forking…' }) : t('message.forkFromHere', { defaultValue: 'Fork from here' })}
                     aria-label={t('message.forkFromHere', { defaultValue: 'Fork from here' })}
                     aria-busy={isForking}
-                    className={`flex items-center gap-1 rounded px-1.5 py-1 text-xs transition-opacity hover:bg-muted disabled:cursor-not-allowed ${isForking ? 'opacity-100' : 'opacity-70 hover:opacity-100 focus-visible:opacity-100 sm:opacity-0 sm:group-hover:opacity-100'}`}
+                    className={`flex items-center gap-1 rounded px-1.5 py-1 text-xs transition-opacity hover:bg-muted hover:opacity-100 focus-visible:opacity-100 disabled:cursor-not-allowed ${isForking ? 'opacity-100' : 'opacity-70'}`}
                   >
                     {isForking
                       ? <LoaderCircleIcon className="h-3.5 w-3.5 animate-spin" />

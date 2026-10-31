@@ -467,7 +467,7 @@ test('resolveSilenceTimeoutMs defaults to 1 hour and respects environment overri
   }
 });
 
-test('requestProviderRuntimeHeaders returns jwt token for start-plan provider', async () => {
+test('requestProviderRuntimeHeaders no longer bridges the removed start-plan provider', async () => {
   const previous = process.env.ZCODE_STORAGE_DIR;
   const tempDir = await mkdtemp(path.join(os.tmpdir(), 'zcode-runtime-headers-'));
   process.env.ZCODE_STORAGE_DIR = tempDir;
@@ -487,14 +487,10 @@ test('requestProviderRuntimeHeaders returns jwt token for start-plan provider', 
       method: 'interaction/requestProviderRuntimeHeaders',
       params: { providerId: 'account:bigmodel-start-plan' },
     });
-    // Decrypted plain token must be returned, NEVER raw ciphertext
+    // The start-plan group is gone; unknown providers fall through to the
+    // router default instead of receiving the trial JWT.
     assert.deepEqual(answer, {
-      result: {
-        headersApplied: true,
-        requestAuth: {
-          apiKey: 'jwt-header-token-123',
-        },
-      },
+      error: { code: -32601, message: 'Method not found: interaction/requestProviderRuntimeHeaders' },
     });
   } finally {
     if (previous === undefined) delete process.env.ZCODE_STORAGE_DIR;

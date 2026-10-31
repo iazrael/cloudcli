@@ -4,7 +4,7 @@ import { ChevronRight } from 'lucide-react';
 import type { ChatMessage, DiffLine, Project, Provider } from '@/shared/types';
 import type { ToolGroupItem } from '@/modules/chat/utils/toolGrouping';
 import { useIsExportingTranscript } from '@/modules/chat/context/TranscriptRenderContext';
-import { getToolConfig, isCommandTool, isFilePreviewTool, pickCommandField, unwrapNestedCommand } from '@/modules/chat/tools';
+import { canonicalToolName, getToolConfig, isCommandTool, isFilePreviewTool, pickCommandField, pickEditSides, pickWriteContent, unwrapNestedCommand } from '@/modules/chat/tools';
 import { formatToolDisplayName, getMcpExecHint } from '@/modules/chat/tools/configs/toolConfigs';
 import LLMProviderLogo from '@/shared/ui/LLMProviderLogo';
 import { getProviderDisplayName } from '@/shared/providerDisplay';
@@ -76,35 +76,36 @@ function getToolGroupIcon(icon: string | undefined, toolName: string): React.Rea
   if (icon === 'terminal' || isCommandTool(toolName)) {
     return '$';
   }
-  if (['Read', 'view_file'].includes(toolName)) {
+  const canonical = canonicalToolName(toolName);
+  if (canonical === 'Read') {
     return (
       <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
       </svg>
     );
   }
-  if (['Edit', 'replace_file_content', 'ApplyPatch'].includes(toolName)) {
+  if (canonical === 'Edit') {
     return (
       <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
       </svg>
     );
   }
-  if (['Write', 'write_to_file'].includes(toolName)) {
+  if (canonical === 'Write') {
     return (
       <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
       </svg>
     );
   }
-  if (['Grep', 'Glob', 'grep_search', 'find_by_name'].includes(toolName)) {
+  if (canonical === 'Grep' || canonical === 'Glob') {
     return (
       <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
       </svg>
     );
   }
-  if (['LS', 'list_dir'].includes(toolName)) {
+  if (canonical === 'LS') {
     return (
       <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
@@ -138,13 +139,15 @@ export default memo(function ToolGroupContainer({
   }, [group.messages]);
 
   const diffStats = useMemo(() => {
-    if (!['Edit', 'Write'].includes(group.toolName)) return null;
+    const groupTool = canonicalToolName(group.toolName);
+    if (groupTool !== 'Edit' && groupTool !== 'Write') return null;
     let added = 0;
     let removed = 0;
     for (const msg of group.messages) {
       const parsed = parseToolInput(msg.toolInput) as any;
-      const oldStr = parsed?.old_string ?? parsed?.TargetContent ?? '';
-      const newStr = parsed?.new_string ?? parsed?.ReplacementContent ?? parsed?.CodeContent ?? parsed?.content ?? '';
+      const { oldContent: oldStr, newContent: newStr } = groupTool === 'Write'
+        ? { oldContent: '', newContent: pickWriteContent(parsed) }
+        : pickEditSides(parsed);
       if (oldStr || newStr) {
         const lines = createDiff ? createDiff(oldStr, newStr) : [];
         for (const line of lines) {

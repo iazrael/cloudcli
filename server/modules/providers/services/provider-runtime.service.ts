@@ -163,6 +163,11 @@ export function createProviderRuntimeService(
     compact,
     injectInput,
 
+    /** 供排队调度器判断能否安全尝试续轮，避免替换仍有后台任务的进程。 */
+    supportsInputAcceptance(providerName: LLMProvider): boolean {
+      return dependencies.resolveProvider(providerName).runtime.supportsInputAcceptance === true;
+    },
+
     /**
      * Installs the entry that publishes an event to a session outside any
      * run. The composition root calls it with the gateway's publisher, so the
@@ -195,6 +200,18 @@ export function createProviderRuntimeService(
     /** Used by server composition to connect observed native calls to task authorization. */
     setEngineToolCallRegistrar(registrar: (call: TaskBridgeEngineCall) => void): void {
       engineToolCallRegistrar = registrar;
+    },
+
+    /** execution 模块按注册表发现可派发引擎，安装探测失败时保留可追踪的诊断。 */
+    async listExecutionProviders(): Promise<{ provider: LLMProvider; installed: boolean; supportsTaskExecution: boolean }[]> {
+      return Promise.all(dependencies.listProviders().map(async (provider) => {
+        try {
+          return { provider: provider.id, installed: Boolean(provider.runtime && (await provider.auth.getStatus()).installed), supportsTaskExecution: provider.runtime.supportsTaskExecution === true };
+        } catch (error) {
+          console.warn(`[ProviderRuntime] ${provider.id} 安装探测失败`, error);
+          return { provider: provider.id, installed: false, supportsTaskExecution: false };
+        }
+      }));
     },
 
     hasRuntime(providerName: string): boolean {

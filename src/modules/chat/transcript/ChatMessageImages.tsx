@@ -1,7 +1,7 @@
-import { useContext, useEffect, useState } from 'react';
+import { useContext, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { api } from '@/shared/api';
+import { useSignedImage } from '@/shared/hooks/useSignedImage';
 import { UnifiedImageViewer } from '@/shared/ui';
 import type { ChatImage } from '@/shared/types';
 import { TranscriptRenderContext } from '@/modules/chat/context/TranscriptRenderContext';
@@ -11,109 +11,60 @@ type ChatMessageImagesProps = {
   projectId?: string | null;
 };
 
-/**
- * Resolves one chat image to a displayable src. Inline data URLs are used
- * directly; path-based attachments are fetched as blobs (a bare <img src>
- * cannot carry the auth header) — first from the global assets route
- * (`~/.cloudcli/assets`), then from the project files route as a fallback for
- * sessions recorded before attachments moved to the global store.
- */
-function useChatImageSrc(image: ChatImage, projectId?: string | null): { src: string | null; failed: boolean } {
+// 导出保留嵌入字节；交互式历史签发引用，JS 不读取图片字节。
+function useChatImageSrc(image: ChatImage, projectId?: string | null) {
   const { isExporting, assetData } = useContext(TranscriptRenderContext);
   const storedDataPath = image.data?.startsWith('/api/assets/images/') ? image.data : null;
   const inlineData = (isExporting && assetData?.[image.path || storedDataPath || '']) || (storedDataPath ? null : image.data);
-  const [src, setSrc] = useState<string | null>(inlineData || null);
-  const [failed, setFailed] = useState(false);
-
-  useEffect(() => {
-    if (inlineData) return;
-
-    const imagePath = image.path || storedDataPath;
-    if (!imagePath) return;
-
-    const filename = imagePath.split(/[\\/]/).pop() || '';
-    let objectUrl: string | null = null;
-    const controller = new AbortController();
-
-    const candidateRequests: Array<() => Promise<Response>> = [
-      () => api.assets.image(filename, { signal: controller.signal }),
-      ...(projectId
-        ? [() => api.readFileBlob(projectId, imagePath, { signal: controller.signal })]
-        : []),
-    ];
-
-    const load = async () => {
-      setFailed(false);
-      for (const requestCandidate of candidateRequests) {
-        try {
-          const response = await requestCandidate();
-          if (!response.ok) {
-            continue;
-          }
-          const blob = await response.blob();
-          objectUrl = URL.createObjectURL(blob);
-          setSrc(objectUrl);
-          return;
-        } catch (error) {
-          if (error instanceof Error && error.name === 'AbortError') {
-            return;
-          }
-        }
-      }
-      setSrc(null);
-      setFailed(true);
-    };
-
-    void load();
-
-    return () => {
-      controller.abort();
-      if (objectUrl) {
-        URL.revokeObjectURL(objectUrl);
-      }
-    };
-  }, [inlineData, storedDataPath, image.path, projectId]);
-
-  if (inlineData) return { src: inlineData, failed: false };
-  if (!image.path && !storedDataPath) return { src: null, failed: true };
-  return { src, failed };
+  const imagePath = image.path || storedDataPath;
+  const signed = useSignedImage(!inlineData && imagePath ? {
+    kind: 'asset', filename: imagePath.split(/[\\/]/).pop() || '',
+    ...(projectId ? { projectId, fallbackPath: imagePath } : {}),
+  } : null);
+  return { ...signed, src: inlineData || signed.url, failed: !inlineData && (Boolean(signed.error) || !imagePath) };
 }
 
 /**
  * Used by chat's ComposerAttachment to expand an attachment preview to full size
  * using the unified image viewer.
  */
-export function ImageLightbox({ src, alt, onClose }: { src: string; alt: string; onClose: () => void }) {
-  return <UnifiedImageViewer src={src} alt={alt} title={alt} onClose={onClose} />;
+export function ImageLightbox({ src, alt, filePath, onClose }: { src: string; alt: string; filePath?: string; onClose: () => void }) {
+  return <UnifiedImageViewer src={src} alt={alt} title={alt} filePath={filePath} onClose={onClose} />;
 }
 
+/** 聊天时间线用此组件显示签名附件预览并打开统一查看器。 */
 export function ChatMessageImage({ image, projectId }: { image: ChatImage; projectId?: string | null }) {
   const { t } = useTranslation();
-  const { src, failed } = useChatImageSrc(image, projectId);
+  const { observe, ...signed } = useChatImageSrc(image, projectId);
+  const { src, failed } = signed;
+  // 展开由用户点击决定，与图片加载状态分开。
   const [expanded, setExpanded] = useState(false);
   const alt = image.name || 'Attached image';
 
   if (failed) {
     return (
       <div className="flex h-28 w-28 items-center justify-center rounded-xl border border-border/50 bg-muted px-2 text-center text-[10px] text-muted-foreground">
-        {alt}
+        <span>{alt}</span>
+        {signed.error && <button type="button" onClick={signed.retry}>{t('common:buttons.retry')}</button>}
       </div>
     );
   }
 
   if (!src) {
-    return <div className="h-28 w-28 animate-pulse rounded-xl border border-border/50 bg-muted" />;
+    return <div ref={observe} className="h-28 w-28 animate-pulse rounded-xl border border-border/50 bg-muted" />;
   }
 
   return (
     <>
       <button
+        ref={observe}
         type="button"
         onClick={() => setExpanded(true)}
         aria-label={t('chat:misc.expandImage', { name: alt })}
         className="block overflow-hidden rounded-xl border border-border/50 shadow-sm focus:outline-none focus:ring-2 focus:ring-primary/60"
       >
         <img
+          loading="lazy" decoding="async" referrerPolicy="no-referrer" onLoad={signed.onLoad} onError={signed.onError}
           src={src}
           alt={alt}
           className="h-28 w-28 cursor-zoom-in object-cover transition-transform duration-200 hover:scale-105"
@@ -124,7 +75,9 @@ export function ChatMessageImage({ image, projectId }: { image: ChatImage; proje
           src={src}
           alt={alt}
           title={alt}
-          filePath={image.path || undefined}
+          resolveSrc={image.data && !image.data.startsWith('/api/') ? undefined : signed.ensureFresh}
+          onImageError={signed.onError} onImageLoad={signed.onLoad}
+          filePath={image.path || (image.data?.startsWith('/api/assets/images/') ? image.data : undefined)}
           onClose={() => setExpanded(false)}
         />
       )}

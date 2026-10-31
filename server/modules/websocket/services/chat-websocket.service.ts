@@ -25,7 +25,7 @@ import type {
   ProviderRuntimeWriter,
 } from '@/shared/types.js';
 import { createNormalizedMessage, parseIncomingJsonObject, readObjectRecord } from '@/shared/utils.js';
-import { resolveCodexExecutionPolicy } from '@/shared/index.js';
+import { AppError, resolveCodexExecutionPolicy } from '@/shared/index.js';
 
 /**
  * Trust boundary for client-supplied image attachments: chat.send options come
@@ -72,6 +72,8 @@ export function filterImagesToUploadStore(
 /** Application boundary for dispatching provider runs and approvals. */
 export type ProviderRuntimeGateway = {
   hasRuntime(provider: string): boolean;
+  /** 运行时支持输入确认，无法安全续轮时继续等待，避免停止后台任务。 */
+  supportsInputAcceptance?(provider: LLMProvider): boolean;
   run(
     provider: LLMProvider,
     command: string,
@@ -119,6 +121,8 @@ type ChatWebSocketDependencies = {
 
 const CLIENT_RESERVED_RUNTIME_OPTIONS = new Set([
   'toolOutput',
+  'onInputAccepted',
+  'onBeforeInputAccepted',
   'taskContinuation',
   'taskExecutionContext',
   'taskContinuationContext',
@@ -502,6 +506,16 @@ async function dispatchRun(
 
   const runtimeOptions = buildRuntimeOptions(sessionId, session, clientOptions, extraRuntimeOptions);
 
+  const onInputAccepted = extraRuntimeOptions.onInputAccepted;
+  let inputAccepted = typeof onInputAccepted !== 'function';
+  if (typeof onInputAccepted === 'function') {
+    runtimeOptions.onInputAccepted = () => {
+      if (inputAccepted) return;
+      inputAccepted = true;
+      onInputAccepted();
+    };
+  }
+  let deferred = false;
   let failure: string | null = null;
   let runtimeOutcome: unknown;
   let taskRunToken: string | null = null;
@@ -555,8 +569,11 @@ async function dispatchRun(
     }
   } catch (error) {
     failure = error instanceof Error ? error.message : String(error);
-    console.error(`[Chat] Provider runtime "${provider}" failed`, { sessionId, error: failure });
-    emitRuntimeFailureFallback(run, { provider, sessionId, message: failure });
+    deferred = !inputAccepted && error instanceof AppError && error.code === 'PROVIDER_INPUT_DEFERRED';
+    if (!deferred) {
+      console.error(`[Chat] Provider runtime "${provider}" failed`, { sessionId, error: failure });
+      emitRuntimeFailureFallback(run, { provider, sessionId, message: failure });
+    }
   } finally {
     if (taskRunToken && revokeTaskCapability) {
       revokeTaskCapability(taskRunToken);
@@ -566,10 +583,13 @@ async function dispatchRun(
     // "processing" forever on every connected client. Scoped to THIS run —
     // a queued message can start the session's next run before this promise
     // settles, and the session-keyed completeRun would kill that new run.
-    chatRunRegistry.completeRunIfCurrent(run, { exitCode: 1, reason: 'dispatch_failed' });
+    chatRunRegistry.completeRunIfCurrent(run, deferred ? { exitCode: 0, reason: 'engine_completed' } : { exitCode: 1, reason: 'dispatch_failed' });
     sessionsDb.touchSession(sessionId);
   }
 
+  if (!inputAccepted) {
+    return { started: false, ...(deferred ? { busy: true } : {}), error: failure ?? 'The engine did not accept the input.' };
+  }
   const outcome = readObjectRecord(runtimeOutcome);
   const terminalStatus = outcome?.terminalStatus;
   if (extraRuntimeOptions.taskContinuation && outcome?.busy === true && !outcome.engineTurnId) {
@@ -966,6 +986,10 @@ export async function runDetachedChatTurn(
      * land mid-run, so the timer outranks whatever is running.
      */
     interruptActiveRun?: boolean;
+    /** 可信的原子领取回调，在运行时提交输入前核对排队消息是否仍有效。 */
+    onBeforeInputAccepted?: () => boolean;
+    /** 支持输入确认时在 SDK 消费后调用，否则在登记运行后调用。 */
+    onRunStarted?: () => void;
     taskContinuation?: AnyRecord;
     onEngineTurnStarted?: (engineTurnId: string) => boolean;
     taskContinuationTarget?: {
@@ -1026,6 +1050,7 @@ export async function runDetachedChatTurn(
     });
   }
 
+  const waitForInputAcceptance = dependencies.runtime.supportsInputAcceptance?.(provider) === true;
   return dispatchRun(
     null,
     input.userId,
@@ -1034,12 +1059,17 @@ export async function runDetachedChatTurn(
     { sessionId: input.sessionId, content: input.content, options: input.options ?? {} },
     dependencies,
     {
+      ...(waitForInputAcceptance ? {
+        onBeforeInputAccepted: input.onBeforeInputAccepted,
+        onInputAccepted: () => input.onRunStarted?.(),
+      } : {}),
       ...(input.taskContinuation ? { taskContinuation: input.taskContinuation } : {}),
       ...(taskTarget ? { taskContinuationTarget: taskTarget } : {}),
       ...(input.onEngineTurnStarted ? {
         taskContinuationLifecycle: { onEngineTurnStarted: input.onEngineTurnStarted },
       } : {}),
     },
+    !waitForInputAcceptance && input.onRunStarted ? () => input.onRunStarted?.() : undefined,
   );
 }
 

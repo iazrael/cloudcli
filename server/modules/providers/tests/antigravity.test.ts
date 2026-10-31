@@ -181,7 +181,129 @@ test('AntigravityProviderModels returns builtin models fallback', async () => {
     const definition = await models.getSupportedModels();
     assert.ok(definition.OPTIONS.length > 0);
     assert.ok(definition.DEFAULT);
-    assert.ok(definition.OPTIONS.some((m) => m.value === 'gemini-3.7-flash'));
+    assert.ok(definition.OPTIONS.some((m) => m.value === 'gemini-4-argon'));
+  } finally {
+    restoreAgyPath();
+    clearEnginePathCache();
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+// The fixture is a POSIX shell script; Windows cannot execute it.
+test('AntigravityProviderModels retries the CLI once the fallback cache expires', { skip: process.platform === 'win32' }, async () => {
+  // The builtin catalog is only a stopgap while `agy models` is failing
+  // (cold start, slow fetch). It must not pin the picker to a stale list
+  // for five minutes, so the fallback TTL expires fast; 0 makes the
+  // retry immediate in this test.
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'antigravity-models-ttl-'));
+  const stubPath = path.join(tempRoot, 'agy');
+  const restoreAgyPath = withEnvValue('CLOUDCLI_AGY_PATH', stubPath);
+  await fs.writeFile(stubPath, '#!/bin/sh\n', { mode: 0o755 });
+  clearEnginePathCache();
+  try {
+    const models = new AntigravityProviderModels(0);
+    const fallback = await models.getSupportedModels();
+    assert.ok(fallback.OPTIONS.some((m) => m.value === 'gemini-4-argon'));
+
+    // A healthy CLI output replaces the dead stub; with the (zero) TTL
+    // elapsed the next call must re-query instead of serving the fallback.
+    await fs.writeFile(
+      stubPath,
+      `#!/bin/sh\nprintf 'gemini-4-argon-medium\\tGemini 4 Argon (Medium)\\n'\n`,
+      { mode: 0o755 },
+    );
+    clearEnginePathCache();
+    // The expired fallback is served at once while the CLI is re-queried
+    // behind it; the call after that refresh gets the real catalog.
+    const stale = await models.getSupportedModels();
+    assert.ok(stale.OPTIONS.some((m) => m.value === 'gemini-4-argon'));
+    let refreshed = stale;
+    for (let i = 0; i < 100 && !refreshed.OPTIONS.some((m) => m.value === 'gemini-4-argon-medium'); i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      refreshed = await models.getSupportedModels();
+    }
+    assert.ok(
+      refreshed.OPTIONS.some((m) => m.value === 'gemini-4-argon-medium'),
+      `expected CLI catalog, got: ${JSON.stringify(refreshed.OPTIONS.map((m) => m.value))}`,
+    );
+  } finally {
+    restoreAgyPath();
+    clearEnginePathCache();
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+// The fixture is a POSIX shell script; Windows cannot execute it.
+test('AntigravityProviderModels never holds a caller behind a hung CLI once it has a catalog', { skip: process.platform === 'win32' }, async () => {
+  // Every turn reads the catalog before spawning agy. A CLI whose `models`
+  // query hangs (offline token refresh) must not delay each turn by the
+  // query's timeout: the expired catalog is served while the refresh runs.
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'antigravity-models-swr-'));
+  const stubPath = path.join(tempRoot, 'agy');
+  const countPath = path.join(tempRoot, 'count');
+  const restoreAgyPath = withEnvValue('CLOUDCLI_AGY_PATH', stubPath);
+  await fs.writeFile(stubPath, '#!/bin/sh\n', { mode: 0o755 });
+  clearEnginePathCache();
+  try {
+    const models = new AntigravityProviderModels(0);
+    await models.getSupportedModels();
+
+    // `models` hangs for longer than the assertion below allows, and counts
+    // its runs; other invocations (the `--version` probe) return at once.
+    await fs.writeFile(
+      stubPath,
+      `#!/bin/sh\n[ "$1" = models ] || exit 0\necho run >> '${countPath}'\nsleep 2\n`,
+      { mode: 0o755 },
+    );
+    clearEnginePathCache();
+
+    const startedAt = Date.now();
+    const [first, second] = await Promise.all([models.getSupportedModels(), models.getSupportedModels()]);
+    assert.ok(Date.now() - startedAt < 1_000, 'an expired catalog must be served without waiting on the CLI');
+    assert.ok(first.OPTIONS.some((m) => m.value === 'gemini-4-argon'));
+    assert.equal(second, first);
+
+    // Concurrent callers share one refresh.
+    await new Promise((resolve) => setTimeout(resolve, 2_500));
+    const runs = (await fs.readFile(countPath, 'utf8')).trim().split('\n');
+    assert.equal(runs.length, 1);
+  } finally {
+    restoreAgyPath();
+    clearEnginePathCache();
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+// The fixture is a POSIX shell script; Windows cannot execute it.
+test('AntigravityProviderModels keeps caching a healthy CLI catalog', { skip: process.platform === 'win32' }, async () => {
+  // A successful `agy models` result keeps its five-minute cache so the
+  // picker never re-runs the ~5s CLI on every open; only the fallback
+  // path uses the short TTL.
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'antigravity-models-cache-'));
+  const stubPath = path.join(tempRoot, 'agy');
+  const restoreAgyPath = withEnvValue('CLOUDCLI_AGY_PATH', stubPath);
+  await fs.writeFile(
+    stubPath,
+    `#!/bin/sh\nprintf 'gemini-4-argon-medium\\tGemini 4 Argon (Medium)\\n'\n`,
+    { mode: 0o755 },
+  );
+  clearEnginePathCache();
+  try {
+    const models = new AntigravityProviderModels();
+    const first = await models.getSupportedModels();
+    assert.ok(first.OPTIONS.some((m) => m.value === 'gemini-4-argon-medium'));
+
+    // The stub now reports a different catalog; inside the cache window
+    // the provider must keep serving the first result.
+    await fs.writeFile(
+      stubPath,
+      `#!/bin/sh\nprintf 'claude-opus-5-5-high\\tClaude Opus 5.5 (High)\\n'\n`,
+      { mode: 0o755 },
+    );
+    clearEnginePathCache();
+    const cached = await models.getSupportedModels();
+    assert.ok(cached.OPTIONS.some((m) => m.value === 'gemini-4-argon-medium'));
+    assert.ok(!cached.OPTIONS.some((m) => m.value.startsWith('claude-')));
   } finally {
     restoreAgyPath();
     clearEnginePathCache();
@@ -190,48 +312,43 @@ test('AntigravityProviderModels returns builtin models fallback', async () => {
 });
 
 test('ANTIGRAVITY_BUILTIN_MODELS collapses multi-tier families and keeps fixed models', () => {
-  assert.equal(ANTIGRAVITY_BUILTIN_MODELS.DEFAULT, 'gemini-3.7-flash');
+  assert.equal(ANTIGRAVITY_BUILTIN_MODELS.DEFAULT, 'gemini-4-argon');
 
   const values = ANTIGRAVITY_BUILTIN_MODELS.OPTIONS.map((option) => option.value);
   for (const expected of [
+    'gemini-4-argon',
     'gemini-3.8-flash',
-    'gemini-3.7-flash',
-    'gemini-3.6-flash',
-    'gemini-3.1-pro',
-    'claude-sonnet-4-6',
-    'claude-opus-4-6-thinking',
+    'claude-opus-5-5',
+    'claude-sonnet-5-5',
     'gpt-oss-120b-medium',
   ]) {
     assert.ok(values.includes(expected), `${expected} must be listed`);
   }
-  // Multi-tier gemini families collapse; the fixed-tier gpt-oss row keeps
-  // its real agy id.
+  // Multi-tier families collapse to base ids; the single-variant gpt-oss
+  // row keeps its real agy id.
   assert.equal(
-    values.filter((value) => value.startsWith('gemini-') && /-(low|medium|high)$/.test(value)).length,
+    values.filter((value) => value !== 'gpt-oss-120b-medium' && /-(low|medium|high)$/?.test(value)).length,
     0,
-    `no gemini suffixed ids may survive: ${JSON.stringify(values)}`,
+    `no suffixed ids may survive: ${JSON.stringify(values)}`,
   );
 
-  const flash = ANTIGRAVITY_BUILTIN_MODELS.OPTIONS.find((o) => o.value === 'gemini-3.7-flash');
-  assert.equal(flash?.label, 'Gemini 3.7 Flash');
-  assert.equal(flash?.description, 'Google Gemini 3.7 Flash');
-  assert.equal(flash?.effort?.encoding, 'model-suffix');
-  assert.deepEqual(flash?.effort?.values.map((v) => v.value), ['low', 'medium', 'high']);
-  assert.equal(flash?.effort?.default, 'high');
+  const argon = ANTIGRAVITY_BUILTIN_MODELS.OPTIONS.find((o) => o.value === 'gemini-4-argon');
+  assert.equal(argon?.label, 'Gemini 4 Argon');
+  assert.equal(argon?.description, 'Google Gemini 4 Argon');
+  assert.equal(argon?.effort?.encoding, 'model-suffix');
+  assert.deepEqual(argon?.effort?.values.map((v) => v.value), ['low', 'medium', 'high']);
+  assert.equal(argon?.effort?.default, 'high');
 
-  // Tiers mirror what agy actually offers: 3.1 Pro has no medium variant.
-  const pro = ANTIGRAVITY_BUILTIN_MODELS.OPTIONS.find((o) => o.value === 'gemini-3.1-pro');
-  assert.deepEqual(pro?.effort?.values.map((v) => v.value), ['low', 'high']);
+  // Claude tiers became adjustable in the current agy catalog, unlike
+  // older releases where sonnet was a passthrough.
+  const opus = ANTIGRAVITY_BUILTIN_MODELS.OPTIONS.find((o) => o.value === 'claude-opus-5-5');
+  assert.deepEqual(opus?.effort?.values.map((v) => v.value), ['low', 'medium', 'high']);
 
   // Models without adjustable tiers carry no effort config at all, so the
   // WebUI hides the Reasoning menu for them.
   const gptOss = ANTIGRAVITY_BUILTIN_MODELS.OPTIONS.find((o) => o.value === 'gpt-oss-120b-medium');
   assert.equal(gptOss?.label, 'GPT-OSS 120B (Medium)');
   assert.equal(gptOss?.effort, undefined);
-
-  const claude = ANTIGRAVITY_BUILTIN_MODELS.OPTIONS.find((o) => o.value === 'claude-sonnet-4-6');
-  assert.equal(claude?.label, 'Claude Sonnet 4.6 (Thinking)');
-  assert.equal(claude?.effort, undefined);
 });
 
 test('dedupeAntigravityVariantModels merges CLI variant rows into base models', () => {

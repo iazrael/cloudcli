@@ -434,3 +434,44 @@ test('an untimed wakeup alone lapses after the turn it triggers', () => {
   assert.equal(tracker.endTurn('s1'), true);
   assert.equal(tracker.hasPending('s1'), false);
 });
+
+test('a foreground Bash the CLI moves to the background after its timeout gets a card', () => {
+  // Seen live: a `find ~` that ran past Bash's 120s timeout was backgrounded
+  // by the CLI with only a `task_started`. Without a card the strip listed no
+  // task while the session still read as pending, so the page drew the
+  // background phase as a reply in flight until the command died.
+  const tracker = createBackgroundWorkTracker();
+  tracker.apply('s1', ownCall('toolu_find', 'Bash', { command: 'find ~ -name auth.db' }));
+  assert.deepEqual(tracker.activeTasks('s1'), [], 'a foreground Bash launches nothing yet');
+
+  assert.equal(tracker.apply('s1', started('find', {
+    tool_use_id: 'toolu_find', task_type: 'local_bash', description: 'find ~ -name auth.db',
+  })), true, 'the new card must be broadcast');
+  const [card] = tracker.activeTasks('s1');
+  assert.equal(card.id, 'toolu_find');
+  assert.equal(card.taskId, 'find');
+  assert.equal(card.toolName, 'Bash');
+  assert.equal(card.command, 'find ~ -name auth.db');
+  assert.equal(card.startedAt, tracker.list()[0].tasks[0].startedAt);
+  assert.equal(tracker.settlesMainThreadWork('s1', notified('find', 'completed')), true,
+    'the CLI reports on the finished command in a reply turn');
+
+  tracker.apply('s1', notified('find', 'completed'));
+  assert.deepEqual(tracker.activeTasks('s1'), []);
+  assert.equal(tracker.hasPending('s1'), false);
+});
+
+test('a task started before its own non-background call still gets a card once the call is seen', () => {
+  const tracker = createBackgroundWorkTracker();
+  tracker.apply('s1', started('late', { task_type: 'local_bash', description: 'sleep 999' }));
+  assert.deepEqual(tracker.activeTasks('s1'), [], 'without its call the task may be an agent\'s');
+  assert.equal(tracker.apply('s1', ownCall('toolu_late', 'Bash', { command: 'sleep 999' })), true);
+  assert.deepEqual(tracker.activeTasks('s1').map((card) => [card.id, card.taskId, card.toolName]), [['toolu_late', 'late', 'Bash']]);
+});
+
+test('a task started inside an agent stays off the strip and asks for no reply', () => {
+  const tracker = createBackgroundWorkTracker();
+  tracker.apply('s1', started('child', { tool_use_id: 'toolu_inside_agent', task_type: 'local_bash' }));
+  assert.deepEqual(tracker.activeTasks('s1'), []);
+  assert.equal(tracker.settlesMainThreadWork('s1', notified('child', 'completed')), false);
+});

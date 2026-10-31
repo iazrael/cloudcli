@@ -5,12 +5,25 @@ import rehypeKatex from 'rehype-katex';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 
+import type { MarkdownImageContext } from '@/shared/types';
+import { markdownUrlTransform, normalizeLatexMathDelimiters } from '@/shared/utils';
 import MarkdownCodeBlock from '@/modules/code-editor/markdown/MarkdownCodeBlock';
-import { normalizeLatexMathDelimiters } from '@/shared/utils';
+import MarkdownPreviewImage from '@/modules/code-editor/markdown/MarkdownPreviewImage';
+import MarkdownPreviewLink from '@/modules/code-editor/markdown/MarkdownPreviewLink';
 
 type MarkdownPreviewProps = {
   content: string;
+  /**
+   * Where the document's local image references resolve from. Callers with no
+   * workspace document to resolve against omit it; those images then show
+   * their alternative text.
+   */
+  imageContext?: MarkdownImageContext | null;
 };
+
+// Used when a caller renders markdown without a workspace document: web images
+// still load, local paths show their alternative text.
+const NO_IMAGE_CONTEXT: MarkdownImageContext = { isExternal: false };
 
 const markdownPreviewComponents: Components = {
   code: MarkdownCodeBlock,
@@ -21,11 +34,6 @@ const markdownPreviewComponents: Components = {
     <blockquote className="my-2 border-l-4 border-gray-300 pl-4 italic text-gray-600 dark:border-gray-600 dark:text-gray-400">
       {children}
     </blockquote>
-  ),
-  a: ({ href, children }) => (
-    <a href={href} className="text-blue-600 hover:underline dark:text-blue-400" target="_blank" rel="noopener noreferrer">
-      {children}
-    </a>
   ),
   table: ({ children }) => (
     <div className="my-2 overflow-x-auto">
@@ -41,17 +49,30 @@ const markdownPreviewComponents: Components = {
   ),
 };
 
-/** Used by the prd-editor module, and by CodeEditorSurface inside code-editor, to render markdown source as formatted preview output. */
-export default function MarkdownPreview({ content }: MarkdownPreviewProps) {
+/** Used by CodeEditorSurface inside code-editor to render markdown source as formatted preview output. */
+export default function MarkdownPreview({ content, imageContext = null }: MarkdownPreviewProps) {
   const markdown = useMemo(() => normalizeLatexMathDelimiters(content), [content]);
   const remarkPlugins = useMemo(() => [remarkGfm, [remarkMath, { singleDollarTextMath: false }]] as any, []);
   const rehypePlugins = useMemo(() => [rehypeKatex], []);
+  const components = useMemo<Components>(
+    () => ({
+      ...markdownPreviewComponents,
+      a: ({ node: _node, ...props }) => (
+        <MarkdownPreviewLink {...props} context={imageContext ?? NO_IMAGE_CONTEXT} />
+      ),
+      img: ({ node: _node, ...props }) => (
+        <MarkdownPreviewImage {...props} context={imageContext ?? NO_IMAGE_CONTEXT} />
+      ),
+    }),
+    [imageContext],
+  );
 
   return (
     <ReactMarkdown
       remarkPlugins={remarkPlugins}
       rehypePlugins={rehypePlugins}
-      components={markdownPreviewComponents}
+      components={components}
+      urlTransform={markdownUrlTransform}
     >
       {markdown}
     </ReactMarkdown>

@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ArrowDownIcon } from 'lucide-react';
 
-import { useTasksSettings } from '@/modules/task-master';
 import { useWebSocket } from '@/shared/context/WebSocketContext';
 import PermissionContext from '@/modules/chat/context/PermissionContext';
 import type { ChatInterfaceProps, PermissionMode } from '@/shared/types';
@@ -17,6 +16,7 @@ import { useProviderAuthStatus } from '@/modules/provider-auth';
 import { useScheduledMessages } from '@/modules/chat/composer/useScheduledMessages';
 import { useScheduledJobs } from '@/modules/scheduled-jobs';
 import { useProviderCapabilitiesMap } from '@/shared/hooks/useProviderCapabilities';
+import { useQueuedMessageSync } from '@/modules/chat/hooks/useQueuedMessageSync';
 import ChatMessagesPane from '@/modules/chat/transcript/ChatMessagesPane';
 import ProviderSelectionEmptyState from '@/modules/chat/transcript/ProviderSelectionEmptyState';
 import type { ChatMessage, ActiveBackgroundTask } from '@/shared/types';
@@ -43,11 +43,9 @@ function ChatInterface({
   sendByCtrlEnter,
   externalMessageUpdate,
   newSessionTrigger,
-  onShowAllTasks,
   scheduledJobsEnabled = false,
 }: ChatInterfaceProps) {
-  const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings();
-  const { subscribe } = useWebSocket();
+  const { subscribe, isConnected } = useWebSocket();
   const { t } = useTranslation('chat');
   const { providerAuthStatus, refreshProviderAuthStatuses } = useProviderAuthStatus();
 
@@ -149,6 +147,24 @@ function ChatInterface({
     }
   }, [revealToolRow]);
 
+  const namedBackgroundTasks = useMemo(() => {
+    if (provider !== 'codex' || !backgroundTasks?.length) return backgroundTasks;
+    const names = new Map(chatMessages.flatMap((message) =>
+      message.toolId && message.subagent?.name ? [[message.toolId, message.subagent.name] as const] : [],
+    ));
+    return backgroundTasks.map((task) => {
+      if (task.toolName !== 'Agent') return task;
+      const detail = task.command || task.description || '';
+      const uuidPrefix = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?::\s*|$)/i;
+      const name = names.get(task.id);
+      if (!uuidPrefix.test(detail)) return task;
+      const description = detail.replace(uuidPrefix, '');
+      const label = name && !uuidPrefix.test(`${name}:`) ? name : '';
+      const command = label && description ? `${label}: ${description}` : label || description;
+      return { ...task, command: command || 'Agent', description: command || 'Agent' };
+    });
+  }, [provider, backgroundTasks, chatMessages]);
+
   // Brand-new conversation: the composer allocated a stable session id via
   // the session gateway before the first send. Record it locally and put it
   // in the URL — this id never changes again, so there is no later handoff.
@@ -249,6 +265,14 @@ function ChatInterface({
     resolvePermissionModeForProvider,
     backgroundTasks,
     hasActiveBackgroundTasks,
+    isConnected,
+  });
+
+  useQueuedMessageSync({
+    activeSessionId: selectedSession?.id || currentSessionId || null,
+    subscribe,
+    addMessage,
+    onSessionProcessing,
   });
 
   // On WebSocket reconnect, request a bounded persisted-tail sync (deferred
@@ -499,9 +523,6 @@ function ChatInterface({
               providerModelActions={providerModelActions}
               providerModelsLoading={providerModelsLoading}
               providerAuthStatus={providerAuthStatus}
-              tasksEnabled={tasksEnabled}
-              isTaskMasterInstalled={isTaskMasterInstalled}
-              onShowAllTasks={onShowAllTasks}
               setInput={setInput}
             />
           )
@@ -628,7 +649,7 @@ function ChatInterface({
           placeholder={t('input.placeholder', { provider: selectedProviderLabel })}
           isTextareaExpanded={isTextareaExpanded}
           sendByCtrlEnter={sendByCtrlEnter}
-          backgroundTasks={backgroundTasks}
+          backgroundTasks={namedBackgroundTasks}
           onStopBackgroundTasks={handleStopBackgroundTasks}
           onRevealBackgroundTask={handleRevealBackgroundTask}
           hasActiveBackgroundTasks={hasActiveBackgroundTasks}

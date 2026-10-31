@@ -5,6 +5,10 @@ import '@/modules/i18n';
 import { PluginsProvider, usePlugins } from '@/modules/plugins/context/PluginsContext';
 import PluginSettingsTab from '@/modules/plugins/PluginSettingsTab';
 import type { Plugin } from '@/shared/types';
+import { initI18n } from '@/modules/i18n';
+
+// Copy assertions need real translations; bundles load per language (see docs/design/i18n按语言懒加载.md).
+await initI18n();
 
 type StubbedReply = { status: number; body: unknown };
 

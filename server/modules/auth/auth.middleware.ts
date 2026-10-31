@@ -80,6 +80,7 @@ const authenticateToken = async (req, res, next) => {
     }
 
     req.user = user;
+    req.authExpiresAt = decoded.exp;
     next();
   } catch (error) {
     if (error instanceof jwt.TokenExpiredError) {

@@ -227,3 +227,15 @@ test('a context compaction is the shared compaction row, the same from history a
   assert.equal(running.id, 'cmp-1');
   assert.deepEqual(running.compact, { phase: 'running' });
 });
+
+test('a completed spawn acknowledgement keeps its child running in live and rollout records', () => {
+  for (const [reader, type] of [[readCodexAppServerItem, 'collabAgentToolCall'], [readCodexRolloutItem, 'CollabAgentToolCall']] as const) {
+    const item = reader({ type, id: 'spawn-ack', tool: 'spawn_agent', status: 'completed', receiver_thread_ids: ['child-1'], receiver_agents: [{ thread_id: 'child-1', agent_nickname: 'Boole' }], agents_states: { 'child-1': 'pending_init' } });
+    assert.ok(item && item.kind === 'collab_spawn');
+    assert.deepEqual(item.receiverThreadIds, ['child-1']);
+    const rows = codexThreadItemToRows(item, TIMESTAMP);
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0].status, 'in_progress');
+    assert.deepEqual(rows[1].toolUseResult, { isAsync: true, agentId: 'child-1' });
+  }
+});

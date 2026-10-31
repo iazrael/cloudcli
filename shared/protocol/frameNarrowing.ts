@@ -55,6 +55,7 @@ const GATEWAY_KINDS: ReadonlySet<string> = new Set([
   'scheduled_jobs_changed',
   'loading_progress',
   'protocol_error',
+  'queued_message_dispatched',
   'websocket_reconnected',
 ]);
 

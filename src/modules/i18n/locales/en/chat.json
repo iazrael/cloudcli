@@ -1,4 +1,14 @@
 {
+  "imageLoad": {
+    "unauthorized": "Sign in again to load this image.",
+    "forbidden": "This image is outside the readable directories or access was denied.",
+    "notFound": "Image file not found. It may have been moved or deleted.",
+    "failed": "Could not load the image. Check the address or your connection and retry.",
+    "decode": "Could not display the image. The file may be damaged or its format unsupported.",
+    "unresolved": "Cannot resolve this image reference. Relative paths require an active project.",
+    "copied": "Path copied.",
+    "copyFailed": "Could not copy. Select the path above to copy it manually."
+  },
   "replay": {
     "recoveryFailed": "Chat sync failed. Retrying automatically; your existing messages are kept. You can also reload this page to retry."
   },
@@ -156,7 +166,8 @@
       "ctrlEnter": "Ctrl+Enter to send • Shift+Enter for new line • Tab to change modes • / for slash commands",
       "enter": "Enter to send • Shift+Enter for new line • Tab to change modes • / for slash commands",
       "queue": "Enter to queue your next message",
-      "updateQueued": "Enter to update queued message"
+      "updateQueued": "Enter to update queued message",
+      "appendQueued": "Enter to add to the queued message"
     },
     "clickToChangeMode": "Click to change permission mode (or press Tab in input)",
     "showAllCommands": "Show all commands",
@@ -171,7 +182,13 @@
       "delete": "Delete queued message",
       "willSendAfterBackground": "Will send when the background tasks finish",
       "forceSend": "Send now; background tasks keep running",
-      "forceSendButton": "Send now"
+      "forceSendButton": "Send now",
+      "append": "Add to queued message",
+      "notCombinable": "Slash commands must be sent separately and cannot be added to the queued message.",
+      "failed": "Failed to queue message: {{message}}",
+      "clearFailed": "Unable to cancel the queued message. Please try again later.",
+      "confirmDelivery": "No server confirmation was received. Check both the queue and conversation history after refreshing before trying again.",
+      "permission": "Whole queued message: {{mode}}. New additions apply the latest settings."
     },
     "compactQueued": {
       "label": "Compaction queued",
@@ -203,7 +220,9 @@
       "abortButton": "Stop",
       "hintContinue": "Send anytime; background tasks keep running",
       "hintContinueShort": "Send anytime"
-    }
+    },
+    "permissionCycleHint": "Press Tab in the message box to switch modes",
+    "permissionTriggerLabel": "{{mode}}: {{heading}}"
   },
   "providerSelection": {
     "title": "Choose Your AI Assistant",

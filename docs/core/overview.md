@@ -57,6 +57,8 @@ server/
     scheduled-jobs/        定时任务（cron 循环或 run_at 仅一次 + 运行历史；reuse/new 两种会话模式，reuse 可设 rotate_after_days 到龄换新会话并归档旧会话；永不打断在跑回合）
                            含 agent 侧受管 MCP 桥 `cloudcli-scheduled-tasks`（Settings 全局开关 + 启动对账）
     browser-use/           浏览器自动化 service + 本地 MCP 桥接
+    execution/             本机执行 MCP（/mcp/execution）：外部工具凭专用令牌把任务派发给本机引擎，可查进度/事件/结果并取消（默认关闭，需 CLOUDCLI_EXECUTION_TOKEN 与 CLOUDCLI_EXECUTION_ROOTS）
+    media/                 聊天图片的短时效签名票据：签发与换取 /api/media，浏览器可直接 <img> 加载本地图片
     local-proxy/           把服务器本机端口上的服务转发给远程浏览器（票据 + 会话 cookie）
     voice/  cli/  git/  file-tree/  worktrees/  projects/  settings/  system/  user/
                            其余领域模块（每个 = routes + services 的薄模块）
@@ -69,7 +71,7 @@ src/
     sidebar/  settings/  auth/  provider-auth/  mcp/  skills/  git-panel/  file-tree/
     code-editor/  shell/  standalone-shell/  i18n/  plugins/  browser-use/
     scheduled-jobs/        工作区 Scheduled 标签页 + composer 任务入口（循环/仅一次，见 chat.md / frontend.md）
-    voice/  task-master/  command-palette/  onboarding/  quick-settings-panel/  …
+    voice/  command-palette/  onboarding/  quick-settings-panel/  …
   shared/                  api.ts（fetch 封装）、types.ts、context/（全局 Context）、ui/（通用组件 + 引擎 Logo）
   App.tsx                  路由：/ 与 /session/:sessionId 两个工作区路由
 docs/
@@ -86,7 +88,7 @@ docs/
 | 异步任务目录与产物 | `~/.cloudcli/tasks/<taskId>` | 后台命令日志 `output.log` 与原子结果 `result.json`，支持宿主断电/崩溃重启后自动扫描补录入库 |
 | 聊天上传资产 | `~/.cloudcli/assets` | `server/modules/assets`；聊天发送只信任该目录**直接子文件**（`chat-websocket.service.ts` 过滤） |
 | 插件本体与启用状态 | `~/.cloudcli/plugins` + `~/.cloudcli/plugins.json` | `server/modules/plugins`（注册表扫描 + 子进程管理）；首次访问时从旧 `~/.claude-code-ui` 一次性自动迁移（`migrateLegacyPluginPaths`） |
-| 各引擎会话原件 | `~/.claude` / `~/.codex` / `~/.cursor` / `~/.local/share/opencode` / `~/.zcode` / `~/.gemini/antigravity*` | 云 CLI 不复制、不改写；同步器只读解析后把元数据 upsert 进 SQLite（`sessions` 表含 `jsonl_path`）。`sessions` 还记会话的运行时事实：`model`、`effort`、`context_window`（引擎自报的真实上下文窗口，转录里推不出来；未跑过的会话为 NULL）、`name_locked`（用户在应用里改过名，引擎标题不得覆盖）、`worktree_path` / `worktree_branch`（引擎把会话绑到项目某个 git worktree 时的位置；主检出会话为 NULL） |
+| 各引擎会话原件 | `~/.claude` / `~/.codex` / `~/.cursor` / `~/.local/share/opencode` / `~/.zcode` / `~/.gemini/antigravity*` | 云 CLI 不复制、不改写；同步器只读解析后把元数据 upsert 进 SQLite（`sessions` 表含 `jsonl_path`）。`sessions` 还记会话的运行时事实：`model`、`effort`、`context_window`（引擎自报的真实上下文窗口，转录里推不出来；未跑过的会话为 NULL）、`name_locked`（用户在应用里改过名，引擎标题不得覆盖）、`worktree_path` / `worktree_branch`（引擎把会话绑到项目某个 git worktree 时的位置；主检出会话为 NULL）、`isPinned`（侧边栏置顶：项目会话与跨项目动态都按置顶优先、组内再按活跃时间排序，服务端分页同样置顶优先） |
 | 运行结束记录 | 服务进程内存（有界，约百条） | `server/modules/diagnostics`：每个 run 为什么结束（见 [chat.md](./chat.md)）。刻意不入库——它服务于"刚刚出了什么事"，重启即弃；`GET /api/diagnostics/runs` 读出，前端诊断报告把它和浏览器侧证据合成一份文件 |
 | 前端构建产物 | `dist/`（vite build） | Express 静态托管 + SPA fallback |
 | 服务端构建产物 | `dist-server/` | `tsc + tsc-alias` 先产出 `dist-server.next`，`scripts/promote-dist-server.mjs` 原子晋升（保留 `dist-server.old`；`preserver` 钩子启动前自愈） |

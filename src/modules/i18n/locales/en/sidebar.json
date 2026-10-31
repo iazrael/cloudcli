@@ -38,7 +38,24 @@
     "selectAllLoaded": "Select all loaded",
     "clearSelection": "Clear",
     "deleteSelected_one": "Delete {{count}} session",
-    "deleteSelected_other": "Delete {{count}} sessions"
+    "deleteSelected_other": "Delete {{count}} sessions",
+    "pinSession": "Pin session",
+    "unpinSession": "Unpin session",
+    "pinned": "Pinned",
+    "optionsTitle": "Session options",
+    "optionsFor": "Session options for {{name}}",
+    "providerSession": "{{provider}} session",
+    "forkSession": "Fork session",
+    "forkSessionDescription": "Continue from a copy, leaving this one untouched.",
+    "archiveOrDelete": "Archive or delete session",
+    "clickToRetry": "Click to try again.",
+    "tapToRetry": "Tap to try again.",
+    "sessionName": "Session name",
+    "copyId": "Copy {{provider}} session ID",
+    "copyIdLoading": "Loading {{provider}} session ID…",
+    "copyIdCopied": "{{provider}} session ID copied",
+    "copyIdFailed": "Couldn't copy {{provider}} session ID",
+    "copyIdUnavailable": "{{provider}} session ID unavailable"
   },
   "tooltips": {
     "viewEnvironments": "View Environments",
@@ -123,7 +140,8 @@
     "restoreSessionError": "Error restoring session. Please try again.",
     "forkSessionError": "Could not fork this session. Please try again.",
     "deleteSessionsPartialFailure_one": "{{count}} session out of {{total}} could not be deleted. Please try again.",
-    "deleteSessionsPartialFailure_other": "{{count}} of {{total}} sessions could not be deleted. Please try again."
+    "deleteSessionsPartialFailure_other": "{{count}} of {{total}} sessions could not be deleted. Please try again.",
+    "pinSessionError": "Could not pin this session. Please try again."
   },
   "version": {
     "updateAvailable": "Update available",

@@ -7,6 +7,11 @@ import '@/modules/i18n';
 import ModelLibraryPanel from '@/modules/chat/modals/ModelLibraryPanel';
 import ProviderSelectionEmptyState from '@/modules/chat/transcript/ProviderSelectionEmptyState';
 import { resetUserPreferences } from '@/shared/userSettings';
+import { initI18n } from '@/modules/i18n';
+
+// Copy assertions need real translations; bundles load per language (see docs/design/i18n按语言懒加载.md).
+await initI18n();
+
 import type {
   LLMProvider,
   ProviderModelActions,
@@ -104,9 +109,6 @@ vi.mock('@/shared/api', () => ({
     },
   },
 }));
-
-// The picker's task banner pulls in the terminal stack; these tests never show it.
-vi.mock('@/modules/task-master', () => ({ NextTaskBanner: () => null }));
 
 // A boolean, so a failing assertion never has node:assert inspect a DOM node
 // (which runs the test worker out of memory).
@@ -354,8 +356,6 @@ test('the model picker says which providers list only your models', () => {
         providerModelCatalog={providerModelCatalog}
         providerModelActions={createActions(async () => {})}
         providerModelsLoading={false}
-        tasksEnabled={false}
-        isTaskMasterInstalled={null}
         setInput={() => {}}
       />,
     );

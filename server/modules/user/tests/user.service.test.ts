@@ -19,7 +19,9 @@ function createDependencies(overrides: Partial<UserDependencies> = {}): UserDepe
     },
     drafts: {
       getDrafts: () => [],
-      saveDraft: () => undefined,
+      saveDraftText: () => undefined,
+      appendQueuedMessage: (_id, _scope, message) => ({ queuedMessage: message, appended: false }),
+      clearQueuedMessage: () => true,
       deleteDraft: () => undefined,
     },
     readSystemGitConfig: async () => ({ git_name: null, git_email: null }),
@@ -97,41 +99,48 @@ test('savePreferences rejects an over-long preference key', () => {
   assert.throws(() => service.savePreferences(3, { ['k'.repeat(201)]: 1 }), /1-200/);
 });
 
-test('saveDraft stores the text and queued message under the given scope', () => {
-  const saved: unknown[][] = [];
-  const service = createUserService(createDependencies({
-    drafts: {
-      getDrafts: () => [],
-      saveDraft: (...args) => saved.push(args),
-      deleteDraft: () => undefined,
-    },
-  }));
-
-  service.saveDraft(5, 'session-1', {
-    scope: 'session-1',
-    text: 'half a thought',
-    queuedMessage: { content: 'later' },
-  });
-
-  assert.deepEqual(saved, [[5, 'session-1', {
-    text: 'half a thought',
-    queuedMessage: { content: 'later' },
-  }]]);
+test('legacy queue snapshots fail without changing text or queue', () => {
+  const writes: unknown[] = [];
+  const deps = createDependencies();
+  deps.drafts.saveDraftText = (...args) => { writes.push(args); };
+  const service = createUserService(deps);
+  for (const queuedMessage of [{ content: 'stale' }, undefined]) {
+    assert.throws(() => service.saveDraft(5, 'session', { text: 'changed', queuedMessage }), { code: 'LEGACY_QUEUE_WRITE', statusCode: 409 });
+  }
+  assert.deepEqual(writes, []);
+  service.saveDraft(5, 'session', { text: 'typing' });
+  assert.deepEqual(writes, [[5, 'session', 'typing']]);
 });
 
-test('saveDraft defaults a missing queued message to null rather than dropping the row', () => {
-  const saved: unknown[][] = [];
+test('an old page can safely save a new-chat draft with a null queue', () => {
+  const writes: unknown[][] = [];
+  const deps = createDependencies();
+  deps.drafts.saveDraftText = (...args) => writes.push(args);
+  const service = createUserService(deps);
+  service.saveDraft(5, 'project:p1', { text: 'new chat unsent paragraph', queuedMessage: null });
+  assert.deepEqual(writes, [[5, 'project:p1', 'new chat unsent paragraph']]);
+});
+
+test('legacy queue rejection asks the session channel to show a refresh notice', () => {
+  const notices: unknown[][] = [];
   const service = createUserService(createDependencies({
-    drafts: {
-      getDrafts: () => [],
-      saveDraft: (...args) => saved.push(args),
-      deleteDraft: () => undefined,
-    },
+    notifyLegacyQueueWrite: (...args) => notices.push(args),
   }));
+  assert.throws(() => service.saveDraft(5, 'session', { text: '', queuedMessage: { content: 'unsaved' } }), { code: 'LEGACY_QUEUE_WRITE' });
+  assert.deepEqual(notices, [[5, 'session']]);
+});
 
-  service.saveDraft(5, 'session-1', { scope: 'session-1', text: 'typing' });
-
-  assert.deepEqual(saved, [[5, 'session-1', { text: 'typing', queuedMessage: null }]]);
+test('append validates message and scope, preserves settings without broadening permissions, and maps conflicts', () => {
+  const deps = createDependencies();
+  const service = createUserService(deps);
+  assert.deepEqual(service.appendQueuedMessage(1, 'session', { content: 'A', options: { permissionMode: 'plan' } }), { success: true, queuedMessage: { content: 'A', attachments: [], options: { permissionMode: 'plan' } }, appended: false });
+  for (const value of [null, [], {}, { content: ' ' }, { content: 4 }, { content: 'x', attachments: 'bad' }, { content: 'x', options: [] }]) {
+    assert.throws(() => service.appendQueuedMessage(1, 'session', value), { code: 'INVALID_QUEUED_MESSAGE', statusCode: 400 });
+  }
+  assert.throws(() => service.appendQueuedMessage(1, '', { content: 'A' }), /scope/i);
+  assert.throws(() => service.appendQueuedMessage(1, 'session', { content: 'x'.repeat(100_001) }), { statusCode: 413 });
+  deps.drafts.appendQueuedMessage = () => null;
+  assert.throws(() => service.appendQueuedMessage(1, 'session', { content: '/help' }), { code: 'QUEUED_MESSAGE_NOT_COMBINABLE', statusCode: 409 });
 });
 
 test('saveDraft rejects a blank or over-long scope', () => {

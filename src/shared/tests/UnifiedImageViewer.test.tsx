@@ -30,7 +30,7 @@ test.each([
   fireEvent.click(screen.getByRole('button', { name: '下载图片' }));
 
   await waitFor(() => expect(saveOrShareBlob).toHaveBeenCalledWith(blob, filename));
-  expect(fetchMock).toHaveBeenCalledWith(src);
+  expect(fetchMock).toHaveBeenCalledWith(src, { referrerPolicy: 'no-referrer' });
   expect(onClose).not.toHaveBeenCalled();
 });
 

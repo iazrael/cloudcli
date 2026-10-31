@@ -17,8 +17,8 @@ import '@/index.css'
 import 'katex/dist/katex.min.css'
 import { markStartupMilestone, startStartupDiagnostics } from '@/shared/diagnostics/startupDiagnostics'
 
-// Initialize i18n
-import '@/modules/i18n'
+// i18n bundles load per language; initI18n must resolve before the first render
+import { initI18n } from '@/modules/i18n'
 
 startStartupDiagnostics()
 markStartupMilestone('entry_evaluated')
@@ -46,8 +46,10 @@ if (!rootElement) {
   throw new Error('Unable to mount the app: #root is missing from the document')
 }
 
-ReactDOM.createRoot(rootElement).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>,
-)
+void initI18n().then(() => {
+  ReactDOM.createRoot(rootElement).render(
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>,
+  )
+})

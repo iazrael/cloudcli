@@ -1,5 +1,11 @@
 # Repository guidance
 
+## Documentation before implementation
+
+- 所有实现任务先写文档，再修改业务代码或测试。已有对应活文档时先补充；需要设计的新任务在 `docs/design/` 写明目标、范围、方案、验证和风险。
+- 简单任务写最小必要说明，不为凑流程扩展文档。设计文档头部的“状态”是唯一进度记录处；现行架构文档只写已实现事实。
+- 文档先行不增加审批轮次：L1/L2 在文档写好后直接实施；L3 按已有审批规则执行，已获批准的方案落文档后继续实施。
+
 ## Core architecture docs (must stay in sync)
 
 This fork's core architecture guides live in `docs/core/` (written in Chinese). Changes to the code below **must update the matching doc**:

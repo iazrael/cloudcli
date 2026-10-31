@@ -99,7 +99,10 @@ export const getAllSessions = (project: Project): SessionWithProvider[] => {
     ...session,
     __provider: getSessionProvider(session),
   })).sort(
-    (a, b) => getSessionDate(b).getTime() - getSessionDate(a).getTime(),
+    // Pinned sessions first, newest first inside each group — the same order
+    // the server pages in, so a loaded page never reshuffles.
+    (a, b) => Number(Boolean(b.isPinned)) - Number(Boolean(a.isPinned))
+      || getSessionDate(b).getTime() - getSessionDate(a).getTime(),
   );
 
   sortedSessionsByProject.set(project, sessions);
@@ -160,28 +163,6 @@ export const filterProjects = (projects: Project[], searchFilter: string): Proje
     const searchPath = (project.path || project.fullPath || '').toLowerCase();
     return displayName.includes(normalizedSearch) || searchPath.includes(normalizedSearch);
   });
-};
-
-export const getTaskIndicatorStatus = (
-  project: Project,
-  mcpServerStatus: { hasMCPServer?: boolean; isConfigured?: boolean } | null,
-) => {
-  const projectConfigured = Boolean(project.taskmaster?.hasTaskmaster);
-  const mcpConfigured = Boolean(mcpServerStatus?.hasMCPServer && mcpServerStatus?.isConfigured);
-
-  if (projectConfigured && mcpConfigured) {
-    return 'fully-configured';
-  }
-
-  if (projectConfigured) {
-    return 'taskmaster-only';
-  }
-
-  if (mcpConfigured) {
-    return 'mcp-only';
-  }
-
-  return 'not-configured';
 };
 
 export const normalizeProjectForSettings = (project: Project): SettingsProject => {

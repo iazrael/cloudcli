@@ -19,8 +19,10 @@ import type {
   ProviderCurrentActiveModel,
   ProviderModelsDefinition,
 } from '@/shared/types.js';
+import type { StaleWhileRefreshValue } from '@/shared/utils.js';
 import {
   buildDefaultProviderCurrentActiveModel,
+  createStaleWhileRefreshValue,
   readObjectRecord,
   readOptionalString,
 } from '@/shared/utils.js';
@@ -46,24 +48,23 @@ const execFileAsync = promisify(execFile);
  * family carries a description; it becomes the base model's description.
  */
 const ANTIGRAVITY_BUILTIN_RAW_MODELS: AntigravityRawModelEntry[] = [
-  { value: 'gemini-3.8-flash-high', label: 'Gemini 3.8 Flash (High)', description: 'Google Gemini 3.8 Flash' },
-  { value: 'gemini-3.8-flash-medium', label: 'Gemini 3.8 Flash (Medium)' },
-  { value: 'gemini-3.8-flash-low', label: 'Gemini 3.8 Flash (Low)' },
-  { value: 'gemini-3.7-flash-high', label: 'Gemini 3.7 Flash (High)', description: 'Google Gemini 3.7 Flash' },
-  { value: 'gemini-3.7-flash-medium', label: 'Gemini 3.7 Flash (Medium)' },
-  { value: 'gemini-3.7-flash-low', label: 'Gemini 3.7 Flash (Low)' },
-  { value: 'gemini-3.6-flash-high', label: 'Gemini 3.6 Flash (High)', description: 'Google Gemini 3.6 Flash' },
-  { value: 'gemini-3.6-flash-medium', label: 'Gemini 3.6 Flash (Medium)' },
-  { value: 'gemini-3.6-flash-low', label: 'Gemini 3.6 Flash (Low)' },
-  { value: 'gemini-3.1-pro-high', label: 'Gemini 3.1 Pro (High)', description: 'Google Gemini 3.1 Pro for complex architecture and deep reasoning' },
-  { value: 'gemini-3.1-pro-low', label: 'Gemini 3.1 Pro (Low)' },
-  { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6 (Thinking)', description: 'Anthropic Claude Sonnet 4.6 with extended thinking' },
-  { value: 'claude-opus-4-6-thinking', label: 'Claude Opus 4.6 (Thinking)', description: 'Anthropic Claude Opus 4.6 with maximum reasoning capability' },
-  { value: 'gpt-oss-120b-medium', label: 'GPT-OSS 120B (Medium)', description: 'Open-weight 120B foundation model' },
+  { value: "gemini-4-argon-high", label: "Gemini 4 Argon (High)", description: "Google Gemini 4 Argon" },
+  { value: "gemini-4-argon-medium", label: "Gemini 4 Argon (Medium)" },
+  { value: "gemini-4-argon-low", label: "Gemini 4 Argon (Low)" },
+  { value: "gemini-3.8-flash-high", label: "Gemini 3.8 Flash (High)", description: "Google Gemini 3.8 Flash" },
+  { value: "gemini-3.8-flash-medium", label: "Gemini 3.8 Flash (Medium)" },
+  { value: "gemini-3.8-flash-low", label: "Gemini 3.8 Flash (Low)" },
+  { value: "claude-opus-5-5-high", label: "Claude Opus 5.5 (High)", description: "Anthropic Claude Opus 5.5 with maximum reasoning capability" },
+  { value: "claude-opus-5-5-medium", label: "Claude Opus 5.5 (Medium)" },
+  { value: "claude-opus-5-5-low", label: "Claude Opus 5.5 (Low)" },
+  { value: "claude-sonnet-5-5-high", label: "Claude Sonnet 5.5 (High)", description: "Anthropic Claude Sonnet 5.5 with extended thinking" },
+  { value: "claude-sonnet-5-5-medium", label: "Claude Sonnet 5.5 (Medium)" },
+  { value: "claude-sonnet-5-5-low", label: "Claude Sonnet 5.5 (Low)" },
+  { value: "gpt-oss-120b-medium", label: "GPT-OSS 120B (Medium)" },
 ];
 
 /** Catalog default, kept identical in the builtin and dynamic paths. */
-const DEFAULT_BASE_MODEL = 'gemini-3.7-flash';
+const DEFAULT_BASE_MODEL = 'gemini-4-argon';
 
 /**
  * Builtin fallback model definitions when `agy models` cannot be queried.
@@ -85,7 +86,9 @@ async function fetchModelsFromCli(): Promise<ProviderModelsDefinition | null> {
   try {
     const { stdout } = await execFileAsync(enginePath, ['models'], {
       encoding: 'utf8',
-      timeout: 8000,
+      // A healthy `agy models` takes ~5s cold (token refresh included);
+      // leave headroom so a cold start is not misread as a dead CLI.
+      timeout: 15000,
       windowsHide: true,
     });
 
@@ -151,23 +154,34 @@ function readDefaultModelFromSettings(): string | null {
 }
 
 export class AntigravityProviderModels implements IProviderModels {
-  private cachedModels: ProviderModelsDefinition | null = null;
-  private cacheExpiry: number = 0;
+  /**
+   * Every turn reads the catalog before spawning agy, and `agy models` takes
+   * seconds (or hangs to its timeout), so only the first read waits on it; an
+   * expired catalog keeps serving while it is re-queried.
+   */
+  private readonly catalog: StaleWhileRefreshValue<ProviderModelsDefinition>;
+
+  /**
+   * @param fallbackTtlMs How long the builtin fallback stays fresh. Unlike a
+   *   healthy CLI result it expires fast: the builtin list is a stopgap that
+   *   goes stale, so `agy models` is asked again soon instead of after the
+   *   full five-minute window.
+   */
+  constructor(fallbackTtlMs: number = 10_000) {
+    this.catalog = createStaleWhileRefreshValue<ProviderModelsDefinition>({
+      load: async () => (await fetchModelsFromCli()) ?? ANTIGRAVITY_BUILTIN_MODELS,
+      ttlMs: (models) => (models === ANTIGRAVITY_BUILTIN_MODELS ? fallbackTtlMs : 5 * 60 * 1000),
+      // The load falls back instead of rejecting; this only covers a bug in it.
+      failureRetryMs: fallbackTtlMs,
+      onRefreshError: (error) => console.error('[Antigravity] Model catalog refresh failed:', error),
+    });
+  }
 
   /**
    * Returns supported Antigravity models, dynamically loaded or from builtin defaults.
    */
   async getSupportedModels(): Promise<ProviderModelsDefinition> {
-    const now = Date.now();
-    if (this.cachedModels && now < this.cacheExpiry) {
-      return this.cachedModels;
-    }
-
-    const cliModels = await fetchModelsFromCli();
-    this.cachedModels = cliModels ?? ANTIGRAVITY_BUILTIN_MODELS;
-    this.cacheExpiry = now + 5 * 60 * 1000; // Cache for 5 minutes
-
-    return this.cachedModels;
+    return this.catalog.get();
   }
 
   /**
@@ -201,7 +215,6 @@ export class AntigravityProviderModels implements IProviderModels {
    * Clears the models cache.
    */
   clearCache(): void {
-    this.cachedModels = null;
-    this.cacheExpiry = 0;
+    this.catalog.clear();
   }
 }

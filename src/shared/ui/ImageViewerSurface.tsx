@@ -1,4 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { Copy } from 'lucide-react';
+
+import { copyTextToClipboard } from '@/shared/utils';
 
 type Position = {
   x: number;
@@ -15,7 +19,11 @@ export type ImageViewerHandle = {
 type ImageViewerSurfaceProps = {
   src: string;
   alt: string;
+  filePath?: string;
+  dark?: boolean;
   onScaleChange?: (scale: number) => void;
+  onError?: () => void;
+  onLoad?: () => void;
   viewerRef?: React.MutableRefObject<ImageViewerHandle | null>;
 };
 
@@ -28,9 +36,29 @@ const WHEEL_DAMPING = 0.003;
 export function ImageViewerSurface({
   src,
   alt,
+  filePath,
+  dark = false,
   onScaleChange,
+  onError,
+  onLoad,
   viewerRef,
 }: ImageViewerSurfaceProps) {
+  const { t } = useTranslation('common');
+  // 按图片源保存解码尺寸，切换图片时不显示上一张的分辨率。
+  const [dimensions, setDimensions] = useState<{ src: string; width: number; height: number } | null>(null);
+  // 复制反馈只属于当前图片与路径。
+  const [copyResult, setCopyResult] = useState<{ key: string; copied: boolean } | null>(null);
+  const sourcePath = /^(https?:\/\/|\/\/)/i.test(src) && !new URL(src, window.location.href).pathname.startsWith('/api/media/') ? src : undefined;
+  const displayPath = filePath || sourcePath;
+  const copyKey = `${src}:${displayPath ?? ''}`;
+  const visibleDimensions = dimensions?.src === src ? dimensions : null;
+
+  const copyPath = async () => {
+    if (!displayPath) return;
+    const copied = await copyTextToClipboard(displayPath);
+    setCopyResult({ key: copyKey, copied });
+  };
+
   const containerRef = useRef<HTMLDivElement>(null);
 
   /** Current zoom scale multiplier ranging between MIN_SCALE and MAX_SCALE. */
@@ -345,36 +373,60 @@ export function ImageViewerSurface({
     : 'transition-transform duration-200 ease-out';
 
   return (
-    <div
-      ref={containerRef}
-      role="region"
-      aria-label={alt}
-      tabIndex={0}
-      className={`relative flex h-full w-full touch-none select-none items-center justify-center overflow-hidden ${cursorClass}`}
-      onPointerDown={handlePointerDown}
-      onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerUp}
-      onPointerCancel={handlePointerUp}
-      onDoubleClick={handleDoubleClick}
-      onTouchStart={handleTouchStart}
-      onTouchMove={handleTouchMove}
-      onTouchEnd={handleTouchEnd}
-      onTouchCancel={handleTouchEnd}
-    >
+    <div className="flex h-full min-h-0 w-full flex-col">
       <div
-        className={`flex max-h-full max-w-full items-center justify-center will-change-transform ${transformTransitionClass}`}
-        style={{
-          transform: `translate3d(${position.x}px, ${position.y}px, 0) scale(${scale})`,
-          transformOrigin: 'center center',
-        }}
+        ref={containerRef}
+        role="region"
+        aria-label={alt}
+        tabIndex={0}
+        className={`relative flex min-h-0 w-full flex-1 touch-none select-none items-center justify-center overflow-hidden ${cursorClass}`}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
+        onDoubleClick={handleDoubleClick}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+        onTouchCancel={handleTouchEnd}
       >
-        <img
-          src={src}
-          alt={alt}
-          draggable={false}
-          className="pointer-events-none max-h-full max-w-full select-none object-contain drop-shadow-sm"
-        />
+        <div
+          className={`flex max-h-full max-w-full items-center justify-center will-change-transform ${transformTransitionClass}`}
+          style={{
+            transform: `translate3d(${position.x}px, ${position.y}px, 0) scale(${scale})`,
+            transformOrigin: 'center center',
+          }}
+        >
+          <img
+            src={src}
+            referrerPolicy="no-referrer" decoding="async"
+            onError={() => { setDimensions(null); onError?.(); }}
+            onLoad={(event) => {
+              const { naturalWidth, naturalHeight } = event.currentTarget;
+              setDimensions(naturalWidth && naturalHeight ? { src, width: naturalWidth, height: naturalHeight } : null);
+              onLoad?.();
+            }}
+            alt={alt}
+            draggable={false}
+            className="pointer-events-none max-h-full max-w-full select-none object-contain drop-shadow-sm"
+          />
+        </div>
       </div>
+      <footer className={`relative z-10 max-h-[30%] shrink-0 touch-auto select-text overflow-y-auto border-t px-4 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2 text-xs ${dark ? 'border-white/10 bg-black/60 text-white/80' : 'border-border bg-background text-muted-foreground'}`}>
+        {visibleDimensions && <p className="mb-1 text-center font-mono">{visibleDimensions.width} × {visibleDimensions.height} px</p>}
+        <div className="flex items-start gap-2">
+          <p className="min-w-0 flex-1 whitespace-pre-wrap break-all font-mono">{displayPath || t('imageViewer.noPath', { defaultValue: '无文件路径' })}</p>
+          {displayPath && <button type="button" onClick={() => void copyPath()}
+            className="flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md border border-current px-2 hover:opacity-80"
+            aria-label={t('fileOperations.copyPath', { defaultValue: '复制路径' })}
+            title={t('fileOperations.copyPath', { defaultValue: '复制路径' })}>
+            <Copy className="h-4 w-4" aria-hidden="true" />
+          </button>}
+        </div>
+        {copyResult?.key === copyKey && <p role="status" className="mt-1">
+          {copyResult.copied ? t('imageViewer.copied', { defaultValue: '路径已复制。' }) : t('imageViewer.copyFailed', { defaultValue: '复制失败，请选中上方路径手动复制。' })}
+        </p>}
+      </footer>
     </div>
   );
 }

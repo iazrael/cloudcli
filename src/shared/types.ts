@@ -187,7 +187,7 @@ export type ProviderModelActions = {
 //----------------- PROJECTS AND SESSIONS ------------
 
 /** Identifies the workspace pane the user is looking at; plugin panes are namespaced by plugin id. */
-export type AppTab = 'chat' | 'files' | 'shell' | 'git' | 'tasks' | 'browser' | 'scheduled' | `plugin:${string}`;
+export type AppTab = 'chat' | 'files' | 'shell' | 'git' | 'browser' | 'scheduled' | `plugin:${string}`;
 
 /** A message queued to be sent to a session at a future time. */
 export type ScheduledMessage = {
@@ -279,6 +279,9 @@ export type ProjectSession = {
   // session with the branch. Null/absent for main-checkout sessions.
   worktreePath?: string | null;
   worktreeBranch?: string | null;
+  // True when the user pinned the session: sidebar lists put it above every
+  // unpinned session, with activity time still ordering each group.
+  isPinned?: boolean;
   // Tags the session with the owning project's DB `projectId` so UI handlers
   // (session switching, sidebar focus, etc.) can match against selectedProject.
   __projectId?: string;
@@ -289,14 +292,6 @@ export type ProjectSession = {
 export type ProjectSessionMeta = {
   total?: number;
   hasMore?: boolean;
-  [key: string]: unknown;
-};
-
-/** Task Master provisioning state for a project, used to decide whether the tasks tab is available. */
-export type ProjectTaskmasterInfo = {
-  hasTaskmaster?: boolean;
-  status?: string;
-  metadata?: Record<string, unknown>;
   [key: string]: unknown;
 };
 
@@ -313,7 +308,6 @@ export type Project = {
   isStarred?: boolean;
   sessions?: ProjectSession[];
   sessionMeta?: ProjectSessionMeta;
-  taskmaster?: ProjectTaskmasterInfo;
   [key: string]: unknown;
 }
 
@@ -1198,28 +1192,6 @@ export type Plugin = {
 
 // ---------------------------
 
-//----------------- PRD EDITOR ------------
-
-/** The PRD document the PRD editor should open, describing either an existing file to load (by path or inline content) or a blank draft to start from. */
-export type PrdEditorFile = {
-  name?: string;
-  path?: string;
-  // DB projectId used to resolve the project path when fetching file content.
-  projectId?: string;
-  content?: string;
-  isExisting?: boolean;
-};
-
-/** A PRD already stored in a project's TaskMaster docs folder, used to detect filename collisions before saving and to load a previously written PRD. */
-export type ExistingPrdFile = {
-  name: string;
-  content?: string;
-  isExisting?: boolean;
-  [key: string]: unknown;
-};
-
-// ---------------------------
-
 //----------------- PROJECT CREATION WIZARD ------------
 
 /** The one-based index of the step currently shown by the project-creation wizard: 1 configures the workspace, 2 reviews it before creation. */
@@ -1333,7 +1305,7 @@ export type AgentContext = {
 };
 
 /** Identifier of a top-level section in the settings dialog; use it whenever a tab is stored, compared or requested so deep links, the sidebar and the command palette all agree on the same set of names. */
-export type SettingsMainTab = 'agents' | 'sessions' | 'appearance' | 'git' | 'api' | 'voice' | 'tasks' | 'browser' | 'scheduled' | 'notifications' | 'plugins' | 'diagnostics' | 'about';
+export type SettingsMainTab = 'agents' | 'sessions' | 'appearance' | 'git' | 'api' | 'voice' | 'browser' | 'scheduled' | 'notifications' | 'plugins' | 'diagnostics' | 'about';
 
 /** The coding-agent CLI a settings screen is configuring, aliasing LLMProvider so agent-scoped settings read as being about an agent rather than a chat model. */
 export type AgentProvider = LLMProvider;
@@ -1469,6 +1441,8 @@ export type SessionRowActions = {
   onDeleteSession: (sessionId: string, sessionTitle: string) => void;
   /** Branches a session into an independent one. Rows hide it for providers that cannot. */
   onForkSession?: (session: SessionWithProvider) => void;
+  /** Pins or unpins a session; pinned sessions sit at the top of every sidebar list. */
+  onSetSessionPinned?: (sessionId: string, isPinned: boolean) => void;
 };
 
 export type SidebarProjectListProps = SessionRowActions & {
@@ -1482,8 +1456,6 @@ export type SidebarProjectListProps = SessionRowActions & {
   initialSessionsLoaded: Set<string>;
   currentTime: Date;
   deletingProjects: Set<string>;
-  tasksEnabled: boolean;
-  mcpServerStatus: MCPServerStatus;
   getProjectSessions: (project: Project) => SessionWithProvider[];
   onLoadMoreSessions: (projectId: string) => void;
   loadingMoreProjects: Set<string>;
@@ -1552,7 +1524,10 @@ export type ArchivedSessionListItem = {
 export type RecentConversationListItem = Pick<
   ArchivedSessionListItem,
   'sessionId' | 'provider' | 'projectId' | 'projectDisplayName' | 'sessionTitle' | 'lastActivity'
->;
+> & {
+  /** True when the user pinned the session; the feed lists pinned rows first. */
+  isPinned?: boolean;
+};
 
 /**
  * The rename the sidebar currently has open, if any.
@@ -1581,12 +1556,6 @@ export type PendingSidebarDeletion =
   | { kind: 'project'; project: Project; sessionCount: number; isArchived: boolean }
   | { kind: 'session'; sessionId: string; sessionTitle: string; isArchived: boolean }
   | { kind: 'sessions'; sessionIds: string[] };
-
-/** Whether a TaskMaster MCP server is present and configured for a project, or null while that status is still unknown. */
-export type MCPServerStatus = {
-  hasMCPServer?: boolean;
-  isConfigured?: boolean;
-} | null;
 
 // Retained as `name` for backwards compatibility with existing settings
 // consumers; the value is populated from `projectId` by normalizeProjectForSettings.
@@ -1703,103 +1672,6 @@ export type ProviderSkillCreateEntryPayload = {
   }>;
 };
 
-// ---------------------------
-
-//----------------- TASK MASTER ------------
-
-/** Identifier of a TaskMaster task or subtask, which TaskMaster may emit as either a number or a string. */
-export type TaskId = string | number;
-
-/** One task as returned by TaskMaster, including its status, priority, dependencies, implementation details and nested subtasks. */
-export type TaskMasterTask = {
-  id: TaskId;
-  title: string;
-  description?: string;
-  status?: TaskStatus;
-  priority?: TaskPriority;
-  details?: string;
-  testStrategy?: string;
-  parentId?: TaskId;
-  dependencies?: TaskId[];
-  subtasks?: TaskMasterTask[];
-  createdAt?: string;
-  updatedAt?: string;
-  [key: string]: unknown;
-};
-
-/** A minimal pointer to a task, used by callbacks that only need its id and title rather than the full task record. */
-export type TaskReference = {
-  id: TaskId;
-  title?: string;
-  [key: string]: unknown;
-};
-
-/** A task handed to a click handler, which may be either a complete TaskMasterTask or a lightweight TaskReference. */
-export type TaskSelection = TaskMasterTask | TaskReference;
-
-/** A product-requirements document in a project's TaskMaster directory, used both for listing PRDs and for editing their content. */
-export type PrdFile = {
-  name: string;
-  content?: string;
-  isExisting?: boolean;
-  modified?: string;
-  created?: string;
-  path?: string;
-  size?: number;
-  [key: string]: unknown;
-};
-
-/** The TaskMaster section of a project record, describing whether the project has been initialised and the status metadata TaskMaster reports for it. */
-export type TaskMasterProjectInfo = {
-  hasTaskmaster?: boolean;
-  status?: string;
-  metadata?: Record<string, unknown>;
-  [key: string]: unknown;
-};
-
-/** A Project augmented with the flattened TaskMaster fields (configured flag, status and task counts) that the task board and its callers read directly. */
-export type TaskMasterProject = Project & {
-  taskMasterConfigured?: boolean;
-  taskMasterStatus?: string;
-  taskCount?: number;
-  completedCount?: number;
-  taskmaster?: TaskMasterProjectInfo;
-};
-
-
-
-
-/** The layout the task board is currently rendering: kanban columns, a flat list, or a grid. */
-export type TaskBoardView = 'kanban' | 'list' | 'grid';
-
-/** The task field the board is currently sorted by. */
-export type TaskBoardSortField = 'id' | 'title' | 'status' | 'priority' | 'updated';
-
-/** The direction of the task board's current sort, ascending or descending. */
-export type TaskBoardSortOrder = 'asc' | 'desc';
-
-/** One column of the kanban board, pairing its status and display colours with the tasks that belong to it. */
-export type TaskKanbanColumn = {
-  id: string;
-  title: string;
-  status: string;
-  color: string;
-  headerColor: string;
-  tasks: TaskMasterTask[];
-};
-
-/** A TaskMaster task's lifecycle state; the known values are enumerated and the string fallback tolerates statuses added by newer TaskMaster releases. */
-type TaskStatus =
-  | 'pending'
-  | 'in-progress'
-  | 'done'
-  | 'review'
-  | 'blocked'
-  | 'deferred'
-  | 'cancelled'
-  | string;
-
-type TaskPriority = 'high' | 'medium' | 'low' | string;
 
 // ─── Fork additions consolidated from src/types/app, chat/types, settings/types ───
 /** The four permission modes every plan-and-edit engine accepts: prompt for everything (default), auto-approve edits, read-only plan agent, or skip every check. Each provider alias below names the engine whose setting stores it. */
@@ -1837,8 +1709,6 @@ export type ChatInterfaceProps = {
   sendByCtrlEnter?: boolean;
   externalMessageUpdate?: number;
   newSessionTrigger?: number;
-  onTaskClick?: (...args: unknown[]) => void;
-  onShowAllTasks?: (() => void) | null;
   /** Whether the scheduled-tasks feature is on; gates the composer's repeat entry. */
   scheduledJobsEnabled?: boolean;
 }
@@ -1965,4 +1835,23 @@ export type RunOutcomeRecord = {
   durationMs: number;
   eventCount: number;
   lastSeq: number;
+};
+
+//----------------- SIGNED IMAGE MEDIA ------------
+/** 前后端共用的持久图片引用与临时签名响应。 */
+export type { ImageMediaSource, ImageMediaRequest, ImageMediaResult } from '@shared/protocol/imageMedia';
+/** 签名图片加载失败原因，驱动图片占位与重试 UI；useSignedImage 对外暴露。 */
+export type ImageFailure = 'unauthorized' | 'forbidden' | 'notFound' | 'failed' | 'decode';
+
+//----------------- PATH EXISTENCE PROBE ------------
+/** 前后端共用的本地路径可读性探测契约。 */
+export type { PathExistenceRequest, PathExistenceResult } from '@shared/protocol/pathExistence';
+
+//----------------- MARKDOWN AST NODE ------------
+/** remark 引用转换插件（聊天模块）读写的最小 Markdown 节点形状，只声明插件用到的字段。 */
+export type MarkdownNode = {
+  type: string;
+  value?: string;
+  url?: string;
+  children?: MarkdownNode[];
 };

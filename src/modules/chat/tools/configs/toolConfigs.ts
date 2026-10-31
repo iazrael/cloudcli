@@ -3,6 +3,20 @@
  * Defines display behavior for all tool types 
  */
 
+import {
+  canonicalToolName,
+  pickCommandField,
+  pickEditSides,
+  pickFilePath,
+  pickWriteContent,
+} from '@/modules/chat/tools/toolTaxonomy';
+
+/** A file card's title: the touched file's basename. */
+const fileNameTitle = (input: unknown): string => {
+  const rawPath = pickFilePath(input) || 'file';
+  return rawPath.split('/').pop() || rawPath;
+};
+
 export type ToolDisplayConfig = {
   input: {
     type: 'one-line' | 'collapsible' | 'plan' | 'hidden';
@@ -95,9 +109,15 @@ const UNIFIED_TOOL_LABELS: Record<string, string> = {
 };
 
 export function formatToolDisplayName(toolName: string): string {
-  const unifiedLabel = UNIFIED_TOOL_LABELS[toolName];
+  // An engine alias (agy `write_file`, opencode `edit`) renders through its
+  // canonical config, so its header names that card too.
+  const canonical = canonicalToolName(toolName);
+  const unifiedLabel = UNIFIED_TOOL_LABELS[canonical];
   if (unifiedLabel) {
     return unifiedLabel;
+  }
+  if (canonical !== toolName) {
+    return canonical;
   }
 
   const mcpMatch = /^mcp__([^_]+(?:_[^_]+)*)__(.+)$/.exec(toolName);
@@ -179,32 +199,8 @@ export const TOOL_CONFIGS: Record<string, ToolDisplayConfig> = {
     input: {
       type: 'one-line',
       icon: 'terminal',
-      getValue: (input) => input.command || input.CommandLine,
+      getValue: (input) => pickCommandField(input),
       getSecondary: (input) => input.description || input.toolAction || input.toolSummary,
-      action: 'copy',
-      style: 'terminal',
-      wrapText: true,
-      colorScheme: {
-        primary: 'text-green-400 font-mono',
-        secondary: 'text-gray-400',
-        background: '',
-        border: 'border-green-500 dark:border-green-400',
-        icon: 'text-green-500 dark:text-green-400'
-      }
-    },
-    result: {
-      hideOnSuccess: true,
-      type: 'special'
-    }
-  },
-
-  run_command: {
-    input: {
-      type: 'one-line',
-      icon: 'terminal',
-      label: 'Bash',
-      getValue: (input) => input.CommandLine || input.command,
-      getSecondary: (input) => input.toolAction || input.toolSummary || input.description,
       action: 'copy',
       style: 'terminal',
       wrapText: true,
@@ -302,25 +298,7 @@ export const TOOL_CONFIGS: Record<string, ToolDisplayConfig> = {
     input: {
       type: 'one-line',
       label: 'Read',
-      getValue: (input) => input.file_path || input.AbsolutePath || '',
-      action: 'open-file',
-      colorScheme: {
-        primary: 'text-gray-700 dark:text-gray-300',
-        background: '',
-        border: 'border-gray-300 dark:border-gray-600',
-        icon: 'text-gray-500 dark:text-gray-400'
-      }
-    },
-    result: {
-      hidden: true
-    }
-  },
-
-  view_file: {
-    input: {
-      type: 'one-line',
-      label: 'Read',
-      getValue: (input) => input.AbsolutePath || input.file_path || '',
+      getValue: (input) => pickFilePath(input),
       action: 'open-file',
       colorScheme: {
         primary: 'text-gray-700 dark:text-gray-300',
@@ -338,43 +316,13 @@ export const TOOL_CONFIGS: Record<string, ToolDisplayConfig> = {
     input: {
       type: 'collapsible',
       label: 'Edit',
-      title: (input) => {
-        const rawPath = input.file_path || input.TargetFile || 'file';
-        const filename = rawPath.split('/').pop() || rawPath;
-        return `${filename}`;
-      },
+      title: (input) => fileNameTitle(input),
       defaultOpen: false,
       contentType: 'diff',
       actionButton: 'none',
       getContentProps: (input) => ({
-        oldContent: input.old_string ?? input.TargetContent ?? '',
-        newContent: input.new_string ?? input.ReplacementContent ?? '',
-        filePath: input.file_path || input.TargetFile,
-        badge: 'Edit',
-        badgeColor: 'gray'
-      })
-    },
-    result: {
-      hideOnSuccess: true
-    }
-  },
-
-  replace_file_content: {
-    input: {
-      type: 'collapsible',
-      label: 'Edit',
-      title: (input) => {
-        const rawPath = input.TargetFile || input.file_path || 'file';
-        const filename = rawPath.split('/').pop() || rawPath;
-        return `${filename}`;
-      },
-      defaultOpen: false,
-      contentType: 'diff',
-      actionButton: 'none',
-      getContentProps: (input) => ({
-        oldContent: input.TargetContent ?? input.old_string ?? '',
-        newContent: input.ReplacementContent ?? input.new_string ?? '',
-        filePath: input.TargetFile || input.file_path,
+        ...pickEditSides(input),
+        filePath: pickFilePath(input) || undefined,
         badge: 'Edit',
         badgeColor: 'gray'
       })
@@ -388,45 +336,14 @@ export const TOOL_CONFIGS: Record<string, ToolDisplayConfig> = {
     input: {
       type: 'collapsible',
       label: 'Write',
-      title: (input) => {
-        const rawPath = input.file_path || input.TargetFile || 'file';
-        const filename = rawPath.split('/').pop() || rawPath;
-        return `${filename}`;
-      },
+      title: (input) => fileNameTitle(input),
       defaultOpen: false,
       contentType: 'diff',
       actionButton: 'none',
       getContentProps: (input) => ({
         oldContent: '',
-        // Codex normalizes file writes to old_string/new_string (no `content`),
-        // so read it last or the title-click diff snapshot opens the editor empty.
-        newContent: input.content ?? input.CodeContent ?? input.new_string ?? '',
-        filePath: input.file_path || input.TargetFile,
-        badge: 'New',
-        badgeColor: 'green'
-      })
-    },
-    result: {
-      hideOnSuccess: true
-    }
-  },
-
-  write_to_file: {
-    input: {
-      type: 'collapsible',
-      label: 'Write',
-      title: (input) => {
-        const rawPath = input.TargetFile || input.file_path || 'file';
-        const filename = rawPath.split('/').pop() || rawPath;
-        return `${filename}`;
-      },
-      defaultOpen: false,
-      contentType: 'diff',
-      actionButton: 'none',
-      getContentProps: (input) => ({
-        oldContent: '',
-        newContent: input.CodeContent ?? input.content ?? input.new_string ?? '',
-        filePath: input.TargetFile || input.file_path,
+        newContent: pickWriteContent(input),
+        filePath: pickFilePath(input) || undefined,
         badge: 'New',
         badgeColor: 'green'
       })
@@ -502,6 +419,29 @@ export const TOOL_CONFIGS: Record<string, ToolDisplayConfig> = {
       label: 'Glob',
       getValue: (input) => input.pattern || input.Pattern || '',
       getSecondary: (input) => input.path ? `in ${input.path}` : input.SearchDirectory ? `in ${input.SearchDirectory}` : undefined,
+      action: 'jump-to-results',
+      colorScheme: {
+        primary: 'text-gray-700 dark:text-gray-300',
+        secondary: 'text-gray-500 dark:text-gray-400',
+        background: '',
+        border: 'border-gray-400 dark:border-gray-500',
+        icon: 'text-gray-500 dark:text-gray-400'
+      }
+    },
+    result: {
+      hideOnSuccess: true
+    }
+  },
+
+  // opencode's grep shares Grep's row, but its output is plain text rather than
+  // Claude's `toolUseResult` file list, which the Grep result card would read
+  // as "Found 0 files".
+  grep: {
+    input: {
+      type: 'one-line',
+      label: 'Grep',
+      getValue: (input) => input.pattern || '',
+      getSecondary: (input) => input.path ? `in ${input.path}` : undefined,
       action: 'jump-to-results',
       colorScheme: {
         primary: 'text-gray-700 dark:text-gray-300',
@@ -1076,10 +1016,12 @@ export const TOOL_CONFIGS: Record<string, ToolDisplayConfig> = {
 };
 
 /**
- * Get configuration for a tool, with fallback to default
+ * Configuration for a tool: its own entry when its input shape needs one,
+ * else its canonical name's (so an engine alias such as agy `edit_file`
+ * renders as the shared Edit card), else the generic default.
  */
 export function getToolConfig(toolName: string): ToolDisplayConfig {
-  return TOOL_CONFIGS[toolName] || TOOL_CONFIGS.Default;
+  return TOOL_CONFIGS[toolName] || TOOL_CONFIGS[canonicalToolName(toolName)] || TOOL_CONFIGS.Default;
 }
 
 /**

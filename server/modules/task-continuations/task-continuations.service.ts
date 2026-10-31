@@ -7,6 +7,7 @@ import {
   hashToken,
   verifyTaskCallbackToken,
 } from '@/modules/task-continuations/services/task-token.service.js';
+import { notifyTaskActivity } from '@/modules/task-continuations/services/task-host-cards.service.js';
 import { normalizeTaskResult } from '@/modules/task-continuations/services/task-result.service.js';
 import type { AsyncTaskRecord, TaskAccessScope } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
@@ -189,6 +190,8 @@ export async function handleTaskFinishRequest(input: TaskFinishInput): Promise<T
     resultSummary: normalizedResult.resultSummary,
     resultJson: normalizedResult.resultJson,
   });
+  // The task is over, so its card goes.
+  notifyTaskActivity(task.session_id);
 
   return {
     success: true,

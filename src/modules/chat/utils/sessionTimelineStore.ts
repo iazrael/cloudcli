@@ -800,6 +800,8 @@ const SERVER_EVENT_ROUTES: Record<string, { flushesStream: boolean; action: Serv
   // Owned by useScheduledJobs; a job-list signal, never a timeline row.
   scheduled_jobs_changed: { flushesStream: false, action: 'none' },
   loading_progress: { flushesStream: false, action: 'none' },
+  // Owned by useQueuedMessageSync.
+  queued_message_dispatched: { flushesStream: false, action: 'none' },
 };
 
 /**

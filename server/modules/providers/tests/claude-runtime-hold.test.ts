@@ -160,6 +160,7 @@ async function withRun(
     nextTurn: NextTurn;
     /** One scripted CLI process per `createQuery` call, the first being `script`. */
     processes: Scripted[];
+    queryOptions: Array<Parameters<NonNullable<ProviderRuntimeContext['createQuery']>>[0]['options']>;
     cwd: string;
     /** The session's transcript, as the runtime resolves it. */
     transcriptPath: string;
@@ -172,7 +173,9 @@ async function withRun(
   const first = createScriptedQuery();
   const script = first.script;
   const processes: Scripted[] = [];
+  const queryOptions: Array<Parameters<NonNullable<ProviderRuntimeContext['createQuery']>>[0]['options']> = [];
   const createQuery: NonNullable<ProviderRuntimeContext['createQuery']> = (args) => {
+    queryOptions.push(args.options);
     const scripted = processes.length === 0 ? first : createScriptedQuery();
     processes.push(scripted.script);
     return scripted.createQuery(args);
@@ -194,14 +197,16 @@ async function withRun(
     const turnSent: NormalizedMessage[] = [];
     const turnWriter = { send: (message: NormalizedMessage) => { turnSent.push(message); }, userId: null };
     const turnDone = queryClaudeSDK(command, { sessionId: SESSION_ID, cwd, ...baseOptions, ...options }, turnWriter as never, context);
-    turns.push(turnDone);
+    turns.push(turnDone.catch((error: unknown) => {
+      if ((error as { code?: string }).code !== 'PROVIDER_INPUT_DEFERRED') throw error;
+    }));
     return { sent: turnSent, done: turnDone };
   };
 
   try {
     const done = queryClaudeSDK('hello', { sessionId: SESSION_ID, cwd, ...baseOptions }, writer as never, context);
     try {
-      await runTest({ script, sent, done, nextTurn, processes, cwd, transcriptPath });
+      await runTest({ script, sent, done, nextTurn, processes, queryOptions, cwd, transcriptPath });
     } finally {
       for (const scripted of processes.length ? processes : [script]) scripted.end();
       await done;
@@ -211,6 +216,28 @@ async function withRun(
     await rm(cwd, { recursive: true, force: true });
   }
 }
+
+test('SDK environment enables Artifact by default and respects an explicit host setting', { concurrency: false }, async () => {
+  const previous = process.env.CLAUDE_CODE_ARTIFACT;
+  const previousOther = process.env.CLOUDCLI_TEST_ENV;
+  process.env.CLOUDCLI_TEST_ENV = 'forwarded';
+  try {
+    for (const configured of [undefined, '0']) {
+      if (configured === undefined) delete process.env.CLAUDE_CODE_ARTIFACT;
+      else process.env.CLAUDE_CODE_ARTIFACT = configured;
+      await withRun(async ({ script, queryOptions }) => {
+        await script.drain();
+        assert.equal(queryOptions[0]?.env?.CLAUDE_CODE_ARTIFACT, configured ?? '1');
+        assert.equal(queryOptions[0]?.env?.CLOUDCLI_TEST_ENV, 'forwarded');
+      });
+    }
+  } finally {
+    if (previous === undefined) delete process.env.CLAUDE_CODE_ARTIFACT;
+    else process.env.CLAUDE_CODE_ARTIFACT = previous;
+    if (previousOther === undefined) delete process.env.CLOUDCLI_TEST_ENV;
+    else process.env.CLOUDCLI_TEST_ENV = previousOther;
+  }
+});
 
 const settle = () => new Promise((resolve) => { setTimeout(resolve, 25); });
 
@@ -296,13 +323,14 @@ test('a completion without tool_use_id resolves the card through task_started', 
   });
 });
 
-test('a new foreground-only run actively clears the old run\'s cards', async () => {
+test('a new foreground-only run clears cards after explicit cancellation', async () => {
   await withRun(async ({ script: oldScript, done: oldDone }) => {
     oldScript.emit(init());
     oldScript.emit(toolUse('toolu_old', 'Agent', { run_in_background: true }));
     oldScript.emit(taskStarted('old', 'toolu_old', 'local_agent'));
     oldScript.emit(result());
     await oldScript.drain();
+    await abortClaudeSDKSession(SESSION_ID);
     await withRun(async ({ script, sent }) => {
       script.emit(init());
       script.emit(result());
@@ -385,6 +413,7 @@ test('superseded streams cannot clear or resurrect the new run\'s task cards', a
     oldScript.emit(taskStarted('old', 'toolu_old', 'local_agent'));
     oldScript.emit(result());
     await oldScript.drain();
+    await abortClaudeSDKSession(SESSION_ID);
     const oldCount = oldSent.length;
     await withRun(async ({ script, sent }) => {
       script.emit(init());
@@ -778,11 +807,13 @@ async function holdForBackgroundBash(script: Scripted): Promise<void> {
 test('a turn sent while the process is held goes into that process, and the background work survives it', async () => {
   await withRun(async ({ script, sent, nextTurn, processes }) => {
     await holdForBackgroundBash(script);
-    const second = nextTurn('change direction');
+    let acceptedAt = 0;
+    const second = nextTurn('change direction', { onInputAccepted: () => { acceptedAt = script.prompts.length; } });
     await until(() => script.prompts.length >= 2);
 
     assert.equal(processes.length, 1, 'no second CLI process');
     assert.match(promptText(script.prompts[1]), /change direction/);
+    assert.equal(acceptedAt, 2, 'acceptance follows SDK consumption of the input');
 
     script.emit(init());
     script.emit(assistantText('on it'));
@@ -924,9 +955,15 @@ for (const [label, options] of [
   ['another working directory', { cwd: '/tmp' }],
   ['an edited message', { resumeAnchorId: 'uuid-keep' }],
 ] as const) {
-  test(`a turn with ${label} starts a new process and ends the held one`, async () => {
+  test(`a turn with ${label} waits for background work before starting a new process`, async () => {
     await withRun(async ({ script, nextTurn, processes }) => {
       await holdForBackgroundBash(script);
+      await assert.rejects(nextTurn('again', options).done, { code: 'PROVIDER_INPUT_DEFERRED' });
+      assert.equal(script.released(), false);
+      assert.deepEqual(script.stopped, []);
+      script.emit(taskNotification('b1', 'toolu_bg', 'completed'));
+      script.emit(result());
+      await script.drain();
       const second = nextTurn('again', options);
       await until(() => processes.length >= 2);
 
@@ -998,11 +1035,11 @@ test('stopping a continued reply stops only that turn while the background work 
   });
 });
 
-test('the strip tells the page that Claude background work does not hold back the next message', async () => {
+test('the strip keeps Claude input queued until the held process accepts it', async () => {
   await withRun(async ({ script, sent }) => {
     await holdForBackgroundBash(script);
     const strip = lastStatus(sent);
-    assert.equal(strip?.backgroundWorkQueuesInput, false, 'the next turn goes into the held process');
+    assert.equal(strip?.backgroundWorkQueuesInput, true, 'the queue waits for confirmed input acceptance');
   });
 });
 
@@ -1066,20 +1103,56 @@ test('entering plan mode keeps the held process', async () => {
   });
 });
 
-test('a switch the CLI refuses moves the turn to a fresh process, which still completes it', async () => {
+test('a refused settings switch defers input without stopping background work', async () => {
   await withRun(async ({ script, nextTurn, processes }) => {
     await holdForBackgroundBash(script);
     script.rejectSwitches = true;
-    const second = nextTurn('again', { model: 'haiku' });
-    await until(() => processes.length >= 2);
-    assert.equal(processes.length, 2);
-    processes[1].emit(init());
-    processes[1].emit(result());
-    processes[1].end();
-    await second.done;
-    assert.equal(completes(second.sent).length, 1);
+    let accepted = false;
+    const second = nextTurn('again', { model: 'haiku', onInputAccepted: () => { accepted = true; } });
+    let settled = false;
+    void second.done.then(() => { settled = true; }, () => { settled = true; });
+    await until(() => processes.length > 1 || settled);
+    assert.equal(processes.length, 1, 'a failed switch must not start another process');
+    await assert.rejects(second.done, { code: 'PROVIDER_INPUT_DEFERRED' });
+    assert.equal(accepted, false);
+    assert.equal(processes.length, 1);
+    assert.equal(script.released(), false);
+    assert.deepEqual(script.stopped, []);
+    assert.equal(script.prompts.length, 1);
+
+    script.rejectSwitches = false;
+    const retry = nextTurn('again', { model: 'haiku', onInputAccepted: () => { accepted = true; } });
+    await until(() => script.prompts.length === 2);
+    assert.equal(accepted, true);
+    script.emit(init());
+    script.emit(result());
+    await retry.done;
   });
 });
+
+for (const options of [
+  { toolsSettings: { allowedTools: ['Read'] } },
+  { permissionMode: 'bypassPermissions' },
+  { skipHeldProcess: true },
+  { onBeforeInputAccepted: () => false },
+]) {
+  test(`an incompatible turn preserves background work: ${JSON.stringify(options)}`, async () => {
+    await withRun(async ({ script, nextTurn, processes }) => {
+      await holdForBackgroundBash(script);
+      let accepted = false;
+      const next = nextTurn('wait for the task', { ...options, onInputAccepted: () => { accepted = true; } });
+      let settled = false;
+      void next.done.then(() => { settled = true; }, () => { settled = true; });
+      await until(() => processes.length > 1 || settled);
+      assert.equal(processes.length, 1, 'an incompatible turn must not replace the live process');
+      await assert.rejects(next.done, { code: 'PROVIDER_INPUT_DEFERRED' });
+      assert.equal(accepted, false);
+      assert.equal(processes.length, 1);
+      assert.equal(script.released(), false);
+      assert.deepEqual(script.stopped, []);
+    });
+  });
+}
 
 test('stopping a turn that still waits for the relay withdraws only that turn', async () => {
   await withRun(async ({ script, nextTurn }) => {
@@ -1184,10 +1257,16 @@ test('stopping a message sent right after a stop withdraws it before the interru
 // Measured against claude CLI (2026-10-19): `setPermissionMode('bypassPermissions')`
 // throws "Cannot set permission mode to bypassPermissions because the session
 // was not launched with --dangerously-skip-permissions".
-test('turning on bypass permissions starts a new process, since the CLI refuses that switch', async () => {
+test('turning on bypass permissions waits for background work before starting a new process', async () => {
   await withRun(async ({ script, nextTurn, processes }) => {
     await holdForBackgroundBash(script);
-    const second = nextTurn('again', { toolsSettings: { allowedTools: [], disallowedTools: [], skipPermissions: true } });
+    const options = { toolsSettings: { allowedTools: [], disallowedTools: [], skipPermissions: true } };
+    await assert.rejects(nextTurn('again', options).done, { code: 'PROVIDER_INPUT_DEFERRED' });
+    assert.deepEqual(script.stopped, []);
+    script.emit(taskNotification('b1', 'toolu_bg', 'completed'));
+    script.emit(result());
+    await script.drain();
+    const second = nextTurn('again', options);
     await until(() => processes.length >= 2);
     assert.equal(processes.length, 2);
     assert.deepEqual(script.switches, [], 'no switch is attempted on the held process');

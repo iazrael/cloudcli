@@ -19,6 +19,7 @@ import { hashToken } from '@/modules/task-continuations/services/task-token.serv
 import { AppError, canonicalizeJson, readObjectRecord, sha256Hex } from '@/shared/utils.js';
 import type { TaskBridgeCredentialContext, TaskBridgeEngineCall } from '@/shared/types.js';
 import { resolveTaskRunCapability } from '@/modules/task-continuations/services/task-run-context.service.js';
+import { areTaskContinuationsEnabled } from '@/modules/task-continuations/task-continuations.config.js';
 
 /** How long a bridge credential stays valid. */
 const TASK_BRIDGE_CREDENTIAL_TTL_MS = 12 * 60 * 60 * 1000;
@@ -213,6 +214,15 @@ export async function authorizeTaskBridgeCall(input: {
   arguments: Record<string, unknown>;
 }) {
   const { credential, identity } = input;
+  // With the switch off no round carries a run token, so the engine's calls
+  // are never recorded: waiting for one would only end in a refusal that
+  // hides the real reason.
+  if (!areTaskContinuationsEnabled()) {
+    throw new AppError('Asynchronous task tools are disabled by the CloudCLI continuation setting.', {
+      code: 'TASK_CONTINUATIONS_DISABLED',
+      statusCode: 409,
+    });
+  }
   const observed = await waitForTaskBridgeCall(credential.appSessionId, identity.callId, credential.generation);
   if (!observed) throw new AppError('The engine did not announce this call.', { code: 'TASK_BRIDGE_CALL_UNKNOWN', statusCode: 403 });
   if (observed.generation !== credential.generation || observed.threadId !== identity.threadId

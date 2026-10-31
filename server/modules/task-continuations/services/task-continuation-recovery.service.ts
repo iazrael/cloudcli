@@ -2,6 +2,7 @@ import { readdir, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 import { getConnection, taskContinuationDb } from '@/modules/database/index.js';
+import { notifyTaskActivity, suppressReportOfStoppedTask } from '@/modules/task-continuations/services/task-host-cards.service.js';
 import { readAndNormalizeTaskResultFromDisk } from '@/modules/task-continuations/services/task-result.service.js';
 import { getTaskContinuationTasksRoot } from '@/modules/task-continuations/services/task-storage.service.js';
 import type { TaskHistoryChecker } from '@/shared/types.js';
@@ -50,6 +51,7 @@ export async function scanAndRecoverTaskResultsFromDisk(tasksRootDir?: string): 
         resultFilePath: resultFilePath,
       });
 
+      suppressReportOfStoppedTask(taskId, result.status);
       taskContinuationDb.recordTaskCompletionAndCreateContinuationEvent({
         taskId,
         status: result.status,
@@ -59,6 +61,7 @@ export async function scanAndRecoverTaskResultsFromDisk(tasksRootDir?: string): 
         resultSummary: result.resultSummary,
         resultJson: result.resultJson,
       });
+      notifyTaskActivity(task.session_id);
 
       recoveredCount++;
     } catch (error) {

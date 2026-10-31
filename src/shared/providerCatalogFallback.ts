@@ -41,7 +41,7 @@ export const PROVIDER_FALLBACK_CATALOG = {
     permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
   },
   antigravity: {
-    defaultModel: 'gemini-3.7-flash',
+    defaultModel: 'gemini-4-argon',
     permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
   },
 };

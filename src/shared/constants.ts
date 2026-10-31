@@ -4,7 +4,6 @@ import {
   GitBranch,
   Info,
   KeyRound,
-  ListChecks,
   MonitorPlay,
   Palette,
   Plug,
@@ -85,7 +84,6 @@ export const SETTINGS_MAIN_TABS: SettingsMainTabMeta[] = [
   { id: 'appearance', label: 'Appearance', keywords: 'appearance theme dark light language', icon: Palette },
   { id: 'git', label: 'Git', keywords: 'git github commits', icon: GitBranch },
   { id: 'api', label: 'API Tokens', keywords: 'api tokens auth keys', icon: KeyRound },
-  { id: 'tasks', label: 'Tasks', keywords: 'tasks taskmaster', icon: ListChecks },
   { id: 'browser', label: 'Browser', keywords: 'browser playwright chromium automation', icon: MonitorPlay },
   { id: 'notifications', label: 'Notifications', keywords: 'notifications alerts push', icon: Bell },
   { id: 'plugins', label: 'Plugins', keywords: 'plugins extensions integrations', icon: Plug },
@@ -224,6 +222,14 @@ export const PROVIDER_PERMISSION_PREFERENCE_KEYS: Record<LLMProvider, UserPrefer
   zcode: 'zcodePermissions',
   antigravity: 'antigravityPermissions',
 };
+
+//----------------- ACCOUNT LIFECYCLE ------------
+/** 退出登录或切换账号时清除临时图片票据，平台模式也适用。 */
+export const AUTH_ACCOUNT_CHANGED_EVENT = 'auth-account-changed';
+
+//----------------- MARKDOWN REFERENCE PLUGINS ------------
+/** remark 引用插件（remarkFileReferences / remarkImageReferences）遇到这些节点类型时跳过整棵子树：链接、代码块、公式和 HTML 内部不做转换。 */
+export const REMARK_SKIP_CONTAINER_RE = /^(?:link|linkReference|image|imageReference|code|math|inlineMath|html)$/;
 
 // ---------------------------
 

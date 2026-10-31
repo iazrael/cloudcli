@@ -97,6 +97,52 @@ test('a resident process calls the bridge with the engine own call identity', as
   }
 });
 
+test('a refused bridge call reports the host error code and message', async () => {
+  const server = http.createServer((request, response) => {
+    request.resume();
+    request.on('end', () => {
+      response.writeHead(409, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({
+        success: false,
+        error: { code: 'TASK_CONTINUATIONS_DISABLED', message: 'Asynchronous task registration is disabled.' },
+      }));
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as AddressInfo).port;
+
+  try {
+    const responses = await runProtocol([
+      {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: {
+          name: 'cloudcli_task_status',
+          arguments: { taskId: 'task_1' },
+          _meta: {
+            callId: 'call-8',
+            threadId: 'native-thread-1',
+            'x-codex-turn-metadata': { turn_id: 'native-turn-1' },
+          },
+        },
+      },
+    ], {
+      CLOUDCLI_TASK_API_URL: `http://127.0.0.1:${port}`,
+      CLOUDCLI_TASK_BRIDGE: 'tbc_bridge-token',
+    });
+
+    assert.equal((responses[0] as any).result.isError, true);
+    assert.equal(
+      (responses[0] as any).result.content[0].text,
+      'Task host rejected the request with HTTP 409 (TASK_CONTINUATIONS_DISABLED): Asynchronous task registration is disabled.',
+    );
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
 test('tool calls fail closed when the host capability environment is absent', async () => {
   const responses = await runProtocol([
     { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'cloudcli_task_status', arguments: { taskId: 'task_1' } } },

@@ -1,5 +1,5 @@
 <div align="center">
- <img src="../public/logo.svg" alt="CloudCLI UI" width="64" height="64">
+ <img src="../public/logo.svg" alt="CloudCLI" width="64" height="64">
  <h1>Cloud CLI (Claude Code UI olarak da bilinir)</h1>
  <p><a href="https://docs.anthropic.com/en/docs/claude-code">Claude Code</a>, <a href="https://docs.cursor.com/en/cli/overview">Cursor CLI</a>, <a href="https://developers.openai.com/codex">Codex</a> için masaüstü ve mobil arayüz.<br>Yerel ya da uzaktan kullanarak aktif projelerine ve oturumlarına her yerden erişebilirsin.</p>
 </div>
@@ -78,7 +78,7 @@ Başlamanın en hızlı yolu — yerel kurulum yok. Web, mobil uygulama, API vey
 
 #### npm
 
-CloudCLI UI'yi **npx** ile anında dene (**Node.js** v22+ gerekir):
+CloudCLI'yi **npx** ile anında dene (**Node.js** v22+ gerekir):
 
 ```
 npx @cloudcli-ai/cloudcli
@@ -110,7 +110,7 @@ Claude Code ve Codex'i destekler. Kurulum ve gelişmiş seçenekler için [sandb
 
 ## Hangi seçenek sana uygun?
 
-CloudCLI UI, CloudCLI Cloud'u güçlendiren açık kaynak arayüz katmanıdır. Kendi makinende barındırabilir, izolasyon için Docker sandbox'ta çalıştırabilir veya tam yönetilen ortam için CloudCLI Cloud kullanabilirsin.
+CloudCLI, CloudCLI Cloud'u güçlendiren açık kaynak arayüz katmanıdır. Kendi makinende barındırabilir, izolasyon için Docker sandbox'ta çalıştırabilir veya tam yönetilen ortam için CloudCLI Cloud kullanabilirsin.
 
 | | Kendin Barındır (npm) | Kendin Barındır (Docker Sandbox) *(Deneysel)* | CloudCLI Cloud |
 |---|---|---|---|
@@ -185,11 +185,11 @@ CloudCLI, kendi frontend UI'sı ve isteğe bağlı Node.js arka ucu olan özel s
 
 Claude Code Remote Control, yerel terminalinde zaten çalışan bir oturuma mesaj göndermeni sağlar. Makinen açık kalmak zorunda, terminalin açık kalmak zorunda ve ağ bağlantısı olmadan yaklaşık 10 dakika sonra oturumlar zaman aşımına uğrar.
 
-CloudCLI UI ve CloudCLI Cloud, Claude Code'un yanında değil içinde çalışır — MCP sunucuların, izinlerin, ayarların ve oturumların, Claude Code'un yerel olarak kullandığının birebir aynısıdır. Hiçbir şey çoğaltılmaz veya ayrı yönetilmez.
+CloudCLI ve CloudCLI Cloud, Claude Code'un yanında değil içinde çalışır — MCP sunucuların, izinlerin, ayarların ve oturumların, Claude Code'un yerel olarak kullandığının birebir aynısıdır. Hiçbir şey çoğaltılmaz veya ayrı yönetilmez.
 
 Pratikte bu ne demek:
 
-- **Tek oturum değil, tüm oturumların** — CloudCLI UI, `~/.claude` klasöründeki her oturumu otomatik keşfeder. Remote Control yalnızca tek aktif oturumu Claude mobil uygulamasına açar.
+- **Tek oturum değil, tüm oturumların** — CloudCLI, `~/.claude` klasöründeki her oturumu otomatik keşfeder. Remote Control yalnızca tek aktif oturumu Claude mobil uygulamasına açar.
 - **Ayarların sana ait** — UI'da değiştirdiğin MCP sunucuları, araç izinleri ve proje yapılandırması doğrudan Claude Code yapılandırmana yazılır ve anında etkili olur; tersi de geçerli.
 - **Daha fazla ajanla çalışır** — Sadece Claude Code değil; Cursor CLI ve Codex de.
 - **Sadece sohbet penceresi değil, tam UI** — dosya gezgini, Git entegrasyonu, MCP yönetimi ve shell terminali hepsi yerleşik.
@@ -205,7 +205,7 @@ Evet. CloudCLI AI'yi değil, ortamı sağlar. Kendi Claude, Cursor veya Codex ab
 </details>
 
 <details>
-<summary>CloudCLI UI'yi telefonumda kullanabilir miyim?</summary>
+<summary>CloudCLI'yi telefonumda kullanabilir miyim?</summary>
 
 Evet. Kendin barındırdığında, sunucuyu makinende çalıştır ve ağındaki herhangi bir tarayıcıda `[yourip]:port` adresini aç. CloudCLI Cloud için, herhangi bir cihazdan aç — VPN yok, port yönlendirme yok, kurulum yok. Native bir uygulama da hazırlanıyor.
 
@@ -214,7 +214,7 @@ Evet. Kendin barındırdığında, sunucuyu makinende çalıştır ve ağındaki
 <details>
 <summary>UI'da yaptığım değişiklikler yerel Claude Code kurulumumu etkiler mi?</summary>
 
-Evet, kendin barındırdığında. CloudCLI UI, Claude Code'un yerel olarak kullandığı aynı `~/.claude` yapılandırmasından okur ve ona yazar. UI üzerinden eklediğin MCP sunucuları Claude Code'da anında görünür; tersi de geçerli.
+Evet, kendin barındırdığında. CloudCLI, Claude Code'un yerel olarak kullandığı aynı `~/.claude` yapılandırmasından okur ve ona yazar. UI üzerinden eklediğin MCP sunucuları Claude Code'da anında görünür; tersi de geçerli.
 
 </details>
 
@@ -233,7 +233,7 @@ GNU Affero General Public License v3.0 veya sonrası (AGPL-3.0-or-later) — tam
 
 Bu proje açık kaynaklıdır ve AGPL-3.0-or-later lisansı altında özgürce kullanılabilir, değiştirilebilir ve dağıtılabilir. Bu yazılımı değiştirir ve bir ağ servisi olarak çalıştırırsan, değiştirilmiş kaynak kodunu o servisin kullanıcılarına sunmak zorundasın.
 
-CloudCLI UI — (https://cloudcli.ai).
+CloudCLI — (https://cloudcli.ai).
 
 ## Teşekkürler
 

@@ -1,4 +1,14 @@
 {
+  "imageLoad": {
+    "unauthorized": "请重新登录后加载图片。",
+    "forbidden": "图片不在可读目录内，或没有读取权限。",
+    "notFound": "找不到图片文件，可能已被移动或删除。",
+    "failed": "图片加载失败，请检查地址或连接后重试。",
+    "decode": "图片无法显示，文件可能已损坏或格式不受支持。",
+    "unresolved": "无法解析图片引用，相对路径需要关联项目。",
+    "copied": "路径已复制。",
+    "copyFailed": "复制失败，请选中上方路径手动复制。"
+  },
   "replay": {
     "recoveryFailed": "聊天同步失败，正在自动重试，已有内容已保留。也可以刷新页面重试。"
   },
@@ -127,7 +137,7 @@
     },
     "descriptions": {
       "default": "按各家引擎自身的权限规则，需要批准的操作会先征求你的同意。",
-      "auto": "由模型分类器逐个判断放行或拒绝工具调用。省心，但比跳过权限安全——不安全的调用仍会被拒绝。",
+      "auto": "由模型分类器针对每次工具调用决定批准或拒绝。无需手动操作，但比无限制模式更安全——仍可能被拒绝。",
       "acceptEdits": "文件编辑自动应用、不再逐次询问；其他操作仍按引擎自身的权限规则处理。",
       "bypassPermissions": "完全的系统访问，无限制。所有命令自动运行，具有完整的磁盘和网络访问权限。请谨慎使用。",
       "plan": "计划模式 - 不执行任何命令"
@@ -155,7 +165,8 @@
       "ctrlEnter": "Ctrl+Enter 发送 • Shift+Enter 换行 • Tab 切换模式 • / 斜杠命令",
       "enter": "Enter 发送 • Shift+Enter 换行 • Tab 切换模式 • / 斜杠命令",
       "queue": "Enter 排队发送下一条消息",
-      "updateQueued": "Enter 更新排队消息"
+      "updateQueued": "Enter 更新排队消息",
+      "appendQueued": "Enter 添加到排队消息"
     },
     "clickToChangeMode": "点击更改权限模式（或在输入框中按 Tab）",
     "showAllCommands": "显示所有命令",
@@ -170,7 +181,13 @@
       "delete": "删除排队消息",
       "willSendAfterBackground": "后台任务完成后将自动发送",
       "forceSend": "立即发送，后台任务继续运行",
-      "forceSendButton": "立即发送"
+      "forceSendButton": "立即发送",
+      "append": "添加到排队消息",
+      "notCombinable": "斜杠命令必须单独发送，不能追加到当前排队消息。",
+      "failed": "排队失败：{{message}}",
+      "clearFailed": "无法取消排队消息，请稍后重试。",
+      "confirmDelivery": "未收到服务器确认，请刷新后同时检查排队卡片和对话记录，确认投递状态后再重试。",
+      "permission": "整条排队消息使用：{{mode}}。追加消息时应用最新设置。"
     },
     "compactQueued": {
       "label": "压缩已排队",
@@ -309,7 +326,10 @@
       "abortButton": "中止",
       "hintContinue": "可直接发送，后台任务继续运行",
       "hintContinueShort": "可继续发送"
-    }
+    },
+    "permissionHeading": "如何批准 {{provider}} 的操作？",
+    "permissionCycleHint": "在输入框中按 Tab 切换模式",
+    "permissionTriggerLabel": "{{mode}}：{{heading}}"
   },
   "export": {
     "trigger": "导出对话",

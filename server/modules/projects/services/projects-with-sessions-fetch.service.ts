@@ -17,6 +17,8 @@ type SessionSummary = {
   worktreePath: string | null;
   /** Branch checked out in that worktree; null when detached or main-checkout. */
   worktreeBranch: string | null;
+  /** True when the user pinned the session; the page already lists pinned rows first. */
+  isPinned: boolean;
 };
 
 type SessionRepositoryRow = {
@@ -27,6 +29,7 @@ type SessionRepositoryRow = {
   created_at?: string | null;
   worktree_path?: string | null;
   worktree_branch?: string | null;
+  isPinned?: number;
 };
 
 type ProjectRepositoryRow = {
@@ -143,6 +146,7 @@ function mapSessionRowToSummary(row: SessionRepositoryRow): SessionSummary {
     lastActivity: row.updated_at ?? row.created_at ?? new Date().toISOString(),
     worktreePath: row.worktree_path ?? null,
     worktreeBranch: row.worktree_branch ?? null,
+    isPinned: Boolean(row.isPinned),
   };
 }
 

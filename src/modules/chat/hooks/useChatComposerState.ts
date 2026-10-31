@@ -12,29 +12,37 @@ import type {
 import { useDropzone } from 'react-dropzone';
 import { useTranslation } from 'react-i18next';
 
-import { authenticatedFetch } from '@/shared/api';
-import { createClientRequestId, isEnginePromptCommand } from '@/shared/utils';
+import { api, ApiRequestError, authenticatedFetch } from '@/shared/api';
+import { createClientRequestId, isEnginePromptCommand, isImageAttachment } from '@/shared/utils';
 import type { MarkSessionProcessing, SessionActivityMap } from '@/shared/types';
 import { useProviderCapabilitiesMap } from '@/shared/hooks/useProviderCapabilities';
 import { uploadAttachmentFiles } from '@/modules/chat/utils/attachmentUpload';
 import { grantClaudeToolPermission } from '@/modules/chat/utils/chatPermissions';
 import {
   clearQueuedCompact,
-  clearQueuedMessage,
   readProviderToolsSettings,
   readQueuedCompact,
-  readQueuedMessage,
   safeLocalStorage,
   writeQueuedCompact,
-  writeQueuedMessage,
-  type QueuedSendOptions,
 } from '@/modules/chat/utils/chatStorage';
+import {
+  appendQueuedMessage,
+  clearQueuedMessage,
+  getChatDraftSessionGeneration,
+  hydrateChatDrafts,
+  readDraftText,
+  readQueuedMessage,
+  subscribeToChatDrafts,
+  writeDraftText,
+  type StoredQueuedMessage,
+} from '@/shared/chatDrafts';
 import type {
   ActiveBackgroundTask,
   ChatAttachment,
   ChatMessage,
   PendingPermissionRequest,
   PermissionMode,
+  QueuedSendOptions,
   SessionEstablishedContext,
 } from '@/shared/types';
 import type { Project, ProjectSession, LLMProvider, ProviderModelOption, ProviderQuotaData } from '@/shared/types';
@@ -61,6 +69,8 @@ type UseChatComposerStateArgs = {
   currentProviderModel: string;
   currentProviderEffort: string;
   isLoading: boolean;
+  /** Live websocket connectivity; unknown counts as connected. */
+  isConnected?: boolean;
   backgroundTasks?: ActiveBackgroundTask[];
   hasActiveBackgroundTasks?: boolean;
   processingSessions?: SessionActivityMap;
@@ -219,11 +229,6 @@ const createFakeSubmitEvent = () => {
 const MAX_ATTACHMENT_COUNT = 10;
 const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024;
 
-const isImageAttachment = (attachment: ChatAttachment) => {
-  if (attachment.mimeType?.startsWith('image/')) return true;
-  return /\.(gif|jpe?g|png|svg|webp)$/i.test(attachment.path || attachment.name || '');
-};
-
 export type QueuedDraft = {
   content: string;
   /** Browser files retained while this composer stays mounted, for editing. */
@@ -231,12 +236,25 @@ export type QueuedDraft = {
   /** JSON-safe descriptors uploaded when the message is queued. */
   uploadedAttachments?: unknown[];
   /**
-   * Send options snapshotted at queue time. Persisted with the draft so the
-   * app-level auto-send can dispatch the message with the right model and
-   * permission settings while another session is being viewed.
+   * Send options snapshotted at queue time. Stored with the message so the
+   * server sends it with the model and permission settings it was queued under,
+   * whichever page (if any) is open by then.
    */
   options?: QueuedSendOptions;
 };
+
+/** The JSON-safe part of a queued draft, as the server stores and sends it. */
+const toStoredQueuedMessage = (draft: QueuedDraft): StoredQueuedMessage => ({
+  content: draft.content,
+  options: draft.options,
+  attachments: draft.uploadedAttachments,
+});
+
+const isSameQueuedMessage = (a: StoredQueuedMessage, b: StoredQueuedMessage): boolean => (
+  a.content === b.content
+  && JSON.stringify(a.options ?? null) === JSON.stringify(b.options ?? null)
+  && JSON.stringify(a.attachments ?? []) === JSON.stringify(b.attachments ?? [])
+);
 
 const restoreQueuedDraft = (sessionKey: string): QueuedDraft | null => {
   const saved = readQueuedMessage(sessionKey);
@@ -248,6 +266,21 @@ const restoreQueuedDraft = (sessionKey: string): QueuedDraft | null => {
         options: saved.options,
       }
     : null;
+};
+
+const recoverQueuedFiles = async (draft: QueuedDraft): Promise<File[]> => {
+  const uploads = draft.uploadedAttachments ?? [];
+  if (uploads.length === 0 || draft.attachments.length === uploads.length) return draft.attachments;
+  return Promise.all(uploads.map(async (entry) => {
+    const descriptor = typeof entry === 'string' ? { path: entry } : entry as ChatAttachment;
+    const storedName = descriptor?.path?.split(/[\\/]/).pop();
+    if (!storedName) throw new Error('The queued attachment has no stored filename');
+    const response = await api.assets.file(storedName);
+    if (!response.ok) throw new Error(`Cannot restore queued attachment (${response.status})`);
+    return new File([await response.arrayBuffer()], descriptor.name || storedName, {
+      type: descriptor.mimeType || response.headers.get('Content-Type') || 'application/octet-stream',
+    });
+  }));
 };
 
 const getNotificationSessionSummary = (
@@ -279,6 +312,7 @@ export function useChatComposerState({
   currentProviderModel,
   currentProviderEffort,
   isLoading,
+  isConnected,
   backgroundTasks = [],
   hasActiveBackgroundTasks = false,
   processingSessions,
@@ -296,7 +330,8 @@ export function useChatComposerState({
   addMessage,
   setPendingPermissionRequests,
 }: UseChatComposerStateArgs) {
-  const { t } = useTranslation();
+  const { t } = useTranslation('chat');
+  const draftGenerationRef = useRef(getChatDraftSessionGeneration());
   // Backend-owned capability for the active provider; while the matrix is
   // loading the `/compact` entry simply stays hidden.
   const { capabilities: providerCapabilities } = useProviderCapabilitiesMap();
@@ -310,9 +345,8 @@ export function useChatComposerState({
   const queuesInput = turnQueuesInput || backgroundWorkQueuesInput;
   const [input, setInput] = useState(() => {
     if (typeof window !== 'undefined' && selectedProject) {
-      // Draft inputs are keyed by the DB projectId so per-project drafts
-      // survive display-name changes.
-      return safeLocalStorage.getItem(`draft_input_${selectedProject.projectId}`) || '';
+      const scope = selectedSession?.id || currentSessionId || `project:${selectedProject.projectId}`;
+      return readDraftText(scope) || safeLocalStorage.getItem(`draft_input_${selectedProject.projectId}`) || '';
     }
     return '';
   });
@@ -342,21 +376,27 @@ export function useChatComposerState({
   // handed back to the parent's `selectedSession` prop yet.
   const sessionKey = selectedSession?.id || currentSessionId || null;
   const sessionKeyRef = useRef(sessionKey);
-  const processingSessionsRef = useRef<SessionActivityMap | undefined>(processingSessions);
   sessionKeyRef.current = sessionKey;
-  processingSessionsRef.current = processingSessions;
+  const draftScope = sessionKey ?? (selectedProjectId ? `project:${selectedProjectId}` : null);
+  const draftScopeRef = useRef(draftScope);
+  draftScopeRef.current = draftScope;
+  const inputOwnerRef = useRef(draftScope);
+  const scopeFilesRef = useRef(new Map<string, File[]>());
 
   // Every programmatic input write goes through the same pair of stores a send
   // reads: the state (for the render) and inputValueRef (so an immediate Enter
   // submits the new text, not a stale value). setInput and the ref are both
   // stable, so this callback never changes identity.
-  const updateInput = useCallback((value: string) => {
-    setInput(value);
-    inputValueRef.current = value;
+  const updateInput = useCallback((value: SetStateAction<string>) => {
+    if (draftGenerationRef.current !== getChatDraftSessionGeneration()) return;
+    const next = typeof value === 'function' ? value(inputValueRef.current) : value;
+    setInput(next);
+    inputValueRef.current = next;
+    if (draftScopeRef.current) writeDraftText(draftScopeRef.current, next);
   }, []);
   // The chat scope a draft belongs to: the open session, or the project for a
   // chat that has not been sent yet and so has no session id.
-  const draftScope = sessionKey ?? (selectedProjectId ? `project:${selectedProjectId}` : null);
+  const failedSubmissionsRef = useRef(new Map<string, File[]>());
   const { recordSentMessage, handleHistoryKeyDown } = useInputHistory({
     setInput: updateInput,
     textareaRef,
@@ -675,7 +715,7 @@ export function useChatComposerState({
     selectedProject,
     provider,
     input,
-    setInput,
+    setInput: updateInput,
     textareaRef,
     onExecuteCommand: executeCommand,
     supportsCompaction,
@@ -692,7 +732,7 @@ export function useChatComposerState({
   } = useFileMentions({
     selectedProject,
     input,
-    setInput,
+    setInput: updateInput,
     textareaRef,
   });
 
@@ -815,9 +855,17 @@ export function useChatComposerState({
   }, [resetCommandMenuState, selectedProjectId, updateInput]);
 
   /** Puts a failed submit's text and attachments back so nothing is lost. */
-  const restoreComposerAfterFailedSubmit = useCallback((content: string, attachments: File[]) => {
-    updateInput(content);
-    setAttachedFiles(attachments);
+  const restoreComposerAfterFailedSubmit = useCallback((content: string, attachments: File[], ownerScope: string) => {
+    if (draftGenerationRef.current !== getChatDraftSessionGeneration()) return;
+    if (draftScopeRef.current !== ownerScope) {
+      const previous = failedSubmissionsRef.current.get(ownerScope);
+      const restored = [content, readDraftText(ownerScope)].filter((part) => part.trim()).join('\n\n');
+      failedSubmissionsRef.current.set(ownerScope, [...attachments, ...(previous ?? scopeFilesRef.current.get(ownerScope) ?? [])]);
+      writeDraftText(ownerScope, restored);
+      return;
+    }
+    updateInput([content, inputValueRef.current].filter((part) => part.trim()).join('\n\n'));
+    setAttachedFiles((current) => [...attachments, ...current]);
   }, [updateInput]);
 
   // Snapshot of everything `chat.send` needs beyond the text itself. Built at
@@ -873,6 +921,7 @@ export function useChatComposerState({
       submitOptions?: SubmitOptions,
     ): Promise<boolean> => {
       event.preventDefault();
+      if (draftGenerationRef.current !== getChatDraftSessionGeneration()) return false;
       const currentInput = queuedSubmission?.content ?? inputValueRef.current;
       const currentAttachments = queuedSubmission?.attachments ?? attachedFiles;
       const previouslyUploadedAttachments = queuedSubmission?.uploadedAttachments ?? [];
@@ -906,6 +955,8 @@ export function useChatComposerState({
       // The one send identity the backend dedupes on. It covers what the latch
       // cannot: a retried fetch, or a second tab replaying the same submit.
       const clientRequestId = createClientRequestId();
+      // False only when the submit failed and its message went back where it came from.
+      let accepted = true;
       // Emptied up front rather than after the awaits, so the send is visible
       // immediately and the button stops looking dead. A queued flush carries
       // its own copy of the message and must leave the composer alone — the
@@ -970,33 +1021,21 @@ export function useChatComposerState({
             throw new ComposerSubmitError(`Failed to upload files: ${message}`);
           }
 
-          // If there is already a queued draft, append new content rather than silently overwriting it
-          const existingDraft = queuedDraft;
-          const mergedContent = existingDraft?.content
-            ? `${existingDraft.content}\n\n${currentInput}`
-            : currentInput;
-          const mergedAttachments = existingDraft?.attachments
-            ? [...existingDraft.attachments, ...currentAttachments]
-            : currentAttachments;
-          const mergedUploadedAttachments = existingDraft?.uploadedAttachments
-            ? [...existingDraft.uploadedAttachments, ...uploadedAttachments]
-            : uploadedAttachments;
-
-          const durableDraft: QueuedDraft = {
-            content: mergedContent,
-            attachments: mergedAttachments,
-            uploadedAttachments: mergedUploadedAttachments,
-            options: queuedOptions,
-          };
-          if (queuedSessionKey) {
-            // Write the claim ticket synchronously after upload; this closes the
-            // gap before React's persistence effect runs.
-            writeQueuedMessage(queuedSessionKey, {
-              content: durableDraft.content,
-              options: durableDraft.options,
-              attachments: durableDraft.uploadedAttachments,
-            });
+          if (draftGenerationRef.current !== getChatDraftSessionGeneration()) return false;
+          if (!queuedSessionKey) {
+            throw new ComposerSubmitError('No session is available to queue this message.');
           }
+          const response = await appendQueuedMessage(queuedSessionKey, {
+            content: currentInput,
+            options: queuedOptions,
+            attachments: uploadedAttachments,
+          });
+          const durableDraft: QueuedDraft = {
+            content: response.queuedMessage.content,
+            options: response.queuedMessage.options,
+            uploadedAttachments: response.queuedMessage.attachments,
+            attachments: currentAttachments,
+          };
 
           // Recorded under the session the message was queued FOR, and before
           // the session-switch return below — the queued text must be
@@ -1004,31 +1043,28 @@ export function useChatComposerState({
           recordSentMessage(currentInput, queuedSessionKey);
 
           // The upload is asynchronous. If the user changed sessions while it
-          // was running, persist/send against the session where Queue was
-          // pressed rather than putting the draft into the newly opened chat.
+          // was running, the message is already queued on the server for the
+          // session where Queue was pressed; the newly opened chat must not
+          // take it into its own queue.
           if (queuedSessionKey && sessionKeyRef.current !== queuedSessionKey) {
-            if (
-              processingSessionsRef.current
-              && !processingSessionsRef.current.has(queuedSessionKey)
-            ) {
-              clearQueuedMessage(queuedSessionKey);
-              sendMessage({
-                type: 'chat.send',
-                sessionId: queuedSessionKey,
-                content: durableDraft.content,
-                options: {
-                  ...(durableDraft.options ?? {}),
-                  attachments: durableDraft.uploadedAttachments ?? [],
-                },
-              });
-              onSessionProcessing?.(queuedSessionKey, { statusText: null, canInterrupt: true });
-            }
             return true;
           }
 
           queuedDraftSessionRef.current = queuedSessionKey;
-          setQueuedDraft(durableDraft);
+          setQueuedDraft((previous) => ({
+            ...durableDraft,
+            attachments: response.appended && previous
+              ? [...previous.attachments, ...currentAttachments]
+              : currentAttachments,
+          }));
           return true;
+        }
+
+        // A closed socket drops the frame without a word, after the echo and
+        // the busy marker below have already told the user it went out. Refuse
+        // up front instead, before a new chat allocates a session for nothing.
+        if (isConnected === false) {
+          throw new ComposerSubmitError('Not connected to the server. Your message was kept; send it again once the connection is back.');
         }
 
         const messageContent = currentInput;
@@ -1044,6 +1080,7 @@ export function useChatComposerState({
           }
         }
 
+        if (draftGenerationRef.current !== getChatDraftSessionGeneration()) return false;
         const resolvedProjectPath = selectedProject.fullPath || selectedProject.path || '';
         const sessionSummary = getNotificationSessionSummary(selectedSession, currentInput);
 
@@ -1068,6 +1105,7 @@ export function useChatComposerState({
               throw new Error(`Failed to create session (${response.status})`);
             }
             const body = await response.json();
+            if (draftGenerationRef.current !== getChatDraftSessionGeneration()) return false;
             targetSessionId = body?.data?.sessionId || null;
             // A blank server name would leave the session unlabeled, so the local
             // summary stays the fallback unless a real name comes back.
@@ -1146,6 +1184,8 @@ export function useChatComposerState({
         // consecutive-duplicate check keeps this second call a no-op.
         recordSentMessage(currentInput, targetSessionId);
       } catch (error) {
+        accepted = false;
+        if (draftGenerationRef.current !== getChatDraftSessionGeneration()) return false;
         // One place turns a failed submit back into an editable message, and
         // exactly one error row is rendered. Nothing is dropped silently.
         if (queuedSubmission) {
@@ -1153,11 +1193,15 @@ export function useChatComposerState({
           queuedDraftSessionRef.current = sessionKey;
           setQueuedDraft(queuedSubmission);
         } else {
-          restoreComposerAfterFailedSubmit(currentInput, currentAttachments);
+          restoreComposerAfterFailedSubmit(currentInput, currentAttachments, submitScope);
         }
         addMessage({
           type: 'error',
-          content: error instanceof ComposerSubmitError
+          content: error instanceof ApiRequestError && error.code === 'QUEUE_DELIVERY_UNCONFIRMED'
+            ? t('input.queue.confirmDelivery', { defaultValue: 'No server confirmation was received. Refresh and confirm whether the message was queued before trying again.' })
+            : error instanceof ApiRequestError && error.code === 'QUEUED_MESSAGE_NOT_COMBINABLE'
+            ? t('input.queue.notCombinable', { defaultValue: 'Slash commands must be sent separately from the queued message.' })
+            : error instanceof ComposerSubmitError
             ? error.message
             : `Failed to send message: ${error instanceof Error ? error.message : 'Unknown error'}`,
           timestamp: new Date(),
@@ -1169,7 +1213,7 @@ export function useChatComposerState({
         setSubmittingScopes(new Set(submittingScopesRef.current));
       }
 
-      return true;
+      return accepted;
     },
     [
       selectedSession,
@@ -1178,6 +1222,7 @@ export function useChatComposerState({
       currentSessionId,
       executeCommand,
       queuesInput,
+      isConnected,
       onSessionProcessing,
       onSessionEstablished,
       provider,
@@ -1191,6 +1236,7 @@ export function useChatComposerState({
       draftScope,
       addMessage,
       slashCommands,
+      t,
     ],
   );
 
@@ -1198,99 +1244,78 @@ export function useChatComposerState({
     handleSubmitRef.current = handleSubmit;
   }, [handleSubmit]);
 
-  // Once the in-flight turn ends, replay the queued draft through the normal
-  // submit path. A `/compact` parked during that turn goes first: it is a run
-  // of its own, so the queued draft has to wait behind the compaction. The
-  // draft itself is passed directly so submission never depends on React
-  // committing restored attachment state first.
-  const wasBusyRef = useRef(queuesInput);
-  const flushSessionKeyRef = useRef(sessionKey);
+  // The server sends queued messages, and another page can queue, edit or
+  // drop one, so the card follows what the store holds for this session. Its
+  // own copy is kept while it matches, since only it has the browser files the
+  // edit button puts back.
   useEffect(() => {
-    const wasBusy = wasBusyRef.current;
-    wasBusyRef.current = queuesInput;
-
-    // A session switch changes which session `isLoading` describes, so this
-    // transition says nothing about the queued draft's own session. Never
-    // flush across it — the swap effect below replaces `queuedDraft` with the
-    // new session's saved draft right after this.
-    if (flushSessionKeyRef.current !== sessionKey) {
-      flushSessionKeyRef.current = sessionKey;
-      return;
+    if (!sessionKey) {
+      return undefined;
     }
-
-    // A manual submit in flight owns the latch; flushing now would be refused.
-    // This effect re-runs when it finishes, which is the retry. `isLoading` is
-    // checked on its own because the gateway refuses a `/compact` while any
-    // run is live, even on providers that take messages mid-turn.
-    if (queuesInput || isLoading || isSubmitting || (!queuedDraft && !pendingCompact)) {
-      return;
-    }
-
-    // Turn just ended in this session: flush immediately. Otherwise this is a
-    // saved draft restored into an apparently idle session — hold it briefly
-    // so the `chat_subscribed` ack can flip `isLoading` if a run is actually
-    // still live (the cleanup below cancels the send in that case).
-    const delay = wasBusy ? 0 : 750;
-    const timer = setTimeout(() => {
-      // A parked `/compact` claims this turn-end: the storage key is the claim
-      // ticket shared with the app-level auto-send, so an empty key means the
-      // request was already dispatched and must not be sent twice.
-      if (sessionKey) {
-        const parkedCompact = readQueuedCompact(sessionKey);
-        if (parkedCompact) {
-          clearQueuedCompact(sessionKey);
-          setPendingCompactSession((current) => (current === sessionKey ? null : current));
-          sendMessage({
-            type: 'chat.compact',
-            sessionId: sessionKey,
-            options: {
-              model: currentProviderModel,
-              effort: currentProviderEffort,
-              ...parkedCompact.options,
-            },
-          });
-          // Dispatching marks the session processing, so the queued draft (if
-          // any) flushes when the compaction's own run completes.
-          onSessionProcessing?.(sessionKey, { statusText: null, canInterrupt: false });
-          return;
-        }
-        if (pendingCompact) {
-          // The request was claimed elsewhere, so there is nothing left to run.
-          setPendingCompactSession((current) => (current === sessionKey ? null : current));
-        }
-      }
-
-      if (!queuedDraft) {
+    return subscribeToChatDrafts(() => {
+      if (queuedDraftSessionRef.current !== sessionKey) {
         return;
       }
-
-      // The saved key is the claim ticket shared with the app-level auto-send
-      // (which handles sessions that finish while not viewed). If it's gone,
-      // the message was already dispatched — don't send it twice.
-      if (sessionKey && !readQueuedMessage(sessionKey)) {
-        setQueuedDraft(null);
-        return;
-      }
-      setQueuedDraft(null);
-      // The draft travels as an argument — the composer is never loaded with
-      // it, so whatever the user is typing survives the flush.
-      const submitted = handleSubmitRef.current?.(createFakeSubmitEvent(), queuedDraft);
-      void submitted?.then((accepted) => {
-        if (!accepted) {
-          // Refused after this effect already cleared the queue: nobody took
-          // the message, so put it back rather than losing it silently.
-          queuedDraftSessionRef.current = sessionKey;
-          setQueuedDraft(queuedDraft);
+      const stored = readQueuedMessage(sessionKey);
+      setQueuedDraft((current) => {
+        if (!stored) {
+          return null;
         }
+        if (current && isSameQueuedMessage(toStoredQueuedMessage(current), stored)) {
+          return current;
+        }
+        const restored = restoreQueuedDraft(sessionKey);
+        const uploads = current?.uploadedAttachments ?? [];
+        return restored && current && JSON.stringify((restored.uploadedAttachments ?? []).slice(0, uploads.length)) === JSON.stringify(uploads)
+          ? { ...restored, attachments: current.attachments }
+          : restored;
       });
-    }, delay);
+    });
+  }, [sessionKey]);
+
+  // A `/compact` asked mid-turn cannot ride the running turn — the gateway
+  // refuses a second run — so it is parked in localStorage and this page
+  // dispatches it once the turn (and any background work that queues input)
+  // settles. The server's queued-message dispatcher then sends queued text
+  // behind the compaction's own run.
+  // Whether the session was still busy on the previous render. A compact
+  // parked during a turn is dispatched immediately when that turn ends, ahead
+  // of the server's 2s queue poll (which would otherwise start a queued
+  // message first and make the gateway refuse this compaction).
+  const compactWasBusyRef = useRef(false);
+  useEffect(() => {
+    const wasBusy = compactWasBusyRef.current;
+    compactWasBusyRef.current = isLoading || queuesInput;
+    if (!sessionKey || !pendingCompact || isLoading || queuesInput) {
+      return undefined;
+    }
+    // Hold briefly so a `chat_subscribed` ack can flip `isLoading` when a run
+    // is actually still live; the cleanup cancels the dispatch in that case.
+    const timer = setTimeout(() => {
+      setPendingCompactSession((current) => (current === sessionKey ? null : current));
+      const parked = readQueuedCompact(sessionKey);
+      if (!parked) {
+        return;
+      }
+      clearQueuedCompact(sessionKey);
+      sendMessage({
+        type: 'chat.compact',
+        sessionId: sessionKey,
+        options: {
+          model: currentProviderModel,
+          effort: currentProviderEffort,
+          ...parked.options,
+        },
+      });
+      // Dispatching marks the session processing, which holds any queued
+      // message behind the compaction's own run.
+      onSessionProcessing?.(sessionKey, { statusText: null, canInterrupt: false });
+    }, wasBusy ? 0 : 750);
     return () => clearTimeout(timer);
   }, [
-    queuesInput,
-    isLoading,
-    isSubmitting,
-    queuedDraft,
     pendingCompact,
+    isLoading,
+    queuesInput,
     sessionKey,
     currentProviderModel,
     currentProviderEffort,
@@ -1298,37 +1323,79 @@ export function useChatComposerState({
     onSessionProcessing,
   ]);
 
-  const editQueuedDraft = useCallback(() => {
+  const clearQueuedDraftOnServer = useCallback(async (owner: string | null, expected: QueuedDraft) => {
+    if (!owner || draftGenerationRef.current !== getChatDraftSessionGeneration()) return false;
+    const cleared = await clearQueuedMessage(owner, toStoredQueuedMessage(expected));
+    if (draftGenerationRef.current !== getChatDraftSessionGeneration()) return false;
+    if (!cleared) {
+      addMessage({ type: 'error', content: t('input.queue.clearFailed', { defaultValue: 'Could not cancel the queued message. Please try again.' }), timestamp: new Date() });
+    }
+    return cleared;
+  }, [addMessage, t]);
+
+  const editQueuedDraft = useCallback(async () => {
     if (!queuedDraft) {
       return;
     }
-    setQueuedDraft(null);
-    updateInput(queuedDraft.content);
-    setAttachedFiles(queuedDraft.attachments);
-    textareaRef.current?.focus();
-  }, [queuedDraft, updateInput]);
-
-  const deleteQueuedDraft = useCallback(() => {
-    setQueuedDraft(null);
-  }, []);
-
-  const forceSendQueuedDraft = useCallback(() => {
-    if (!queuedDraft) {
-      return;
-    }
+    const owner = queuedDraftSessionRef.current;
     const draft = queuedDraft;
-    setQueuedDraft(null);
-    if (sessionKey) {
-      clearQueuedMessage(sessionKey);
+    let files: File[];
+    try {
+      files = await recoverQueuedFiles(draft);
+    } catch (error) {
+      addMessage({ type: 'error', content: String(error), timestamp: new Date() });
+      return;
     }
-    const submitted = handleSubmitRef.current?.(createFakeSubmitEvent(), draft, true);
-    void submitted?.then((accepted) => {
-      if (!accepted) {
-        queuedDraftSessionRef.current = sessionKey;
-        setQueuedDraft(draft);
+    if (!await clearQueuedDraftOnServer(owner, draft)) return;
+    if (sessionKeyRef.current === owner) setQueuedDraft(null);
+    restoreComposerAfterFailedSubmit(draft.content, files, owner ?? '');
+    textareaRef.current?.focus();
+  }, [queuedDraft, clearQueuedDraftOnServer, restoreComposerAfterFailedSubmit, addMessage]);
+
+  const deleteQueuedDraft = useCallback(async () => {
+    const owner = queuedDraftSessionRef.current;
+    if (queuedDraft && await clearQueuedDraftOnServer(owner, queuedDraft) && sessionKeyRef.current === owner) setQueuedDraft(null);
+  }, [clearQueuedDraftOnServer, queuedDraft]);
+
+  // Force send starts a new run, which the server refuses while a reply is
+  // still in flight (RUN_IN_PROGRESS); only a session whose turn has ended
+  // and that waits on background work alone can take one.
+  const queueTargetActivity = processingSessions?.get(selectedSession?.id || currentSessionId || '');
+  const canForceSendQueuedDraft = provider !== 'claude' && Boolean(hasActiveBackgroundTasks)
+    && !(queueTargetActivity && !queueTargetActivity.background);
+
+  const forceSendQueuedDraft = useCallback(async () => {
+    if (!canForceSendQueuedDraft || !queuedDraft) {
+      return;
+    }
+    const owner = queuedDraftSessionRef.current;
+    const draft = { ...queuedDraft };
+    try {
+      draft.attachments = await recoverQueuedFiles(draft);
+    } catch (error) {
+      addMessage({ type: 'error', content: String(error), timestamp: new Date() });
+      return;
+    }
+    if (!await clearQueuedDraftOnServer(owner, draft)) return;
+    if (sessionKeyRef.current === sessionKey) {
+      setQueuedDraft(null);
+      if (await handleSubmitRef.current?.(createFakeSubmitEvent(), draft, true)) return;
+    }
+    if (draftGenerationRef.current !== getChatDraftSessionGeneration()) return;
+    if (sessionKey) {
+      try {
+        const response = await appendQueuedMessage(sessionKey, toStoredQueuedMessage(draft));
+        if (sessionKeyRef.current === sessionKey) {
+          setQueuedDraft({ ...draft, content: response.queuedMessage.content,
+            uploadedAttachments: response.queuedMessage.attachments, options: response.queuedMessage.options });
+        }
+      } catch (error) {
+        if (sessionKeyRef.current === sessionKey) setQueuedDraft(null);
+        restoreComposerAfterFailedSubmit(draft.content, draft.attachments, sessionKey);
+        addMessage({ type: 'error', content: `Failed to restore queued message: ${String(error)}`, timestamp: new Date() });
       }
-    });
-  }, [queuedDraft, sessionKey]);
+    }
+  }, [canForceSendQueuedDraft, queuedDraft, sessionKey, clearQueuedDraftOnServer, restoreComposerAfterFailedSubmit, addMessage]);
 
   // A voice transcript either fills the input (to edit before sending) or, when the
   // user tapped "stop and send", is submitted straight away. updateInput mirrors
@@ -1345,50 +1412,20 @@ export function useChatComposerState({
   }, [input]);
 
   useEffect(() => {
-    if (!selectedProjectId) {
-      return;
+    if (draftGenerationRef.current !== getChatDraftSessionGeneration()) return;
+    const previousScope = inputOwnerRef.current;
+    if (previousScope !== draftScope) {
+      if (previousScope) scopeFilesRef.current.set(previousScope, attachedFiles);
+      inputOwnerRef.current = draftScope;
+      const failed = draftScope ? failedSubmissionsRef.current.get(draftScope) : undefined;
+      updateInput(draftScope ? readDraftText(draftScope) : '');
+      setAttachedFiles(failed ?? (draftScope ? scopeFilesRef.current.get(draftScope) : undefined) ?? []);
+      if (draftScope) failedSubmissionsRef.current.delete(draftScope);
+    } else if (draftScope) {
+      writeDraftText(draftScope, inputValueRef.current);
     }
-    const savedInput = safeLocalStorage.getItem(`draft_input_${selectedProjectId}`) || '';
-    setInput((previous) => {
-      const next = previous === savedInput ? previous : savedInput;
-      inputValueRef.current = next;
-      return next;
-    });
-  }, [selectedProjectId]);
-
-  useEffect(() => {
-    if (!selectedProjectId) {
-      return;
-    }
-    if (input !== '') {
-      safeLocalStorage.setItem(`draft_input_${selectedProjectId}`, input);
-    } else {
-      safeLocalStorage.removeItem(`draft_input_${selectedProjectId}`);
-    }
-  }, [input, selectedProjectId]);
-
-  // Persist the queued draft under its session's key. Must be defined BEFORE
-  // the swap effect below: on a session switch there is one commit where
-  // `sessionKey` already points at the new session while `queuedDraft` (and
-  // the owner ref) still describe the old one — the ref mismatch makes this
-  // effect skip that commit instead of writing/clearing across sessions.
-  useEffect(() => {
-    if (!sessionKey || queuedDraftSessionRef.current !== sessionKey) {
-      return;
-    }
-    if (
-      queuedDraft
-      && (queuedDraft.content.trim() || (queuedDraft.uploadedAttachments?.length ?? 0) > 0)
-    ) {
-      writeQueuedMessage(sessionKey, {
-        content: queuedDraft.content,
-        options: queuedDraft.options,
-        attachments: queuedDraft.uploadedAttachments,
-      });
-    } else {
-      clearQueuedMessage(sessionKey);
-    }
-  }, [queuedDraft, sessionKey]);
+    if (selectedProjectId) safeLocalStorage.removeItem(`draft_input_${selectedProjectId}`);
+  }, [attachedFiles, draftScope, selectedProjectId, updateInput]);
 
   // Switching sessions swaps in that session's queued draft. Browser File
   // objects are local to the mounted composer, while their already-uploaded
@@ -1400,7 +1437,19 @@ export function useChatComposerState({
       return;
     }
     setQueuedDraft(restoreQueuedDraft(sessionKey));
-  }, [sessionKey]);
+  }, [sessionKey, updateInput]);
+
+  useEffect(() => {
+    const reconcile = () => {
+      if (document.visibilityState === 'visible') void hydrateChatDrafts();
+    };
+    const timer = setInterval(reconcile, 5_000);
+    document.addEventListener('visibilitychange', reconcile);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', reconcile);
+    };
+  }, []);
 
   // The parked `/compact` follows the session the same way: it belongs to the
   // session it was requested for, not to whichever composer is mounted now.
@@ -1640,7 +1689,7 @@ export function useChatComposerState({
 
   return {
     input,
-    setInput,
+    setInput: updateInput,
     editingAnchorId,
     beginEditMessage,
     cancelEditMessage,
@@ -1676,6 +1725,8 @@ export function useChatComposerState({
     editQueuedDraft,
     deleteQueuedDraft,
     forceSendQueuedDraft,
+    /** False for providers whose fresh run would stop the background work a force send relies on. */
+    canForceSendQueuedDraft,
     /** True while a `/compact` waits for the running turn to end. */
     pendingCompact,
     cancelPendingCompact,

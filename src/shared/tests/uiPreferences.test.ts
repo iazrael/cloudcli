@@ -36,6 +36,7 @@ test('a fresh install gets the documented defaults', () => {
     showThinking: true,
     sendByCtrlEnter: false,
     sidebarVisible: true,
+    keepProjectsExpanded: false,
     voiceEnabled: false,
     showTerminalTab: true,
     showQuickSettingsPanel: true,
@@ -110,4 +111,12 @@ test('a cross-tab update with nothing new keeps the same object', () => {
   });
 
   assert.equal(next, state);
+});
+
+
+test('remembering expanded projects uses the existing preference reader and reducer', () => {
+  storeUiPreferences({ keepProjectsExpanded: 'true' });
+  const state = readStoredUiPreferences();
+  assert.equal(state.keepProjectsExpanded, true);
+  assert.equal(uiPreferencesReducer(state, { type: 'set', key: 'keepProjectsExpanded', value: false }).keepProjectsExpanded, false);
 });

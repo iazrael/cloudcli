@@ -561,3 +561,59 @@ test('Codex title settings default on and validate the persisted switch', async 
     assert.deepEqual((await (await fetch(url)).json() as any).data, { enabled: false });
   });
 });
+
+test('the pin route pins and unpins a session, and lists it in the recent feed', async () => {
+  await withProviderServer(async (baseUrl, workspacePath) => {
+    const olderTimestamp = '2026-01-01T00:00:00.000Z';
+    const newerTimestamp = '2026-01-02T00:00:00.000Z';
+    sessionsDb.createSession('ses_pin_old', 'claude', workspacePath, 'Old', olderTimestamp, olderTimestamp);
+    sessionsDb.createSession('ses_pin_new', 'claude', workspacePath, 'New', newerTimestamp, newerTimestamp);
+
+    const pinResponse = await fetch(`${baseUrl}/api/providers/sessions/ses_pin_old/pin`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ isPinned: true }),
+    });
+    const pinPayload = await pinResponse.json() as { data: { sessionId: string; isPinned: boolean } };
+    assert.equal(pinResponse.status, 200);
+    assert.deepEqual(pinPayload.data, { sessionId: 'ses_pin_old', isPinned: true });
+    assert.equal(sessionsDb.getSessionById('ses_pin_old')?.isPinned, 1);
+
+    const recentResponse = await fetch(`${baseUrl}/api/providers/sessions/recent?limit=10&offset=0`);
+    const recentPayload = await recentResponse.json() as {
+      data: { conversations: Array<{ sessionId: string; isPinned: boolean }> };
+    };
+    assert.deepEqual(
+      recentPayload.data.conversations.map((conversation) => [conversation.sessionId, conversation.isPinned]),
+      [['ses_pin_old', true], ['ses_pin_new', false]],
+    );
+
+    const unpinResponse = await fetch(`${baseUrl}/api/providers/sessions/ses_pin_old/pin`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ isPinned: false }),
+    });
+    assert.equal(unpinResponse.status, 200);
+    assert.equal(sessionsDb.getSessionById('ses_pin_old')?.isPinned, 0);
+  });
+});
+
+test('the pin route rejects a missing flag and an unknown session', async () => {
+  await withProviderServer(async (baseUrl, workspacePath) => {
+    sessionsDb.createSession('ses_pin', 'claude', workspacePath, 'Pin');
+
+    const badBody = await fetch(`${baseUrl}/api/providers/sessions/ses_pin/pin`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ isPinned: 'yes' }),
+    });
+    assert.equal(badBody.status, 400);
+
+    const unknownSession = await fetch(`${baseUrl}/api/providers/sessions/ses_missing/pin`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ isPinned: true }),
+    });
+    assert.equal(unknownSession.status, 404);
+  });
+});

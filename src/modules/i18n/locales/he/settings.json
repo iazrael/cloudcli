@@ -130,7 +130,6 @@
     "git": "Git",
     "apiTokens": "API וטוקנים",
     "voice": "קול",
-    "tasks": "משימות",
     "browser": "דפדפן",
     "notifications": "התראות",
     "plugins": "תוספים",
@@ -354,25 +353,6 @@
     "loading": "טוען…",
     "version": {
       "updateAvailable": "יש עדכון זמין: v{{version}}"
-    }
-  },
-  "tasks": {
-    "checking": "בודק את התקנת TaskMaster…",
-    "notInstalled": {
-      "title": "TaskMaster AI CLI לא מותקן",
-      "description": "צריך את TaskMaster CLI כדי להשתמש בניהול משימות. כדי להתחיל, יש להתקין אותו:",
-      "installCommand": "npm install -g task-master-ai",
-      "viewOnGitHub": "צפייה ב-GitHub",
-      "afterInstallation": "אחרי ההתקנה:",
-      "steps": {
-        "restart": "הפעלה מחדש של האפליקציה",
-        "autoAvailable": "יכולות TaskMaster יהיו זמינות אוטומטית",
-        "initCommand": "הרצת task-master init בתיקיית הפרויקט"
-      }
-    },
-    "settings": {
-      "enableLabel": "הפעלת השילוב עם TaskMaster",
-      "enableDescription": "הצגת משימות, באנרים וסימונים בסרגל הצד של TaskMaster בכל הממשק"
     }
   },
   "agents": {

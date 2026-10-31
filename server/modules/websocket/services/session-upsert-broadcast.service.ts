@@ -53,6 +53,7 @@ async function buildSessionUpsertedEvent(
       lastActivity: row.updated_at ?? row.created_at ?? new Date().toISOString(),
       worktreePath: row.worktree_path,
       worktreeBranch: row.worktree_branch,
+      isPinned: Boolean(row.isPinned),
     },
     project: project
       ? {
@@ -129,6 +130,31 @@ export function broadcastScheduledJobsChanged(): void {
     timestamp: new Date().toISOString(),
   };
   sendToConnectedClients([JSON.stringify(event)]);
+}
+
+/**
+ * Announces that the server just started a session's queued message as a new
+ * turn. Used by the scheduled-messages dispatcher, the only sender of queued
+ * messages. Pages drop their copy of the queued card and, when they are
+ * showing that session, echo a matching local message. The optional fingerprint
+ * identifies the submitted content without broadcasting one user's text to all pages.
+ */
+export function broadcastQueuedMessageDispatched(sessionId: string, messageFingerprint?: string): void {
+  const payload = JSON.stringify({
+    kind: 'queued_message_dispatched', sessionId,
+    ...(messageFingerprint ? { messageFingerprint } : {}),
+  });
+  connectedClients.forEach((client) => {
+    if (client.readyState !== WS_OPEN_STATE) return;
+    try {
+      client.send(payload);
+    } catch (error) {
+      // The provider must still receive this claimed turn if a page disconnects
+      // during its echo; retrying the message would risk duplicate execution.
+      console.error('[QueuedMessages] Dispatch notification failed', { sessionId,
+        error: error instanceof Error ? error.message : String(error) });
+    }
+  });
 }
 
 /**

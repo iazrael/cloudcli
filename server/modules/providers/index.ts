@@ -15,6 +15,13 @@ export { providerTokenUsageService } from './services/provider-token-usage.servi
 export { executeCodexSandboxCommand } from './list/codex/codex-runtime.provider.js';
 export { listCodexThreadTurns } from './list/codex/codex-app-server.client.js';
 
+// setCodexHostTaskSource and createBackgroundTasksStatusMessage: the server
+// entrypoint connects the commands the host runs for a Codex chat
+// (`cloudcli_task_run`) to the composer strip, and re-sends the strip when
+// one of them starts or ends.
+export { setCodexHostTaskSource } from './list/codex/codex-background-work.js';
+export { createBackgroundTasksStatusMessage } from './shared/background-work/task-status.js';
+
 // closeCodexResidentSessions: used by the server entrypoint to stop the
 // Codex processes that stay alive between rounds.
 export { closeCodexResidentSessions } from './list/codex/codex-session-manager.js';

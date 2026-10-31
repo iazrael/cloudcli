@@ -1,6 +1,6 @@
 {
   "name": "@siteboon/claude-code-ui",
-  "version": "2.13.0",
+  "version": "2.17.0",
   "description": "This package has moved to @cloudcli-ai/cloudcli",
   "type": "module",
   "main": "index.js",
@@ -32,7 +32,7 @@
     "ui",
     "mobile IDE"
   ],
-  "author": "CloudCLI UI Contributors",
+  "author": "CloudCLI Contributors",
   "dependencies": {
     "@cloudcli-ai/cloudcli": "*"
   },

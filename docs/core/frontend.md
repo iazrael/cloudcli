@@ -134,13 +134,14 @@ MCP 服务器表单按 `useProviderMcpCapabilities()` 渲染。首屏与请求�
 6. **WS 帧**：任何新功能不得在帧回调里直接 setState；进 store，靠 notify 批量提交。
 7. **滚动的验收只看行，不看 `scrollTop`**：`scripts/perf/chat-scroll-up-stability.mjs` 断言屏幕上的行走了多远（`visualProgress`）、有没有逆向漂移（`visualBacktrack`）。虚拟化会主动改写 `scrollTop` 来让行不动，因此基于 `scrollTop` 的断言两头不准——既放过了旧实现的卡顿，又会把新实现的正常补偿报成故障。
 8. **Git 变更面板按需取 diff**：`useGitPanelController` 只负责 `fetch` 单个文件的 diff，status 刷新时只清掉已不在变更列表里的缓存；`ChangesView` 在某行展开时才请求，`FileChangeItem` 折叠时**不挂载** `GitDiffViewer`。几百个变更文件若一次性预取并常驻 DOM（每行 diff 一个节点），移动端浏览器会被内存打死。
-9. **客户端包的两条构建闸门**：① 不得出现未加保护的正则后向断言 `(?<=` / `(?<!`——Safari < 16.4 解析即抛 SyntaxError，整个 chunk 失效；`vite.config.js` 的 `safariRegexCompatPlugin`（`src/modules/chat/utils/safariRegexCompat.ts`）在 `generateBundle` 扫描并让构建失败，需要“前一字符”判断时改用捕获组写回（如 `normalizeLatexMathDelimiters` 的单 `$` 规则）。② chunk 之间不得互相 import 成环（环会让 chunk 在 React 初始化前求值、白屏）：`manualChunks` 把 rollup/babel helper 钉进 `vendor-react`，`module-task-master` 并进 `module-settings`（合并上游后它单独成 chunk 会与 `module-settings` 经共享 UI/helper 成环；并入后 mcp/skills/plugins 各自独立，环消失），`src/shared/tests/bundleNoCycles.test.ts` 在 `dist/` 上校验。
+9. **客户端包的两条构建闸门**：① 不得出现未加保护的正则后向断言 `(?<=` / `(?<!`——Safari < 16.4 解析即抛 SyntaxError，整个 chunk 失效；`vite.config.js` 的 `safariRegexCompatPlugin`（`src/modules/chat/utils/safariRegexCompat.ts`）在 `generateBundle` 扫描并让构建失败，需要“前一字符”判断时改用捕获组写回（如 `normalizeLatexMathDelimiters` 的单 `$` 规则）。② chunk 之间不得互相 import 成环（环会让 chunk 在 React 初始化前求值、白屏）：`manualChunks` 把 rollup/babel helper 钉进 `vendor-react`；每种语言一个 `locale-<lang>` 懒加载 chunk（`resources.ts` 的 `import.meta.glob`，与 `manualChunks` 规则配套），设置等大模块各自成 chunk，`src/shared/tests/bundleNoCycles.test.ts` 在 `dist/` 上校验。
 10. **折叠体首次展开才挂载**：`CollapsibleContent`（thinking、工具输出共用）从未展开过就不渲染内容，展开过一次后保持挂载，用于收起动画；原生 `<details>` 导出形态始终保留内容。贴底打开会话时，视口内的折叠 thinking 不应为了隐藏而解析 markdown。
 11. **Markdown 解析预算**：micromark 解析强调标记的耗时，与单个行内文本块的长度成平方关系。`MarkdownBody` 在最长的行内文本块（不计围栏代码，表格逐行计算）超过 `INLINE_RUN_PARSE_LIMIT`（10,000 字符）时，原样输出纯文本。模型复读出来的 190KB 单行 thinking 曾让页面卡死近一分钟。
 
 ## i18n
 
-- 目录 `src/modules/i18n/`：11 种语言 × 8 个命名空间（auth/chat/codeEditor/common/scheduled/settings/sidebar/tasks）；`scheduled` 目前只有 en / zh-CN / zh-TW 三份，其余语言整包回退英文（i18next fallback 按命名空间生效）。
+- 目录 `src/modules/i18n/`：15 种语言 × 8 个命名空间（auth/chat/codeEditor/common/git/scheduled/settings/sidebar）；`scheduled` 目前只有 en / zh-CN / zh-TW 三份，其余语言整包回退英文（i18next fallback 按命名空间生效）。
+- **按语言懒加载**：`resources.ts` 用 `import.meta.glob('./locales/*/*.json')` 把每种语言打成独立 chunk，启动只加载当前语言 + 英文兜底（`partialBundledLanguages`），`initI18n()` 必须在首屏渲染前 resolve；`switchLanguage` 先加载目标语言再 `changeLanguage`，避免出现原始 key。新增命名空间只要有同名 JSON 就自动进包，不需要改配置。
 - 新增用户可见文案必须走 i18n key；**en / zh-CN / zh-TW 三份必须给全**，其余语言可暂缺（回退英文）——这是当前维护约定，翻译覆盖面以 `src/modules/i18n/locales/` 现状为准。
 
 ## PWA 与版本

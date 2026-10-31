@@ -147,7 +147,7 @@ export function MarkdownImage({ node: _node, src, alt, title }: MarkdownImagePro
           className="block max-h-96 max-w-full cursor-zoom-in object-contain"
         />
       </button>
-      {expanded && <ImageLightbox src={resolved} alt={label} onClose={() => setExpanded(false)} />}
+      {expanded && <ImageLightbox src={resolved} alt={label} filePath={isBrowserLoadableSrc(source) ? undefined : toWorkspacePath(source)} onClose={() => setExpanded(false)} />}
     </>
   );
 }

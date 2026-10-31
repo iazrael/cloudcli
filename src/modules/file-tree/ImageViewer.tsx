@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { X } from 'lucide-react';
 
-import { api } from '@/shared/api';
+import { useSignedImage } from '@/shared/hooks/useSignedImage';
 import { UnifiedImageViewer } from '@/shared/ui';
 import type { FileTreeImageSelection } from '@/shared/types';
 
@@ -12,56 +12,11 @@ type ImageViewerProps = {
 
 /** Rendered by FileTree to preview an image file picked in the tree using UnifiedImageViewer. */
 export default function ImageViewer({ file, onClose }: ImageViewerProps) {
-  /** Blob URL created from downloaded image bytes for local preview. */
-  const [imageUrl, setImageUrl] = useState<string | null>(null);
-
-  /** Error message displayed if loading image blob fails. */
-  const [error, setError] = useState<string | null>(null);
-
-  /** Loading state indicator while image blob is being fetched. */
-  const [loading, setLoading] = useState<boolean>(true);
-
-  useEffect(() => {
-    let objectUrl: string | null = null;
-    const controller = new AbortController();
-
-    const loadImage = async () => {
-      try {
-        setLoading(true);
-        setError(null);
-        setImageUrl(null);
-
-        const response = await api.readFileBlob(file.projectId, file.path, {
-          signal: controller.signal,
-        });
-
-        if (!response.ok) {
-          throw new Error(`Request failed with status ${response.status}`);
-        }
-
-        const blob = await response.blob();
-        objectUrl = URL.createObjectURL(blob);
-        setImageUrl(objectUrl);
-      } catch (loadError: unknown) {
-        if (loadError instanceof Error && loadError.name === 'AbortError') {
-          return;
-        }
-        console.error('Error loading image:', loadError);
-        setError('无法加载图片');
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    loadImage();
-
-    return () => {
-      controller.abort();
-      if (objectUrl) {
-        URL.revokeObjectURL(objectUrl);
-      }
-    };
-  }, [file.projectId, file.path]);
+  const { t } = useTranslation();
+  const signed = useSignedImage({ kind: 'project', projectId: file.projectId, path: file.path }, { eager: true });
+  const imageUrl = signed.url;
+  const error = signed.error ? '无法加载图片' : null;
+  const loading = !imageUrl && !error;
 
   if (!loading && imageUrl) {
     return (
@@ -69,6 +24,7 @@ export default function ImageViewer({ file, onClose }: ImageViewerProps) {
         src={imageUrl}
         alt={file.name}
         title={file.name}
+        resolveSrc={signed.ensureFresh} onImageError={signed.onError} onImageLoad={signed.onLoad}
         filePath={file.path}
         onClose={onClose}
       />
@@ -102,6 +58,7 @@ export default function ImageViewer({ file, onClose }: ImageViewerProps) {
         ) : (
           <>
             <p className="text-sm text-red-400">{error || '无法加载图片'}</p>
+            <button type="button" onClick={signed.retry}>{t('common:buttons.retry')}</button>
             <p className="max-w-md break-all font-mono text-xs text-white/50">{file.path}</p>
           </>
         )}

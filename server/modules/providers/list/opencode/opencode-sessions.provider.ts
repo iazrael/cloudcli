@@ -43,6 +43,8 @@ import { readOpenCodeContextUsage } from './opencode-context-usage.js';
 import { buildOpenCodeTextRowKey } from './opencode-event-translator.js';
 import { connectOpenCodeApiClient } from './opencode-service.js';
 import { formatOpenCodeToolBlock } from './opencode-tool-output.js';
+import { toClientToolName } from './opencode-subagent.js';
+import { isOpenCodeQuestionTool, toQuestionCardInput } from './opencode-question.js';
 
 const PROVIDER = 'opencode';
 
@@ -627,10 +629,12 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
     }
 
     if (type === 'tool_use') {
-      const toolName = readOptionalString(raw.tool)
+      const engineToolName = readOptionalString(raw.tool)
         ?? readOptionalString(raw.name)
         ?? readOptionalString(part?.tool)
         ?? 'Tool';
+      const isQuestion = isOpenCodeQuestionTool(engineToolName);
+      const toolName = isQuestion ? 'AskUserQuestion' : engineToolName;
       const toolId = readOptionalString(raw.callID)
         ?? readOptionalString(raw.toolCallId)
         ?? readOptionalString(part?.id)
@@ -644,7 +648,9 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
         provider: PROVIDER,
         kind: 'tool_use',
         toolName,
-        toolInput: raw.input ?? raw.arguments ?? partState?.input ?? part?.input ?? {},
+        toolInput: isQuestion
+          ? toQuestionCardInput(raw.input ?? raw.arguments ?? partState?.input ?? part?.input ?? {}, partState?.metadata)
+          : raw.input ?? raw.arguments ?? partState?.input ?? part?.input ?? {},
         toolId,
       });
 
@@ -655,7 +661,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
         };
       }
 
-      if (SUBAGENT_TOOL_NAMES.has(toolName)) {
+      if (SUBAGENT_TOOL_NAMES.has(engineToolName)) {
         this.attachLiveSubagent(toolMessage, partState ?? {}, eventSessionId);
       }
 
@@ -1034,8 +1040,15 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
       if (partType === 'tool') {
         const state = readObjectRecord(partData.state) ?? {};
         const status = readOptionalString(state.status);
-        const toolName = readOptionalString(partData.tool) ?? 'Tool';
-        const toolInput = state.input ?? partData.input ?? {};
+        const engineToolName = readOptionalString(partData.tool) ?? 'Tool';
+        // The client draws the shared cards for these engine tools: the question
+        // panel for `question`, and the Agent card for a spawn. Map the name and
+        // input here so restored history matches the live run.
+        const toolName = toClientToolName(engineToolName);
+        const engineInput = state.input ?? partData.input ?? {};
+        const toolInput = isOpenCodeQuestionTool(engineToolName)
+          ? toQuestionCardInput(engineInput, state.metadata)
+          : engineInput;
         const toolMessage = createNormalizedMessage({
           id: baseId,
           sessionId,
@@ -1059,7 +1072,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
         // timeline live — the parent launch block keeps `status: "running"`
         // forever for a background agent.
         const metadata = readObjectRecord(state.metadata) ?? {};
-        const childSessionId = SUBAGENT_TOOL_NAMES.has(toolName)
+        const childSessionId = SUBAGENT_TOOL_NAMES.has(engineToolName)
           ? readOptionalString(metadata.sessionID)
           : undefined;
         if (childSessionId) {

@@ -39,7 +39,24 @@
     "clearSelection": "ניקוי",
     "deleteSelected_one": "מחיקת סשן אחד",
     "deleteSelected_two": "מחיקת שני סשנים",
-    "deleteSelected_other": "מחיקת {{count}} סשנים"
+    "deleteSelected_other": "מחיקת {{count}} סשנים",
+    "pinSession": "הצמדת סשן",
+    "unpinSession": "ביטול הצמדה",
+    "pinned": "מוצמד",
+    "optionsTitle": "אפשרויות סשן",
+    "optionsFor": "אפשרויות סשן עבור {{name}}",
+    "providerSession": "סשן {{provider}}",
+    "forkSession": "פיצול (fork) סשן",
+    "forkSessionDescription": "להמשיך מעותק, הסשן הזה נשאר ללא שינוי.",
+    "archiveOrDelete": "העברה לארכיון או מחיקה של הסשן",
+    "clickToRetry": "יש ללחוץ כדי לנסות שוב.",
+    "tapToRetry": "יש להקיש כדי לנסות שוב.",
+    "sessionName": "שם הסשן",
+    "copyId": "העתקת מזהה סשן {{provider}}",
+    "copyIdLoading": "טוען מזהה סשן {{provider}}…",
+    "copyIdCopied": "מזהה סשן {{provider}} הועתק",
+    "copyIdFailed": "לא ניתן להעתיק את מזהה סשן {{provider}}",
+    "copyIdUnavailable": "מזהה סשן {{provider}} אינו זמין"
   },
   "tooltips": {
     "viewEnvironments": "הצגת סביבות",
@@ -132,7 +149,8 @@
     "forkSessionError": "לא ניתן לפצל (fork) את הסשן. יש לנסות שוב.",
     "deleteSessionsPartialFailure_one": "סשן אחד מתוך {{total}} לא נמחק. יש לנסות שוב.",
     "deleteSessionsPartialFailure_two": "שני סשנים מתוך {{total}} לא נמחקו. יש לנסות שוב.",
-    "deleteSessionsPartialFailure_other": "{{count}} מתוך {{total}} סשנים לא נמחקו. יש לנסות שוב."
+    "deleteSessionsPartialFailure_other": "{{count}} מתוך {{total}} סשנים לא נמחקו. יש לנסות שוב.",
+    "pinSessionError": "לא ניתן להצמיד את הסשן. יש לנסות שוב."
   },
   "version": {
     "updateAvailable": "יש עדכון זמין",

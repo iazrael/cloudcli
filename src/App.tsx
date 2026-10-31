@@ -5,7 +5,6 @@ import { I18nextProvider } from 'react-i18next';
 import { ThemeProvider } from '@/shared/context/ThemeContext';
 import { UiPreferencesProvider } from '@/shared/context/UiPreferencesContext';
 import { AuthProvider, ProtectedRoute } from '@/modules/auth';
-import { TaskMasterProvider, TasksSettingsProvider } from '@/modules/task-master';
 import { WebSocketProvider } from '@/shared/context/WebSocketContext';
 import { PluginsProvider } from '@/modules/plugins/context/PluginsContext';
 import WorkspaceErrorBoundary from '@/modules/project-workspace/WorkspaceErrorBoundary';
@@ -134,18 +133,14 @@ export default function App() {
         <AuthProvider>
           <WebSocketProvider>
             <PluginsProvider>
-              <TasksSettingsProvider>
-                <TaskMasterProvider>
-                <ProtectedRoute>
-                  <Router basename={routerBasename}>
-                    <Routes>
-                      <Route path="/" element={<ProjectWorkspaceRoute />} />
-                      <Route path="/session/:sessionId" element={<ProjectWorkspaceRoute />} />
-                    </Routes>
-                  </Router>
-                </ProtectedRoute>
-                </TaskMasterProvider>
-              </TasksSettingsProvider>
+              <ProtectedRoute>
+                <Router basename={routerBasename}>
+                  <Routes>
+                    <Route path="/" element={<ProjectWorkspaceRoute />} />
+                    <Route path="/session/:sessionId" element={<ProjectWorkspaceRoute />} />
+                  </Routes>
+                </Router>
+              </ProtectedRoute>
             </PluginsProvider>
           </WebSocketProvider>
         </AuthProvider>

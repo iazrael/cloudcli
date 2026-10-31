@@ -5,10 +5,9 @@ import { useDeviceSettings } from '@/shared/hooks/useDeviceSettings';
 import { useSystemUpdate } from '@/shared/hooks/useSystemUpdate';
 import { useUiPreferences, useSetUiPreference } from '@/shared/context/UiPreferencesContext';
 import { useSidebarController } from '@/modules/sidebar/hooks/useSidebarController';
-import { useTaskMaster, useTasksSettings } from '@/modules/task-master';
 import { usePaletteOps } from '@/modules/command-palette';
 import { useBackgroundSessionIdSet, useBusySessionIdSet } from '@/shared/context/SessionProtectionContext';
-import type { LLMProvider, LoadingProgress, MCPServerStatus, Project, ProjectSession, SidebarProjectListProps } from '@/shared/types';
+import type { LLMProvider, LoadingProgress, Project, ProjectSession, SidebarProjectListProps } from '@/shared/types';
 import SidebarCollapsed from '@/modules/sidebar/SidebarCollapsed';
 import SidebarContent from '@/modules/sidebar/SidebarContent';
 import SidebarModals from '@/modules/sidebar/SidebarModals';
@@ -34,11 +33,6 @@ type SidebarProps = {
   settingsInitialTab: string;
   onCloseSettings: () => void;
   isMobile: boolean;
-};
-
-type TaskMasterSidebarContext = {
-  setCurrentProject: (project: Project) => void;
-  mcpServerStatus: MCPServerStatus;
 };
 
 /** Exported through the sidebar barrel; the project-workspace module renders it as the app's project and session navigation panel. */
@@ -76,8 +70,6 @@ function Sidebar({
   const preferences = useUiPreferences();
   const setPreference = useSetUiPreference();
   const { sidebarVisible } = preferences;
-  const { setCurrentProject, mcpServerStatus } = useTaskMaster() as TaskMasterSidebarContext;
-  const { tasksEnabled } = useTasksSettings();
   const paletteOps = usePaletteOps();
   // Only membership is rendered here, so subscribing to the full activity map
   // would re-render the whole tree on every provider status frame.
@@ -146,6 +138,7 @@ function Sidebar({
     refreshProjects,
     updateSessionSummary,
     forkSession,
+    setSessionPinned,
     collapseSidebar: handleCollapseSidebar,
     expandSidebar: handleExpandSidebar,
     setShowNewProject,
@@ -167,9 +160,9 @@ function Sidebar({
     onSessionDelete,
     onLoadMoreSessions,
     onProjectDelete,
-    setCurrentProject,
     setSidebarVisible: (visible) => setPreference('sidebarVisible', visible),
     sidebarVisible,
+    keepProjectsExpanded: preferences.keepProjectsExpanded,
   });
 
   useEffect(() => {
@@ -210,8 +203,6 @@ function Sidebar({
     initialSessionsLoaded,
     currentTime,
     deletingProjects,
-    tasksEnabled,
-    mcpServerStatus,
     getProjectSessions,
     loadingMoreProjects,
     activeSessions,
@@ -229,6 +220,7 @@ function Sidebar({
     onSessionSelect: handleSessionClick,
     onDeleteSession: showDeleteSessionConfirmation,
     onForkSession: forkSession,
+    onSetSessionPinned: setSessionPinned,
     onLoadMoreSessions: loadMoreSessionsForProject,
     onNewSession,
     onStartEditingSession: startEditingSession,

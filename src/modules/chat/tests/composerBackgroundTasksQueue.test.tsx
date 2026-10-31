@@ -3,11 +3,14 @@ import assert from 'node:assert/strict';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, test, vi } from 'vitest';
 
+import type * as Api from '@/shared/api';
 import type { Project, ProjectSession } from '@/shared/types';
 
 const authenticatedFetch = vi.fn();
+let serverDrafts: Array<{ scope: string; text: string; queuedMessage: { content: string; attachments?: unknown[] } }> = [];
 
-vi.mock('@/shared/api', () => ({
+vi.mock('@/shared/api', async (importOriginal) => ({
+  ...(await importOriginal<typeof Api>()),
   authenticatedFetch: (...args: unknown[]) => authenticatedFetch(...args),
   api: {
     getFiles: () => Promise.resolve({ ok: false }),
@@ -15,7 +18,27 @@ vi.mock('@/shared/api', () => ({
       list: () => Promise.resolve(new Response(JSON.stringify({ commands: [] }))),
     },
     providers: {
+      capabilities: () => Promise.resolve(new Response('{}', { status: 503 })),
       skills: () => Promise.resolve(new Response(JSON.stringify({ data: { skills: [] } }))),
+    },
+    user: {
+      drafts: () => Promise.resolve(new Response(JSON.stringify({ drafts: serverDrafts }))),
+      saveDraft: () => Promise.resolve(new Response('{}')),
+      deleteDraft: () => Promise.resolve(new Response('{}')),
+      appendQueuedMessage: async (scope: string, queuedMessage: { content: string; attachments?: unknown[] }) => {
+        const earlier = serverDrafts.find((draft) => draft.scope === scope);
+        const merged = earlier?.queuedMessage ? {
+          ...queuedMessage,
+          content: [earlier.queuedMessage.content, queuedMessage.content].join('\n\n'),
+          attachments: [...(earlier.queuedMessage.attachments ?? []), ...(queuedMessage.attachments ?? [])],
+        } : queuedMessage;
+        serverDrafts = [...serverDrafts.filter((draft) => draft.scope !== scope), { scope, text: '', queuedMessage: merged }];
+        return new Response(JSON.stringify({ queuedMessage: merged, appended: Boolean(earlier?.queuedMessage) }));
+      },
+      clearQueuedMessage: async (scope: string) => {
+        serverDrafts = serverDrafts.filter((draft) => draft.scope !== scope);
+        return new Response('{}');
+      },
     },
   },
 }));
@@ -28,7 +51,12 @@ vi.mock('@/shared/hooks/useProviderCapabilities', () => ({
   useProviderCapabilitiesMap: () => ({ capabilities: providerCapabilities, loaded: true }),
 }));
 
-beforeEach(() => {
+beforeEach(async () => {
+  localStorage.clear();
+  serverDrafts = [];
+  // The queue lives in a module-level store; one test's queued message must
+  // not leak into the next.
+  (await import('@/shared/chatDrafts')).resetChatDrafts();
   providerCapabilities = null;
 });
 
@@ -113,14 +141,15 @@ test('queues message when hasActiveBackgroundTasks is true even if isLoading is 
     backgroundTasks: [], backgroundWorkPending: false,
   }));
 
-  // Once background task is no longer active, the queued draft should be flushed and sent
-  await waitFor(() => {
-    assert.equal(sent.length, 1, 'queued message was flushed and sent');
-  });
-  assert.equal(sent[0]?.content, 'next command');
+  // The page never sends it: the server does, once the work is done, whether
+  // or not this page is still open or connected by then.
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 30)); });
+  assert.equal(sent.length, 0, 'the page leaves the queued message to the server');
+  const { readQueuedMessage } = await import('@/shared/chatDrafts');
+  assert.equal(readQueuedMessage('session-1')?.content, 'next command');
 });
 
-test('allows forceSendQueuedDraft to send message immediately with forceInterrupt', async () => {
+test.each(['claude', 'zcode'] as const)('%s only offers force send when it can preserve background work', async (provider) => {
   const { useChatComposerState } = await import('@/modules/chat/hooks/useChatComposerState');
 
   const sent: Array<Record<string, unknown>> = [];
@@ -130,13 +159,13 @@ test('allows forceSendQueuedDraft to send message immediately with forceInterrup
       selectedProject,
       selectedSession,
       currentSessionId: 'session-1',
-      provider: 'claude',
+      provider,
       permissionMode: 'bypassPermissions',
       cyclePermissionMode: () => undefined,
       resolvePermissionModeForProvider: () => 'bypassPermissions',
       currentProviderModel: 'claude-3-7-sonnet',
       currentProviderEffort: 'default',
-      isLoading: false,
+      isLoading: true,
       hasActiveBackgroundTasks: true,
       backgroundTasks: [
         { id: 't1', toolName: 'Bash', command: 'npm test', startedAt: Date.now() },
@@ -160,12 +189,19 @@ test('allows forceSendQueuedDraft to send message immediately with forceInterrup
 
   assert.equal(sent.length, 0);
   assert.ok(result.current.queuedDraft);
+  assert.equal(result.current.canForceSendQueuedDraft, provider !== 'claude');
 
   // User explicitly clicks force send
   await act(async () => {
-    result.current.forceSendQueuedDraft();
+    await result.current.forceSendQueuedDraft();
   });
 
+  if (provider === 'claude') {
+    assert.equal(sent.length, 0);
+    assert.ok(result.current.queuedDraft);
+    assert.equal(serverDrafts[0]?.queuedMessage.content, 'force stop and run');
+    return;
+  }
   await waitFor(() => {
     assert.equal(sent.length, 1, 'message sent after force send');
   });
@@ -223,52 +259,6 @@ test('appends subsequent inputs into existing queued draft without overwriting',
   });
 
   assert.equal(result.current.queuedDraft?.content, 'first part\n\nsecond part');
-});
-
-test('sends immediately over background work when the provider accepts input during it', async () => {
-  providerCapabilities = { claude: { inputWhileBusy: 'background' } };
-  const { useChatComposerState } = await import('@/modules/chat/hooks/useChatComposerState');
-
-  const sent: Array<Record<string, unknown>> = [];
-
-  const { result } = renderHook(() =>
-    useChatComposerState({
-      selectedProject,
-      // Its own session: queued drafts persist per session across cases.
-      selectedSession: { id: 'session-accepts', summary: 'session-accepts' } as unknown as ProjectSession,
-      currentSessionId: 'session-accepts',
-      provider: 'claude',
-      permissionMode: 'bypassPermissions',
-      cyclePermissionMode: () => undefined,
-      resolvePermissionModeForProvider: () => 'bypassPermissions',
-      currentProviderModel: 'claude-3-7-sonnet',
-      currentProviderEffort: 'default',
-      isLoading: false,
-      hasActiveBackgroundTasks: true,
-      backgroundTasks: [
-        { id: 't1', toolName: 'Bash', command: 'npm test', startedAt: Date.now() },
-      ],
-      canAbortSession: false,
-      tokenBudget: null,
-      sendMessage: (payload) => sent.push(payload as Record<string, unknown>),
-      stickToBottomAfterSend: () => undefined,
-      addMessage: () => undefined,
-      setPendingPermissionRequests: () => undefined,
-    }),
-  );
-
-  act(() => {
-    result.current.handleInputChange({ target: { value: 'while it runs' } } as never);
-  });
-  await act(async () => {
-    await result.current.handleSubmit(submitEvent);
-  });
-
-  // The runtime feeds the turn into the live process, so nothing is held back.
-  assert.equal(result.current.backgroundWorkQueuesInput, false);
-  assert.equal(result.current.queuedDraft, null);
-  assert.equal(sent.length, 1);
-  assert.equal(sent[0]?.content, 'while it runs');
 });
 
 /**
@@ -336,4 +326,49 @@ test('queues during a running turn when the provider declares queue', async () =
   assert.equal(result.current.queuesInput, true);
   assert.equal(sent.length, 0);
   assert.equal(result.current.queuedDraft?.content, 'mid-turn note');
+});
+
+test('the queued card follows the server: it leaves once sent and shows one queued elsewhere', async () => {
+  const { useChatComposerState } = await import('@/modules/chat/hooks/useChatComposerState');
+  const drafts = await import('@/shared/chatDrafts');
+  const { result } = renderHook(() =>
+    useChatComposerState({
+      selectedProject,
+      selectedSession,
+      currentSessionId: 'session-1',
+      provider: 'claude',
+      permissionMode: 'bypassPermissions',
+      cyclePermissionMode: () => undefined,
+      resolvePermissionModeForProvider: () => 'bypassPermissions',
+      currentProviderModel: 'claude-3-7-sonnet',
+      currentProviderEffort: 'default',
+      isLoading: true,
+      canAbortSession: true,
+      tokenBudget: null,
+      sendMessage: () => undefined,
+      stickToBottomAfterSend: () => undefined,
+      addMessage: () => undefined,
+      setPendingPermissionRequests: () => undefined,
+    }),
+  );
+
+  act(() => {
+    result.current.handleInputChange({ target: { value: 'after this turn' } } as never);
+  });
+  await act(async () => {
+    await result.current.handleSubmit(submitEvent);
+  });
+  assert.equal(result.current.queuedDraft?.content, 'after this turn');
+
+  // The server sent it: its copy is gone, and the page reloads the queue.
+  serverDrafts = [];
+  await act(async () => { await drafts.hydrateChatDrafts(); });
+  assert.equal(result.current.queuedDraft, null);
+
+  // Queued from the phone while this page was open.
+  serverDrafts = [{ scope: 'session-1', text: '', queuedMessage: { content: 'from the phone' } }];
+  await act(async () => { await drafts.hydrateChatDrafts(); });
+  // Re-read through a cast: the null assertion above narrowed this path.
+  const shown = result.current.queuedDraft as { content: string } | null;
+  assert.equal(shown?.content, 'from the phone');
 });

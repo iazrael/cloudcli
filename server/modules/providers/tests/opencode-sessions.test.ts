@@ -1159,7 +1159,7 @@ test('a v2 subagent launch carries the child session timeline, agent and settled
     const task = history.messages.find((message) => message.toolId === 'call_subagent');
 
     assert.equal(task?.kind, 'tool_use');
-    assert.equal(task?.toolName, 'subagent');
+    assert.equal(task?.toolName, 'Agent');
     assert.equal(task?.subagent?.id, 'ses_child');
     assert.equal(task?.subagent?.name, 'general');
     assert.equal(task?.subagent?.type, 'general');

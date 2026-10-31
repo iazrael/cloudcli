@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to CloudCLI UI will be documented in this file.
+All notable changes to CloudCLI will be documented in this file.
 
 
 ## [1.37.5](https://github.com/siteboon/claudecodeui/compare/v1.37.4...v1.37.5) (2026-10-17)

@@ -1,5 +1,5 @@
 <div align="center">
- <img src="../public/logo.svg" alt="CloudCLI UI" width="64" height="64">
+ <img src="../public/logo.svg" alt="CloudCLI" width="64" height="64">
  <h1>Cloud CLI（又名 Claude Code UI）</h1>
  <p><a href="https://docs.anthropic.com/en/docs/claude-code">Claude Code</a>、<a href="https://docs.cursor.com/en/cli/overview">Cursor CLI</a>、<a href="https://developers.openai.com/codex">Codex</a> 的桌面和移动端 UI。可在本地或远程使用，从任何地方查看激活的项目与会话。</p>
 </div>
@@ -74,7 +74,7 @@
 
 #### npm
 
-启动 CloudCLI UI，只需一行 `npx`（需要 Node.js v22+）：
+启动 CloudCLI，只需一行 `npx`（需要 Node.js v22+）：
 
 ```bash
 npx @cloudcli-ai/cloudcli
@@ -105,9 +105,9 @@ npx @cloudcli-ai/cloudcli@latest sandbox ~/my-project
 
 ## 哪个选项更适合你？
 
-CloudCLI UI 是 CloudCLI Cloud 的开源 UI 层。你可以在本地机器上自托管它，也可以使用提供团队功能与深入集成的 CloudCLI Cloud。
+CloudCLI 是 CloudCLI Cloud 的开源 UI 层。你可以在本地机器上自托管它，也可以使用提供团队功能与深入集成的 CloudCLI Cloud。
 
-| | CloudCLI UI（自托管） | CloudCLI Cloud |
+| | CloudCLI（自托管） | CloudCLI Cloud |
 |---|---|---|
 | **适合对象** | 需要为本地代理会话提供完整 UI 的开发者 | 需要部署在云端，随时从任何地方访问代理的团队与开发者 |
 | **访问方式** | 通过 `[yourip]:port` 在浏览器中访问 | 浏览器、任意 IDE、REST API、n8n |
@@ -181,10 +181,10 @@ CloudCLI 配备插件系统，允许你添加带自定义前端 UI 和可选 Nod
 
 Claude Code Remote Control 让你发送消息到本地终端中已经运行的会话。该方式要求你的机器保持开机，终端保持开启，断开网络后约 10 分钟会话会超时。
 
-CloudCLI UI 与 CloudCLI Cloud 是对 Claude Code 的扩展，而非旁观 — MCP 服务器、权限、设置、会话与 Claude Code 完全一致。
+CloudCLI 与 CloudCLI Cloud 是对 Claude Code 的扩展，而非旁观 — MCP 服务器、权限、设置、会话与 Claude Code 完全一致。
 
-- **覆盖全部会话** — CloudCLI UI 会自动扫描 `~/.claude` 文件夹中的每个会话。Remote Control 只暴露当前活动的会话。
-- **设置统一** — 在 CloudCLI UI 中修改的 MCP、工具权限等设置会立即写入 Claude Code。
+- **覆盖全部会话** — CloudCLI 会自动扫描 `~/.claude` 文件夹中的每个会话。Remote Control 只暴露当前活动的会话。
+- **设置统一** — 在 CloudCLI 中修改的 MCP、工具权限等设置会立即写入 Claude Code。
 - **支持更多 Agents** — Claude Code、Cursor CLI、Codex。
 - **完整 UI** — 除了聊天界面，还包括文件浏览器、Git 集成、MCP 管理和 Shell 终端。
 - **CloudCLI Cloud 保持运行于云端** — 关闭本地设备也不会中断代理运行，无需监控终端。
@@ -199,7 +199,7 @@ CloudCLI UI 与 CloudCLI Cloud 是对 Claude Code 的扩展，而非旁观 — M
 </details>
 
 <details>
-<summary>能在手机上使用 CloudCLI UI 吗？</summary>
+<summary>能在手机上使用 CloudCLI 吗？</summary>
 
 可以。自托管时，在你的设备上运行服务器，然后在网络中的任意浏览器打开 `[yourip]:port`。CloudCLI Cloud 可从任意设备访问，内置原生应用也在开发中。
 
@@ -208,7 +208,7 @@ CloudCLI UI 与 CloudCLI Cloud 是对 Claude Code 的扩展，而非旁观 — M
 <details>
 <summary>UI 中的更改会影响本地 Claude Code 配置吗？</summary>
 
-会的。自托管模式下，CloudCLI UI 读取并写入 Claude Code 使用的 `~/.claude` 配置。通过 UI 添加的 MCP 服务器会立即在 Claude Code 中可见。
+会的。自托管模式下，CloudCLI 读取并写入 Claude Code 使用的 `~/.claude` 配置。通过 UI 添加的 MCP 服务器会立即在 Claude Code 中可见。
 
 </details>
 

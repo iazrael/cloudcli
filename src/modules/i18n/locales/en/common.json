@@ -1,4 +1,9 @@
 {
+  "imageViewer": {
+    "noPath": "No file path",
+    "copied": "Path copied.",
+    "copyFailed": "Could not copy. Select the path above to copy it manually."
+  },
   "buttons": {
     "save": "Save",
     "cancel": "Cancel",

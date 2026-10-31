@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { Languages } from 'lucide-react';
 
 import { languages } from '@/modules/i18n/languages';
+import { switchLanguage } from '@/modules/i18n/config';
 
 type LanguageSelectorProps = {
   compact?: boolean;
@@ -25,8 +26,9 @@ export default function LanguageSelector({ compact = false }: LanguageSelectorPr
   const { i18n, t } = useTranslation('settings');
 
   const handleLanguageChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
-    const newLanguage = event.target.value;
-    i18n.changeLanguage(newLanguage);
+    // switchLanguage loads the target language's bundles before changing the
+    // language, so the re-render never shows untranslated keys.
+    void switchLanguage(event.target.value);
   };
 
   // Compact style for QuickSettingsPanel

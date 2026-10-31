@@ -38,7 +38,24 @@
     "selectAllLoaded": "Sélectionner les chargées",
     "clearSelection": "Tout désélectionner",
     "deleteSelected_one": "Supprimer {{count}} session",
-    "deleteSelected_other": "Supprimer {{count}} sessions"
+    "deleteSelected_other": "Supprimer {{count}} sessions",
+    "pinSession": "Épingler la session",
+    "unpinSession": "Désépingler la session",
+    "pinned": "Épinglée",
+    "optionsTitle": "Options de la session",
+    "optionsFor": "Options de la session {{name}}",
+    "providerSession": "Session {{provider}}",
+    "forkSession": "Dupliquer la session",
+    "forkSessionDescription": "Continuer depuis une copie, sans toucher à celle-ci.",
+    "archiveOrDelete": "Archiver ou supprimer la session",
+    "clickToRetry": "Cliquez pour réessayer.",
+    "tapToRetry": "Touchez pour réessayer.",
+    "sessionName": "Nom de la session",
+    "copyId": "Copier l’ID de session {{provider}}",
+    "copyIdLoading": "Chargement de l’ID de session {{provider}}…",
+    "copyIdCopied": "ID de session {{provider}} copié",
+    "copyIdFailed": "Impossible de copier l’ID de session {{provider}}",
+    "copyIdUnavailable": "ID de session {{provider}} indisponible"
   },
   "tooltips": {
     "viewEnvironments": "Voir les environnements",
@@ -122,7 +139,8 @@
     "restoreSessionError": "Erreur lors de la restauration de la session. Veuillez réessayer.",
     "forkSessionError": "Impossible de dupliquer cette session. Veuillez réessayer.",
     "deleteSessionsPartialFailure_one": "{{count}} session sur {{total}} n'a pas pu être supprimée. Veuillez réessayer.",
-    "deleteSessionsPartialFailure_other": "{{count}} sessions sur {{total}} n'ont pas pu être supprimées. Veuillez réessayer."
+    "deleteSessionsPartialFailure_other": "{{count}} sessions sur {{total}} n'ont pas pu être supprimées. Veuillez réessayer.",
+    "pinSessionError": "Impossible d’épingler cette session. Veuillez réessayer."
   },
   "version": {
     "updateAvailable": "Mise à jour disponible",

@@ -2,7 +2,7 @@ import { clsx, type ClassValue } from 'clsx';
 import { defaultUrlTransform } from 'react-markdown';
 import { twMerge } from 'tailwind-merge';
 
-import type { Project, ProjectSession, QuickSettingsTab, SlashCommand } from '@/shared/types';
+import type { ChatAttachment, Project, ProjectSession, QuickSettingsTab, SlashCommand } from '@/shared/types';
 
 //----------------- DEPLOYMENT MODE ------------
 
@@ -201,7 +201,7 @@ export const playChatCompletionSound = (options = {}): Promise<void> => playNoti
 //----------------- DOCUMENT TITLE ------------
 
 /** Browser tab title shown when no project or session is selected. Private to the title helpers. */
-const DEFAULT_PAGE_TITLE = 'CloudCLI UI';
+const DEFAULT_PAGE_TITLE = 'CloudCLI';
 
 /**
  * Resolves the human-readable label for a session.
@@ -385,7 +385,7 @@ export const showCompletionTitleIndicator = (): void => {
     return;
   }
 
-  const baseTitle = stripIndicator(document.title || 'CloudCLI UI');
+  const baseTitle = stripIndicator(document.title || 'CloudCLI');
   document.title = `${getIndicatorPrefix()}${baseTitle}`;
 
   if (pageIsActive()) {
@@ -661,7 +661,7 @@ export function toLocalDateTimeInputValue(date: Date): string {
  * Share API is the platform answer there (Save to Files, AirDrop, …) and
  * never navigates away. Environments that cannot share files keep the
  * classic download link. Used by the chat file cards and transcript export,
- * the file tree, the code editor, the PRD editor, and the diagnostics report.
+ * the file tree, the code editor, and the diagnostics report.
  */
 export async function saveOrShareBlob(blob: Blob, filename: string): Promise<void> {
   const file = new File([blob], filename, { type: blob.type });
@@ -702,7 +702,39 @@ export function createClientRequestId(): string {
 
 // ---------------------------
 
+//----------------- CHAT ATTACHMENTS ------------
+
+/**
+ * Whether an uploaded chat attachment is an image, by MIME type or, for
+ * descriptors that carry none, by file extension. Splits a message's
+ * attachments into the `images` and `files` its timeline row shows.
+ */
+export function isImageAttachment(attachment: ChatAttachment): boolean {
+  if (attachment.mimeType?.startsWith('image/')) return true;
+  return /\.(gif|jpe?g|png|svg|webp)$/i.test(attachment.path || attachment.name || '');
+}
+
+// ---------------------------
+
 //----------------- MARKDOWN URLS ------------
+
+/** 聊天渲染与地址识别共用：仅识别带明确图片扩展名的文件引用或 HTTP 地址，不读取文件。 */
+export function isImageReference(value: string): boolean {
+  const reference = value.trim();
+  const imageExtension = /\.(?:apng|avif|bmp|gif|ico|jpe?g|png|svg|tiff?|webp)$/i;
+  if (!reference || /[\r\n<>"'`|]/.test(reference)) return false;
+  if (/^(?:https?:\/\/|\/\/)/i.test(reference)) {
+    try {
+      return imageExtension.test(new URL(reference, window.location.href).pathname);
+    } catch {
+      return false;
+    }
+  }
+  if (/^[a-z][a-z0-9+.-]*:/i.test(reference) && !/^(?:file:\/\/|[a-z]:[/\\])/i.test(reference)) return false;
+  if (/\s/.test(reference) && !/^(?:[/\\]|\.{1,2}[/\\]|[a-z]:[/\\]|file:\/\/)/i.test(reference)) return false;
+  if (/^[^/\\]*=/.test(reference)) return false;
+  return imageExtension.test(reference) || imageExtension.test(reference.split(/[?#]/)[0]);
+}
 
 /**
  * Whether a URL points at a local file (`file://`). Providers such as

@@ -1,4 +1,14 @@
 {
+  "imageLoad": {
+    "unauthorized": "請重新登入後載入圖片。",
+    "forbidden": "圖片不在可讀取目錄內，或沒有讀取權限。",
+    "notFound": "找不到圖片檔案，可能已被移動或刪除。",
+    "failed": "圖片載入失敗，請檢查網址或連線後重試。",
+    "decode": "圖片無法顯示，檔案可能已損壞或格式不受支援。",
+    "unresolved": "無法解析圖片參照，相對路徑需要關聯專案。",
+    "copied": "路徑已複製。",
+    "copyFailed": "複製失敗，請選取上方路徑手動複製。"
+  },
   "replay": {
     "recoveryFailed": "聊天同步失敗，正在自動重試，現有內容已保留。也可以重新整理頁面重試。"
   },
@@ -138,7 +148,8 @@
     "stop": "停止",
     "hintText": {
       "ctrlEnter": "Ctrl+Enter 傳送 • Shift+Enter 換行 • Tab 切換模式 • / 斜線指令",
-      "enter": "Enter 傳送 • Shift+Enter 換行 • Tab 切換模式 • / 斜線指令"
+      "enter": "Enter 傳送 • Shift+Enter 換行 • Tab 切換模式 • / 斜線指令",
+      "appendQueued": "Enter 加入排隊訊息"
     },
     "clickToChangeMode": "點擊變更權限模式（或在輸入框中按 Tab）",
     "showAllCommands": "顯示所有指令",
@@ -153,7 +164,9 @@
       "delete": "刪除排隊訊息",
       "willSendAfterBackground": "背景任務完成後將自動傳送",
       "forceSend": "立即傳送，背景任務繼續執行",
-      "forceSendButton": "立即傳送"
+      "forceSendButton": "立即傳送",
+      "append": "加入排隊訊息",
+      "notCombinable": "無法將訊息加入排隊：斜線指令會單獨執行，因此無法與排隊訊息合併。請在排隊訊息送出後再傳送。"
     }
   },
   "thinkingMode": {
@@ -321,7 +334,10 @@
       "abortButton": "中止",
       "hintContinue": "可直接傳送，背景任務繼續執行",
       "hintContinueShort": "可繼續傳送"
-    }
+    },
+    "permissionHeading": "如何核准 {{provider}} 的操作？",
+    "permissionCycleHint": "在輸入框中按 Tab 切換模式",
+    "permissionTriggerLabel": "{{mode}}：{{heading}}"
   },
   "misc": {
     "needsInput": "{{provider}} 需要你的輸入",

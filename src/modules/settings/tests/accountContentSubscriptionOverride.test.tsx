@@ -5,6 +5,10 @@ import { render, screen } from '@testing-library/react';
 import '@/modules/i18n';
 import AccountContent from '@/modules/settings/tabs/agents-settings/sections/content/AccountContent';
 import type { ProviderAuthStatus } from '@/shared/types';
+import { initI18n } from '@/modules/i18n';
+
+// Copy assertions need real translations; bundles load per language (see docs/design/i18n按语言懒加载.md).
+await initI18n();
 
 // Issue #568: Claude Code prefers ANTHROPIC_API_KEY over the `claude /login`
 // subscription without saying so. The account panel has to make the bypass

@@ -47,6 +47,7 @@ import { readOpenCodeStepTokens } from './opencode-context-usage.js';
 import { readBackgroundLaunch, type OpenCodeBackgroundLaunch } from './opencode-background-work.js';
 import type { OpenCodeEventEnvelope } from './opencode-event-stream.js';
 import { formatOpenCodeToolBlock } from './opencode-tool-output.js';
+import { isOpenCodeQuestionTool, toQuestionCardInput } from './opencode-question.js';
 
 const PROVIDER = 'opencode' as const;
 
@@ -393,15 +394,18 @@ export class OpenCodeSessionEventTranslator {
     });
   }
 
-  private toolUseFrame(callId: string, toolName: string, toolInput: unknown, timestamp: string): NormalizedMessage {
+  private toolUseFrame(callId: string, engineToolName: string, engineToolInput: unknown, timestamp: string): NormalizedMessage {
+    // The transcript draws opencode's `question` as the shared AskUserQuestion
+    // card; the engine's own name and `multiple`/picks shape mean nothing to it.
+    const isQuestion = isOpenCodeQuestionTool(engineToolName);
     return createNormalizedMessage({
       id: callId,
       sessionId: this.sessionId,
       timestamp,
       provider: PROVIDER,
       kind: 'tool_use',
-      toolName,
-      toolInput,
+      toolName: isQuestion ? 'AskUserQuestion' : engineToolName,
+      toolInput: isQuestion ? toQuestionCardInput(engineToolInput) : engineToolInput,
       toolId: callId,
     });
   }

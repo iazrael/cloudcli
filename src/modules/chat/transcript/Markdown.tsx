@@ -1,4 +1,4 @@
-import React, { memo, useContext, useEffect, useMemo, useState } from 'react';
+import React, { memo, useContext, useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
@@ -7,9 +7,15 @@ import rehypeKatex from 'rehype-katex';
 import { oneDark, oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { useTranslation } from 'react-i18next';
 
+import { useSignedImageCandidates } from '@/modules/chat/hooks/useSignedImageCandidates';
+import { usePathExistsCandidates } from '@/modules/chat/hooks/usePathExists';
 import { SyntaxHighlighter, isRegisteredLanguage } from '@/modules/chat/composer/codeHighlightLanguages';
 import { MermaidDiagram } from '@/modules/code-editor';
 import { normalizeInlineCodeFences } from '@/modules/chat/utils/chatFormatting';
+import { remarkImageReferences } from '@/modules/chat/utils/remarkImageReferences';
+import { remarkFileReferences } from '@/modules/chat/utils/remarkFileReferences';
+import { isLocalAbsolutePath, joinWorktreePath, lineFromRef, looksLikeFilePath, referenceProbeCandidates, stripLineSuffix } from '@/modules/chat/utils/fileReference';
+import type { ImageMediaSource } from '@/shared/types';
 import {
   filePathFromFileUrl,
   fileReferenceFromMarkdownHref,
@@ -20,7 +26,7 @@ import { normalizeLatexDelimiters } from '@/modules/chat/utils/latexDelimiters';
 import { api, readApiJson, readExternalFileContent } from '@/shared/api';
 import { MarkdownWorkspaceContext } from '@/modules/chat/context/MarkdownWorkspaceContext';
 import { shouldProxyLocalHref } from '@/modules/chat/utils/localProxyLink';
-import { copyTextToClipboard, normalizeLatexMathDelimiters } from '@/shared/utils';
+import { copyTextToClipboard, isImageReference, normalizeLatexMathDelimiters } from '@/shared/utils';
 import { UnifiedImageViewer } from '@/shared/ui';
 import { usePaletteOps } from '@/modules/command-palette';
 import { useTheme } from '@/shared/context/ThemeContext';
@@ -66,29 +72,6 @@ async function openThroughLocalProxy(
 // everything else is treated as a workspace file reference.
 const isExternalHref = (href?: string): boolean =>
   !!href && (/^(https?:|mailto:|tel:|data:)/i.test(href) || href.startsWith('#'));
-
-// Read the trailing `:line` / `:line:col` suffix so the editor can reveal it.
-// Both this and stripLineSuffix are anchored at the end, so callers pass an
-// already-trimmed reference.
-const lineFromRef = (value: string): number | null => {
-  const match = value.match(/:(\d+)(?::\d+)?$/);
-  return match ? Number(match[1]) : null;
-};
-
-// Strip a trailing `:line` / `:line:col` suffix (e.g. `src/foo.ts:130`).
-const stripLineSuffix = (value: string): string => value.replace(/:\d+(?::\d+)?$/, '');
-
-// A usable file path contains a separator or a filename with an extension.
-const looksLikeFilePath = (value?: string): value is string => {
-  if (!value) {
-    return false;
-  }
-  const cleaned = stripLineSuffix(value.trim());
-  if (!cleaned || cleaned === '#') {
-    return false;
-  }
-  return /[\\/]/.test(cleaned) || /\.[a-z0-9]+$/i.test(cleaned);
-};
 
 // Extract plain text from link children so a reference rendered only as link
 // text (e.g. `[src/foo.ts]()` with an empty href) can still be opened.
@@ -266,208 +249,234 @@ const CodeBlock = memo(function CodeBlock({ node: _node, className, children, fo
   );
 });
 
-const LOCAL_IMAGE_EXTENSION_RE = /\.(png|jpe?g|gif|webp|svg|avif|bmp)$/i;
-const SYSTEM_ABSOLUTE_PREFIX_RE = /^\/(Users|home|var|tmp|private|Volumes|opt|mnt|root)\//i;
-const WINDOWS_ABSOLUTE_PATH_RE = /^[a-zA-Z]:([/\\]|%5[cC])/i;
+// 保留现有静态图片地址语义；其他绝对引用按文件路径处理。
+// 不按目录层级或扩展名猜测是否可读，权限由后端校验。
 const COMMON_STATIC_WEB_PREFIX_RE = /^\/(assets|static|public|icons|images|favicon|logo)[/.?#]/i;
-
-const isLikelyLocalFilesystemPath = (rawPath: string): boolean => {
-  if (COMMON_STATIC_WEB_PREFIX_RE.test(rawPath)) {
-    return false;
-  }
-  if (SYSTEM_ABSOLUTE_PREFIX_RE.test(rawPath) || WINDOWS_ABSOLUTE_PATH_RE.test(rawPath)) {
-    return true;
-  }
-  const clean = rawPath.split('?')[0].split('#')[0];
-  const segments = clean.replace(/\\/g, '/').split('/').filter(Boolean);
-  return segments.length >= 3;
-};
-
-// A workspace-relative image path ('imagenes/gato.png'): not a URL, not a
-// filesystem path — the project files route resolves it against the project
-// root. Absolute paths and file:// URLs go to the read-only external route
-// instead (localPathFromImageSrc).
-const RELATIVE_IMAGE_SRC = /^(?!https?:|data:|blob:|file:)(?!\/)[^\s]+$/;
-
 const BROWSER_LOADABLE_IMAGE_SRC = /^(https?:|data:|blob:)/i;
 
-const relativePathFromImageSrc = (src?: string): string | undefined => {
-  if (!src || !RELATIVE_IMAGE_SRC.test(src.trim())) {
-    return undefined;
-  }
-  let decoded = src.trim();
-  if (decoded.startsWith('./')) {
-    decoded = decoded.slice(2);
-  }
-  try {
-    decoded = decodeURIComponent(decoded);
-  } catch {
-    // Keep raw src if decode fails
-  }
-  return decoded;
-};
+type MarkdownImageTarget =
+  | { kind: 'browser'; src: string }
+  | { kind: 'absolute' | 'relative'; path: string }
+  | { kind: 'unresolved' };
 
-const localPathFromImageSrc = (src?: string): string | undefined => {
-  if (!src) {
-    return undefined;
+/** 相对图片引用的双候选签名源：会话工作树拼接路径优先（外部接口 + 项目回退），项目根兜底；绝对路径维持单一候选。 */
+function signedImageSources(
+  target: MarkdownImageTarget,
+  projectId: string | null,
+  worktreePath: string | null,
+): { primary: ImageMediaSource | null; fallback: ImageMediaSource | null } {
+  const absolute = target.kind === 'absolute' ? target.path : null;
+  if (absolute) {
+    return {
+      primary: { kind: 'external', path: absolute, ...(projectId ? { projectId, projectFallback: true } : {}) },
+      fallback: null,
+    };
   }
-  if (isFileUrl(src)) {
-    return filePathFromFileUrl(src);
+  if (target.kind !== 'relative' || !projectId) return { primary: null, fallback: null };
+  const projectSource: ImageMediaSource = { kind: 'project', projectId, path: target.path };
+  if (!worktreePath) return { primary: projectSource, fallback: null };
+  return {
+    primary: { kind: 'external', path: joinWorktreePath(worktreePath, target.path), projectId, projectFallback: true },
+    fallback: projectSource,
+  };
+}
+
+function resolveImageTarget(src: string): MarkdownImageTarget {
+  const value = src.trim();
+  if (!value) return { kind: 'unresolved' };
+  if (BROWSER_LOADABLE_IMAGE_SRC.test(value) || value.startsWith('//') || COMMON_STATIC_WEB_PREFIX_RE.test(value)) {
+    return { kind: 'browser', src: value };
   }
-  let decoded = src;
+  if (isFileUrl(value)) {
+    const filePath = filePathFromFileUrl(value);
+    return filePath ? { kind: 'absolute', path: filePath } : { kind: 'unresolved' };
+  }
+  let decoded = value;
   try {
-    decoded = decodeURIComponent(src);
+    decoded = decodeURIComponent(value);
   } catch {
-    // Keep raw src if decode fails
+    // 无效百分号编码可能是文件名中的字面字符，保留原文。
   }
-  if (!decoded.startsWith('/') && !WINDOWS_ABSOLUTE_PATH_RE.test(decoded)) {
-    return undefined;
+  if (isLocalAbsolutePath(decoded)) {
+    return { kind: 'absolute', path: decoded };
   }
-  const clean = decoded.split('?')[0].split('#')[0];
-  if (!LOCAL_IMAGE_EXTENSION_RE.test(clean)) {
-    return undefined;
-  }
-  return isLikelyLocalFilesystemPath(clean) ? clean : undefined;
-};
+  // 未知协议不能作为工作区文件名读取。
+  if (/^[a-z][a-z0-9+.-]*:/i.test(decoded)) return { kind: 'unresolved' };
+  return { kind: 'relative', path: decoded.replace(/^\.\//, '') };
+}
 
 type MarkdownImageProps = { node?: unknown } & React.ImgHTMLAttributes<HTMLImageElement>;
+type ImageLoadError = 'unauthorized' | 'forbidden' | 'notFound' | 'failed' | 'decode' | 'unresolved';
 
-// Renders markdown <img> inside chat messages — both the live stream and
-// restored history go through here. Remote and data images render as-is;
-// local filesystem images resolve into a blob URL (a bare <img> cannot carry
-// the auth header) and expand into the unified image viewer on click.
-function MarkdownImage({ src, alt, node: _node, ...props }: MarkdownImageProps) {
+
+// 历史消息与流式回复共用此入口，本地文件复用鉴权接口，失败时保留引用。
+function MarkdownImage(props: MarkdownImageProps) {
+  const { projectId, worktreePath } = useContext(MarkdownWorkspaceContext);
+  // 引用、项目或工作树变化时销毁旧的展开及错误状态。
+  return <MarkdownImageContent key={JSON.stringify([projectId, worktreePath, props.src])} {...props} projectId={projectId} worktreePath={worktreePath ?? null} />;
+}
+
+function MarkdownImageContent({ src = '', alt, node: _node, projectId, worktreePath, ...props }: MarkdownImageProps & { projectId: string | null; worktreePath: string | null }) {
   const { t } = useTranslation('chat');
-  const { projectId } = useContext(MarkdownWorkspaceContext);
-  const localPath = localPathFromImageSrc(src);
-  const workspaceRelative = localPath ? undefined : relativePathFromImageSrc(src);
-  // Blob URL handed to <img> once the bytes arrive; null while loading.
-  const [blobSrc, setBlobSrc] = useState<string | null>(null);
-  // Set when the endpoint refuses the path (not allowlisted / deleted): fall
-  // back to the raw src, i.e. exactly the pre-fix rendering.
-  const [resolveFailed, setResolveFailed] = useState(false);
-  // Controls the viewer only after a resolved image is clicked; it is not
-  // derivable from the URL because closing the viewer must preserve the image.
-  const [expanded, setExpanded] = useState(false);
+  const target = resolveImageTarget(src);
+  const localPath = target.kind === 'absolute' ? target.path : undefined;
+  const workspaceRelative = target.kind === 'relative' ? target.path : undefined;
+  const browserSrc = target.kind === 'browser' ? target.src : undefined;
+  const sources = signedImageSources(target, projectId, worktreePath);
+  const { observe, ...signed } = useSignedImageCandidates(sources.primary, sources.fallback);
+  const key = JSON.stringify([projectId, worktreePath, src]);
+  // 网页图片保留自己的加载错误；本地错误由签名 Hook 提供。
+  const [browserFailed, setBrowserFailed] = useState(false);
+  // 显示复制结果，让用户知道是否需要手动复制路径。
+  const [copyResult, setCopyResult] = useState<{ key: string; success: boolean } | null>(null);
+  // 仅用户点击时打开查看器，加载或切换图片不能自动打开。
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const unresolved = target.kind === 'unresolved' || (target.kind === 'relative' && !projectId);
+  const error: ImageLoadError | undefined = browserFailed ? 'failed' : signed.error ?? (unresolved ? 'unresolved' : undefined);
+  const imageSrc = browserSrc ?? signed.url;
 
-  useEffect(() => {
-    if (!localPath && !(workspaceRelative && projectId)) {
-      setBlobSrc(null);
-      setResolveFailed(false);
-      return;
-    }
-
-    setBlobSrc(null);
-    setResolveFailed(false);
-    const controller = new AbortController();
-    let objectUrl: string | null = null;
-    let revoked = false;
-    const revokeObjectUrl = () => {
-      if (objectUrl && !revoked) {
-        revoked = true;
-        URL.revokeObjectURL(objectUrl);
-      }
-    };
-    const load = async () => {
-      try {
-        let blob: Blob;
-        if (localPath) {
-          const response = projectId
-            ? await readExternalFileContent(localPath, { signal: controller.signal }, projectId)
-            : await readExternalFileContent(localPath, { signal: controller.signal });
-          if (!response.ok) {
-            throw new Error(`Image request failed with status ${response.status}`);
-          }
-          blob = await response.blob();
-        } else {
-          const response = await api.readFileBlob(projectId!, workspaceRelative!, { signal: controller.signal });
-          if (!response.ok) {
-            throw new Error(`Image request failed with status ${response.status}`);
-          }
-          blob = await response.blob();
-        }
-        objectUrl = URL.createObjectURL(blob);
-        if (controller.signal.aborted) {
-          revokeObjectUrl();
-          return;
-        }
-        setBlobSrc(objectUrl);
-      } catch (caught) {
-        console.error('[MarkdownImage] load failed:', caught);
-        if (!controller.signal.aborted) {
-          setResolveFailed(true);
-        }
-      }
-    };
-    void load();
-    return () => {
-      controller.abort();
-      revokeObjectUrl();
-    };
-  }, [localPath, workspaceRelative, projectId]);
-
-  if (resolveFailed) {
-    // The read was refused. A workspace-relative path has no browser-loadable
-    // form at all, so the alt text replaces it; an external filesystem path
-    // falls back to the raw src — exactly the rendering this component shipped
-    // with before the read-only route existed.
-    if (workspaceRelative) {
-      return <span className="text-xs italic text-muted-foreground">{alt}</span>;
-    }
-    return <img src={src} alt={alt} loading="lazy" decoding="async" className="rounded-lg" {...props} />;
-  }
-
-  if (!localPath && !(workspaceRelative && projectId)) {
-    // Web URLs load directly, and so do origin-relative paths (/assets/…):
-    // the browser resolves those against the app's own origin.
-    if (src && (BROWSER_LOADABLE_IMAGE_SRC.test(src) || src.startsWith('/'))) {
-      // Lazy decoding keeps late image loads from shifting scroll position
-      // while the user reads (native anchoring absorbs what remains).
-      return <img src={src} alt={alt} loading="lazy" decoding="async" className="rounded-lg" {...props} />;
-    }
-    // A path no route can resolve (and no project to resolve it against).
-    return <span className="text-xs italic text-muted-foreground">{alt}</span>;
-  }
-
-  if (!blobSrc) {
-    // Placeholder holds the layout while the bytes load. Deliberately not
-    // role="img": it is a skeleton, not an image, and claiming the role would
-    // satisfy img queries before the bytes arrive.
+  if (error) {
     return (
-      <div aria-hidden className="my-1 h-28 max-w-sm animate-pulse rounded-lg bg-muted" />
+      <span ref={observe} role="status" className="my-2 inline-flex max-w-full flex-col gap-1 rounded-lg border p-3 text-sm">
+        {alt && <span>{alt}</span>}
+        <span>{t(`imageLoad.${error}`)}</span>
+        {src && <code className="whitespace-pre-wrap break-all text-xs">{src}</code>}
+        <span className="flex gap-3">
+          {src && <button type="button" onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            void copyTextToClipboard(localPath ?? workspaceRelative ?? src).then((success) => setCopyResult({ key, success }));
+          }}>{t('common:fileOperations.copyPath')}</button>}
+          {!unresolved && <button type="button" onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (browserSrc) setBrowserFailed(false); else signed.retry();
+          }}>{t('common:buttons.retry')}</button>}
+        </span>
+        {copyResult?.key === key && <span>{t(copyResult.success ? 'imageLoad.copied' : 'imageLoad.copyFailed')}</span>}
+      </span>
     );
   }
 
+  if (!imageSrc) {
+    return <span ref={observe} aria-hidden className="my-1 block h-28 max-w-sm animate-pulse rounded-lg bg-muted" />;
+  }
+
+  const image = <img {...props} src={imageSrc} alt={alt} loading="lazy" decoding="async" className="rounded-lg"
+    referrerPolicy="no-referrer" onLoad={signed.onLoad} onError={() => browserSrc ? setBrowserFailed(true) : signed.onError()} />;
+  if (browserSrc) return image;
   return (
     <>
-      <button
-        type="button"
-        onClick={(event) => {
-          event.stopPropagation();
-          setExpanded(true);
-        }}
-        aria-label={t('misc.expandImage', { name: alt ?? '' })}
-        className="block max-w-full cursor-zoom-in"
-      >
-        <img src={blobSrc} alt={alt} loading="lazy" decoding="async" className="rounded-lg" {...props} />
+      <button ref={observe} type="button" onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        setExpanded(key);
+      }} aria-label={t('misc.expandImage', { name: alt ?? '' })} className="block max-w-full cursor-zoom-in">
+        {image}
       </button>
-      {expanded && (
-        <UnifiedImageViewer
-          src={blobSrc}
-          alt={alt ?? ''}
-          title={alt ?? ''}
-          filePath={localPath}
-          onClose={() => setExpanded(false)}
-        />
+      {expanded === key && (
+        <UnifiedImageViewer src={imageSrc} alt={alt ?? ''} title={alt ?? ''}
+          resolveSrc={signed.ensureFresh} onImageError={signed.onError} onImageLoad={signed.onLoad} filePath={localPath ?? workspaceRelative} onClose={() => setExpanded(null)} />
       )}
     </>
   );
 }
 
+function ImageReferenceLink({ source, projectId, worktreePath, children }: {
+  source: string;
+  projectId: string | null;
+  worktreePath: string | null;
+  children: React.ReactNode;
+}) {
+  const { t } = useTranslation('chat');
+  const target = resolveImageTarget(source);
+  // 查看器仍由用户点击打开；签名同时承担挂载时的存在性探测。
+  const [expanded, setExpanded] = useState(false);
+  // 远程图片的解码失败不属于本地签名请求，单独保留以提供重试。
+  const [browserFailed, setBrowserFailed] = useState(false);
+  const sources = signedImageSources(target, projectId, worktreePath);
+  const signed = useSignedImageCandidates(sources.primary, sources.fallback, { eager: true });
+  const unresolved = target.kind === 'unresolved' || (target.kind === 'relative' && !projectId);
+  const error = expanded ? unresolved ? 'unresolved' : browserFailed ? 'failed' : signed.error : undefined;
+  const imageSrc = target.kind === 'browser' ? target.src : signed.url;
+  const path = target.kind === 'absolute' || target.kind === 'relative' ? target.path : source;
+  const loading = expanded && !imageSrc && !error;
+  const open = () => {
+    setExpanded(true);
+    setBrowserFailed(false);
+    if (signed.error) signed.retry();
+  };
+
+  // 探测明确不存在或不可读的本地引用按默认样式显示，不提供点击；其余保持原有可点行为。
+  if (!unresolved && target.kind !== 'browser' && (signed.error === 'notFound' || signed.error === 'forbidden')) {
+    return <>{children}</>;
+  }
+
+  return <>
+    <button type="button" title={source} disabled={loading} aria-busy={loading || undefined}
+      className="max-w-full break-all text-left text-blue-600 hover:underline dark:text-blue-400 [&_code]:text-inherit"
+      onClickCapture={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        open();
+      }}>{children}</button>
+    {loading && <span role="status" className="ml-2 text-xs text-muted-foreground">{t('codeEditor:filePreview.loading')}</span>}
+    {error && <span role="status" className="ml-2 inline-flex max-w-full flex-wrap items-center gap-2 text-xs text-muted-foreground">
+      <span>{t(`imageLoad.${error}`)}</span>
+      <code className="break-all">{path}</code>
+      {!unresolved && <button type="button" onClick={open}>{t('common:buttons.retry')}</button>}
+    </span>}
+    {expanded && imageSrc && !error && <UnifiedImageViewer src={imageSrc} alt={source} title={source} filePath={path}
+      resolveSrc={target.kind === 'browser' ? undefined : signed.ensureFresh}
+      onImageError={target.kind === 'browser' ? () => setBrowserFailed(true) : signed.onError}
+      onImageLoad={target.kind === 'browser' ? undefined : signed.onLoad}
+      onClose={() => setExpanded(false)} />}
+  </>;
+}
+
+/** 聊天 Markdown 用它渲染本地文件与目录引用，探测明确不可读时退回普通文字。 */
+function FileReferenceLink({ href, reference, projectId, worktreePath, children }: {
+  href: string;
+  reference: string;
+  projectId: string | null;
+  worktreePath: string | null;
+  children: React.ReactNode;
+}) {
+  const { openFileInEditor, openDirectory } = usePaletteOps();
+  // 与点击目标保持一致：目录引用保留结尾斜杠，文件引用去掉行号后缀再探测。
+  const probePath = reference.endsWith('/') ? reference : stripLineSuffix(reference);
+  const resolvable = isLocalAbsolutePath(probePath) || !!projectId;
+  const candidates = resolvable
+    ? referenceProbeCandidates(probePath, projectId, worktreePath)
+    : { primary: null, fallback: null };
+  const toProbeSource = (path: string | null) => path !== null && (isLocalAbsolutePath(path) || projectId)
+    ? { path, projectId: projectId ?? undefined }
+    : null;
+  const { verdict, existsPath } = usePathExistsCandidates(toProbeSource(candidates.primary), toProbeSource(candidates.fallback));
+  if (verdict === 'missing') return <>{children}</>;
+  return (
+    <a
+      href={href}
+      className="cursor-pointer text-blue-600 hover:underline dark:text-blue-400 [&_code]:text-inherit"
+      onClick={(event) => {
+        event.preventDefault();
+        // 工作树候选命中时打开那份副本，否则维持项目根语义的原始引用。
+        const target = verdict === 'exists' && existsPath ? existsPath : reference;
+        if (reference.endsWith('/')) {
+          openDirectory(target);
+          return;
+        }
+        openFileInEditor(stripLineSuffix(target), lineFromRef(reference));
+      }}
+    >
+      {children}
+    </a>
+  );
+}
+
 const markdownComponents = {
   code: CodeBlock,
-  // Workspace image paths are fetched through the authenticated files route;
-  // a bare <img src> would resolve against the web origin and 404.
+  // 工作区引用转换为短期签名 URL，浏览器直接加载字节。
   img: MarkdownImage,
   // Fenced/indented code arrives as <pre><code>. Re-render the child CodeBlock
   // with `forceBlock` so it always gets the block treatment (react-markdown v9+
@@ -545,12 +554,12 @@ export const MarkdownBody = memo(function MarkdownBody({ children, breaks = fals
   const exceedsParseBudget = useMemo(() => longestInlineRun(content) > INLINE_RUN_PARSE_LIMIT, [content]);
   const remarkPlugins = useMemo(
     () => (breaks
-      ? [remarkGfm, [remarkMath, { singleDollarTextMath: false }], remarkBreaks]
-      : [remarkGfm, [remarkMath, { singleDollarTextMath: false }]]) as any,
+      ? [remarkGfm, [remarkMath, { singleDollarTextMath: false }], remarkBreaks, remarkImageReferences, remarkFileReferences]
+      : [remarkGfm, [remarkMath, { singleDollarTextMath: false }], remarkImageReferences, remarkFileReferences]) as any,
     [breaks],
   );
   const rehypePlugins = useMemo(() => (hasMath ? [rehypeKatex] : EMPTY_PLUGINS), [hasMath]);
-  const { openFileInEditor, openDirectory } = usePaletteOps();
+  const { projectId, worktreePath } = useContext(MarkdownWorkspaceContext);
   const { t } = useTranslation('chat');
 
   const components = useMemo(
@@ -565,27 +574,18 @@ export const MarkdownBody = memo(function MarkdownBody({ children, breaks = fals
         const pathHref = fileReferenceFromMarkdownHref(href);
         const fileRef = looksLikeFilePath(pathHref) ? pathHref : looksLikeFilePath(linkText) ? linkText : undefined;
 
+        const imageSource = href?.trim() || linkText.trim();
+        if (isImageReference(imageSource) && !shouldProxyLocalHref(imageSource, window.location.origin)) {
+          return <ImageReferenceLink key={JSON.stringify([projectId, worktreePath, imageSource])} source={imageSource} projectId={projectId} worktreePath={worktreePath ?? null}>{linkChildren}</ImageReferenceLink>;
+        }
+
         if (fileRef && !isExternalHref(pathHref)) {
           return (
-            <a
-              href={pathHref || fileRef}
-              className="cursor-pointer text-blue-600 hover:underline dark:text-blue-400"
-              onClick={(event) => {
-                event.preventDefault();
-                // Normalized once for every branch below: the href arrives
-                // trimmed from the parser, but the link-text fallback keeps a
-                // trailing space (``[`src/foo.ts:12` ]()``), and that space
-                // defeats the `$`-anchored suffix strip.
-                const reference = fileRef.trim();
-                if (reference.endsWith('/')) {
-                  openDirectory(reference);
-                  return;
-                }
-                openFileInEditor(stripLineSuffix(reference), lineFromRef(reference));
-              }}
-            >
+            // fileRef 来自链接文字回退时可能带尾随空格（``[`src/foo.ts:12` ]()``），
+            // 会破坏按 `$` 锚定的行号后缀剥离，这里与点击时一样先归一化。
+            <FileReferenceLink key={JSON.stringify([projectId, worktreePath, fileRef])} href={pathHref || fileRef} reference={fileRef.trim()} projectId={projectId} worktreePath={worktreePath ?? null}>
               {linkChildren}
-            </a>
+            </FileReferenceLink>
           );
         }
 
@@ -617,7 +617,7 @@ export const MarkdownBody = memo(function MarkdownBody({ children, breaks = fals
         );
       },
     }),
-    [openFileInEditor, t],
+    [projectId, worktreePath, t],
   );
 
   if (exceedsParseBudget) {

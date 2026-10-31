@@ -10,7 +10,7 @@ import type {
   FileTreeServices,
   FileTreeUploadedFile,
 } from '@/shared/types.js';
-import { AppError, FORBIDDEN_WORKSPACE_PATHS, normalizeProjectPath } from '@/shared/utils.js';
+import { AppError, errorStatusCode, FORBIDDEN_WORKSPACE_PATHS, normalizeProjectPath } from '@/shared/utils.js';
 
 const HARD_EXCLUDED_DIRECTORY_NAMES = new Set([
   'node_modules', '.git', '.svn', '.hg',
@@ -592,6 +592,29 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
       }
     },
 
+    async resolveImagePath(input) {
+      let canonical: string;
+      if (input.external) {
+        canonical = await resolvePathInsideExternalRoots(fileSystem, await resolveExternalAllowedRoots(input.projectId), input.path);
+      } else {
+        if (!input.projectId) throw createFileTreeError('Project is required', 400, 'PROJECT_REQUIRED');
+        const root = await resolveProjectRoot(input.projectId);
+        const candidate = await resolveReadablePath(root, input.path);
+        // 图片票据同时校验 realpath，防止项目内符号链接授权外部文件。
+        if (candidate.startsWith(path.resolve(root) + path.sep)) {
+          canonical = await resolvePathInsideExternalRoots(fileSystem, [root], candidate);
+        } else {
+          canonical = await fileSystem.realpath(candidate);
+          await resolveReadablePath(root, canonical);
+        }
+      }
+      const stats = await fileSystem.stat(canonical);
+      if ((stats.mode & 0o170000) !== 0o100000) {
+        throw createFileTreeError('Image must be a regular file', 403, 'INVALID_IMAGE_FILE');
+      }
+      return { path: canonical, contentType: dependencies.resolveMimeType(canonical) };
+    },
+
     async openExternalFile(filePath, projectId) {
       const allowedRoots = await resolveExternalAllowedRoots(projectId);
       const resolvedPath = await resolvePathInsideExternalRoots(
@@ -624,6 +647,41 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
         contentType: dependencies.resolveMimeType(resolvedPath),
         stream: fileSystem.createReadStream(resolvedPath),
       };
+    },
+
+    async checkPathsExist(items) {
+      return Promise.all(items.map(async ({ id, path: requestedPath, projectId }) => {
+        try {
+          if (path.isAbsolute(requestedPath)) {
+            try {
+              await fileSystem.stat(await resolvePathInsideExternalRoots(
+                fileSystem,
+                await resolveExternalAllowedRoots(projectId),
+                requestedPath,
+              ));
+              return { id, status: 200 };
+            } catch (error) {
+              // 与图片签名一致：外部白名单拒绝且给了项目时，再按项目边界校验同一路径。
+              if (!(error instanceof AppError && error.statusCode === 403) || !projectId) throw error;
+            }
+          } else if (!projectId) {
+            throw createFileTreeError('Project is required', 400, 'PROJECT_REQUIRED');
+          }
+          const projectRoot = await resolveProjectRoot(projectId);
+          const candidate = await resolveReadablePath(projectRoot, requestedPath);
+          // 项目内路径同样核对 realpath，防止项目内符号链接把探测放行到外部文件。
+          const canonical = candidate.startsWith(path.resolve(projectRoot) + path.sep)
+            ? await resolvePathInsideExternalRoots(fileSystem, [projectRoot], candidate)
+            : await fileSystem.realpath(candidate);
+          await fileSystem.stat(canonical);
+          return { id, status: 200 };
+        } catch (error) {
+          return {
+            id,
+            status: errorStatusCode(error),
+          };
+        }
+      }));
     },
 
     async saveTextFile(projectId, filePath, content) {

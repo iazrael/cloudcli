@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -294,6 +294,33 @@ test('OpenCode reads display names and effort variants from the cached catalog',
         // keeps its gateway annotation.
         { value: 'opencode/glm-5.3-flash-free', label: 'GLM 5.3 Flash Free', description: 'OpenCode Zen · Free' },
       ]);
+    },
+  );
+});
+
+// The fixture is a POSIX shell script; Windows cannot execute it.
+test('OpenCode does not run `opencode models` again for every turn', { skip: process.platform === 'win32' }, async () => {
+  // Every turn reads the catalog before it starts, and the CLI query takes a
+  // second or more; within the fresh window the catalog comes from memory.
+  await withOpenCodeHome(
+    async (homeDir) => {
+      const cliPath = path.join(homeDir, 'fake-opencode');
+      await writeFile(
+        cliPath,
+        `#!/bin/sh\necho run >> '${path.join(homeDir, 'runs')}'\necho opencode/beam-free\n`,
+        'utf8',
+      );
+      await chmod(cliPath, 0o755);
+      process.env.CLOUDCLI_OPENCODE_CLI = cliPath;
+    },
+    async (adapter) => {
+      const first = await adapter.getSupportedModels();
+      const second = await adapter.getSupportedModels();
+      await adapter.getCurrentActiveModel();
+
+      assert.deepEqual(second, first);
+      const runs = (await readFile(path.join(os.homedir(), 'runs'), 'utf8')).trim().split('\n');
+      assert.equal(runs.length, 1);
     },
   );
 });

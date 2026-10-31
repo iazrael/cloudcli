@@ -20,6 +20,8 @@ import {
     setSessionWorktreeHomeResolver,
     closeClaudeResidentSessions,
     closeCodexResidentSessions,
+    createBackgroundTasksStatusMessage,
+    setCodexHostTaskSource,
     shutdownZCodeRuntime,
 } from '@/modules/providers/index.js';
 import { chatRunRegistry, createWebSocketServer } from '@/modules/websocket/index.js';
@@ -34,10 +36,10 @@ import {
     authRoutes,
     validateApiKey,
 } from './modules/auth/index.js';
-import { taskmasterRoutes } from './modules/taskmaster/index.js';
 import { commandsRoutes } from './modules/commands/index.js';
 import { settingsRoutes } from './modules/settings/index.js';
 import { createAppBrandingService, createSystemModule } from './modules/system/index.js';
+import { createExecutionModule } from './modules/execution/index.js';
 import { createAgentModule } from './modules/agent/index.js';
 import projectModuleRoutes from './modules/projects/projects.routes.js';
 import notificationRoutes from './modules/notifications/notifications.routes.js';
@@ -63,6 +65,7 @@ import {
     scheduledJobsSettingsService,
 } from './modules/scheduled-jobs/index.js';
 import { assetsRoutes } from './modules/assets/index.js';
+import { mediaRoutes } from './modules/media/index.js';
 import { fileTreeRoutes } from './modules/file-tree/index.js';
 import { diagnosticsRoutes } from './modules/diagnostics/index.js';
 import { createLocalProxyRouter, localProxyAbsolutePathFallback } from './modules/local-proxy/index.js';
@@ -76,7 +79,10 @@ import { initializeDatabase, sessionsDb } from './modules/database/index.js';
 import { configureWebPush } from './modules/notifications/index.js';
 import {
     createTaskBridgeCredential,
+    listRunningHostTasks,
     registerTaskBridgeCall,
+    requestHostTaskStop,
+    setTaskActivityListener,
     revokeTaskBridgeCredential,
     startTaskContinuationRuntime,
     taskBridgeRouter,
@@ -176,6 +182,20 @@ providerRuntimeService.setBridgeCredentialRevoker((token) => {
     revokeTaskBridgeCredential(token);
 });
 
+// A command a Codex chat hands to `cloudcli_task_run` runs in a host worker,
+// so the engine never reports it. Its card on the composer strip comes from
+// the task records, its stop goes back to the host, and every start or end
+// re-sends the chat's whole strip (agents included) on the session channel.
+setCodexHostTaskSource({ list: listRunningHostTasks, stop: requestHostTaskStop });
+setTaskActivityListener((sessionId) => {
+    chatRunRegistry.publishSessionEvent(sessionId, createBackgroundTasksStatusMessage(
+        { provider: 'codex', sessionId },
+        providerRuntimeService.getBackgroundTasksForSession(sessionId),
+        providerRuntimeService.canInterruptBackgroundWork(sessionId),
+        providerRuntimeService.backgroundWorkQueuesInput('codex', sessionId),
+    ));
+});
+
 createWebSocketServer(server, {
     verifyClient: {
         isPlatform: IS_PLATFORM,
@@ -240,8 +260,15 @@ app.get('/health', (req, res) => {
 // authentication.
 app.use('/api/tasks', taskBridgeRouter);
 
+// 本机执行使用显式配置的专用令牌，单独校验鉴权。
+app.use('/mcp/execution', createExecutionModule().router);
+
+// 图片票据只授权单个资源；签发入口仍受 API key 和登录检查保护。
+app.use('/api/media', mediaRoutes.images);
+
 // Optional API key validation (if configured)
 app.use('/api', validateApiKey);
+app.use('/api/media', mediaRoutes.signing);
 
 // Authentication routes (public)
 app.use('/api/auth', authRoutes);
@@ -263,9 +290,6 @@ app.use('/api/git', authenticateToken, gitRoutes);
 
 // Git worktree management (protected)
 app.use('/api/worktrees', authenticateToken, worktreesRoutes);
-
-// TaskMaster API Routes (protected)
-app.use('/api/taskmaster', authenticateToken, taskmasterRoutes);
 
 // Commands API Routes (protected)
 app.use('/api/commands', authenticateToken, commandsRoutes);

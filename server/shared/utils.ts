@@ -37,6 +37,7 @@ import type {
   ProviderModelsDefinition,
   ProviderQuotaResetCredit,
   ProviderSkillSource,
+  QueuedChatMessage,
   SubagentActivity,
   WorkspacePathValidationResult,
 } from './types.js';
@@ -350,6 +351,19 @@ export class AppError extends Error {
     this.statusCode = options.statusCode ?? 500;
     this.details = options.details;
   }
+}
+
+/**
+ * Normalizes an unknown thrown value into an HTTP status code: `AppError`
+ * instances contribute their own status; anything else is read as an optional
+ * `statusCode` field (raw fs errors, wrapped route failures) and falls back
+ * to 500.
+ *
+ * Used by the media and file-tree failure paths to map per-item batch errors
+ * onto batch response statuses.
+ */
+export function errorStatusCode(error: unknown): number {
+  return error instanceof AppError ? error.statusCode : Number((error as { statusCode?: number }).statusCode) || 500;
 }
 
 /**
@@ -1876,6 +1890,107 @@ export function readUsageNumber(value: unknown): number {
 
 // ---------------------------
 
+//----------------- STALE-WHILE-REFRESH VALUE ------------
+
+/** Options for `createStaleWhileRefreshValue`. */
+export type StaleWhileRefreshOptions<T> = {
+  /** Produces a fresh value. May reject; see `failureRetryMs`. */
+  load: () => Promise<T>;
+  /** How long a loaded value stays fresh; may depend on the value (a fallback can expire sooner). */
+  ttlMs: (value: T) => number;
+  /** After a failed refresh, how long the previous value keeps serving before the next try. */
+  failureRetryMs: number;
+  /** Told about every failed refresh, including ones nobody was waiting on. */
+  onRefreshError?: (error: unknown) => void;
+  /** Clock override for tests. */
+  now?: () => number;
+};
+
+/** A value that is read on hot paths but slow to produce. */
+export type StaleWhileRefreshValue<T> = {
+  get(): Promise<T>;
+  /** Forgets the value; the next read loads again and waits for it. */
+  clear(): void;
+};
+
+/**
+ * Creates a value that callers never wait on once it has been loaded.
+ *
+ * Only the first read (and the first after `clear`) waits for `load`. After
+ * that an expired value is returned at once while one shared refresh replaces
+ * it behind the caller. Provider model catalogs use this: every turn reads the
+ * catalog before starting the engine, and the CLI query behind it (`agy
+ * models`, `opencode models`, Codex's app-server listing) can take seconds or
+ * hang to its timeout, which must not be added to every turn.
+ *
+ * A failed refresh keeps serving the previous value and waits
+ * `failureRetryMs` before trying again. A first read whose load fails rejects,
+ * and the next read tries again.
+ */
+export function createStaleWhileRefreshValue<T>(
+  options: StaleWhileRefreshOptions<T>,
+): StaleWhileRefreshValue<T> {
+  const now = options.now ?? Date.now;
+  let current: { value: T } | null = null;
+  let expiresAt = 0;
+  let refreshing: Promise<T> | null = null;
+  // Bumped by `clear`, so a load that was running across it is not kept.
+  let generation = 0;
+
+  const refresh = (): Promise<T> => {
+    if (refreshing) {
+      return refreshing;
+    }
+    const startedIn = generation;
+    const pending = options.load()
+      .then((value) => {
+        if (startedIn === generation) {
+          current = { value };
+          expiresAt = now() + options.ttlMs(value);
+        }
+        return value;
+      })
+      .catch((error: unknown) => {
+        options.onRefreshError?.(error);
+        if (startedIn !== generation || !current) {
+          throw error;
+        }
+        expiresAt = now() + options.failureRetryMs;
+        return current.value;
+      })
+      .finally(() => {
+        if (refreshing === pending) {
+          refreshing = null;
+        }
+      });
+    refreshing = pending;
+    return pending;
+  };
+
+  return {
+    async get(): Promise<T> {
+      if (current && now() < expiresAt) {
+        return current.value;
+      }
+      if (current) {
+        // Nobody waits on this refresh; a failure was already reported.
+        void refresh().catch(() => undefined);
+        return current.value;
+      }
+      return refresh();
+    },
+
+    clear(): void {
+      generation += 1;
+      current = null;
+      expiresAt = 0;
+      refreshing = null;
+    },
+  };
+}
+
+// ---------------------------
+
 /**
  * Decodes an OpenCode text payload that was persisted as a JSON string literal.
  *
@@ -2014,15 +2129,35 @@ export async function readFileTimestamps(
 
 // ---------------------------
 //----------------- SESSION SYNCHRONIZER JSONL PARSING HELPERS ------------
+async function* readJsonlRows(filePath: string): AsyncGenerator<unknown> {
+  const fileStream = fs.createReadStream(filePath);
+  const lineReader = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
+  let streamError: Error | undefined;
+  fileStream.on('error', (error) => {
+    streamError = error;
+    lineReader.close();
+  });
+  try {
+    for await (const line of lineReader) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      let parsed: unknown;
+      try { parsed = JSON.parse(trimmed) as unknown; }
+      catch (error) { if (error instanceof SyntaxError) continue; throw error; }
+      yield parsed;
+    }
+  } catch (error) {
+    if (error !== streamError) throw error;
+  } finally {
+    lineReader.close();
+    fileStream.destroy();
+  }
+}
+
 /**
- * Builds a key/value lookup map from a JSONL file.
- *
- * Use this for provider index files where session id -> display name metadata
- * is stored line-by-line. With `prefer: 'first'` (the default) the first value
- * for each key wins; with `prefer: 'last'` a later record for the same key
- * replaces the earlier one — engines such as Codex append a rename record to
- * their index when a generated title lands, so the last record is the current
- * name.
+ * Builds the session synchronizers' key/value lookup from valid JSONL rows.
+ * First values win by default; `last` keeps append-only Codex rename records current.
+ * Malformed rows and unreadable files do not prevent later session scans.
  */
 export async function buildLookupMap(
   filePath: string,
@@ -2032,26 +2167,15 @@ export async function buildLookupMap(
 ): Promise<Map<string, string>> {
   const lookup = new Map<string, string>();
 
-  try {
-    const fileStream = fs.createReadStream(filePath);
-    const lineReader = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
+  for await (const row of readJsonlRows(filePath)) {
+    if (!row || typeof row !== 'object' || Array.isArray(row)) continue;
+    const parsed = row as Record<string, unknown>;
+    const key = parsed[keyField];
+    const value = parsed[valueField];
 
-    for await (const line of lineReader) {
-      const trimmed = line.trim();
-      if (!trimmed) {
-        continue;
-      }
-
-      const parsed = JSON.parse(trimmed) as Record<string, unknown>;
-      const key = parsed[keyField];
-      const value = parsed[valueField];
-
-      if (typeof key === 'string' && typeof value === 'string' && (prefer === 'last' || !lookup.has(key))) {
-        lookup.set(key, value);
-      }
+    if (typeof key === 'string' && typeof value === 'string' && (prefer === 'last' || !lookup.has(key))) {
+      lookup.set(key, value);
     }
-  } catch {
-    // Missing or unreadable lookup files should not block session sync.
   }
 
   return lookup;
@@ -2068,26 +2192,11 @@ export async function extractFirstValidJsonlData<T>(
   filePath: string,
   extractor: (parsedJson: unknown) => T | null | undefined
 ): Promise<T | null> {
-  try {
-    const fileStream = fs.createReadStream(filePath);
-    const lineReader = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
-
-    for await (const line of lineReader) {
-      const trimmed = line.trim();
-      if (!trimmed) {
-        continue;
-      }
-
-      const parsed = JSON.parse(trimmed);
-      const extracted = extractor(parsed);
-      if (extracted) {
-        lineReader.close();
-        fileStream.close();
-        return extracted;
-      }
+  for await (const row of readJsonlRows(filePath)) {
+    const extracted = extractor(row);
+    if (extracted) {
+      return extracted;
     }
-  } catch {
-    // Ignore malformed or missing artifacts so full scans keep progressing.
   }
 
   return null;
@@ -2464,4 +2573,38 @@ export function canonicalizeJson(value: unknown): unknown {
  */
 export function getCodexHome(): string {
   return process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
+}
+
+// ---------------------------
+//----------------- QUEUED CHAT MESSAGE UTILITIES ------------
+/**
+ * Reads a stored queued chat message (the parsed JSON of
+ * `session_drafts.queued_message`), or returns null when it has nothing to
+ * send: no text and no attachments.
+ *
+ * Used by the Database module's drafts repository, which appends a follow-up
+ * to the waiting message, and by the Scheduled Messages dispatcher, which sends
+ * it. Both must read a stored message the same way, or a merge could keep what
+ * the dispatcher then ignores. Rows from before attachments existed hold
+ * image-only descriptors in `images`; they are read as `attachments`.
+ * `options` is kept only when it is a plain object.
+ */
+export function readQueuedChatMessage(value: unknown): QueuedChatMessage | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const content = typeof record.content === 'string' ? record.content : '';
+  const attachments = Array.isArray(record.attachments)
+    ? record.attachments
+    : Array.isArray(record.images)
+      ? record.images
+      : [];
+  if (!content.trim() && attachments.length === 0) {
+    return null;
+  }
+  const options = record.options && typeof record.options === 'object' && !Array.isArray(record.options)
+    ? record.options as Record<string, unknown>
+    : undefined;
+  return { content, ...(options ? { options } : {}), attachments };
 }

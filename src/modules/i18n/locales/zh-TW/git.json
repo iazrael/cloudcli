@@ -4,6 +4,7 @@
   },
   "tabs": {
     "changes": "變更",
+    "compare": "比較",
     "history": "提交",
     "branches": "分支",
     "worktrees": "工作樹",
@@ -13,6 +14,7 @@
     "modified": "已修改",
     "added": "已加入",
     "deleted": "已刪除",
+    "renamed": "已重新命名",
     "untracked": "未追蹤"
   },
   "confirm": {
@@ -111,6 +113,23 @@
     "changesCount": "變更 ({{n}})",
     "stageAll": "全部暫存",
     "allStaged": "所有變更均已暫存"
+  },
+  "compare": {
+    "baseLabel": "比較對象",
+    "localGroup": "本地分支",
+    "remoteGroup": "遠端分支",
+    "noBranches": "沒有可用分支",
+    "summary_one": "與 <ref>{{base}}</ref> 相比有 {{count}} 個檔案變更",
+    "summary_other": "與 <ref>{{base}}</ref> 相比有 {{count}} 個檔案變更",
+    "mergeBase": "合併基點 {{sha}}",
+    "mergeBaseTitle": "{{base}} 與 HEAD 的合併基點：{{sha}}",
+    "refresh": "重新整理比較",
+    "noChanges": "與 {{base}} 沒有差異",
+    "noCommonHistory": "「{{base}}」與目前分支沒有共同歷史，因此沒有可比較的內容。",
+    "loadError": "無法與「{{base}}」進行比較",
+    "renamedFrom": "由 {{path}} 重新命名",
+    "renameOnly": "僅重新命名，內容無變更",
+    "fileLoadError": "無法載入此差異。"
   },
   "composer": {
     "confirmCommit_one": "以提交訊息「{{message}}」提交 {{count}} 個檔案？",
