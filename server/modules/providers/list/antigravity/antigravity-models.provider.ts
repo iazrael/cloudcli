@@ -153,6 +153,9 @@ function readDefaultModelFromSettings(): string | null {
   }
 }
 
+/** One catalog read; injectable so tests can drive the cache without a CLI process. */
+export type AntigravityCatalogLoader = () => Promise<ProviderModelsDefinition | null>;
+
 export class AntigravityProviderModels implements IProviderModels {
   /**
    * Every turn reads the catalog before spawning agy, and `agy models` takes
@@ -166,10 +169,11 @@ export class AntigravityProviderModels implements IProviderModels {
    *   healthy CLI result it expires fast: the builtin list is a stopgap that
    *   goes stale, so `agy models` is asked again soon instead of after the
    *   full five-minute window.
+   * @param load Catalog reader; defaults to the real `agy models` probe.
    */
-  constructor(fallbackTtlMs: number = 10_000) {
+  constructor(fallbackTtlMs: number = 10_000, load: AntigravityCatalogLoader = fetchModelsFromCli) {
     this.catalog = createStaleWhileRefreshValue<ProviderModelsDefinition>({
-      load: async () => (await fetchModelsFromCli()) ?? ANTIGRAVITY_BUILTIN_MODELS,
+      load: async () => (await load()) ?? ANTIGRAVITY_BUILTIN_MODELS,
       ttlMs: (models) => (models === ANTIGRAVITY_BUILTIN_MODELS ? fallbackTtlMs : 5 * 60 * 1000),
       // The load falls back instead of rejecting; this only covers a bug in it.
       failureRetryMs: fallbackTtlMs,

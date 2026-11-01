@@ -20,6 +20,7 @@ import {
   readObjectRecord,
   readOptionalString,
   stripAnsiSequences,
+  type StaleWhileRefreshValue,
 } from '@/shared/utils.js';
 
 import {
@@ -474,13 +475,18 @@ export class OpenCodeProviderModels implements IProviderModels {
    * minute so a newly connected provider shows up soon; the anchor fallback
    * for ten seconds, so a CLI that was briefly unavailable is asked again.
    */
-  private readonly catalog = createStaleWhileRefreshValue<OpenCodeCatalogLoad>({
-    load: loadOpenCodeCatalog,
-    ttlMs: (loaded) => (loaded.fromCli ? 60_000 : 10_000),
-    // The load falls back instead of rejecting; this only covers a bug in it.
-    failureRetryMs: 10_000,
-    onRefreshError: (error) => console.error('[OpenCode] Model catalog refresh failed:', error),
-  });
+  private readonly catalog: StaleWhileRefreshValue<OpenCodeCatalogLoad>;
+
+  /** @param load Catalog reader; defaults to the real `opencode models` probe. */
+  constructor(load: () => Promise<OpenCodeCatalogLoad> = loadOpenCodeCatalog) {
+    this.catalog = createStaleWhileRefreshValue<OpenCodeCatalogLoad>({
+      load,
+      ttlMs: (loaded) => (loaded.fromCli ? 60_000 : 10_000),
+      // The load falls back instead of rejecting; this only covers a bug in it.
+      failureRetryMs: 10_000,
+      onRefreshError: (error) => console.error('[OpenCode] Model catalog refresh failed:', error),
+    });
+  }
 
   async getSupportedModels(): Promise<ProviderModelsDefinition> {
     return (await this.catalog.get()).models;
