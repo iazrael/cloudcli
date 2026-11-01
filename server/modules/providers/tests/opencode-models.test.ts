@@ -298,6 +298,62 @@ test('OpenCode reads display names and effort variants from the cached catalog',
   );
 });
 
+test('OpenCode reads effort tiers from the v2.2 catalog key and layout', async () => {
+  // OpenCode v2.2 renamed the kv key to `models-dev:v2:catalog` and moved the
+  // tiers to `capabilities.reasoning.effort`; the new key wins over a stale old one.
+  await withOpenCodeHome(
+    async (homeDir) => {
+      const cliPath = await writeFakeOpenCodeCli(
+        homeDir,
+        ['opencode-go/deepseek-v4.1-flash', 'opencode-go/plain'].join('\n'),
+      );
+      process.env.CLOUDCLI_OPENCODE_CLI = cliPath;
+
+      const dbPath = path.join(homeDir, '.local', 'share', 'opencode', 'opencode.db');
+      await mkdir(path.dirname(dbPath), { recursive: true });
+      const db = new Database(dbPath);
+      try {
+        db.exec('CREATE TABLE kv (key text PRIMARY KEY, value text NOT NULL);');
+        const insert = db.prepare('INSERT INTO kv (key, value) VALUES (?, ?)');
+        insert.run('models-dev:catalog', JSON.stringify({ body: { 'opencode-go': { models: {} } } }));
+        insert.run(
+          'models-dev:v2:catalog',
+          JSON.stringify({
+            updatedAt: 1,
+            digest: 'd',
+            body: JSON.stringify({
+              'opencode-go': {
+                models: {
+                  'deepseek-v4.1-flash': {
+                    name: 'DeepSeek V4.1 Flash',
+                    capabilities: { reasoning: { supported: true, effort: ['low', 'high', 'max'] } },
+                  },
+                  plain: { name: 'Plain', capabilities: { reasoning: { supported: false, effort: ['low'] } } },
+                },
+              },
+            }),
+          }),
+        );
+      } finally {
+        db.close();
+      }
+    },
+    async (adapter) => {
+      const catalog = await adapter.getSupportedModels();
+
+      assert.deepEqual(catalog.OPTIONS, [
+        {
+          value: 'opencode-go/deepseek-v4.1-flash',
+          label: 'DeepSeek V4.1 Flash',
+          description: 'OpenCode Go',
+          effort: { values: [{ value: 'low' }, { value: 'high' }, { value: 'max' }] },
+        },
+        { value: 'opencode-go/plain', label: 'Plain', description: 'OpenCode Go' },
+      ]);
+    },
+  );
+});
+
 test('OpenCode does not run `opencode models` again for every turn', async () => {
   // Every turn reads the catalog before it starts, and the CLI query takes a
   // second or more; within the fresh window the catalog comes from memory.

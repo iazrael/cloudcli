@@ -257,16 +257,23 @@ const OPENCODE_FAMILY_DESCRIPTIONS: Record<string, string> = {
 
 type OpenCodeCatalogModelEntry = {
   name?: string;
+  /** v2.2+ layout: effort tiers live under `capabilities.reasoning.effort`. */
+  capabilities?: { reasoning?: { supported?: boolean; effort?: unknown[] } };
+  /** Pre-v2.2 layout. */
   reasoning_options?: Array<{ type?: string; values?: string[] }>;
 };
 
+/** `kv` keys of the cached models.dev catalog, newest layout first (v2.2 renamed it). */
+const OPENCODE_CATALOG_KV_KEYS = ['models-dev:v2:catalog', 'models-dev:catalog'];
+
 /**
  * Reads the models.dev catalog OpenCode caches in its database (`kv` key
- * `models-dev:catalog`) and maps `<family>/<modelId>` to the display name and
- * reasoning-effort values it records for each model.
+ * `models-dev:v2:catalog`, `models-dev:catalog` before v2.2) and maps
+ * `<family>/<modelId>` to the display name and reasoning-effort values it
+ * records for each model.
  *
  * This is where the reasoning-variant data lives in v2 — `opencode models`
- * prints ids only, but this catalog carries `reasoning_options` per model and
+ * prints ids only, but this catalog carries the effort tiers per model and
  * is refreshed by the CLI itself. A missing database, missing key, or a
  * `body` encoded as an embedded JSON string all degrade to an empty map, so
  * options fall back to synthesized labels without effort variants.
@@ -276,9 +283,10 @@ const readOpenCodeCatalogEntries = (): Map<string, OpenCodeCatalogModelEntry> =>
   try {
     const db = new Database(getOpenCodeDatabasePath(), { readonly: true, fileMustExist: true });
     try {
-      const row = db.prepare("SELECT value FROM kv WHERE key = 'models-dev:catalog'").get() as {
-        value?: string;
-      } | undefined;
+      const readKey = db.prepare('SELECT value FROM kv WHERE key = ?');
+      const row = OPENCODE_CATALOG_KV_KEYS
+        .map((key) => readKey.get(key) as { value?: string } | undefined)
+        .find((candidate) => candidate?.value);
       const parsed = readJsonRecord(row?.value);
       let body: unknown = parsed?.body;
       if (typeof body === 'string') {
@@ -318,9 +326,11 @@ const buildOpenCodeModelOption = (
   // name — stamping them "OpenCode Zen" would misrepresent where the run goes.
   const gateway = OPENCODE_FAMILY_DESCRIPTIONS[familyId] ?? humanizeOpenCodeModelLabel(familyId);
   const catalogEntry = catalogEntries.get(value);
-  const effortValues = (catalogEntry?.reasoning_options ?? [])
-    .find((option) => option?.type === 'effort')
-    ?.values?.filter((entry): entry is string => typeof entry === 'string') ?? [];
+  const reasoning = catalogEntry?.capabilities?.reasoning;
+  const rawEffortValues = Array.isArray(reasoning?.effort)
+    ? (reasoning.supported === false ? [] : reasoning.effort)
+    : (catalogEntry?.reasoning_options ?? []).find((option) => option?.type === 'effort')?.values ?? [];
+  const effortValues = rawEffortValues.filter((entry): entry is string => typeof entry === 'string');
 
   return {
     value,
