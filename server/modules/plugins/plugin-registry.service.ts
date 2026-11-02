@@ -135,6 +135,59 @@ export function validateManifest(manifest) {
 }
 
 const BUILD_TIMEOUT_MS = 60_000;
+const NATIVE_REBUILD_TIMEOUT_MS = 180_000;
+
+/**
+ * Plugin dependencies are installed by the host, which typically runs with
+ * `NODE_ENV=production` (PM2). npm reads that as `--omit=dev`, but plugins
+ * compile their own sources, so the build toolchain in devDependencies must be
+ * present regardless of how the host was started. `--include=dev` overrides
+ * the inference; scripts/self-update.mjs uses the same argument for the host
+ * build. `--ignore-scripts` still blocks postinstall hooks.
+ */
+const PLUGIN_NPM_INSTALL_ARGS = ['install', '--ignore-scripts', '--include=dev'];
+
+/**
+ * Runs one npm step of a plugin install with a timeout and captured stderr.
+ * `onError` receives an Error whose message names the command and carries the
+ * process output, so the settings screen can explain the failure.
+ */
+function runPluginCommand(command, args, options, onSuccess, onError) {
+  const child = spawn(command, args, {
+    cwd: options.cwd,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  let stderr = '';
+  let settled = false;
+
+  const timer = setTimeout(() => {
+    if (settled) return;
+    settled = true;
+    child.removeAllListeners();
+    child.kill();
+    onError(new Error(options.timeoutMessage));
+  }, options.timeoutMs);
+
+  child.stderr.on('data', (data) => { stderr += data.toString(); });
+
+  child.on('close', (code) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    if (code !== 0) {
+      return onError(new Error(options.failureMessage(code, stderr.trim())));
+    }
+    onSuccess();
+  });
+
+  child.on('error', (err) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    onError(new Error(`Failed to spawn ${options.spawnName}: ${err.message}`));
+  });
+}
 
 /** Run `npm run build` if the plugin's package.json declares a build script. */
 function runBuildIfNeeded(dir, packageJsonPath, onSuccess, onError) {
@@ -147,40 +200,43 @@ function runBuildIfNeeded(dir, packageJsonPath, onSuccess, onError) {
     return onSuccess(); // Unreadable package.json — skip build
   }
 
-  const buildProcess = spawn('npm', ['run', 'build'], {
+  runPluginCommand('npm', ['run', 'build'], {
     cwd: dir,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+    timeoutMs: BUILD_TIMEOUT_MS,
+    timeoutMessage: 'npm run build timed out',
+    spawnName: 'build',
+    failureMessage: (code, stderr) => `npm run build failed (exit code ${code}): ${stderr}`,
+  }, onSuccess, onError);
+}
 
-  let stderr = '';
-  let settled = false;
+/**
+ * `npm install --ignore-scripts` leaves node-pty without a native binary on
+ * Linux: its npm tarball only ships macOS and Windows prebuilds, and the
+ * skipped install script is what compiles the addon. Terminal plugins load
+ * node-pty as soon as their server starts, so the plugin would install but its
+ * server would exit immediately. `npm rebuild node-pty` runs that one known
+ * package's install script (prebuild check, then node-gyp) while every other
+ * postinstall stays disabled. Skips when the platform already has a usable
+ * prebuild or an earlier build.
+ */
+function rebuildPtyIfNeeded(dir, onSuccess, onError) {
+  const ptyDir = path.join(dir, 'node_modules', 'node-pty');
+  if (!fs.existsSync(path.join(ptyDir, 'package.json'))) return onSuccess();
 
-  const timer = setTimeout(() => {
-    if (settled) return;
-    settled = true;
-    buildProcess.removeAllListeners();
-    buildProcess.kill();
-    onError(new Error('npm run build timed out'));
-  }, BUILD_TIMEOUT_MS);
+  const binaryPaths = [
+    path.join(ptyDir, 'build', 'Release', 'pty.node'),
+    path.join(ptyDir, 'prebuilds', `${process.platform}-${process.arch}`, 'pty.node'),
+  ];
+  if (binaryPaths.some((binary) => fs.existsSync(binary))) return onSuccess();
 
-  buildProcess.stderr.on('data', (data) => { stderr += data.toString(); });
-
-  buildProcess.on('close', (code) => {
-    if (settled) return;
-    settled = true;
-    clearTimeout(timer);
-    if (code !== 0) {
-      return onError(new Error(`npm run build failed (exit code ${code}): ${stderr.trim()}`));
-    }
-    onSuccess();
-  });
-
-  buildProcess.on('error', (err) => {
-    if (settled) return;
-    settled = true;
-    clearTimeout(timer);
-    onError(new Error(`Failed to spawn build: ${err.message}`));
-  });
+  runPluginCommand('npm', ['rebuild', 'node-pty', '--ignore-scripts=false'], {
+    cwd: dir,
+    timeoutMs: NATIVE_REBUILD_TIMEOUT_MS,
+    timeoutMessage: 'npm rebuild node-pty timed out',
+    spawnName: 'native rebuild',
+    failureMessage: (code, stderr) => `npm rebuild node-pty failed (exit code ${code}): ${stderr}. `
+      + 'Building it needs python3, make and a C++ compiler on the CloudCLI server.',
+  }, onSuccess, onError);
 }
 
 /**
@@ -491,10 +547,12 @@ export function installPluginFromGit(url) {
       }
 
       // Run npm install if package.json exists.
-      // --ignore-scripts prevents postinstall hooks from executing arbitrary code.
+      // --ignore-scripts prevents postinstall hooks from executing arbitrary code;
+      // --include=dev keeps the plugin's build toolchain when the host runs with
+      // NODE_ENV=production.
       const packageJsonPath = path.join(tempDir, 'package.json');
       if (fs.existsSync(packageJsonPath)) {
-        const npmProcess = spawn('npm', ['install', '--ignore-scripts'], {
+        const npmProcess = spawn('npm', PLUGIN_NPM_INSTALL_ARGS, {
           cwd: tempDir,
           stdio: ['ignore', 'pipe', 'pipe'],
         });
@@ -505,7 +563,9 @@ export function installPluginFromGit(url) {
             return reject(new Error(`npm install for ${repoName} failed (exit code ${npmCode})`));
           }
           restoreNativeBinaryExecBits(tempDir);
-          runBuildIfNeeded(tempDir, packageJsonPath, () => finalize(manifest), (err) => { cleanupTemp(); reject(err); });
+          rebuildPtyIfNeeded(tempDir, () => {
+            runBuildIfNeeded(tempDir, packageJsonPath, () => finalize(manifest), (err) => { cleanupTemp(); reject(err); });
+          }, (err) => { cleanupTemp(); reject(err); });
         });
 
         npmProcess.on('error', (err) => {
@@ -571,7 +631,7 @@ export function updatePluginFromGit(name) {
       // Re-run npm install if package.json exists
       const packageJsonPath = path.join(pluginDir, 'package.json');
       if (fs.existsSync(packageJsonPath)) {
-        const npmProcess = spawn('npm', ['install', '--ignore-scripts'], {
+        const npmProcess = spawn('npm', PLUGIN_NPM_INSTALL_ARGS, {
           cwd: pluginDir,
           stdio: ['ignore', 'pipe', 'pipe'],
         });
@@ -580,7 +640,9 @@ export function updatePluginFromGit(name) {
             return reject(new Error(`npm install for ${name} failed (exit code ${npmCode})`));
           }
           restoreNativeBinaryExecBits(pluginDir);
-          runBuildIfNeeded(pluginDir, packageJsonPath, () => resolve(manifest), (err) => reject(err));
+          rebuildPtyIfNeeded(pluginDir, () => {
+            runBuildIfNeeded(pluginDir, packageJsonPath, () => resolve(manifest), (err) => reject(err));
+          }, (err) => reject(err));
         });
         npmProcess.on('error', (err) => reject(err));
       } else {
