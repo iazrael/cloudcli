@@ -14,6 +14,14 @@ import ChatExportMenu from '@/modules/chat/transcript/ChatExportMenu';
 import { observeScrollStuck } from '@/shared/diagnostics/scrollScreening';
 import { MarkdownWorkspaceContext } from '@/modules/chat/context/MarkdownWorkspaceContext';
 
+/**
+ * Pixels rendered beyond each edge of the viewport. virtua's 200px default is
+ * sized for cheap rows; transcript rows (markdown, code, tool groups) take long
+ * enough to render that an iOS momentum flick, which the compositor advances
+ * thousands of pixels without waiting for JS, outruns it and shows a blank band.
+ */
+const TRANSCRIPT_BUFFER_PX = 1200;
+
 type ChatMessagesPaneProps = {
   /** The scroll container, owned by `useTranscriptViewport`. */
   scrollRef: RefObject<HTMLDivElement>;
@@ -282,6 +290,7 @@ function ChatMessagesPane({
             ref={virtualizerRef}
             scrollRef={scrollRef}
             shift={shiftOnPrepend}
+            bufferSize={TRANSCRIPT_BUFFER_PX}
             onScroll={onScroll}
             data={transcriptItems}
           >
