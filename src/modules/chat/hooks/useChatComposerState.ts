@@ -15,9 +15,16 @@ import { useTranslation } from 'react-i18next';
 import { api, ApiRequestError, authenticatedFetch } from '@/shared/api';
 import { createClientRequestId, isEnginePromptCommand, isImageAttachment } from '@/shared/utils';
 import type { MarkSessionProcessing, SessionActivityMap } from '@/shared/types';
+import { useProviderCapabilitiesMap } from '@/shared/hooks/useProviderCapabilities';
 import { uploadAttachmentFiles } from '@/modules/chat/utils/attachmentUpload';
 import { grantClaudeToolPermission } from '@/modules/chat/utils/chatPermissions';
-import { readProviderToolsSettings, safeLocalStorage } from '@/modules/chat/utils/chatStorage';
+import {
+  clearQueuedCompact,
+  readProviderToolsSettings,
+  readQueuedCompact,
+  safeLocalStorage,
+  writeQueuedCompact,
+} from '@/modules/chat/utils/chatStorage';
 import {
   appendQueuedMessage,
   clearQueuedMessage,
@@ -40,6 +47,7 @@ import type {
 } from '@/shared/types';
 import type { Project, ProjectSession, LLMProvider, ProviderModelOption, ProviderQuotaData } from '@/shared/types';
 import { escapeRegExp } from '@/modules/chat/utils/chatFormatting';
+import { toTokenBudget } from '@/modules/chat/utils/contextUsage';
 
 import { useFileMentions } from '@/modules/chat/hooks/useFileMentions';
 import type { SlashCommand } from '@/shared/types';
@@ -61,12 +69,6 @@ type UseChatComposerStateArgs = {
   currentProviderModel: string;
   currentProviderEffort: string;
   isLoading: boolean;
-  /**
-   * Whether a new message has to wait (be queued). Defaults to "busy at all";
-   * the chat passes false during background work whose runtime takes the next
-   * turn alongside it (Claude's held process).
-   */
-  isInputBlocked?: boolean;
   /** Live websocket connectivity; unknown counts as connected. */
   isConnected?: boolean;
   backgroundTasks?: ActiveBackgroundTask[];
@@ -140,6 +142,18 @@ export type CostCommandData = {
   tokenBreakdown?: {
     input?: number;
     output?: number;
+  };
+  /** Engine-reported context-window percentage (Claude); otherwise derived from used/total. */
+  percentage?: number;
+  /** The session was just compacted, so current occupancy is unknown until the next turn. */
+  compacted?: boolean;
+  /** UTF-8 size of the compaction summary, the only size available while `compacted`. */
+  summaryBytes?: number;
+  /** Session-lifetime totals for providers whose `tokenUsage.used` is the current context occupancy (codex, opencode). */
+  cumulative?: {
+    used?: number;
+    inputTokens?: number;
+    outputTokens?: number;
   };
   provider?: string;
   model?: string;
@@ -298,7 +312,6 @@ export function useChatComposerState({
   currentProviderModel,
   currentProviderEffort,
   isLoading,
-  isInputBlocked,
   isConnected,
   backgroundTasks = [],
   hasActiveBackgroundTasks = false,
@@ -319,6 +332,17 @@ export function useChatComposerState({
 }: UseChatComposerStateArgs) {
   const { t } = useTranslation('chat');
   const draftGenerationRef = useRef(getChatDraftSessionGeneration());
+  // Backend-owned capability for the active provider; while the matrix is
+  // loading the `/compact` entry simply stays hidden.
+  const { capabilities: providerCapabilities } = useProviderCapabilitiesMap();
+  const supportsCompaction = providerCapabilities?.[provider]?.supportsCompaction ?? false;
+  // A busy session only holds a new message back when sending would kill the
+  // work in flight; how far the engine takes input is its own capability.
+  // Until the matrix loads, everything queues.
+  const inputWhileBusy = providerCapabilities?.[provider]?.inputWhileBusy ?? 'queue';
+  const backgroundWorkQueuesInput = Boolean(hasActiveBackgroundTasks) && inputWhileBusy === 'queue';
+  const turnQueuesInput = isLoading && inputWhileBusy !== 'always';
+  const queuesInput = turnQueuesInput || backgroundWorkQueuesInput;
   const [input, setInput] = useState(() => {
     if (typeof window !== 'undefined' && selectedProject) {
       const scope = selectedSession?.id || currentSessionId || `project:${selectedProject.projectId}`;
@@ -391,6 +415,19 @@ export function useChatComposerState({
   // effect must not write across that gap.
   const queuedDraftSessionRef = useRef<string | null>(sessionKey);
 
+  /**
+   * The session whose `/compact` is parked until its running turn ends.
+   * Compaction is a run of its own, so the gateway refuses it while any run
+   * holds the session; parking it — rather than surfacing that refusal — is
+   * what lets the user ask mid-turn and have it happen automatically.
+   */
+  const [pendingCompactSession, setPendingCompactSession] = useState<string | null>(() => (
+    typeof window !== 'undefined' && sessionKey && readQueuedCompact(sessionKey)
+      ? sessionKey
+      : null
+  ));
+  const pendingCompact = Boolean(sessionKey) && pendingCompactSession === sessionKey;
+
   const handleBuiltInCommand = useCallback(
     (result: CommandExecutionResult) => {
       const { action, data } = result;
@@ -415,13 +452,19 @@ export function useChatComposerState({
             kind: 'cost',
             data: costData,
           });
-          if (costData.tokenUsage && setTokenBudget) {
+          if (costData.compacted) {
+            // Occupancy is unknown until the next turn, but the summary that
+            // replaced the conversation still has a measurable size.
+            setTokenBudget?.(toTokenBudget({ compacted: true, summaryBytes: costData.summaryBytes }));
+          } else if (costData.tokenUsage && setTokenBudget) {
             setTokenBudget({
               used: costData.tokenUsage.used,
               total: costData.tokenUsage.total,
               inputTokens: costData.tokenBreakdown?.input,
               outputTokens: costData.tokenBreakdown?.output,
               breakdown: costData.tokenBreakdown,
+              ...(costData.percentage ? { percentage: costData.percentage } : {}),
+              ...(costData.cumulative ? { cumulative: costData.cumulative } : {}),
             });
           }
           break;
@@ -504,6 +547,52 @@ export function useChatComposerState({
         return;
       }
 
+      // `/compact` is a runtime action, not a transcript command: it never
+      // reaches /api/commands/execute. The provider runtime consumes it over
+      // the chat socket, streams progress, and the terminal `complete`
+      // refreshes the transcript with the summary.
+      if (command.name === '/compact') {
+        const targetSessionId = currentSessionId || selectedSession?.id || null;
+        if (!targetSessionId) {
+          addMessage({
+            type: 'assistant',
+            content: t('chat:misc.compactNoSession', {
+              defaultValue: 'Start a conversation before compacting its context.',
+            }),
+            timestamp: Date.now(),
+          });
+          return;
+        }
+
+        const compactOptions = {
+          model: currentProviderModel,
+          effort: currentProviderEffort,
+        };
+
+        // Compaction is a run of its own — it cannot ride the turn in flight
+        // the way a message can, so the gateway would answer RUN_IN_PROGRESS.
+        // Park the request instead and let the turn-end flush dispatch it.
+        if (isLoading && targetSessionId === sessionKey) {
+          writeQueuedCompact(targetSessionId, { options: compactOptions });
+          setPendingCompactSession(targetSessionId);
+          if (!options?.preserveInput) {
+            updateInput('');
+          }
+          return;
+        }
+
+        sendMessage({
+          type: 'chat.compact',
+          sessionId: targetSessionId,
+          options: compactOptions,
+        });
+        onSessionProcessing?.(targetSessionId, { statusText: null, canInterrupt: false });
+        if (!options?.preserveInput) {
+          updateInput('');
+        }
+        return;
+      }
+
       try {
         const effectiveInput = rawInput ?? input;
         // Everything typed after the command name is its argument text, line
@@ -581,12 +670,18 @@ export function useChatComposerState({
       handleBuiltInCommand,
       handleCustomCommand,
       input,
+      isLoading,
       provider,
       selectedProject,
       selectedSession?.id,
+      sessionKey,
       addMessage,
       tokenBudget,
       updateInput,
+      currentProviderEffort,
+      onSessionProcessing,
+      sendMessage,
+      t,
     ],
   );
 
@@ -623,6 +718,7 @@ export function useChatComposerState({
     setInput: updateInput,
     textareaRef,
     onExecuteCommand: executeCommand,
+    supportsCompaction,
   });
 
   const {
@@ -900,11 +996,11 @@ export function useChatComposerState({
           }
         }
 
-        // A turn or background work is already in flight: stash this message instead of sending it.
+        // The session is busy with work this engine cannot take a message during:
+        // stash it instead of sending it.
         // Upload attached files now so the queued record contains durable image
         // descriptors that can be sent even if another session is open later.
-        const isBusy = isInputBlocked ?? (isLoading || Boolean(hasActiveBackgroundTasks));
-        if (isBusy && !isForced) {
+        if (queuesInput && !isForced) {
           // A run can restart in the tiny gap between scheduling and flushing a
           // queued submission. Put the same durable draft back without uploading
           // its files again.
@@ -1125,10 +1221,8 @@ export function useChatComposerState({
       buildSendOptions,
       currentSessionId,
       executeCommand,
-      isLoading,
-      isInputBlocked,
+      queuesInput,
       isConnected,
-      hasActiveBackgroundTasks,
       onSessionProcessing,
       onSessionEstablished,
       provider,
@@ -1178,6 +1272,56 @@ export function useChatComposerState({
       });
     });
   }, [sessionKey]);
+
+  // A `/compact` asked mid-turn cannot ride the running turn — the gateway
+  // refuses a second run — so it is parked in localStorage and this page
+  // dispatches it once the turn (and any background work that queues input)
+  // settles. The server's queued-message dispatcher then sends queued text
+  // behind the compaction's own run.
+  // Whether the session was still busy on the previous render. A compact
+  // parked during a turn is dispatched immediately when that turn ends, ahead
+  // of the server's 2s queue poll (which would otherwise start a queued
+  // message first and make the gateway refuse this compaction).
+  const compactWasBusyRef = useRef(false);
+  useEffect(() => {
+    const wasBusy = compactWasBusyRef.current;
+    compactWasBusyRef.current = isLoading || queuesInput;
+    if (!sessionKey || !pendingCompact || isLoading || queuesInput) {
+      return undefined;
+    }
+    // Hold briefly so a `chat_subscribed` ack can flip `isLoading` when a run
+    // is actually still live; the cleanup cancels the dispatch in that case.
+    const timer = setTimeout(() => {
+      setPendingCompactSession((current) => (current === sessionKey ? null : current));
+      const parked = readQueuedCompact(sessionKey);
+      if (!parked) {
+        return;
+      }
+      clearQueuedCompact(sessionKey);
+      sendMessage({
+        type: 'chat.compact',
+        sessionId: sessionKey,
+        options: {
+          model: currentProviderModel,
+          effort: currentProviderEffort,
+          ...parked.options,
+        },
+      });
+      // Dispatching marks the session processing, which holds any queued
+      // message behind the compaction's own run.
+      onSessionProcessing?.(sessionKey, { statusText: null, canInterrupt: false });
+    }, wasBusy ? 0 : 750);
+    return () => clearTimeout(timer);
+  }, [
+    pendingCompact,
+    isLoading,
+    queuesInput,
+    sessionKey,
+    currentProviderModel,
+    currentProviderEffort,
+    sendMessage,
+    onSessionProcessing,
+  ]);
 
   const clearQueuedDraftOnServer = useCallback(async (owner: string | null, expected: QueuedDraft) => {
     if (!owner || draftGenerationRef.current !== getChatDraftSessionGeneration()) return false;
@@ -1307,6 +1451,21 @@ export function useChatComposerState({
     };
   }, []);
 
+  // The parked `/compact` follows the session the same way: it belongs to the
+  // session it was requested for, not to whichever composer is mounted now.
+  useEffect(() => {
+    setPendingCompactSession(
+      sessionKey && readQueuedCompact(sessionKey) ? sessionKey : null,
+    );
+  }, [sessionKey]);
+
+  const cancelPendingCompact = useCallback(() => {
+    if (sessionKey) {
+      clearQueuedCompact(sessionKey);
+    }
+    setPendingCompactSession((current) => (current === sessionKey ? null : current));
+  }, [sessionKey]);
+
   useEffect(() => {
     if (!textareaRef.current) {
       return;
@@ -1420,34 +1579,18 @@ export function useChatComposerState({
     setIsTextareaExpanded(false);
   }, [resetCommandMenuState, updateInput]);
 
-  // The task strip targets background work even while a foreground turn is
-  // responding. Leave cards and queued drafts intact until the server settles it.
-  const handleAbortBackgroundTasks = useCallback(() => {
-    const targetSessionId = selectedSession?.id || currentSessionId || null;
-    if (!targetSessionId) {
-      console.warn('Background stop requested but no session ID is available.');
-      return;
-    }
-    for (const taskId of new Set(backgroundTasks.flatMap((task) => task.taskId ? [task.taskId] : []))) {
-      sendMessage({ type: 'chat.stop-task', sessionId: targetSessionId, taskId });
-    }
-  }, [backgroundTasks, currentSessionId, selectedSession?.id, sendMessage]);
-
   const handleAbortSession = useCallback(() => {
-    if (!canAbortSession) {
-      return;
-    }
-
     const targetSessionId = selectedSession?.id || currentSessionId || null;
     if (!targetSessionId) {
       console.warn('Abort requested but no session ID is available.');
       return;
     }
 
-    const activity = processingSessions?.get(targetSessionId);
-    if (backgroundTasks.length > 0 && backgroundTasks.every((task) => task.taskId)
-      && !(activity && !activity.background)) {
-      handleAbortBackgroundTasks();
+    // Stop aborts the turn only, as Esc does in Claude Code; background tasks
+    // are stopped from the task strip. Once the turn has ended there is no run
+    // to abort, but a finished task can still wake the model with a turn of
+    // its own, which `chat.abort` interrupts as well.
+    if (!canAbortSession && !processingSessions?.get(targetSessionId)?.background) {
       return;
     }
 
@@ -1457,7 +1600,30 @@ export function useChatComposerState({
       type: 'chat.abort',
       sessionId: targetSessionId,
     });
-  }, [backgroundTasks, canAbortSession, currentSessionId, handleAbortBackgroundTasks, processingSessions, selectedSession?.id, sendMessage]);
+  }, [canAbortSession, currentSessionId, processingSessions, selectedSession?.id, sendMessage]);
+
+  /**
+   * Stops background tasks by id: the one launched by `toolUseId`, or every
+   * stoppable task the session still has running when it is omitted.
+   *
+   * Only an entry carrying `taskId` has a stop handle the engine accepts —
+   * a child agent's session or a command's shell job.
+   */
+  const handleStopBackgroundTasks = useCallback((toolUseId?: string) => {
+    const targetSessionId = selectedSession?.id || currentSessionId || null;
+    if (!targetSessionId) {
+      return;
+    }
+    for (const task of backgroundTasks) {
+      if (!task.taskId) {
+        continue;
+      }
+      if (toolUseId && task.id !== toolUseId) {
+        continue;
+      }
+      sendMessage({ type: 'chat.stop-task', sessionId: targetSessionId, taskId: task.taskId });
+    }
+  }, [backgroundTasks, currentSessionId, selectedSession?.id, sendMessage]);
 
   const handleGrantToolPermission = useCallback(
     (suggestion: { entry: string; toolName: string }) => {
@@ -1559,9 +1725,16 @@ export function useChatComposerState({
     editQueuedDraft,
     deleteQueuedDraft,
     forceSendQueuedDraft,
+    /** False for providers whose fresh run would stop the background work a force send relies on. */
     canForceSendQueuedDraft,
+    /** True while a `/compact` waits for the running turn to end. */
+    pendingCompact,
+    cancelPendingCompact,
     backgroundTasks,
     hasActiveBackgroundTasks,
+    backgroundWorkQueuesInput,
+    /** True while the session is busy with work a new message would have to wait for. */
+    queuesInput,
     handleVoiceTranscript,
     handleInputChange,
     handleKeyDown,
@@ -1571,7 +1744,7 @@ export function useChatComposerState({
     syncInputOverlayScroll,
     handleClearInput,
     handleAbortSession,
-    handleAbortBackgroundTasks,
+    handleStopBackgroundTasks,
     handlePermissionDecision,
     handleGrantToolPermission,
     handleInputFocusChange,

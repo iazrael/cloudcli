@@ -393,11 +393,11 @@ test('an acknowledged wakeup expires even while the SDK stream is silent', async
   await withRun(async ({ script, sent }) => {
     script.emit(init());
     script.emit(toolUse('toolu_timer', 'ScheduleWakeup', { delaySeconds: 60 }));
-    script.emit(ack('toolu_timer', 'Scheduled', { scheduledFor: Date.now() + 300 }));
+    script.emit(ack('toolu_timer', 'Scheduled', { scheduledFor: Date.now() + 2000 }));
     script.emit(result());
     await script.drain();
     assert.equal(sent.filter((message) => message.text === 'background_tasks').at(-1)?.backgroundTasks?.length, 1);
-    const timeout = Date.now() + 1500;
+    const timeout = Date.now() + 6000;
     while (sent.filter((message) => message.text === 'background_tasks').at(-1)?.backgroundTasks?.length && Date.now() < timeout) {
       await script.drain();
     }

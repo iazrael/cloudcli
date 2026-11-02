@@ -13,6 +13,7 @@
 
 import type {
   NormalizedMessage,
+  ScheduledJobsChangedEvent,
   SessionRemovedEvent,
   SessionUpsertedEvent,
 } from './chatEvents.js';
@@ -104,6 +105,7 @@ export type ServerEvent =
   | ChatSubscribedEvent
   | SessionUpsertedEvent
   | SessionRemovedEvent
+  | ScheduledJobsChangedEvent
   | LoadingProgressEvent
   | ProtocolErrorEvent
   | QueuedMessageDispatchedEvent

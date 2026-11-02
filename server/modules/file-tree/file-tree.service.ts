@@ -386,7 +386,8 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
       return readOnlyPath;
     }
 
-    const validation = await dependencies.workspace.validatePath(targetPath);
+    // Browsing may stop at a drive root to switch drives on Windows.
+    const validation = await dependencies.workspace.validatePath(targetPath, { allowDriveRoot: true });
     if (!validation.valid) {
       throw createFileTreeError(validation.error ?? 'Path is outside the workspace root', 403, 'INVALID_WORKSPACE_PATH');
     }
@@ -457,6 +458,23 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
 
   return {
     async browseWorkspace(inputPath) {
+      const isWindows = process.platform === 'win32';
+      const availableDrives = dependencies.getAvailableDrives
+        ? await dependencies.getAvailableDrives()
+        : [];
+
+      if (isWindows && (inputPath === 'drives' || inputPath === 'This PC')) {
+        return {
+          path: 'drives',
+          suggestions: availableDrives.map((drive) => ({
+            path: drive,
+            name: `Local Disk (${drive.replace(/[\\/]/g, '')})`,
+            type: 'directory' as const,
+          })),
+          drives: availableDrives,
+        };
+      }
+
       const requestedPath = inputPath
         ? expandWorkspacePath(dependencies.workspace.rootPath, inputPath)
         : dependencies.workspace.rootPath;
@@ -474,9 +492,10 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
         throw createFileTreeError('Directory not accessible', 404, 'DIRECTORY_NOT_ACCESSIBLE');
       }
 
-      const fileTree = await buildFileTree(resolvedPath, 1);
+      const fileTree = await buildFileTree(resolvedPath, 0);
       const directories = fileTree
         .filter((item) => item.type === 'directory')
+        .filter((item) => !/^\$(recycle\.bin|system volume information)$/i.test(item.name))
         .map((item) => ({ path: item.path, name: item.name, type: 'directory' as const }))
         .sort((left, right) => {
           const leftHidden = left.name.startsWith('.');
@@ -500,7 +519,11 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
           ]
         : directories;
 
-      return { path: resolvedPath, suggestions };
+      return {
+        path: resolvedPath,
+        suggestions,
+        drives: availableDrives.length > 0 ? availableDrives : undefined,
+      };
     },
 
     async createWorkspaceFolder(folderPath) {

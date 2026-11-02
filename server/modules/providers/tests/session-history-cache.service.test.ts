@@ -140,6 +140,55 @@ test('the oldest entries are evicted according to retained payload size', async 
   }
 });
 
+test('a newly recorded context window invalidates the entry it was missing from', async () => {
+  // The window lands after the turn the page was read for, so the post-turn
+  // read can cache a `tokenUsage.total` that fell back to a default. Left
+  // cached, that stale total outlives every later read and the composer badge
+  // flips between it and the live one.
+  await withTranscriptFile(async (transcriptPath) => {
+    const cache = createSessionHistoryCache();
+    let loads = 0;
+    const loadFull = async () => {
+      loads += 1;
+      return historyResult(`load-${loads}`);
+    };
+
+    await cache.getFullHistory({ sessionId: 's1', transcriptPath, contextWindow: null, loadFull });
+    await cache.getFullHistory({ sessionId: 's1', transcriptPath, contextWindow: null, loadFull });
+    assert.equal(loads, 1, 'an unchanged window still serves from cache');
+
+    const afterRecording = await cache.getFullHistory({
+      sessionId: 's1',
+      transcriptPath,
+      contextWindow: 1_000_000,
+      loadFull,
+    });
+    assert.equal(loads, 2, 'a changed window re-reads');
+    assert.equal(afterRecording?.messages[0].content, 'load-2');
+
+    await cache.getFullHistory({ sessionId: 's1', transcriptPath, contextWindow: 1_000_000, loadFull });
+    assert.equal(loads, 2, 'and the new window caches again');
+  });
+});
+
+test('providers that record no window keep caching exactly as before', async () => {
+  await withTranscriptFile(async (transcriptPath) => {
+    const cache = createSessionHistoryCache();
+    let loads = 0;
+    const loadFull = async () => {
+      loads += 1;
+      return historyResult(`load-${loads}`);
+    };
+
+    // Callers that omit the field entirely must behave like `null`.
+    await cache.getFullHistory({ sessionId: 's1', transcriptPath, loadFull });
+    await cache.getFullHistory({ sessionId: 's1', transcriptPath, contextWindow: null, loadFull });
+    await cache.getFullHistory({ sessionId: 's1', transcriptPath, loadFull });
+
+    assert.equal(loads, 1);
+  });
+});
+
 test('an oversized history payload is not cached even when its source file is tiny', async () => {
   await withTranscriptFile(async (transcriptPath) => {
     const cache = createSessionHistoryCache(1024);

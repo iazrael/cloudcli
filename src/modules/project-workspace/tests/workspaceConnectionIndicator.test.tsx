@@ -85,6 +85,7 @@ const header = (activeTab: AppTab) => (
       setActiveTab={() => undefined}
       selectedProject={PROJECT}
       selectedSession={null}
+      shouldShowScheduledTab={false}
       shouldShowBrowserTab={false}
       shouldShowShellTab={false}
       isMobile={false}

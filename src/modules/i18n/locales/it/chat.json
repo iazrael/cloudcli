@@ -244,11 +244,20 @@
     "editing": {
       "title": "Sostituzione di un messaggio precedente",
       "filesNotReverted": "i file già modificati non vengono ripristinati",
+      "filesReverted": "anche i file già modificati vengono ripristinati",
       "cancel": "Annulla"
     },
     "permissionHeading": "Come approvare le azioni di {{provider}}?",
     "permissionCycleHint": "Premi Tab nel campo di testo per cambiare modalità",
     "permissionTriggerLabel": "{{mode}}: {{heading}}"
+  },
+  "misc": {
+    "needsInput": "{{provider}} attende una risposta",
+    "selectAllThatApply": "Seleziona tutte le opzioni applicabili",
+    "other": "Altro...",
+    "back": "Indietro",
+    "next": "Avanti",
+    "submit": "Invia"
   },
   "export": {
     "trigger": "Esporta conversazione",

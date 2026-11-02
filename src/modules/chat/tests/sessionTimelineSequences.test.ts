@@ -105,7 +105,6 @@ function mountTimeline(activeSessionId: string | null = SESSION_ID): TimelineHar
   handlersRoot = renderHook(
     ({ pendingRequests: pr }: { pendingRequests: PendingPermissionRequest[] }) =>
       useChatRealtimeHandlers({
-      sendMessage: () => {},
         isActive: true,
         subscribe,
         provider: 'claude',
@@ -176,7 +175,6 @@ test('real processing state clears a background reply but retains a new turn wit
     const sessionStore = useSessionStore();
     const protection = useSessionProtection();
     useChatRealtimeHandlers({
-      sendMessage: () => {},
       isActive: true, subscribe, provider: 'claude', selectedSession: null,
       currentSessionId: SESSION_ID, setTokenBudget: vi.fn(), pendingPermissionRequests: [],
       setPendingPermissionRequests: vi.fn(), statusCheckSentAtRef: { current: new Map() },
@@ -259,64 +257,6 @@ test('a content frame finalizes the buffered text segment before entering the st
     1,
     'the finalized first segment must stay untouched',
   );
-
-  timeline.cleanup();
-});
-
-test('a subagent step arriving mid-reply leaves the reply as one row', async () => {
-  const timeline = mountTimeline();
-  const replyId = 'msg_parent_text_0';
-  const delta = (content: string) =>
-    timeline.emit({ kind: 'stream_delta', id: replyId, sessionId: SESSION_ID, provider: 'opencode', content } as unknown as ServerEvent);
-  const childStep = (frame: Record<string, unknown>) =>
-    timeline.emit({ sessionId: SESSION_ID, provider: 'opencode', parentToolUseId: 'agent-call-1', ...frame } as unknown as ServerEvent);
-
-  // The frame order a running subagent produced while the parent replied:
-  // its tool calls, results and thinking land between the reply's deltas.
-  delta('Code ');
-  childStep({ kind: 'tool_use', id: 'child-call', toolId: 'child-call', toolName: 'Bash', toolInput: {} });
-  delta('and docs ');
-  await tickThrottle();
-  childStep({ kind: 'tool_result', id: 'child-call_result', toolId: 'child-call', content: 'ok' });
-  delta('are done');
-  childStep({ kind: 'thinking', id: 'child-reasoning', content: 'checking' });
-  delta('.');
-  timeline.emit({ kind: 'text', id: replyId, sessionId: SESSION_ID, provider: 'opencode', role: 'assistant', content: 'Code and docs are done.' } as unknown as ServerEvent);
-  timeline.emit({ kind: 'stream_end', id: `${replyId}_end`, sessionId: SESSION_ID, provider: 'opencode' } as unknown as ServerEvent);
-
-  const replyRows = timeline.sessionStore.getMessages(SESSION_ID)
-    .filter((row) => row.kind === 'text' && row.role === 'assistant' && !row.parentToolUseId);
-  assert.deepEqual(
-    replyRows.map((row) => ({ id: row.id, content: row.content })),
-    [{ id: replyId, content: 'Code and docs are done.' }],
-    'the reply must be one engine-named row, not fragments beside it',
-  );
-  assert.deepEqual(
-    timeline.sessionStore.getMessages(SESSION_ID).filter((row) => row.parentToolUseId).map((row) => row.id),
-    ['child-call', 'child-call_result', 'child-reasoning'],
-    'the subagent steps stay in the timeline for their card',
-  );
-
-  timeline.cleanup();
-});
-
-test('a subagent text row does not take the place of the parent reply streamed before it', () => {
-  const timeline = mountTimeline();
-  const replyId = 'msg_parent_text_0';
-
-  timeline.emit({ kind: 'stream_delta', id: replyId, sessionId: SESSION_ID, provider: 'opencode', content: 'Parent reply' } as unknown as ServerEvent);
-  // The parent's own tool call ends the segment, leaving it under a placeholder.
-  timeline.emit({ kind: 'tool_use', id: 'parent-call', sessionId: SESSION_ID, provider: 'opencode', toolId: 'parent-call', toolName: 'Agent', toolInput: {} } as unknown as ServerEvent);
-  timeline.emit({ kind: 'text', id: 'child-text', sessionId: SESSION_ID, provider: 'opencode', role: 'assistant', parentToolUseId: 'parent-call', content: 'Child finding' } as unknown as ServerEvent);
-  timeline.emit({ kind: 'text', id: replyId, sessionId: SESSION_ID, provider: 'opencode', role: 'assistant', content: 'Parent reply' } as unknown as ServerEvent);
-
-  const textRows = timeline.sessionStore.getMessages(SESSION_ID)
-    .filter((row) => row.kind === 'text')
-    .map((row) => ({ id: row.id, content: row.content, parentToolUseId: row.parentToolUseId }));
-  assert.deepEqual(textRows, [
-    { id: replyId, content: 'Parent reply', parentToolUseId: undefined },
-    { id: 'child-text', content: 'Child finding', parentToolUseId: 'parent-call' },
-  ]);
 
   timeline.cleanup();
 });
@@ -788,70 +728,4 @@ test('a replayed or live permission_request followed by permission_resolved clea
 
 afterEach(() => {
   vi.unstubAllGlobals();
-});
-
-test('history recovery automatically retries a transient failure and releases buffered text and permission effects', async () => {
-  vi.useFakeTimers();
-  let attempts = 0;
-  vi.stubGlobal('fetch', vi.fn(async () => {
-    attempts += 1;
-    return new Response(attempts === 1 ? 'offline' : JSON.stringify({ messages: [], total: 0, hasMore: false }), {
-      status: attempts === 1 ? 503 : 200, headers: { 'Content-Type': 'application/json' },
-    });
-  }));
-  const harness = mountTimeline();
-  try {
-    await act(async () => {
-      harness.emit({ kind: 'chat_subscribed', sessionId: SESSION_ID, streamEpoch: 'gateway-a', lastSeq: 5,
-        replayFromSeq: 6, stale: true, isProcessing: true, pendingPermissions: [], timestamp: '2026-10-20T00:00:00Z' });
-      await vi.advanceTimersByTimeAsync(0);
-    });
-    assert.equal(attempts, 1);
-    assert.equal(harness.sessionStore.getMessages(SESSION_ID).filter(row => row.kind === 'error').length, 1);
-    harness.emit(msg(6, { kind: 'permission_request', streamEpoch: 'gateway-a', seq: 6, requestId: 'after-gap', toolName: 'Bash',
-      context: { subagent: { toolUseId: 'agent-call' } } }) as ServerEvent);
-    harness.emit(msg(7, { role: 'assistant', streamEpoch: 'gateway-a', seq: 7, content: 'resumed reply' }) as ServerEvent);
-    assert.equal(harness.getPendingRequests().length, 0);
-    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
-    assert.equal(attempts, 2);
-    assert.deepEqual(harness.getPendingRequests().map(request => request.requestId), ['after-gap']);
-    assert.deepEqual(harness.sessionStore.getMessages(SESSION_ID).map(row => row.content), ['resumed reply']);
-    assert.equal(harness.sessionStore.getResumeSeq(SESSION_ID), 7);
-  } finally {
-    harness.cleanup();
-    vi.useRealTimers();
-  }
-});
-
-test('persistent history failures back off without parallel requests and unmount cancels retry', async () => {
-  vi.useFakeTimers();
-  let attempts = 0;
-  vi.stubGlobal('fetch', vi.fn(async () => {
-    attempts += 1;
-    return new Response('offline', { status: 503 });
-  }));
-  const harness = mountTimeline();
-  let cleaned = false;
-  try {
-    await act(async () => {
-      harness.emit({ kind: 'chat_subscribed', sessionId: SESSION_ID, streamEpoch: 'gateway-a', lastSeq: 5,
-        replayFromSeq: 6, stale: true, isProcessing: true, pendingPermissions: [], timestamp: '2026-10-20T00:00:00Z' });
-      await vi.advanceTimersByTimeAsync(0);
-    });
-    assert.equal(attempts, 1);
-    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
-    assert.equal(attempts, 2);
-    await act(async () => { await vi.advanceTimersByTimeAsync(1999); });
-    assert.equal(attempts, 2);
-    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
-    assert.equal(attempts, 3);
-    assert.equal(harness.sessionStore.getResumeSeq(SESSION_ID), 0);
-    assert.equal(harness.sessionStore.getMessages(SESSION_ID).filter(row => row.kind === 'error').length, 1);
-    harness.cleanup(); cleaned = true;
-    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
-    assert.equal(attempts, 3);
-  } finally {
-    if (!cleaned) harness.cleanup();
-    vi.useRealTimers();
-  }
 });

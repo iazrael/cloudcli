@@ -257,11 +257,20 @@
     "editing": {
       "title": "이전 메시지를 교체하는 중",
       "filesNotReverted": "이미 변경된 파일은 되돌리지 않습니다",
+      "filesReverted": "이미 변경된 파일도 함께 되돌립니다",
       "cancel": "취소"
     },
     "permissionHeading": "{{provider}} 작업을 어떻게 승인할까요?",
     "permissionCycleHint": "입력창에서 Tab을 누르면 모드를 전환할 수 있습니다",
     "permissionTriggerLabel": "{{mode}}: {{heading}}"
+  },
+  "misc": {
+    "needsInput": "{{provider}}가 입력을 기다리고 있습니다",
+    "selectAllThatApply": "해당하는 항목을 모두 선택하세요",
+    "other": "기타...",
+    "back": "뒤로",
+    "next": "다음",
+    "submit": "제출"
   },
   "export": {
     "trigger": "대화 내보내기",

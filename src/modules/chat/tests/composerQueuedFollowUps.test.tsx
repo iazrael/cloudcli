@@ -53,7 +53,6 @@ async function setup(options: { isConnected?: boolean; isLoading?: boolean; prov
     isLoading: options.isLoading ?? true,
     isConnected: options.isConnected,
     hasActiveBackgroundTasks: true,
-    isInputBlocked: true,
     canAbortSession: true,
     tokenBudget: null,
     sendMessage: () => undefined,

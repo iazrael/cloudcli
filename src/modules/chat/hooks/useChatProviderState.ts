@@ -174,6 +174,11 @@ export function useChatProviderState({
     // page loads that land in a server-restart window would otherwise keep the
     // model menu blank until the whole page is reloaded.
     const retryDelaysMs = [2_000, 8_000];
+    // A fallback catalog (the server could not read the live list yet, e.g.
+    // OpenCode's service still cold-starting) is shown right away but
+    // re-polled on a slower schedule until the real catalog arrives, so the
+    // picker does not stay stuck on the stand-in for the life of the page.
+    const fallbackRefreshDelaysMs = [5_000, 15_000, 30_000, 60_000];
 
     const fetchCatalogEntry = async (p: LLMProvider) => {
       const response = await authenticatedFetch(`/api/providers/${p}/models`);
@@ -190,6 +195,7 @@ export function useChatProviderState({
     };
 
     let pendingProviders = [...PROVIDERS];
+    const fallbackProviders = new Set<LLMProvider>();
     try {
       for (let attempt = 0; ; attempt++) {
         const results = await Promise.allSettled(pendingProviders.map(fetchCatalogEntry));
@@ -202,11 +208,18 @@ export function useChatProviderState({
             if (result.status === 'rejected') console.error(`Error loading ${targetProvider} models:`, result.reason);
           }
         });
+        pendingProviders.forEach((targetProvider, index) => {
+          const result = results[index];
+          if (result.status === 'fulfilled' && result.value) {
+            if (result.value.FALLBACK) fallbackProviders.add(targetProvider);
+            else fallbackProviders.delete(targetProvider);
+          }
+        });
         // Successful requests publish immediately; retry only the failed providers.
-        if (failed.length === 0) return;
+        if (failed.length === 0) break;
         if (attempt >= retryDelaysMs.length) {
           setFailedModelProviders(failed);
-          return;
+          break;
         }
         pendingProviders = failed;
         await new Promise((resolve) => setTimeout(resolve, retryDelaysMs[attempt]));
@@ -217,10 +230,31 @@ export function useChatProviderState({
         setProviderModelsLoading(false);
       }
     }
+
+    // Runs after loading settles: the stand-in is already on screen, so this
+    // only swaps in the live catalog and never flips the loading state back.
+    for (const delay of fallbackRefreshDelaysMs) {
+      if (fallbackProviders.size === 0) return;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      if (providerModelsRequestIdRef.current !== requestId) return;
+      const refreshing = [...fallbackProviders];
+      const results = await Promise.allSettled(refreshing.map(fetchCatalogEntry));
+      if (providerModelsRequestIdRef.current !== requestId) return;
+      refreshing.forEach((targetProvider, index) => {
+        const result = results[index];
+        if (result.status === 'fulfilled' && result.value && !result.value.FALLBACK) {
+          fallbackProviders.delete(targetProvider);
+        }
+      });
+    }
   }, []);
 
   useEffect(() => {
     void loadProviderModels();
+    // Invalidates the in-flight load so its fallback refresh stops polling.
+    return () => {
+      providerModelsRequestIdRef.current += 1;
+    };
   }, [loadProviderModels]);
 
   const getPermissionModesForProvider = useCallback((targetProvider: LLMProvider): PermissionMode[] => {
@@ -328,6 +362,11 @@ export function useChatProviderState({
         const stored = localStorage.getItem(`${targetProvider}-model`);
         const current = previous[targetProvider];
         const storedOption = findCatalogModelOption(definition.OPTIONS, stored);
+        // A stand-in catalog lacks most of the account's models; resetting a
+        // saved choice to its default would lose it before the real list lands.
+        if (definition.FALLBACK && stored && !storedOption) {
+          continue;
+        }
         const currentOption = current !== FALLBACK_DEFAULT_MODEL[targetProvider]
           ? findCatalogModelOption(definition.OPTIONS, current)
           : null;
@@ -687,6 +726,9 @@ export function useChatProviderState({
   // the primary providers (claude, codex) implement both.
   const supportsMessageEditing = providerCapabilities?.[provider]?.supportsMessageEditing ?? true;
   const supportsSessionForking = providerCapabilities?.[provider]?.supportsSessionForking ?? true;
+  // Default false so an unloaded matrix never claims files will be reverted;
+  // OpenCode is the one provider whose edit restores snapshot files.
+  const editRevertsFiles = providerCapabilities?.[provider]?.editRevertsFiles ?? false;
 
   const applyProviderCatalog = useCallback((
     targetProvider: LLMProvider,
@@ -829,6 +871,7 @@ export function useChatProviderState({
     setProvider,
     supportsMessageEditing,
     supportsSessionForking,
+    editRevertsFiles,
     providerModels,
     setProviderModel,
     currentProviderEffort,

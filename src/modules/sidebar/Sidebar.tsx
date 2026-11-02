@@ -2,9 +2,8 @@ import { memo, useCallback, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useDeviceSettings } from '@/shared/hooks/useDeviceSettings';
-import { useVersionCheck } from '@/shared/hooks/useVersionCheck';
+import { useSystemUpdate } from '@/shared/hooks/useSystemUpdate';
 import { useUiPreferences, useSetUiPreference } from '@/shared/context/UiPreferencesContext';
-import { GITHUB_REPO_NAME, GITHUB_REPO_OWNER } from '@/shared/constants';
 import { useSidebarController } from '@/modules/sidebar/hooks/useSidebarController';
 import { usePaletteOps } from '@/modules/command-palette';
 import { useBackgroundSessionIdSet, useBusySessionIdSet } from '@/shared/context/SessionProtectionContext';
@@ -59,10 +58,15 @@ function Sidebar({
 }: SidebarProps) {
   const { t } = useTranslation(['sidebar', 'common']);
   const { isPWA } = useDeviceSettings({ trackMobile: false });
-  const { updateAvailable, restartRequired, latestVersion, currentVersion, releaseInfo, installMode } = useVersionCheck(
-    GITHUB_REPO_OWNER,
-    GITHUB_REPO_NAME,
-  );
+  const {
+    status: updateStatus,
+    updateAvailable,
+    isUpdating,
+    restartRequired,
+    isChecking: isCheckingForUpdates,
+    checkNow: checkForUpdates,
+    reload: reloadUpdateStatus,
+  } = useSystemUpdate();
   const preferences = useUiPreferences();
   const setPreference = useSetUiPreference();
   const { sidebarVisible } = preferences;
@@ -247,11 +251,10 @@ function Sidebar({
         onConfirmDeleteSessions={confirmDeleteSessions}
         showVersionModal={showVersionModal}
         onCloseVersionModal={() => setShowVersionModal(false)}
-        releaseInfo={releaseInfo}
-        currentVersion={currentVersion}
-        latestVersion={latestVersion}
-        installMode={installMode}
-        updateAvailable={updateAvailable}
+        updateStatus={updateStatus}
+        reloadUpdateStatus={reloadUpdateStatus}
+        checkForUpdates={checkForUpdates}
+        isCheckingForUpdates={isCheckingForUpdates}
         t={t}
       />
 
@@ -259,7 +262,7 @@ function Sidebar({
         <SidebarCollapsed
           onExpand={handleExpandSidebar}
           onShowSettings={onShowSettings}
-          updateAvailable={updateAvailable}
+          updateAvailable={updateAvailable || isUpdating}
           restartRequired={restartRequired}
           onShowVersionModal={() => setShowVersionModal(true)}
           t={t}
@@ -340,10 +343,9 @@ function Sidebar({
             onCreateProject={() => setShowNewProject(true)}
             onCollapseSidebar={handleCollapseSidebar}
             updateAvailable={updateAvailable}
+            isUpdating={isUpdating}
             restartRequired={restartRequired}
-            releaseInfo={releaseInfo}
-            latestVersion={latestVersion}
-            currentVersion={currentVersion}
+            updateStatus={updateStatus}
             onShowVersionModal={() => setShowVersionModal(true)}
             onShowSettings={onShowSettings}
             projectListProps={projectListProps}

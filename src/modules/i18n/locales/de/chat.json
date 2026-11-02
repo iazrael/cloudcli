@@ -244,11 +244,20 @@
     "editing": {
       "title": "Ersetzt eine frühere Nachricht",
       "filesNotReverted": "bereits geänderte Dateien werden nicht zurückgesetzt",
+      "filesReverted": "bereits geänderte Dateien werden ebenfalls zurückgesetzt",
       "cancel": "Abbrechen"
     },
     "permissionHeading": "Wie sollen Aktionen von {{provider}} genehmigt werden?",
     "permissionCycleHint": "Tab im Eingabefeld drücken, um den Modus zu wechseln",
     "permissionTriggerLabel": "{{mode}}: {{heading}}"
+  },
+  "misc": {
+    "needsInput": "{{provider}} benötigt deine Eingabe",
+    "selectAllThatApply": "Mehrere auswählbar",
+    "other": "Sonstiges...",
+    "back": "Zurück",
+    "next": "Weiter",
+    "submit": "Senden"
   },
   "export": {
     "trigger": "Unterhaltung exportieren",

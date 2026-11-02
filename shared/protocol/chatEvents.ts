@@ -61,6 +61,7 @@ export type GatewayEventKind =
   | 'chat_subscribed'
   | 'session_upserted'
   | 'session_removed'
+  | 'scheduled_jobs_changed'
   | 'loading_progress'
   | 'queued_message_dispatched'
   | 'protocol_error';
@@ -379,6 +380,16 @@ export type SessionUpsertedEvent = {
 export type SessionRemovedEvent = {
   kind: 'session_removed';
   sessionIds: string[];
+  timestamp: string;
+};
+
+/**
+ * Some scheduled job was created, changed, removed or fired. Carries no job
+ * data: listeners refetch their own scope, so a job deleted by an agent in one
+ * session disappears from the composer banner of the session it was bound to.
+ */
+export type ScheduledJobsChangedEvent = {
+  kind: 'scheduled_jobs_changed';
   timestamp: string;
 };
 

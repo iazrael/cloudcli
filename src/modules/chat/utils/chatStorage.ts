@@ -1,5 +1,5 @@
 import { PROVIDER_PERMISSION_PREFERENCE_KEYS } from '@/shared/constants';
-import type { ClaudeSettings, LLMProvider, PermissionMode } from '@/shared/types';
+import type { ClaudeSettings, LLMProvider, PermissionMode, QueuedSendOptions } from '@/shared/types';
 import { readUserPreference, writeUserPreference } from '@/shared/userSettings';
 
 import { safeLocalStorage } from '@/shared/utils';
@@ -65,3 +65,46 @@ export function readProviderToolsSettings(provider: LLMProvider): Record<string,
   );
 }
 
+
+//----------------- QUEUED COMPACTION ------------
+
+/**
+ * A `/compact` the user asked for while the session was still generating.
+ * Compaction starts its own run, and the gateway refuses one while a run holds
+ * the session, so the request is parked here and dispatched when that run ends.
+ */
+export type StoredQueuedCompact = {
+  /** Composer preferences snapshotted at request time, replayed with the frame. */
+  options?: QueuedSendOptions;
+};
+
+/** Stable localStorage key for a session's parked compaction request. */
+export const queuedCompactKey = (sessionId: string) => `queued_compact_${sessionId}`;
+
+/** Reads the parked compaction request for a session; null when none is parked. */
+export function readQueuedCompact(sessionId: string): StoredQueuedCompact | null {
+  const raw = safeLocalStorage.getItem(queuedCompactKey(sessionId));
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed && typeof parsed === 'object'
+      ? { options: (parsed as StoredQueuedCompact).options }
+      : {};
+  } catch {
+    // A marker written by an older build carries no options, only the request.
+    return {};
+  }
+}
+
+/** Parks a compaction request for the session that asked for it. */
+export function writeQueuedCompact(sessionId: string, compact: StoredQueuedCompact = {}): void {
+  safeLocalStorage.setItem(queuedCompactKey(sessionId), JSON.stringify(compact));
+}
+
+/** Removes a parked compaction request once it is dispatched or cancelled. */
+export function clearQueuedCompact(sessionId: string): void {
+  safeLocalStorage.removeItem(queuedCompactKey(sessionId));
+}

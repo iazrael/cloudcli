@@ -18,12 +18,20 @@ import type { FetchHistoryResult } from '@/shared/types.js';
  * rewrites history (a new turn, an edit, a rewind, a fork) touches the file
  * and invalidates naturally.
  *
- * One thing the file cannot tell: whether the CLI process behind the session
- * is still running. Claude's history reader answers a background agent's
- * status from that, so a session's entry is also dropped explicitly when its
- * process starts or ends (`invalidate`) — otherwise a page read while the
- * process was up would keep reporting `running` after it had gone, until the
- * next row happened to land in the file.
+ * The one input a history result carries that the file does *not* determine is
+ * the session's recorded context window, which `tokenUsage.total` is resolved
+ * against, so it is part of the validity check too. It has to be: the window
+ * is written asynchronously at the end of a turn, so the post-turn history
+ * read can land first and cache a page whose `total` fell back to a default —
+ * and without this the stale total then outlived every later read, leaving the
+ * composer badge flipping between the cached page's window and the live one.
+ *
+ * The other thing the file cannot tell: whether the CLI process behind the
+ * session is still running. Claude's history reader answers a background
+ * agent's status from that, so a session's entry is also dropped explicitly
+ * when its process starts or ends (`invalidate`) — otherwise a page read while
+ * the process was up would keep reporting `running` after it had gone, until
+ * the next row happened to land in the file.
  *
  * Only history readers that read `jsonl_path` itself may use this cache —
  * callers pass `transcriptPath: null` for providers whose messages live
@@ -36,6 +44,8 @@ type CacheEntry = {
   mtimeMs: number;
   /** Source file size, used only for stat invalidation. */
   size: number;
+  /** Recorded window `full.tokenUsage.total` was resolved against, if any. */
+  contextWindow: number | null;
   retainedBytes: number;
   full: FetchHistoryResult;
 };
@@ -44,6 +54,11 @@ type GetFullHistoryArgs = {
   sessionId: string;
   /** Path of the file the provider's history reader actually parses, or null to bypass. */
   transcriptPath: string | null | undefined;
+  /**
+   * The session row's recorded context window. Null for every provider that
+   * records none, which makes it a no-op for them.
+   */
+  contextWindow?: number | null;
   /** Loads the complete transcript (`limit: null, offset: 0`) from the provider. */
   loadFull: () => Promise<FetchHistoryResult>;
 };
@@ -84,7 +99,12 @@ export function createSessionHistoryCache(
      * the session is not cacheable (no transcript path, or the file cannot be
      * stat'ed) — the caller then falls back to a plain provider read.
      */
-    async getFullHistory({ sessionId, transcriptPath, loadFull }: GetFullHistoryArgs): Promise<FetchHistoryResult | null> {
+    async getFullHistory({
+      sessionId,
+      transcriptPath,
+      contextWindow = null,
+      loadFull,
+    }: GetFullHistoryArgs): Promise<FetchHistoryResult | null> {
       if (!transcriptPath) {
         return null;
       }
@@ -107,6 +127,7 @@ export function createSessionHistoryCache(
         && cached.transcriptPath === transcriptPath
         && cached.mtimeMs === stat.mtimeMs
         && cached.size === stat.size
+        && cached.contextWindow === contextWindow
       ) {
         // Re-insert to mark as most recently used.
         entries.delete(sessionId);
@@ -117,6 +138,7 @@ export function createSessionHistoryCache(
       // Concurrent requests for the same session share one parse. The file may
       // gain rows while the load runs; the pre-load stat is what the entry is
       // keyed by, so the next request would see a changed stat and re-read.
+      // The same holds for a window recorded mid-load.
       const pending = pendingLoads.get(sessionId);
       if (pending) {
         return pending;
@@ -128,6 +150,7 @@ export function createSessionHistoryCache(
           transcriptPath,
           mtimeMs: stat.mtimeMs,
           size: stat.size,
+          contextWindow,
           retainedBytes: Buffer.byteLength(JSON.stringify(full)) * 2 + full.messages.length * 128,
           full,
         });

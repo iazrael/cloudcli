@@ -19,7 +19,7 @@ import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import os from 'node:os';
 
-import type { OpenCodeServiceEndpoint } from './opencode-api.client.js';
+import { OpenCodeApiClient, type OpenCodeServiceEndpoint } from './opencode-api.client.js';
 import { getOpenCodeEngineVersion, tryResolveOpenCodeEnginePath } from './opencode-engine-path.js';
 
 /** Why a boot could not produce an endpoint; the runtime maps these to user-facing errors. */
@@ -71,8 +71,8 @@ const STDERR_TAIL_LINES = 12;
 /**
  * Supervises the cloudcli-owned opencode server.
  *
- * Consumers: opencode runtime (module-level singleton); tests construct their
- * own with a fake `serve` binary.
+ * Consumers: opencode runtime (through `opencodeServiceSupervisor`); tests
+ * construct their own with a fake `serve` binary.
  */
 export class OpenCodeServiceSupervisor {
   private readonly spawn: SpawnLike;
@@ -170,6 +170,9 @@ export class OpenCodeServiceSupervisor {
       // OPENCODE_PASSWORD cannot shadow the lease credential.
       env: { ...process.env, OPENCODE_PASSWORD: password },
       stdio: ['pipe', 'pipe', 'pipe'],
+      // The engine is a console binary on Windows: a console-less parent (pm2)
+      // would otherwise get a stray console window for the server's lifetime.
+      windowsHide: true,
     });
 
     const bootedAt = this.now();
@@ -241,6 +244,25 @@ export class OpenCodeServiceSupervisor {
     const backoff = Math.min(BACKOFF_MAX_MS, BACKOFF_BASE_MS * 2 ** (this.consecutiveEarlyExits - 1));
     this.nextBootAllowedAt = this.now() + backoff;
   }
+}
+
+/**
+ * The production supervisor: one `opencode serve` child per cloudcli process.
+ *
+ * Consumers: opencode runtime (the `opencodeRuntime` singleton drives runs
+ * through it) and `connectOpenCodeApiClient` below. Sharing one instance is
+ * what keeps an edit or fork from booting a second server beside the runtime's.
+ */
+export const opencodeServiceSupervisor = new OpenCodeServiceSupervisor();
+
+/**
+ * A client bound to the production server, booting it when nothing is up.
+ *
+ * Consumers: opencode sessions provider (edit rewind) and fork provider — the
+ * facets that act on a session outside a run.
+ */
+export async function connectOpenCodeApiClient(): Promise<OpenCodeApiClient> {
+  return new OpenCodeApiClient(await opencodeServiceSupervisor.ensureEndpoint());
 }
 
 /**

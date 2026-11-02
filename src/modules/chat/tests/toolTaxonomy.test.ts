@@ -8,6 +8,7 @@ import {
   isCommandTool,
   isEditTool,
   isFilePreviewTool,
+  isSubagentSpawnTool,
   pickCommandField,
   unwrapNestedCommand,
 } from '@/modules/chat/tools/toolTaxonomy';
@@ -35,12 +36,24 @@ test('every engine alias resolves to its canonical name', () => {
   assert.equal(canonicalToolName('read_url_content'), 'WebFetch');
   assert.equal(canonicalToolName('manage_task'), 'Task');
   assert.equal(canonicalToolName('manage_subagents'), 'Subagent');
+  assert.equal(canonicalToolName('invoke_subagent'), 'Subagent');
+  assert.equal(canonicalToolName('subagent'), 'Subagent');
+  assert.equal(canonicalToolName('task'), 'Subagent');
   assert.equal(canonicalToolName('ExitPlanMode'), 'Plan');
   assert.equal(canonicalToolName('update_plan'), 'Plan');
 });
 
 test('an unknown tool name is its own canonical name', () => {
   assert.equal(canonicalToolName('mcp__github__create_issue'), 'mcp__github__create_issue');
+});
+
+test('subagent spawn tools are told apart from task management', () => {
+  for (const name of ['Agent', 'subagent', 'task', 'invoke_subagent']) {
+    assert.equal(isSubagentSpawnTool(name), true, `${name} spawns an agent`);
+  }
+  for (const name of ['manage_task', 'manage_subagents', 'send_message', 'Bash']) {
+    assert.equal(isSubagentSpawnTool(name), false, `${name} does not spawn an agent`);
+  }
 });
 
 test('the grouping key is exactly the canonical name', () => {
@@ -83,7 +96,11 @@ test('display categories keep their explicit mapping, including cross-family nam
   assert.equal(getToolDisplayCategory('run_command'), 'bash');
   assert.equal(getToolDisplayCategory('TodoWrite'), 'todo');
   assert.equal(getToolDisplayCategory('manage_task'), 'task', 'manage_task is task work');
-  assert.equal(getToolDisplayCategory('Agent'), 'agent', 'while Agent is subagent delegation');
+  // Capital `Task` is the task-list tool family, not subagent delegation: the
+  // engine adapters canonicalize their legacy spawn name to `Agent`.
+  assert.equal(getToolDisplayCategory('Task'), 'default', 'Task belongs to the task list, not to delegation');
+  assert.equal(getToolDisplayCategory('subagent'), 'agent', 'the opencode spawn tool is delegation too');
+  assert.equal(getToolDisplayCategory('task'), 'agent', 'the opencode v1 spelling is the same tool');
   assert.equal(getToolDisplayCategory('exit_plan_mode'), 'plan');
   assert.equal(getToolDisplayCategory('AskUserQuestion'), 'question');
   assert.equal(getToolDisplayCategory('mcp__something__do_thing'), 'default');

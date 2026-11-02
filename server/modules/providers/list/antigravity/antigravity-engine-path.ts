@@ -31,6 +31,7 @@ const COMMON_PATHS: Partial<Record<NodeJS.Platform, string[]>> = {
     '/usr/bin/agy',
   ],
   win32: [
+    path.join(process.env.LOCALAPPDATA ?? path.join(os.homedir(), 'AppData', 'Local'), 'agy', 'bin', 'agy.exe'),
     path.join(process.env.LOCALAPPDATA ?? path.join(os.homedir(), 'AppData', 'Local'), 'Programs', 'Antigravity', 'agy.exe'),
     path.join(os.homedir(), '.gemini', 'antigravity', 'bin', 'agy.exe'),
   ],

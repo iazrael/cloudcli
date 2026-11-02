@@ -31,7 +31,7 @@ const withFakeService = async (
         response.writeHead(status, payload === undefined ? {} : { 'content-type': 'application/json' });
         response.end(payload === undefined ? undefined : JSON.stringify(payload));
       };
-      if (path.includes('/api/session/ses_missing')) {
+      if (path.includes('/api/session/ses_missing') || path.startsWith('/api/shell/sh_missing')) {
         reply(404, { _tag: 'NotFoundError', message: 'Session ses_missing not found' });
         return;
       }
@@ -45,6 +45,14 @@ const withFakeService = async (
       }
       if (request.method === 'POST' && path.endsWith('/compact')) {
         reply(200, { data: { id: 'msg_compaction', sessionID: 'ses_fake', type: 'compaction', payload: {}, delivery: 'steer' } });
+        return;
+      }
+      if (request.method === 'POST' && path.endsWith('/fork')) {
+        reply(200, { data: { id: 'ses_forked', fork: { sessionID: 'ses_fake' } } });
+        return;
+      }
+      if (request.method === 'POST' && path === '/api/session/ses_stuck/revert/commit') {
+        reply(500, { message: 'commit failed' });
         return;
       }
       if (request.method === 'POST' && path.endsWith('/interrupt')) {
@@ -62,6 +70,14 @@ const withFakeService = async (
       }
       if (request.method === 'GET' && path === '/api/session/ses_running') {
         reply(200, { data: { id: 'ses_running', time: { created: 1, updated: 2 } } });
+        return;
+      }
+      if (request.method === 'GET' && path.startsWith('/api/shell/')) {
+        reply(200, { data: { id: 'sh_1', status: 'running', command: 'sleep 600' } });
+        return;
+      }
+      if (request.method === 'DELETE' && path.startsWith('/api/shell/')) {
+        reply(204);
         return;
       }
       reply(204);
@@ -103,6 +119,7 @@ test('sends the verified wire shapes with Basic auth on every call', async () =>
     });
     assert.equal(prompted.messageId, 'msg_fake');
     assert.equal(await client.interrupt('ses_fake'), true);
+    assert.equal((await client.compactSession('ses_fake')).messageId, 'msg_compaction');
     await client.replyPermission('ses_fake', 'per_1', { decision: 'reject', message: 'nope' });
     await client.replyForm('ses_fake', 'frm_1', { q0: 'Blue', q1: ['a', 'b'] });
     await client.cancelForm('ses_fake', 'frm_2', 'skipped by user');
@@ -122,6 +139,7 @@ test('sends the verified wire shapes with Basic auth on every call', async () =>
       ['PATCH', '/api/session/ses_fake'],
       ['POST', '/api/session/ses_fake/prompt'],
       ['POST', '/api/session/ses_fake/interrupt'],
+      ['POST', '/api/session/ses_fake/compact'],
       ['POST', '/api/session/ses_fake/permission/per_1/reply'],
       ['POST', '/api/session/ses_fake/form/frm_1/reply'],
       ['DELETE', '/api/session/ses_fake/form/frm_2?message=skipped%20by%20user'],
@@ -141,10 +159,11 @@ test('sends the verified wire shapes with Basic auth on every call', async () =>
       files: [{ uri: 'data:text/plain;base64,aGk=', filename: 'note.txt', mime: 'text/plain' }],
     });
     assert.equal(requests[5].body, undefined);
-    assert.deepEqual(requests[6].body, { decision: 'reject', message: 'nope' });
-    assert.deepEqual(requests[7].body, { answer: { q0: 'Blue', q1: ['a', 'b'] } });
-    assert.equal(requests[8].body, undefined, 'the cancel message travels in the query string');
-    assert.equal(requests[9].body, undefined);
+    assert.deepEqual(requests[6].body, {}, 'the compaction request carries no prompt of its own');
+    assert.deepEqual(requests[7].body, { decision: 'reject', message: 'nope' });
+    assert.deepEqual(requests[8].body, { answer: { q0: 'Blue', q1: ['a', 'b'] } });
+    assert.equal(requests[9].body, undefined, 'the cancel message travels in the query string');
+    assert.equal(requests[10].body, undefined);
   });
 });
 
@@ -176,13 +195,64 @@ test('turns non-2xx answers into OpenCodeApiError carrying status and message', 
   });
 });
 
-test('compact posts to the session compaction endpoint and returns the queued input id', async () => {
+test('compact posts to the session compaction endpoint and returns the admitted message id', async () => {
   await withFakeService(async ({ client, requests }) => {
-    const result = await client.compact('ses_fake');
-    assert.deepEqual(result, { inputId: 'msg_compaction' });
+    const result = await client.compactSession('ses_fake');
+    assert.deepEqual(result, { messageId: 'msg_compaction' });
     const request = requests.at(-1);
     assert.equal(request?.method, 'POST');
     assert.equal(request?.path, '/api/session/ses_fake/compact');
     assert.deepEqual(request?.body, {});
+  });
+});
+
+test('forks with an exclusive `before` cut, or the whole conversation without one', async () => {
+  await withFakeService(async ({ client, requests }) => {
+    assert.deepEqual(await client.forkSession('ses_fake', 'msg_next'), { id: 'ses_forked' });
+    assert.deepEqual(await client.forkSession('ses_fake', null), { id: 'ses_forked' });
+
+    assert.deepEqual(requests.map((request) => [request.method, request.path, request.body]), [
+      ['POST', '/api/session/ses_fake/fork', { before: 'msg_next' }],
+      ['POST', '/api/session/ses_fake/fork', {}],
+    ]);
+  });
+});
+
+test('reverts by staging then committing, and clears a boundary whose commit failed', async () => {
+  await withFakeService(async ({ client, requests }) => {
+    await client.revertSession('ses_fake', 'msg_drop', { files: true });
+    await assert.rejects(client.revertSession('ses_stuck', 'msg_drop', { files: false }), OpenCodeApiError);
+
+    assert.deepEqual(requests.map((request) => [request.method, request.path, request.body]), [
+      ['POST', '/api/session/ses_fake/revert/stage', { messageID: 'msg_drop', files: true }],
+      ['POST', '/api/session/ses_fake/revert/commit', undefined],
+      ['POST', '/api/session/ses_stuck/revert/stage', { messageID: 'msg_drop', files: false }],
+      ['POST', '/api/session/ses_stuck/revert/commit', undefined],
+      ['DELETE', '/api/session/ses_stuck/revert', undefined],
+    ]);
+  });
+});
+
+test('reads and stops a background shell by its handle, scoped to the checkout', async () => {
+  await withFakeService(async ({ client, requests }) => {
+    assert.deepEqual(await client.getShell('sh_1', '/tmp/project'), { status: 'running', exitCode: null });
+
+    await client.removeShell('sh_1', '/tmp/project');
+    await assert.rejects(
+      () => client.getShell('sh_missing', '/tmp/project'),
+      (error: unknown) => error instanceof OpenCodeApiError && error.status === 404,
+    );
+
+    const query = new URLSearchParams({ 'location[directory]': '/tmp/project' }).toString();
+    assert.deepEqual(
+      requests
+        .filter((request) => request.path.startsWith('/api/shell/'))
+        .map((request) => [request.method, request.path]),
+      [
+        ['GET', `/api/shell/sh_1?${query}`],
+        ['DELETE', `/api/shell/sh_1?${query}`],
+        ['GET', `/api/shell/sh_missing?${query}`],
+      ],
+    );
   });
 });

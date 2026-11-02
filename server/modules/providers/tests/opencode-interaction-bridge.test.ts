@@ -79,6 +79,39 @@ const formCreated = (): OpenCodeEventEnvelope => ({
   },
 });
 
+/**
+ * The engine's web-search setup gate: a `form.created` whose metadata kind is
+ * `websearch.provider`, captured from v2.0.32. The bridge answers `allow` so
+ * the engine never hits its one-minute cancellation.
+ */
+const webSearchGate = (form: Record<string, unknown> = {}): OpenCodeEventEnvelope => ({
+  id: 'evt_gate_1',
+  created: 1792203581706,
+  type: 'form.created',
+  location: { directory: '/tmp/project' },
+  data: {
+    form: {
+      id: 'frm_gate_1',
+      sessionID: PROVIDER_SESSION,
+      title: 'Web Search',
+      metadata: { kind: 'websearch.provider' },
+      fields: [{
+        key: 'choice',
+        description: 'Allow OpenCode to search the web for up-to-date information?',
+        type: 'string',
+        required: true,
+        custom: false,
+        options: [
+          { value: 'allow', label: 'Allow search via OpenCode Web Search' },
+          { value: 'choose', label: 'Choose another provider' },
+          { value: 'disable', label: 'Disable web search' },
+        ],
+      }],
+      ...form,
+    },
+  },
+});
+
 test('permission.asked becomes a permission_request card labelled with the guarded tool call', () => {
   const { bridge, frames } = makeHarness();
   bridge.handleEvent(permissionAsked());
@@ -175,6 +208,72 @@ test('form.created becomes an AskUserQuestion card with the panel question shape
     ],
   });
   assert.deepEqual(frame.context, { reason: 'Questions', kind: 'question' });
+});
+
+/**
+ * The question fixture's form object: the same payload `form.created` carries
+ * and the service's `GET /api/session/:id/form` lists back.
+ */
+const formFixture = (): Record<string, unknown> => (
+  (formCreated().data as { form: Record<string, unknown> }).form
+);
+
+test('adoptPending re-announces asks the event feed never delivered, and answers route back', async () => {
+  const { bridge, calls, frames } = makeHarness();
+  const form = formFixture();
+
+  // Nothing was announced through the event path: this is what a gap in the
+  // service's event feed looks like — the ask exists only in the service.
+  const announced = bridge.adoptPending(PROVIDER_SESSION, {
+    forms: [form],
+    permissions: [permissionAsked({ id: 'per_reconciled' }).data],
+  });
+
+  assert.equal(announced, 2);
+  assert.deepEqual(frames.map((frame) => [frame.kind, frame.requestId, frame.toolName]), [
+    ['permission_request', 'per_reconciled', 'shell'],
+    ['permission_request', form.id, 'AskUserQuestion'],
+  ]);
+  assert.deepEqual(bridge.listPending(APP_SESSION).map((entry) => entry.requestId), ['per_reconciled', form.id]);
+
+  // Idempotent: the same service lists again after the next subscribe or
+  // reconnect announce nothing new.
+  assert.equal(bridge.adoptPending(PROVIDER_SESSION, {
+    forms: [form],
+    permissions: [permissionAsked({ id: 'per_reconciled' }).data],
+  }), 0);
+  assert.equal(frames.length, 2);
+
+  // A reconciled form still answers by field key, because its field list was
+  // rebuilt from the same payload `form.created` carries.
+  frames.length = 0;
+  const formId = String(form.id);
+  bridge.resolve(formId, {
+    allow: true,
+    updatedInput: { answers: { 'Which color?': 'Blue', 'Which areas?': 'server/, docs' } },
+  });
+  await flush();
+  assert.deepEqual(calls, [{
+    method: 'replyForm',
+    args: [PROVIDER_SESSION, formId, { q0: 'Blue', q1: ['server/', 'docs'] }],
+  }]);
+});
+
+test('adoptPending ignores sessions without a run and payloads the panel cannot render', () => {
+  const { bridge, frames } = makeHarness();
+  const form = formFixture();
+
+  assert.equal(bridge.adoptPending('ses_unknown', { forms: [form] }), 0, 'no attached run, no card');
+  assert.equal(bridge.adoptPending(PROVIDER_SESSION, {
+    forms: [
+      { ...form, id: 'frm_mcp', metadata: { kind: 'mcp' } },
+      { ...form, id: undefined },
+      'not a form',
+    ],
+    permissions: [{ sessionID: PROVIDER_SESSION }, null],
+  }), 0);
+  assert.equal(frames.length, 0);
+  assert.equal(bridge.listPending(APP_SESSION).length, 0);
 });
 
 test('maps the panel answers (keyed by question text) back onto the form field keys', async () => {
@@ -277,6 +376,127 @@ test('a reply the service refuses retracts the card with the failure as the reas
   assert.equal(frames.length, 1);
   assert.equal(frames[0].kind, 'permission_cancelled');
   assert.equal(frames[0].reason, 'session gone');
+});
+
+const CHILD_SESSION = 'ses_child_of_parent';
+
+/** Feeds the lifecycle and spawn events that link a child session to the attached parent. */
+const linkChildSession = (bridge: OpenCodeInteractionBridge): void => {
+  bridge.handleEvent({
+    type: 'session.tool.input.started',
+    data: { sessionID: PROVIDER_SESSION, id: CALL, name: 'subagent' },
+  });
+  bridge.handleEvent({
+    type: 'session.tool.called',
+    data: {
+      sessionID: PROVIDER_SESSION,
+      id: CALL,
+      input: { agent: 'general', description: 'Inspect the repo' },
+    },
+  });
+  bridge.handleEvent({
+    type: 'session.created',
+    data: {
+      sessionID: CHILD_SESSION,
+      parentID: PROVIDER_SESSION,
+      agent: 'general',
+      title: 'Inspect the repo',
+    },
+  });
+};
+
+test('a permission asked inside a subagent surfaces on the parent session and replies to the child', async () => {
+  const { bridge, calls, frames } = makeHarness();
+  linkChildSession(bridge);
+  frames.length = 0;
+
+  bridge.handleEvent(permissionAsked({ id: 'per_child', sessionID: CHILD_SESSION }));
+
+  assert.equal(frames.length, 1);
+  assert.equal(frames[0].kind, 'permission_request');
+  assert.equal(frames[0].sessionId, APP_SESSION, 'the card belongs to the parent chat session');
+  assert.equal(frames[0].requestId, 'per_child');
+  assert.equal(bridge.listPending(APP_SESSION).length, 1);
+  assert.equal(bridge.listPending(PROVIDER_SESSION).length, 1, 'the parent provider id finds it too');
+
+  bridge.resolve('per_child', { allow: true });
+  await flush();
+
+  assert.deepEqual(calls[0].args.slice(0, 2), [CHILD_SESSION, 'per_child'], 'the answer is addressed to the child session');
+  assert.equal(frames[frames.length - 1].kind, 'permission_resolved');
+});
+
+test('a question asked inside a subagent becomes the parent\'s card and replies to the child', async () => {
+  const { bridge, calls, frames } = makeHarness();
+  linkChildSession(bridge);
+  frames.length = 0;
+
+  const captured = formCreated();
+  const childForm = {
+    ...captured,
+    data: {
+      form: {
+        ...(captured.data as { form: Record<string, unknown> }).form,
+        sessionID: CHILD_SESSION,
+      },
+    },
+  };
+  bridge.handleEvent(childForm);
+
+  assert.equal(frames.length, 1);
+  assert.equal(frames[0].kind, 'permission_request');
+  assert.equal(frames[0].sessionId, APP_SESSION);
+  assert.equal(bridge.listPending(APP_SESSION).length, 1);
+
+  bridge.resolve('frm_147a8690a001Bf0LdLSgutFhNT', { allow: false, message: 'later' });
+  await flush();
+
+  assert.equal(calls[0].method, 'cancelForm');
+  assert.deepEqual(calls[0].args, [CHILD_SESSION, 'frm_147a8690a001Bf0LdLSgutFhNT', 'later']);
+});
+
+test('the web-search gate is answered automatically instead of expiring as "Web search cancelled"', async () => {
+  const { bridge, calls, frames } = makeHarness();
+  bridge.handleEvent(webSearchGate());
+  await flush();
+
+  assert.deepEqual(calls, [{
+    method: 'replyForm',
+    args: [PROVIDER_SESSION, 'frm_gate_1', { choice: 'allow' }],
+  }]);
+  assert.equal(frames.length, 0, 'the gate is a setup wizard, not a card');
+  assert.equal(bridge.listPending(APP_SESSION).length, 0);
+
+  // The reconcile path re-lists the same gate until the engine settles it; a
+  // second answer would be rejected as "not pending".
+  const { form } = webSearchGate().data as { form: Record<string, unknown> };
+  assert.equal(bridge.adoptPending(PROVIDER_SESSION, { forms: [form] }), 0);
+  await flush();
+  assert.equal(calls.length, 1);
+});
+
+test('a gate the bridge cannot answer is left alone instead of answered blind', async () => {
+  const { bridge, calls, frames } = makeHarness();
+  bridge.handleEvent(webSearchGate({
+    id: 'frm_gate_reshaped',
+    fields: [{ key: 'provider', options: [{ value: 'tavily', label: 'Tavily' }] }],
+  }));
+  await flush();
+
+  assert.deepEqual(calls, [], 'no allow choice, no guess');
+  assert.equal(frames.length, 0);
+});
+
+test('a web-search gate raised inside a subagent is answered against the child session', async () => {
+  const { bridge, calls } = makeHarness();
+  linkChildSession(bridge);
+  bridge.handleEvent(webSearchGate({ id: 'frm_gate_child', sessionID: CHILD_SESSION }));
+  await flush();
+
+  assert.deepEqual(calls, [{
+    method: 'replyForm',
+    args: [CHILD_SESSION, 'frm_gate_child', { choice: 'allow' }],
+  }]);
 });
 
 test('without a live service the card is retracted instead of hanging', async () => {

@@ -676,8 +676,11 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
             if (stepUpdateRecord.step_type === 'system_message') void settleReportedAgents();
           }
 
-          const resultRecord = readObjectRecord(rawRecord?.result);
-          const usageRecord = readObjectRecord(resultRecord?.usage ?? stepUpdateRecord?.usage ?? rawRecord?.usage);
+          // Context occupancy comes from step_update usage only: each one
+          // reports a single model call, i.e. the live context size. The
+          // result event's usage sums every call of the turn and would
+          // overstate the context (easily past 100%) in agentic loops.
+          const usageRecord = readObjectRecord(stepUpdateRecord?.usage);
 
           // Segment boundary for streaming text: the first event that is not
           // an agent_response text delta (a tool step, a text-less DONE, the
@@ -850,6 +853,7 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
         cwd,
         stdio: ['pipe', 'pipe', 'pipe'],
         env: { ...process.env },
+        windowsHide: true,
       });
 
       activeProcesses.set(processKey, agyProcess);

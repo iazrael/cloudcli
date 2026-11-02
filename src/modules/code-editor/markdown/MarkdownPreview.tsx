@@ -6,7 +6,7 @@ import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 
 import type { MarkdownImageContext } from '@/shared/types';
-import { markdownUrlTransform } from '@/shared/utils';
+import { markdownUrlTransform, normalizeLatexMathDelimiters } from '@/shared/utils';
 import MarkdownCodeBlock from '@/modules/code-editor/markdown/MarkdownCodeBlock';
 import MarkdownPreviewImage from '@/modules/code-editor/markdown/MarkdownPreviewImage';
 import MarkdownPreviewLink from '@/modules/code-editor/markdown/MarkdownPreviewLink';
@@ -51,6 +51,7 @@ const markdownPreviewComponents: Components = {
 
 /** Used by CodeEditorSurface inside code-editor to render markdown source as formatted preview output. */
 export default function MarkdownPreview({ content, imageContext = null }: MarkdownPreviewProps) {
+  const markdown = useMemo(() => normalizeLatexMathDelimiters(content), [content]);
   const remarkPlugins = useMemo(() => [remarkGfm, [remarkMath, { singleDollarTextMath: false }]] as any, []);
   const rehypePlugins = useMemo(() => [rehypeKatex], []);
   const components = useMemo<Components>(
@@ -73,7 +74,7 @@ export default function MarkdownPreview({ content, imageContext = null }: Markdo
       components={components}
       urlTransform={markdownUrlTransform}
     >
-      {content}
+      {markdown}
     </ReactMarkdown>
   );
 }

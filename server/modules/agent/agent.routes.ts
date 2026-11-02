@@ -951,7 +951,7 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
         clonedProjectCreated = clonedProject.created;
       } else {
         // Use existing project path
-        finalProjectPath = normalizeProjectPath(path.resolve(projectPath));
+        finalProjectPath = normalizeProjectPath(path.isAbsolute(projectPath) ? projectPath : path.resolve(projectPath));
 
         // Verify the path exists
         try {

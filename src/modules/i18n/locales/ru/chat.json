@@ -256,11 +256,20 @@
     "editing": {
       "title": "Замена предыдущего сообщения",
       "filesNotReverted": "уже изменённые файлы не возвращаются",
+      "filesReverted": "уже изменённые файлы также возвращаются",
       "cancel": "Отмена"
     },
     "permissionHeading": "Как подтверждать действия {{provider}}?",
     "permissionCycleHint": "Нажмите Tab в поле ввода, чтобы переключить режим",
     "permissionTriggerLabel": "{{mode}}: {{heading}}"
+  },
+  "misc": {
+    "needsInput": "{{provider}} ждёт вашего ответа",
+    "selectAllThatApply": "Выберите все подходящие варианты",
+    "other": "Другое...",
+    "back": "Назад",
+    "next": "Далее",
+    "submit": "Отправить"
   },
   "export": {
     "trigger": "Экспорт диалога",

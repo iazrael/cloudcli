@@ -13,6 +13,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
+import { closeConnection } from '@/modules/database/index.js';
+
 test('a bridge credential resolves only its own session', async () => {
   const previousDatabasePath = process.env.DATABASE_PATH;
   const previousJwtSecret = process.env.JWT_SECRET;
@@ -43,9 +45,10 @@ test('a bridge credential resolves only its own session', async () => {
     assert.equal(revokeTaskBridgeCredential(credential.token), true);
     assert.equal(resolveTaskBridgeCredential(credential.token), null);
   } finally {
+    closeConnection();
     process.env.DATABASE_PATH = previousDatabasePath;
     process.env.JWT_SECRET = previousJwtSecret;
-    await rm(temporaryDirectory, { recursive: true, force: true });
+    await rm(temporaryDirectory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -93,9 +96,10 @@ test('an observed engine call is matched by the session and the call id', async 
     assert.equal(resolveTaskBridgeCall('session-other', 'call-1', 3), null);
     assert.equal(resolveTaskBridgeCall('session-resident', 'call-unknown', 3), null);
   } finally {
+    closeConnection();
     process.env.DATABASE_PATH = previousDatabasePath;
     process.env.JWT_SECRET = previousJwtSecret;
-    await rm(temporaryDirectory, { recursive: true, force: true });
+    await rm(temporaryDirectory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -135,8 +139,9 @@ test('a bridge call waits for the engine call and gives up when it never comes',
     const never = await waitForTaskBridgeCall('session-resident', 'call-never', 3, 100);
     assert.equal(never, null);
   } finally {
+    closeConnection();
     process.env.DATABASE_PATH = previousDatabasePath;
     process.env.JWT_SECRET = previousJwtSecret;
-    await rm(temporaryDirectory, { recursive: true, force: true });
+    await rm(temporaryDirectory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

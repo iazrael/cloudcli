@@ -7,7 +7,13 @@ import test from 'node:test';
 
 import { runTaskContinuationWorker } from '@/modules/task-continuations/cli/task-continuation-worker.js';
 
-test('real Codex command/exec writes a bounded result and task output without host credentials', async () => {
+import { isCodexCommandSandboxAvailable } from './helpers/codex-sandbox-availability.js';
+
+test('real Codex command/exec writes a bounded result and task output without host credentials', async (t) => {
+  if (!await isCodexCommandSandboxAvailable()) {
+    t.skip('Codex command sandbox is unavailable on this machine; see the helper for the Windows requirements.');
+    return;
+  }
   const directory = await mkdtemp(path.join(os.tmpdir(), 'task-worker-codex-'));
   const previousRegistrationToken = process.env.CLOUDCLI_REGISTRATION_TOKEN;
   const previousRunContext = process.env.CLOUDCLI_TASK_RUN_CONTEXT;
@@ -58,7 +64,7 @@ test('real Codex command/exec writes a bounded result and task output without ho
     else process.env.JWT_SECRET = previousJwtSecret;
     if (previousApiKey === undefined) delete process.env.API_KEY;
     else process.env.API_KEY = previousApiKey;
-    await rm(directory, { recursive: true, force: true });
+    await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -80,7 +86,12 @@ test('a stop request in the task directory terminates the command and records it
     stdin.end(JSON.stringify({
       taskId: 'task_stop_worker',
       title: 'stoppable command',
-      command: ['/bin/sh', '-c', 'echo STOP_TEST_STARTED; sleep 60; echo STOP_TEST_NEVER'],
+      // A long-running command, spelled for the host shell: the stop path is
+      // the same, but Windows has no /bin/sh.
+      command: process.platform === 'win32'
+        ? [process.env.ComSpec ?? 'C:\Windows\System32\cmd.exe', '/c',
+          'echo STOP_TEST_STARTED & ping -n 61 127.0.0.1 >nul & echo STOP_TEST_NEVER']
+        : ['/bin/sh', '-c', 'echo STOP_TEST_STARTED; sleep 60; echo STOP_TEST_NEVER'],
       cwd: directory,
       taskDirectory: directory,
       sandboxPolicy: { type: 'workspaceWrite', networkAccess: false },
@@ -102,6 +113,13 @@ test('a stop request in the task directory terminates the command and records it
     assert.match(result.summary, /stopped/);
     assert.doesNotMatch(result.summary, /STOP_TEST_NEVER/);
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    // Windows releases the terminated child's cwd handle a beat after the
+    // worker settles; retry the cleanup instead of failing on EBUSY.
+    await rm(directory, {
+      recursive: true,
+      force: true,
+      maxRetries: process.platform === 'win32' ? 20 : 0,
+      retryDelay: process.platform === 'win32' ? 150 : 0,
+    });
   }
 });

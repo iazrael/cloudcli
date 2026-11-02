@@ -4,10 +4,11 @@ import test from 'node:test';
 import {
   createCliInstallationProbe,
   DEFAULT_NEGATIVE_PROBE_TTL_MS,
+  TIMED_OUT_PROBE_TTL_MS,
   type ProbeSpawn,
 } from '@/modules/providers/shared/installation/cli-installation-probe.js';
 
-type StubOutcome = { error?: Error; status: number | null };
+type StubOutcome = { error?: Error; status: number | null; timedOut?: boolean };
 
 type StubSpawn = {
   spawnAsync: ProbeSpawn;
@@ -137,14 +138,43 @@ test('concurrent queries share one in-flight probe', async () => {
   assert.equal(await second, true);
 });
 
-test('a hung CLI times out to not installed and uses the negative cache', async () => {
+test('a hung CLI times out to installed instead of hiding the provider', async () => {
   const probe = createCliInstallationProbe({
     command: () => process.execPath,
     args: ['-e', 'setTimeout(() => {}, 2000)'],
     timeoutMs: 50,
   });
 
+  assert.equal(await probe.isInstalled(), true);
+});
+
+test('a timed-out probe is trusted briefly, then probed again', async () => {
+  const timedOut = { error: new Error('installation probe timed out'), status: null, timedOut: true };
+  const { spawnAsync, calls } = stubProbeSpawn([timedOut, missing]);
+  const clock = createClock();
+  const probe = createCliInstallationProbe(
+    { command: () => 'cli' },
+    { spawnAsync, now: clock.now },
+  );
+
+  assert.equal(await probe.isInstalled(), true);
+  clock.advance(TIMED_OUT_PROBE_TTL_MS - 1);
+  assert.equal(await probe.isInstalled(), true);
+  assert.equal(calls.length, 1);
+
+  // Unlike a confirmed install, the timeout verdict expires and is re-checked.
+  clock.advance(1);
   assert.equal(await probe.isInstalled(), false);
-  // Within the TTL the hung probe is not repeated.
+  assert.equal(calls.length, 2);
+});
+
+test('a CLI missing from PATH is not installed even when the probe would time out', async () => {
+  // On Windows cross-spawn runs an unresolvable command through cmd.exe, which
+  // can outlast the timeout; the PATH check must answer before any spawn.
+  const probe = createCliInstallationProbe({
+    command: () => 'cloudcli-probe-definitely-missing-cli',
+    timeoutMs: 1,
+  });
+
   assert.equal(await probe.isInstalled(), false);
 });

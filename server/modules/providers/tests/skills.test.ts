@@ -14,15 +14,66 @@ const patchHomeDir = (nextHomeDir: string) => {
   };
 };
 
+/** True when `startPath` or any directory above it carries a `.git` marker. */
+const hasGitAncestor = async (startPath: string): Promise<boolean> => {
+  let currentPath = path.resolve(startPath);
+  while (true) {
+    try {
+      await fs.stat(path.join(currentPath, '.git'));
+      return true;
+    } catch {
+      // No marker at this level; keep walking up.
+    }
+    const parentPath = path.dirname(currentPath);
+    if (parentPath === currentPath) {
+      return false;
+    }
+    currentPath = parentPath;
+  }
+};
+
+let gitWalkTempBase: string | null = null;
+
 /**
- * Creates the fixture root for tests that exercise git-root walking.
+ * Resolves a temp base with no `.git` anywhere above it.
  *
- * `/tmp` is used instead of `os.tmpdir()` because `findTopmostGitRoot` walks
- * `.git` markers all the way to the filesystem root: a tool-managed TMPDIR
- * that happens to live inside a repository would otherwise be swept into
- * project-scope skill discovery and break the fixtures.
+ * `findTopmostGitRoot` walks `.git` markers all the way to the filesystem
+ * root and returns the *topmost* one, so a fixture under a temp directory
+ * that happens to sit inside a repository gets swept into project-scope skill
+ * discovery. `/tmp` satisfies that on POSIX and is tried first, but it does
+ * not exist on Windows — where TMPDIR lives under the home directory, which
+ * is exactly the case worth checking rather than trusting. A base that fails
+ * the check throws here, so the cause is named instead of surfacing as a
+ * fixture assertion that mysteriously picked up the enclosing repository.
  */
-const createGitWalkTempRoot = (prefix: string) => fs.mkdtemp(path.join('/tmp', prefix));
+const resolveGitWalkTempBase = async (): Promise<string> => {
+  if (gitWalkTempBase) {
+    return gitWalkTempBase;
+  }
+
+  const candidates = process.platform === 'win32' ? [os.tmpdir()] : ['/tmp', os.tmpdir()];
+  for (const candidate of candidates) {
+    try {
+      await fs.stat(candidate);
+    } catch {
+      continue;
+    }
+    if (!(await hasGitAncestor(candidate))) {
+      gitWalkTempBase = candidate;
+      return candidate;
+    }
+  }
+
+  throw new Error(
+    `No git-free temp base available (tried ${candidates.join(', ')}). These fixtures need a `
+    + 'directory with no .git above it, or findTopmostGitRoot walks out of the fixture and '
+    + 'into the enclosing repository.',
+  );
+};
+
+/** Creates the fixture root for tests that exercise git-root walking. */
+const createGitWalkTempRoot = async (prefix: string) =>
+  fs.mkdtemp(path.join(await resolveGitWalkTempBase(), prefix));
 
 const writeSkill = async (
   skillsRoot: string,
@@ -751,26 +802,43 @@ test('providerSkillsService adds global skills for claude, codex, and cursor', {
 });
 
 /**
- * OpenCode reuses other providers' skill folders, so it should not accept
- * direct skill writes through the managed provider endpoint.
+ * OpenCode owns a native global skill directory (`~/.config/opencode/skills`),
+ * so managed uploads must land there and be listed back by the engine-facing
+ * read path.
  */
-test('providerSkillsService rejects managed skill creation for opencode', { concurrency: false }, async () => {
-  await assert.rejects(
-    providerSkillsService.addProviderSkills('opencode', {
+test('providerSkillsService manages opencode global skills under the native config directory', { concurrency: false }, async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'llm-skills-opencode-write-'));
+  const restoreHomeDir = patchHomeDir(tempRoot);
+
+  try {
+    const createdSkills = await providerSkillsService.addProviderSkills('opencode', {
       entries: [
         {
           directoryName: 'opencode-global-dir',
-          content: '---\nname: opencode-global\ndescription: Unsupported skill\n---\n\nOpenCode body.\n',
+          content: '---\nname: opencode-global\ndescription: OpenCode global skill\n---\n\nOpenCode body.\n',
         },
       ],
-    }),
-    /does not support managed global skills/i,
-  );
+    });
+    const createdSkill = createdSkills[0];
+    assert.ok(createdSkill);
+    assert.equal(createdSkill.command, '/opencode-global');
+    assert.equal(
+      createdSkill.sourcePath.endsWith(path.join('.config', 'opencode', 'skills', 'opencode-global-dir', 'SKILL.md')),
+      true,
+    );
+    assert.match(await fs.readFile(createdSkill.sourcePath, 'utf8'), /OpenCode body\./);
 
-  await assert.rejects(
-    providerSkillsService.removeProviderSkill('opencode', {
+    const listedSkills = await providerSkillsService.listProviderSkills('opencode');
+    assert.equal(listedSkills.some((skill) => skill.name === 'opencode-global'), true);
+
+    const removedSkill = await providerSkillsService.removeProviderSkill('opencode', {
       directoryName: 'opencode-global-dir',
-    }),
-    /does not support managed global skills/i,
-  );
+    });
+    assert.equal(removedSkill.removed, true);
+    assert.equal(removedSkill.provider, 'opencode');
+    await assert.rejects(fs.stat(path.dirname(createdSkill.sourcePath)), { code: 'ENOENT' });
+  } finally {
+    restoreHomeDir();
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
 });

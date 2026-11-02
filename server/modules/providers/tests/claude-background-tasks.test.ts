@@ -1,9 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import {
-  extractBackgroundTasks,
-} from '@/modules/providers/list/claude/claude-runtime.provider.js';
+import { extractBackgroundTasks } from '@/modules/providers/list/claude/claude-runtime.provider.js';
 
 test('extracts background tasks from Bash tool with run_in_background: true', () => {
   const message = {

@@ -11,7 +11,10 @@ import type {
 const CLI_PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'zcode', 'antigravity'];
 
 const createInitialProviderAuthStatus = (loading = true) => ({
-  installed: false,
+  // Optimistic until the first check lands: pickers filter on `installed`, so a
+  // pessimistic default hid every provider whose probe was still running and
+  // let the empty state auto-switch the selection to whichever answered first.
+  installed: true,
   authenticated: false,
   email: null,
   method: null,

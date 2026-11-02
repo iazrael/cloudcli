@@ -16,6 +16,10 @@ import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/datab
 import type { ProviderModelOption } from '@/shared/types.js';
 
 import { AntigravityProviderAuth } from '../list/antigravity/antigravity-auth.provider.js';
+import {
+  hasMacKeychainCredential,
+  hasWindowsCredentialManagerCredential,
+} from '../list/antigravity/antigravity-credential-store.js';
 import { getAntigravitySummariesDbPath } from '../list/antigravity/antigravity-data-root.js';
 import { clearEnginePathCache } from '../list/antigravity/antigravity-engine-path.js';
 import {
@@ -95,11 +99,14 @@ test('AntigravityProviderAuth only reports authenticated with an OAuth token fil
   // tryResolveEnginePath honors this override whenever its cache is empty.
   const restoreDataDir = withEnvValue('CLOUDCLI_ANTIGRAVITY_DATA_DIR', tempRoot);
   const restoreAgyPath = withEnvValue('CLOUDCLI_AGY_PATH', path.join(tempRoot, 'agy'));
-  // Keep the macOS keychain probe out so this fixture tree is the only
-  // credential source under test, even on a machine whose real keychain holds
-  // live agy credentials.
-  const restoreSkipKeychain = withEnvValue('CLOUDCLI_ANTIGRAVITY_SKIP_KEYCHAIN', '1');
+  // Keep the credential-store probes (macOS keychain, Windows Credential
+  // Manager) out so this fixture tree is the only credential source under
+  // test, even on a machine whose real store holds live agy credentials.
+  const restoreSkipKeychain = withEnvValue('CLOUDCLI_ANTIGRAVITY_SKIP_CREDENTIAL_STORE', '1');
   await fs.writeFile(path.join(tempRoot, 'agy'), '#!/bin/sh\n', { mode: 0o755 });
+  // A previous test may have cached a "not found" resolution for the real
+  // machine; clear it so this fixture's engine path is what resolves.
+  clearEnginePathCache();
   try {
     const auth = new AntigravityProviderAuth();
 
@@ -122,6 +129,41 @@ test('AntigravityProviderAuth only reports authenticated with an OAuth token fil
     restoreSkipKeychain();
     await fs.rm(tempRoot, { recursive: true, force: true });
   }
+});
+
+test('credential-store probes detect macOS keychain and Windows Credential Manager logins', () => {
+  // macOS: `security find-generic-password` exits non-zero for a missing item,
+  // so a successful run alone is the signal.
+  assert.equal(hasMacKeychainCredential(() => 'attributes'), true);
+  assert.equal(hasMacKeychainCredential(() => { throw new Error('item not found'); }), false);
+
+  // Windows: cmdkey always exits 0, so the serialized target line decides.
+  assert.equal(
+    hasWindowsCredentialManagerCredential(() => [
+      'Currently stored credentials:',
+      '',
+      '    Target: LegacyGeneric:target=gemini:antigravity',
+      '    Type: Generic',
+      '    User: antigravity',
+    ].join('\r\n')),
+    true,
+  );
+  assert.equal(
+    hasWindowsCredentialManagerCredential(() => 'Currently stored credentials:\r\n\r\n* NONE *\r\n'),
+    false,
+  );
+  // `cmdkey /list:<target>` echoes the requested target in its header even
+  // when nothing is stored; the probe must not be fooled by that echo.
+  assert.equal(
+    hasWindowsCredentialManagerCredential(
+      () => 'Currently stored credentials for gemini:antigravity:\r\n\r\n* NONE *\r\n',
+    ),
+    false,
+  );
+  assert.equal(
+    hasWindowsCredentialManagerCredential(() => { throw new Error('cmdkey unavailable'); }),
+    false,
+  );
 });
 
 test('AntigravityProviderModels returns builtin models fallback', async () => {
@@ -151,119 +193,85 @@ test('AntigravityProviderModels retries the CLI once the fallback cache expires'
   // The builtin catalog is only a stopgap while `agy models` is failing
   // (cold start, slow fetch). It must not pin the picker to a stale list
   // for five minutes, so the fallback TTL expires fast; 0 makes the
-  // retry immediate in this test.
-  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'antigravity-models-ttl-'));
-  const stubPath = path.join(tempRoot, 'agy');
-  const restoreAgyPath = withEnvValue('CLOUDCLI_AGY_PATH', stubPath);
-  await fs.writeFile(stubPath, '#!/bin/sh\n', { mode: 0o755 });
-  clearEnginePathCache();
-  try {
-    const models = new AntigravityProviderModels(0);
-    const fallback = await models.getSupportedModels();
-    assert.ok(fallback.OPTIONS.some((m) => m.value === 'gemini-4-argon'));
+  // retry immediate in this test. The loader is injected, so the cache is
+  // exercised without spawning a platform-specific CLI.
+  const cliCatalog = {
+    OPTIONS: [{ value: 'gemini-4-argon-medium', label: 'Gemini 4 Argon (Medium)' }],
+    DEFAULT: 'gemini-4-argon-medium',
+  };
+  let reads = 0;
+  const models = new AntigravityProviderModels(0, async () => {
+    reads += 1;
+    return reads === 1 ? null : cliCatalog;
+  });
 
-    // A healthy CLI output replaces the dead stub; with the (zero) TTL
-    // elapsed the next call must re-query instead of serving the fallback.
-    await fs.writeFile(
-      stubPath,
-      `#!/bin/sh\nprintf 'gemini-4-argon-medium\\tGemini 4 Argon (Medium)\\n'\n`,
-      { mode: 0o755 },
-    );
-    clearEnginePathCache();
-    // The expired fallback is served at once while the CLI is re-queried
-    // behind it; the call after that refresh gets the real catalog.
-    const stale = await models.getSupportedModels();
-    assert.ok(stale.OPTIONS.some((m) => m.value === 'gemini-4-argon'));
-    let refreshed = stale;
-    for (let i = 0; i < 100 && !refreshed.OPTIONS.some((m) => m.value === 'gemini-4-argon-medium'); i += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      refreshed = await models.getSupportedModels();
-    }
-    assert.ok(
-      refreshed.OPTIONS.some((m) => m.value === 'gemini-4-argon-medium'),
-      `expected CLI catalog, got: ${JSON.stringify(refreshed.OPTIONS.map((m) => m.value))}`,
-    );
-  } finally {
-    restoreAgyPath();
-    clearEnginePathCache();
-    await fs.rm(tempRoot, { recursive: true, force: true });
+  const fallback = await models.getSupportedModels();
+  assert.ok(fallback.OPTIONS.some((m) => m.value === 'gemini-4-argon'));
+
+  // The expired fallback is served at once while the CLI is re-queried
+  // behind it; the call after that refresh gets the real catalog.
+  const stale = await models.getSupportedModels();
+  assert.ok(stale.OPTIONS.some((m) => m.value === 'gemini-4-argon'));
+
+  let refreshed = stale;
+  for (let i = 0; i < 100 && refreshed !== cliCatalog; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    refreshed = await models.getSupportedModels();
   }
+  assert.equal(refreshed, cliCatalog);
+  assert.equal(reads, 2);
 });
 
 test('AntigravityProviderModels never holds a caller behind a hung CLI once it has a catalog', async () => {
   // Every turn reads the catalog before spawning agy. A CLI whose `models`
   // query hangs (offline token refresh) must not delay each turn by the
   // query's timeout: the expired catalog is served while the refresh runs.
-  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'antigravity-models-swr-'));
-  const stubPath = path.join(tempRoot, 'agy');
-  const countPath = path.join(tempRoot, 'count');
-  const restoreAgyPath = withEnvValue('CLOUDCLI_AGY_PATH', stubPath);
-  await fs.writeFile(stubPath, '#!/bin/sh\n', { mode: 0o755 });
-  clearEnginePathCache();
-  try {
-    const models = new AntigravityProviderModels(0);
-    await models.getSupportedModels();
+  let reads = 0;
+  // A mutable holder: the assignment happens inside the loader, so a plain
+  // `let` would stay narrowed to null for the call below.
+  const hung: { release: (() => void) | null } = { release: null };
+  const models = new AntigravityProviderModels(0, () => {
+    reads += 1;
+    if (reads === 1) {
+      return Promise.resolve(null);
+    }
+    return new Promise((resolve) => {
+      hung.release = () => resolve(null);
+    });
+  });
 
-    // `models` hangs for longer than the assertion below allows, and counts
-    // its runs; other invocations (the `--version` probe) return at once.
-    await fs.writeFile(
-      stubPath,
-      `#!/bin/sh\n[ "$1" = models ] || exit 0\necho run >> '${countPath}'\nsleep 2\n`,
-      { mode: 0o755 },
-    );
-    clearEnginePathCache();
+  await models.getSupportedModels();
 
-    const startedAt = Date.now();
-    const [first, second] = await Promise.all([models.getSupportedModels(), models.getSupportedModels()]);
-    assert.ok(Date.now() - startedAt < 1_000, 'an expired catalog must be served without waiting on the CLI');
-    assert.ok(first.OPTIONS.some((m) => m.value === 'gemini-4-argon'));
-    assert.equal(second, first);
+  const startedAt = Date.now();
+  const [first, second] = await Promise.all([models.getSupportedModels(), models.getSupportedModels()]);
+  assert.ok(Date.now() - startedAt < 1_000, 'an expired catalog must be served without waiting on the CLI');
+  assert.ok(first.OPTIONS.some((m) => m.value === 'gemini-4-argon'));
+  assert.equal(second, first);
+  assert.equal(reads, 2, 'concurrent callers share one refresh');
 
-    // Concurrent callers share one refresh.
-    await new Promise((resolve) => setTimeout(resolve, 2_500));
-    const runs = (await fs.readFile(countPath, 'utf8')).trim().split('\n');
-    assert.equal(runs.length, 1);
-  } finally {
-    restoreAgyPath();
-    clearEnginePathCache();
-    await fs.rm(tempRoot, { recursive: true, force: true });
-  }
+  hung.release?.();
+  await new Promise((resolve) => setTimeout(resolve, 10));
 });
 
 test('AntigravityProviderModels keeps caching a healthy CLI catalog', async () => {
   // A successful `agy models` result keeps its five-minute cache so the
   // picker never re-runs the ~5s CLI on every open; only the fallback
   // path uses the short TTL.
-  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'antigravity-models-cache-'));
-  const stubPath = path.join(tempRoot, 'agy');
-  const restoreAgyPath = withEnvValue('CLOUDCLI_AGY_PATH', stubPath);
-  await fs.writeFile(
-    stubPath,
-    `#!/bin/sh\nprintf 'gemini-4-argon-medium\\tGemini 4 Argon (Medium)\\n'\n`,
-    { mode: 0o755 },
-  );
-  clearEnginePathCache();
-  try {
-    const models = new AntigravityProviderModels();
-    const first = await models.getSupportedModels();
-    assert.ok(first.OPTIONS.some((m) => m.value === 'gemini-4-argon-medium'));
+  const cliCatalog = {
+    OPTIONS: [{ value: 'gemini-4-argon-medium', label: 'Gemini 4 Argon (Medium)' }],
+    DEFAULT: 'gemini-4-argon-medium',
+  };
+  let reads = 0;
+  const models = new AntigravityProviderModels(10_000, async () => {
+    reads += 1;
+    return cliCatalog;
+  });
 
-    // The stub now reports a different catalog; inside the cache window
-    // the provider must keep serving the first result.
-    await fs.writeFile(
-      stubPath,
-      `#!/bin/sh\nprintf 'claude-opus-5-5-high\\tClaude Opus 5.5 (High)\\n'\n`,
-      { mode: 0o755 },
-    );
-    clearEnginePathCache();
-    const cached = await models.getSupportedModels();
-    assert.ok(cached.OPTIONS.some((m) => m.value === 'gemini-4-argon-medium'));
-    assert.ok(!cached.OPTIONS.some((m) => m.value.startsWith('claude-')));
-  } finally {
-    restoreAgyPath();
-    clearEnginePathCache();
-    await fs.rm(tempRoot, { recursive: true, force: true });
-  }
+  const first = await models.getSupportedModels();
+  const second = await models.getSupportedModels();
+  assert.equal(first, cliCatalog);
+  assert.equal(second, cliCatalog);
+  assert.equal(reads, 1);
 });
 
 test('ANTIGRAVITY_BUILTIN_MODELS collapses multi-tier families and keeps fixed models', () => {
@@ -1425,9 +1433,13 @@ test('AntigravityProviderAuth validates token expiry and extracts the account em
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-auth-expiry-'));
   const restoreDataDir = withEnvValue('CLOUDCLI_ANTIGRAVITY_DATA_DIR', tempRoot);
   const restoreAgyPath = withEnvValue('CLOUDCLI_AGY_PATH', path.join(tempRoot, 'agy'));
-  // Isolate from the real keychain so the file fixture alone decides the verdict.
-  const restoreSkipKeychain = withEnvValue('CLOUDCLI_ANTIGRAVITY_SKIP_KEYCHAIN', '1');
+  // Isolate from the real credential store so the file fixture alone decides
+  // the verdict.
+  const restoreSkipKeychain = withEnvValue('CLOUDCLI_ANTIGRAVITY_SKIP_CREDENTIAL_STORE', '1');
   await fs.writeFile(path.join(tempRoot, 'agy'), '#!/bin/sh\n', { mode: 0o755 });
+  // A previous test may have cached a "not found" resolution for the real
+  // machine; clear it so this fixture's engine path is what resolves.
+  clearEnginePathCache();
   const jwtPayload = (payload: Record<string, unknown>) =>
     Buffer.from(JSON.stringify(payload)).toString('base64url');
 
@@ -1538,6 +1550,19 @@ test('AntigravitySessionsProvider prefers persisted token_usage.json over the tr
     });
 
     assert.equal(usage.used, 999);
+
+    // A legacy snapshot larger than its window (a turn-wide sum) is skipped.
+    await fs.writeFile(
+      path.join(tempDirectory, 'brain', 'conv-2', 'token_usage.json'),
+      JSON.stringify({ used: 1791712, total: 1048576, inputTokens: 1740430, outputTokens: 51282 }),
+    );
+    const fallback = await sessions.getTokenUsage({
+      appSessionId: 'app-session',
+      nativeSessionId: 'conv-2',
+      jsonlPath: null,
+      projectPath: null,
+    });
+    assert.equal(fallback.used, 2);
   } finally {
     restoreDataDir();
     await fs.rm(tempDirectory, { recursive: true, force: true });

@@ -185,6 +185,6 @@ test('the bridge entry needs the engine call it names, not just the credential',
     else process.env.DATABASE_PATH = previousDatabasePath;
     if (previousJwtSecret === undefined) delete process.env.JWT_SECRET;
     else process.env.JWT_SECRET = previousJwtSecret;
-    await fs.rm(temporaryDirectory, { recursive: true, force: true });
+    await fs.rm(temporaryDirectory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

@@ -13,7 +13,6 @@ import type {
   ProviderModelOption,
   ProviderModelsDefinition,
 } from '@/shared/types.js';
-import type { StaleWhileRefreshValue } from '@/shared/utils.js';
 import {
   buildDefaultProviderCurrentActiveModel,
   createStaleWhileRefreshValue,
@@ -21,6 +20,7 @@ import {
   readObjectRecord,
   readOptionalString,
   stripAnsiSequences,
+  type StaleWhileRefreshValue,
 } from '@/shared/utils.js';
 
 import {
@@ -218,8 +218,13 @@ const filterOpenCodeModelsByProvider = (
 
 const execFileAsync = promisify(execFile);
 
-/** `opencode models` answers in ~100ms via the background service; a hung CLI must not pin the models endpoint. */
-const OPENCODE_MODELS_PROBE_TIMEOUT_MS = 5000;
+/**
+ * `opencode models` answers in ~200ms once OpenCode's background service is
+ * up, but the first call after boot has to start that service and can take
+ * several seconds; 5s was short enough to hand a cold-start page load the
+ * anchor catalog. A hung CLI still must not pin the models endpoint forever.
+ */
+const OPENCODE_MODELS_PROBE_TIMEOUT_MS = 15_000;
 
 /** `<providerID>/<modelID>` as printed by `opencode models`; looser ids would never run anyway. */
 const OPENCODE_MODEL_ID_PATTERN = /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/i;
@@ -252,16 +257,23 @@ const OPENCODE_FAMILY_DESCRIPTIONS: Record<string, string> = {
 
 type OpenCodeCatalogModelEntry = {
   name?: string;
+  /** v2.2+ layout: effort tiers live under `capabilities.reasoning.effort`. */
+  capabilities?: { reasoning?: { supported?: boolean; effort?: unknown[] } };
+  /** Pre-v2.2 layout. */
   reasoning_options?: Array<{ type?: string; values?: string[] }>;
 };
 
+/** `kv` keys of the cached models.dev catalog, newest layout first (v2.2 renamed it). */
+const OPENCODE_CATALOG_KV_KEYS = ['models-dev:v2:catalog', 'models-dev:catalog'];
+
 /**
  * Reads the models.dev catalog OpenCode caches in its database (`kv` key
- * `models-dev:catalog`) and maps `<family>/<modelId>` to the display name and
- * reasoning-effort values it records for each model.
+ * `models-dev:v2:catalog`, `models-dev:catalog` before v2.2) and maps
+ * `<family>/<modelId>` to the display name and reasoning-effort values it
+ * records for each model.
  *
  * This is where the reasoning-variant data lives in v2 — `opencode models`
- * prints ids only, but this catalog carries `reasoning_options` per model and
+ * prints ids only, but this catalog carries the effort tiers per model and
  * is refreshed by the CLI itself. A missing database, missing key, or a
  * `body` encoded as an embedded JSON string all degrade to an empty map, so
  * options fall back to synthesized labels without effort variants.
@@ -271,9 +283,10 @@ const readOpenCodeCatalogEntries = (): Map<string, OpenCodeCatalogModelEntry> =>
   try {
     const db = new Database(getOpenCodeDatabasePath(), { readonly: true, fileMustExist: true });
     try {
-      const row = db.prepare("SELECT value FROM kv WHERE key = 'models-dev:catalog'").get() as {
-        value?: string;
-      } | undefined;
+      const readKey = db.prepare('SELECT value FROM kv WHERE key = ?');
+      const row = OPENCODE_CATALOG_KV_KEYS
+        .map((key) => readKey.get(key) as { value?: string } | undefined)
+        .find((candidate) => candidate?.value);
       const parsed = readJsonRecord(row?.value);
       let body: unknown = parsed?.body;
       if (typeof body === 'string') {
@@ -313,9 +326,11 @@ const buildOpenCodeModelOption = (
   // name — stamping them "OpenCode Zen" would misrepresent where the run goes.
   const gateway = OPENCODE_FAMILY_DESCRIPTIONS[familyId] ?? humanizeOpenCodeModelLabel(familyId);
   const catalogEntry = catalogEntries.get(value);
-  const effortValues = (catalogEntry?.reasoning_options ?? [])
-    .find((option) => option?.type === 'effort')
-    ?.values?.filter((entry): entry is string => typeof entry === 'string') ?? [];
+  const reasoning = catalogEntry?.capabilities?.reasoning;
+  const rawEffortValues = Array.isArray(reasoning?.effort)
+    ? (reasoning.supported === false ? [] : reasoning.effort)
+    : (catalogEntry?.reasoning_options ?? []).find((option) => option?.type === 'effort')?.values ?? [];
+  const effortValues = rawEffortValues.filter((entry): entry is string => typeof entry === 'string');
 
   return {
     value,
@@ -368,6 +383,8 @@ const readOpenCodeCliModelIds = async (): Promise<string[]> => {
   try {
     const { stdout } = await execFileAsync(executable, ['models'], {
       timeout: OPENCODE_MODELS_PROBE_TIMEOUT_MS,
+      // Otherwise the probe flashes a console window on Windows.
+      windowsHide: true,
     });
 
     const modelIds: string[] = [];
@@ -424,18 +441,37 @@ const parseOpenCodeSessionModelValue = (rawModel: unknown): string | null => {
   return modelId;
 };
 
-/** Reads the account-scoped catalog, or the anchor fallback when the CLI reports nothing. */
-const loadOpenCodeCatalog = async (): Promise<{ models: ProviderModelsDefinition; fromCli: boolean }> => {
-  // `opencode models` reports exactly the models the logged-in account can
-  // route — narrower and fresher than the anchor catalog, which only
-  // covers the fallback path (CLI missing, failing, or answering empty).
+/** The catalog plus where it came from, so the cache can expire a fallback faster. */
+type OpenCodeCatalogLoad = {
+  models: ProviderModelsDefinition;
+  fromCli: boolean;
+};
+
+/**
+ * Reads the account-scoped catalog, falling back to the anchor list when the
+ * CLI cannot answer. `opencode models` reports exactly the models the
+ * logged-in account can route — narrower and fresher than the anchors, which
+ * only cover the fallback path (CLI missing, failing, or answering empty).
+ */
+const loadOpenCodeCatalog = async (): Promise<OpenCodeCatalogLoad> => {
   const cliModelIds = await readOpenCodeCliModelIds();
   if (cliModelIds.length > 0) {
-    return { models: buildAccountScopedOpenCodeCatalog(cliModelIds, readOpenCodeCatalogEntries()), fromCli: true };
+    return {
+      models: buildAccountScopedOpenCodeCatalog(cliModelIds, readOpenCodeCatalogEntries()),
+      fromCli: true,
+    };
   }
 
+  // Flagged so the client keeps polling for the account catalog instead of
+  // settling on the anchors for the life of the page.
   return {
-    models: filterOpenCodeModelsByProvider(OPENCODE_PREDEFINED_MODELS, await readConnectedOpenCodeProviderIds()),
+    models: {
+      ...filterOpenCodeModelsByProvider(
+        OPENCODE_PREDEFINED_MODELS,
+        await readConnectedOpenCodeProviderIds(),
+      ),
+      FALLBACK: true,
+    },
     fromCli: false,
   };
 };
@@ -445,18 +481,22 @@ export class OpenCodeProviderModels implements IProviderModels {
   /**
    * Every turn reads the catalog before starting, and `opencode models` takes
    * a second or more, so only the first read waits on it; an expired catalog
-   * keeps serving while it is re-read. Kept fresh for a minute, so a provider
-   * connected to the account shows up soon; the anchor fallback for ten
-   * seconds, so a CLI that was briefly unavailable is asked again quickly.
+   * keeps serving while it is re-read. A fresh CLI result is kept for a
+   * minute so a newly connected provider shows up soon; the anchor fallback
+   * for ten seconds, so a CLI that was briefly unavailable is asked again.
    */
-  private readonly catalog: StaleWhileRefreshValue<{ models: ProviderModelsDefinition; fromCli: boolean }> =
-    createStaleWhileRefreshValue({
-      load: loadOpenCodeCatalog,
+  private readonly catalog: StaleWhileRefreshValue<OpenCodeCatalogLoad>;
+
+  /** @param load Catalog reader; defaults to the real `opencode models` probe. */
+  constructor(load: () => Promise<OpenCodeCatalogLoad> = loadOpenCodeCatalog) {
+    this.catalog = createStaleWhileRefreshValue<OpenCodeCatalogLoad>({
+      load,
       ttlMs: (loaded) => (loaded.fromCli ? 60_000 : 10_000),
       // The load falls back instead of rejecting; this only covers a bug in it.
       failureRetryMs: 10_000,
       onRefreshError: (error) => console.error('[OpenCode] Model catalog refresh failed:', error),
     });
+  }
 
   async getSupportedModels(): Promise<ProviderModelsDefinition> {
     return (await this.catalog.get()).models;

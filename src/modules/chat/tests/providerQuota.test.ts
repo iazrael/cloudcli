@@ -10,6 +10,10 @@ import {
 test('buildProviderQuotaUrl addresses the active provider and optional refresh', () => {
   assert.equal(buildProviderQuotaUrl('codex'), '/api/providers/quota?provider=codex');
   assert.equal(
+    buildProviderQuotaUrl('opencode'),
+    '/api/providers/quota?provider=opencode',
+  );
+  assert.equal(
     buildProviderQuotaUrl('antigravity', true),
     '/api/providers/quota?provider=antigravity&refresh=true',
   );

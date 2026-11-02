@@ -1,6 +1,6 @@
 # 前端架构（Frontend）
 
-> 基准：2.11.0 / 2026-10-24（i18n 节 2026-10-29 核对）
+> 基准：2.9.0 / 2026-10-17
 > **核心文档**：改动 `src/shared/**` 或聊天渲染/性能相关代码时**必须同步更新本文**。
 > 普通 bug 修复不动架构的不需要更新（提交时走 `--no-verify`，见 `AGENTS.md`）。
 
@@ -24,36 +24,26 @@ React 18 + TypeScript + Vite 7（`vite.config.js`，别名 `@` → `src/`，`@sh
 
 聊天消息**不走 Context**：走 `SessionTimelineStore`（框架无关）+ `useSessionStore` 适配器，见 [chat.md](./chat.md) 的四层结构。
 
-输入框草稿和排队消息也不走 Context：`src/shared/chatDrafts.ts` 按作用域（会话 id，或新会话的 `project:<id>`）存，服务端 `auth.db` 为准，localStorage 只做首屏镜像，订阅用 `subscribeToChatDrafts`。文本保存和队列追加、清空使用独立接口；重载逐字段保留尚未确认的本地文本和请求期间变化的队列。排队消息只由服务端发出，页面只回显与派发指纹匹配的本地消息，其他内容由历史补齐，见 [chat.md](./chat.md) 的「排队消息与草稿协议」。退出登录使未完成请求的结果失效，不能重新填回上一用户的数据。
+composer 的定时卡片同样不走 Context，也不是实时状态：`useScheduledJobs` / `useScheduledMessages` 都是普通拉取，只在创建、删除、切换会话，以及**所在会话的 run 结束时**（`isProcessing` 落沿）重新拉取——仅一次任务跑完已自停用、定时消息已发出，都要靠这次刷新才会从输入框上方消失。
 
-项目展开偏好由 `UiPreferencesContext` 管理，默认关闭；开启后允许多个普通项目分组展开。展开集合使用数据库 projectId，保存在当前浏览器中；运行中分组使用独立的折叠集合。权限模式名称按输入栏实际剩余宽度显示，布局测量跟随输入栏、工具和发送控件的尺寸变化，不用屏幕断点推断输入区宽度。
+`SessionProtectionContext` 的活动表用 `background` 标记区分"主轮"与"只剩后台任务"两种条目；只剩后台任务时消息是否排队由能力矩阵 `inputWhileBusy` 决定（见 [chat.md](./chat.md)），活动表本身不作排队判断。
 
-`SessionProtectionContext` 的活动表区分主轮和后台等待两个阶段。后台等待包括任务执行和后续汇报，卡片消失不等于活动结束；后台结束事件只清后台阶段，新主轮会建立自己的活动。阶段交接不依赖毫秒时间比较。消息排队、中止资格和提示音按后台等待状态判断，具体链路见 [chat.md](./chat.md)。
-
-活动项还带一个"在等引擎"的标志：常驻引擎把已提交的回合握在原生线程空闲之前，这段时间活动药丸显示"排队中——等引擎空闲"，按钮说明它取消的是排队中的消息，而不是停止正在跑的回合。这个标志既来自 `running-sessions` 的轮询，也来自引擎自己发的活动状态帧；两者都走同一份活动项，轮询不报它的时候保留上一次的值。"在汇报"（`reporting`，挂在后台条目上）走同一条路：后台工作结束后引擎自己起一轮汇报，药丸显示"正在汇报后台结果"，仍有后台工作时在旁边列出，没有时不显示任务数；运行时在会话还有工作时总是明确报出这个标志，汇报结束就报 false，否则保留上次值的规则会让它停在 true。
-
-前后端共用的 `NormalizedMessage` 是聊天时间线的 wire contract；provider 给出的跨路行身份和历史正文完整度必须由 WebSocket 与历史接口原样传入 `SessionTimelineStore`，不能在视图模型层重新生成。身份的分段与对账规则见 [chat.md](./chat.md)。本地图片的签名申请与字节加载分离，机制见下文“图片直连与缓存”。
-
-`WebSocketContext` 只分发当前 socket 的回调，已被替换连接的迟到正文、打开和错误回调不能改变新连接。连接建立后，聊天接收器主动订阅已有会话，先通过确认建立网关代次，再让带代次的事件进入时间线。`SessionTimelineStore` 的连续应用游标与确认水位分开；有界缺口缓存、逐事件状态和指令执行、历史恢复基线见 [chat.md](./chat.md)。接收器不另建去重账。历史恢复失败提示使用 `chat.replay.recoveryFailed` 文案，简体、繁体和英文登记在各语言的 `chat.json`，其他语言沿现有英文回退。提示复用错误卡，不增加持久化消息；恢复成功后移除。
+前后端共用的 `NormalizedMessage` 是聊天时间线的 wire contract；provider 给出的跨路行身份和历史正文完整度必须由 WebSocket 与历史接口原样传入 `SessionTimelineStore`，不能在视图模型层重新生成。身份的分段与对账规则见 [chat.md](./chat.md)。本地 Markdown 图片经授权端点转换为 Blob URL 后，组件换图或卸载必须中止请求并恰好释放一次 URL。
 
 ## Provider 相关前端（零分支原则）
 
-- **能力/目录的唯一来源是后端**：`useProviderCapabilities`（`GET /api/providers/capabilities`）+ `useChatProviderState`（`GET /api/providers/<p>/models` 拉统一模型目录，合成 `providerModelCatalog`）。
+- **能力/目录的唯一来源是后端**：`useProviderCapabilities`（`GET /api/providers/capabilities`，模块级缓存 + 失败按 2s/8s 退避重试后仍失败才回退，因为 `/compact` 这类能力项只靠这一次请求）+ `useChatProviderState`（`GET /api/providers/<p>/models` 拉统一模型目录，合成 `providerModelCatalog`；带 `FALLBACK` 的替身目录先展示，再按 5s/15s/30s/60s 后台重拉直到拿到真实目录，期间不覆盖 localStorage 里已选但替身目录中没有的模型）。
 - **回退镜像**：`src/shared/providerCatalogFallback.ts` 只用于首屏与请求失败兜底，由 parity 测试钉住与后端一致；**其 key 顺序是全应用引擎规范顺序**（一处改动不要在别处另排顺序）。
 - 本地选择持久化为 `<provider>-model` / `<provider>-effort`（`useChatProviderState` 直接读写 localStorage，设备本地，不经 preference store）。
 - 引擎外观：`src/shared/providerDisplay.ts`（显示名）、`src/shared/ui/LLMProviderLogo.tsx`（Logo）。
+- 新增引擎的前端步骤见 [providers.md](./providers.md) 第六步——composer 不写 provider 分支，一切按能力矩阵渲染（slash 菜单同理：`/compact` 仅在 `supportsCompaction` 为真时出现，能力为真时前端发 `chat.compact` 帧并**不**落乐观用户气泡；编辑横幅的「文件会不会一并还原」也按 `editRevertsFiles` 切换文案，见 [providers.md](./providers.md) 的编辑段）。
+- **上下文占用展示**：`tokenBudget`（WS `token_budget` 指令 / 历史页 `tokenUsage`）喂 composer 的两个控件与 `/cost` 弹窗，二者读同一份 `readContextUsage`（`src/modules/chat/utils/contextUsage.ts`；引擎自报 `percentage` 优先，否则 `used/total`）：顶沿细进度条 `ContextUsageBar`（`<60%` 绿 / `60–84%` 黄 / `≥85%` 红）表示窗口占用，工具行里的 `TokenUsageSummary` 显示当前 K 数——手机上只留 K 数（隐藏图标与 `xx%`）以免工具行（附件/语音/命令 + 定时/模型/权限/发送）在 ~320px 溢出、和定时图标重叠，`sm` 以上再加图标和百分比。两者点击都开 `/cost`。没有窗口时细条不画；徽章在整份读数缺失时才不画（快照全 0，或刚压缩且没有摘要大小），因为只显示 K 数、百分比是 `sm` 以上的附加项。刚压缩时引擎还没有 token 数，徽章改用 `summaryBytes`（压缩摘要的 UTF-8 字节数）显示 "9.4KB"，占用条不画。字段语义与来源见 [providers.md](./providers.md)，前端不按引擎分支；`cumulative` 只在 `/cost` 里单列。
 
 ### 会话标签只有一个字段
 
 会话的显示名一律取 `ProjectSession.summary`，`getSessionTitle()` 是唯一入口。
 类型里**没有** `name` 备选字段：曾经有过，后端从未下发，而优先读它的代码因此显示占位名。
 新增读取点不要再加 `|| session.name` 之类的兜底。
-
-浏览器标题由常驻的 `useProjectsState` 根据当前项目和会话更新。Projects、Conversations、搜索结果和移动端折叠侧栏共用这一个入口；条件显示的项目列表不负责 `document.title`，列表卸载后改名仍可同步。基础标题与完成提醒共用 `src/shared/utils.ts` 的标题入口：同一会话改名保留 `[Done]`，用户返回后按原期限清除；切换会话清除上一会话的提醒。
-
-同一个会话在前端有两份拷贝：侧边栏那一行（`projects[].sessions`）和当前打开的会话（`selectedSession`）。工作区头部和浏览器标题读的是后者，所以名字到达时两份都要写，只写侧边栏会让头部停在旧名。改名（用户手动改、引擎自己起名）走同一条合并路径，并沿用手动改名的做法：丢掉一次性搜索定位信息，否则新名字会把对话滚回先前搜索命中的位置。
-
-OpenCode 引擎名称和 Codex 自动标题以「仅元数据」增量（`session_upserted` 带 `metadataOnly`）到达，只改名字：不重读消息、不打待看标记、不改列表排序与活跃时间。带新名字的普通增量仍然按原义处理（会话有动静），但名字照样合并。
 
 ### 消息类型的归属
 
@@ -75,8 +65,6 @@ WebSocket 进来的帧类型 `ServerEvent` 定义在 `shared/protocol/frames.ts`
 **没有索引签名**。读任何字段之前必须先确定是哪种帧，用 `shared/protocol/frameNarrowing.ts` 的谓词；
 `sessionId` 与 `seq` 并非每种帧都有（重连通知、加载进度就没有），用 `readFrameSessionId()` /
 `readFrameSeq()` 读。
-新增网关帧要同时登记到 `frameNarrowing.ts` 的 `GATEWAY_KINDS` 和时间线 store 的路由表 `SERVER_EVENT_ROUTES`：
-路由表里没有的 kind 一律按未知内容行追加进当前会话的时间线。
 
 此前它是 `{ kind?, type?, sessionId?, seq?, [key: string]: unknown }`，
 时间线 store 从中读 22 个字段，全部未经检查。三种网关帧
@@ -95,7 +83,6 @@ WebSocket 进来的帧类型 `ServerEvent` 定义在 `shared/protocol/frames.ts`
 MCP 服务器表单按 `useProviderMcpCapabilities()` 渲染。首屏与请求失败回退到
 `src/shared/mcpCapabilitiesFallback.ts`——该文件**零 import**，因为跨树 parity 测试要从服务端目录读它；
 改后端声明而忘了改它会直接让测试红。
-- 新增引擎的前端步骤见 [providers.md](./providers.md) 第六步——composer 不写 provider 分支，一切按能力矩阵渲染。
 
 ## 诊断报告（统一入口）
 
@@ -131,7 +118,7 @@ MCP 服务器表单按 `useProviderMcpCapabilities()` 渲染。首屏与请求�
   注册一个读取器，导出控件按当前会话 id 取。
 
 隐私是格式契约：报告不得包含聊天正文、凭证、Cookie、请求头或 URL query。帧只留决定行身份的
-字段（`kind` / `id` / `toolId` / `role` / `seq`、网关代次与订阅游标、确认窗口和 `stale` + 截断摘要）；只有构建产物的 `/assets/`
+字段（`kind` / `id` / `toolId` / `role` / `seq` + 截断摘要）；只有构建产物的 `/assets/`
 路径可保留文件名，API、其他同源资源和外站资源分别归类为 `/api`、`same_origin_other`、
 `external`；服务端运行记录只有标识、计时和计数。浏览器不支持的性能条目写 `null`，不可伪造为零。
 应用可用性路径若变更，须继续用 `markStartupMilestone()` 标记入口执行、React 首次提交、
@@ -147,14 +134,15 @@ MCP 服务器表单按 `useProviderMcpCapabilities()` 渲染。首屏与请求�
 6. **WS 帧**：任何新功能不得在帧回调里直接 setState；进 store，靠 notify 批量提交。
 7. **滚动的验收只看行，不看 `scrollTop`**：`scripts/perf/chat-scroll-up-stability.mjs` 断言屏幕上的行走了多远（`visualProgress`）、有没有逆向漂移（`visualBacktrack`）。虚拟化会主动改写 `scrollTop` 来让行不动，因此基于 `scrollTop` 的断言两头不准——既放过了旧实现的卡顿，又会把新实现的正常补偿报成故障。
 8. **Git 变更面板按需取 diff**：`useGitPanelController` 只负责 `fetch` 单个文件的 diff，status 刷新时只清掉已不在变更列表里的缓存；`ChangesView` 在某行展开时才请求，`FileChangeItem` 折叠时**不挂载** `GitDiffViewer`。几百个变更文件若一次性预取并常驻 DOM（每行 diff 一个节点），移动端浏览器会被内存打死。
-9. **折叠体首次展开才挂载**：`CollapsibleContent`（thinking、工具输出共用）从未展开过就不渲染内容，展开过一次后保持挂载，用于收起动画；原生 `<details>` 导出形态始终保留内容。贴底打开会话时，视口内的折叠 thinking 不应为了隐藏而解析 markdown。
-10. **Markdown 解析预算**：micromark 解析强调标记的耗时，与单个行内文本块的长度成平方关系。`MarkdownBody` 在最长的行内文本块（不计围栏代码，表格逐行计算）超过 `INLINE_RUN_PARSE_LIMIT`（10,000 字符）时，原样输出纯文本。模型复读出来的 190KB 单行 thinking 曾让页面卡死近一分钟。
+9. **客户端包的两条构建闸门**：① 不得出现未加保护的正则后向断言 `(?<=` / `(?<!`——Safari < 16.4 解析即抛 SyntaxError，整个 chunk 失效；`vite.config.js` 的 `safariRegexCompatPlugin`（`src/modules/chat/utils/safariRegexCompat.ts`）在 `generateBundle` 扫描并让构建失败，需要“前一字符”判断时改用捕获组写回（如 `normalizeLatexMathDelimiters` 的单 `$` 规则）。② chunk 之间不得互相 import 成环（环会让 chunk 在 React 初始化前求值、白屏）：`manualChunks` 把 rollup/babel helper 钉进 `vendor-react`；每种语言一个 `locale-<lang>` 懒加载 chunk（`resources.ts` 的 `import.meta.glob`，与 `manualChunks` 规则配套），设置等大模块各自成 chunk，`src/shared/tests/bundleNoCycles.test.ts` 在 `dist/` 上校验。
+10. **折叠体首次展开才挂载**：`CollapsibleContent`（thinking、工具输出共用）从未展开过就不渲染内容，展开过一次后保持挂载，用于收起动画；原生 `<details>` 导出形态始终保留内容。贴底打开会话时，视口内的折叠 thinking 不应为了隐藏而解析 markdown。
+11. **Markdown 解析预算**：micromark 解析强调标记的耗时，与单个行内文本块的长度成平方关系。`MarkdownBody` 在最长的行内文本块（不计围栏代码，表格逐行计算）超过 `INLINE_RUN_PARSE_LIMIT`（10,000 字符）时，原样输出纯文本。模型复读出来的 190KB 单行 thinking 曾让页面卡死近一分钟。
 
 ## i18n
 
-- 目录 `src/modules/i18n/`：15 种语言目录，命名空间按文件存在（7 种：auth/chat/codeEditor/common/git/settings/sidebar），覆盖面以 `src/modules/i18n/locales/` 现状为准；语言清单在 `languages.ts`。
-- **翻译按语言懒加载**：`resources.ts` 用 `import.meta.glob` 动态引用全部 JSON，Vite 按 `vite.config.js` 的 `locale-<lang>` 规则切成每语言一个懒 chunk；启动只加载当前语言 + en（`initI18n`，在 `main.tsx` 首帧渲染前完成），切换语言走 `switchLanguage`（先载 bundle 再 `changeLanguage`），跨设备偏好同步同样走它。bundle 加载失败降级为显示 key，不阻塞启动。
-- 新增用户可见文案必须走 i18n key；**en / zh-CN / zh-TW 三份必须给全**，其余语言可暂缺（回退英文）——这是当前维护约定。
+- 目录 `src/modules/i18n/`：15 种语言 × 8 个命名空间（auth/chat/codeEditor/common/git/scheduled/settings/sidebar）；`scheduled` 目前只有 en / zh-CN / zh-TW 三份，其余语言整包回退英文（i18next fallback 按命名空间生效）。
+- **按语言懒加载**：`resources.ts` 用 `import.meta.glob('./locales/*/*.json')` 把每种语言打成独立 chunk，启动只加载当前语言 + 英文兜底（`partialBundledLanguages`），`initI18n()` 必须在首屏渲染前 resolve；`switchLanguage` 先加载目标语言再 `changeLanguage`，避免出现原始 key。新增命名空间只要有同名 JSON 就自动进包，不需要改配置。
+- 新增用户可见文案必须走 i18n key；**en / zh-CN / zh-TW 三份必须给全**，其余语言可暂缺（回退英文）——这是当前维护约定，翻译覆盖面以 `src/modules/i18n/locales/` 现状为准。
 
 ## PWA 与版本
 
@@ -168,26 +156,6 @@ MCP 服务器表单按 `useProviderMcpCapabilities()` 渲染。首屏与请求�
 | --- | --- |
 | 新增聊天 UI 块 | 遵守行身份/两种更新形态；数据进 `SessionTimelineStore`，不建平行 state；`MessageComponent` / `ToolRenderer` 已 memo，别破坏输入身份。`ChatMessage.type` 是 `user\|assistant\|error` 三值联合（无索引签名），新 assistant 子形态走 `is*` 旗标 + convertRow + MessageComponent 分支 |
 | 新增全局 Context | 挂到 `App.tsx` 并更新本文表格；能进 store 的别开新 Context |
-| 新增设置分区 | `src/modules/settings/`（各分区独立组件），文案走 i18n 三语言 |
+| 新增设置分区 | `src/modules/settings/`（各分区独立组件），文案走 i18n 三语言。全局功能开关（Browser、定时任务）都在这里：保存后广播一个 `*SettingsChanged` window 事件，工作区 Tab 与 composer 入口用对应 hook 监听，不轮询 |
 | 新增面板/标签页 | `src/modules/project-workspace/`（Shell 布局 + 标签页） |
 | 引入新依赖 | 先确认不破坏性能守则（全量 Prism、per-frame setState、CV:auto 都是禁区） |
-
-## 大结果附件
-
-`OutputAssets` 从结果里的受限资源地址提取图片和完整文本入口，重复地址只展示一次。入口默认折叠，展开前不挂载图片组件，因此浏览器不会为整段读图历史一次性拉取所有图片。图片复用 `ChatMessageImages` 和统一查看器；全文复用文件附件下载。图片引用即使落在旧的 `images.data` 字段，也先申请签名 URL，再由浏览器直接加载。
-
-HTML、PDF 导出通过 assets API 顺序读取引用的资源并内嵌 data URL，附件用原生 `details` 与下载链接显示，不依赖 React 事件。JSON 导出保留消息并附资源映射。读取失败使导出明确失败，不生成缺少附件的文件。完整导出需要在浏览器汇总资源，因此不能用日常聊天读取的内存预算承诺导出峰值。
-
-## 图片直连与缓存
-
-`useSignedImage` 供聊天、Markdown 预览、文件树和编辑器图片预览共用。Hook 只保留签名 URL、有效期与错误，不保存图片字节；浏览器通过 `<img>` 加载和解码。视口附近的组件才申请，查看器立即申请；缺少 IntersectionObserver 时立即申请保证可用。相邻申请按接口上限分批，同一账号和引用共享进行中的申请与有效结果，已完成条目受容量限制。
-
-签名元数据不缓存，图片响应允许浏览器保存并以 ETag 再验证；普通鉴权 API 继续使用 `no-store`，图片响应不带令牌刷新头。签名即将过期时，新的读取和保存操作按需续签；已显示图片不定时更换地址。图片加载失败最多自动续签一次，错误不无限重试。换引用或卸载后的异步结果不能更新旧组件；账号切换、退出登录和会话失效会使缓存及旧请求结果失效。
-
-统一查看器保留浏览器加载方式，下载或分享时才按需读取 Blob。上传前本地预览、导出嵌入图片以及 PDF、音视频预览保留各自的 Blob 生命周期。图片 URL 不持久化；注销不能清除已下载的图片字节。
-
-全屏查看器与编辑器图片预览共用 `ImageViewerSurface` 的底部信息栏。分辨率来自浏览器解码后的 `naturalWidth`、`naturalHeight`，按图片源隔离，缩放不改变它。入口单独传入原始路径，信息栏不把临时签名地址当文件路径；复制复用公共剪贴板工具，路径保留手动选择能力。
-
-聊天正文的图片地址识别共用 `isImageReference`，仅判断明确图片扩展名及可用的地址形式，不读取文件；本地权限仍由图片签名入口校验。
-
-聊天 Markdown 的本地文件、目录链接由聊天模块私有的 `usePathExists` 挂载时经 file-tree 批量存在性接口探测（转录已虚拟化，挂载行即贴近视口）；明确不存在或不可读的判定渲染为不可点的普通文字，其余保持可点。探测只缓存成功结果，失败结果不缓存，账号切换使缓存失效。

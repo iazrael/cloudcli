@@ -7,8 +7,11 @@
  *
  * The connection loop re-resolves the endpoint on every (re)connect, which
  * is what lets it follow the supervisor to a respawned server on a new port.
- * Drops reconnect with exponential backoff; `onReconnect` lets the runtime
- * reconcile runs whose terminal event may have been missed in the gap.
+ * Drops reconnect with exponential backoff and are logged once per streak —
+ * the gap's events are lost, so a silent reconnect would hide the reason a
+ * frame never arrived. `onReconnect` lets the runtime reconcile runs whose
+ * terminal event may have been missed in the gap, and re-read the asks raised
+ * inside it.
  *
  * Parsing is hand-rolled (a few dozen lines) rather than a dependency: the
  * server emits `data: <json>` frames separated by blank lines plus
@@ -183,6 +186,10 @@ export class OpenCodeEventStream {
   private async runLoop(): Promise<void> {
     let attempts = 0;
     let hadConnection = false;
+    // One warning per failure streak: a service that keeps dropping must not
+    // flood the log, but a silent reconnect is worse — the events that
+    // happened during the gap are gone, and nothing else reports them.
+    let warnedThisStreak = false;
     while (!this.stopped) {
       this.stateValue = 'connecting';
       const controller = new AbortController();
@@ -201,6 +208,7 @@ export class OpenCodeEventStream {
         }
         this.stateValue = 'open';
         attempts = 0;
+        warnedThisStreak = false;
         for (const waiter of this.openWaiters) {
           waiter.resolve();
         }
@@ -216,10 +224,18 @@ export class OpenCodeEventStream {
         }
         hadConnection = true;
         await this.consume(response.body);
+        // A clean end carries no error: the service dropped the subscription
+        // (its own subscriber capacity, a restart, a network cut), and every
+        // event in the gap is lost. Say so, then reconnect below.
+        if (!this.stopped && !controller.signal.aborted && !warnedThisStreak) {
+          warnedThisStreak = true;
+          console.warn('[OpenCode] event stream closed by the service; events during the gap are lost');
+        }
       } catch (error) {
         // Warn once per failure streak: a service that stays down must not
         // flood the log on every backoff retry.
-        if (!this.stopped && !controller.signal.aborted && attempts === 0) {
+        if (!this.stopped && !controller.signal.aborted && !warnedThisStreak) {
+          warnedThisStreak = true;
           console.warn('[OpenCode] event stream dropped:', error instanceof Error ? error.message : error);
         }
       } finally {

@@ -32,7 +32,6 @@ import {
   createCompactionMessage,
   createNormalizedMessage,
   generateMessageId,
-  isClaudeNonTurnMessageRow,
   isPlaceholderProviderModel,
   normalizeProjectPath,
   readObjectRecord,
@@ -44,11 +43,9 @@ import {
   truncateSubagentActivity,
 } from '@/shared/utils.js';
 import { sessionsDb } from '@/modules/database/index.js';
+import { readClaudeSessionWindowSources } from '@/modules/providers/services/claude-context-window.js';
 import { getClaudeSDKSessionStartTime } from '@/modules/providers/list/claude/claude-runtime.provider.js';
-import {
-  getReportedClaudeContextWindow,
-  summarizeClaudeTokenUsage,
-} from '@/modules/providers/services/claude-usage.js';
+import { summarizeClaudeTokenUsage, getReportedClaudeContextWindow } from '@/modules/providers/services/claude-usage.js';
 import { liftMemoryCitations } from '@/modules/providers/shared/memory-citations.js';
 import { isClaudeConversationRecord } from '@/shared/index.js';
 
@@ -114,7 +111,7 @@ async function readClaudeSubagentTranscript(filePath: string): Promise<ClaudeSub
 
       try {
         const entry = parseProviderJson(line) as AnyRecord;
-        if (!isClaudeConversationRecord(entry) || isClaudeNonTurnMessageRow(entry)) continue;
+        if (!isClaudeConversationRecord(entry)) continue;
         const timestamp = typeof entry.timestamp === 'string' ? entry.timestamp : undefined;
         if (timestamp && !transcript.startedAt) {
           transcript.startedAt = timestamp;
@@ -457,7 +454,6 @@ async function readTranscriptRows(jsonlPath: string, providerSessionId: string):
   const rows: AnyRecord[] = [];
   for await (const entry of readJsonlRecords(jsonlPath)) {
     if (entry.sessionId !== providerSessionId) continue;
-    if (isClaudeNonTurnMessageRow(entry)) continue;
     // Preserve graph/control records for their own consumers. A nested message
     // in any other record is a diagnostic payload, not another conversation.
     if (isClaudeConversationRecord(entry)
@@ -1056,24 +1052,25 @@ function readTaskUsage(value: unknown): TaskUsage | undefined {
 }
 
 /**
- * Reads the latest assistant-message usage snapshot from a Claude JSONL file.
+ * Parses a Claude JSONL transcript into the rows the usage summarizer reads.
  *
- * Only assistant rows that carry usage are kept, and the snapshot is picked by
- * `summarizeClaudeTokenUsage` — the same rule the history reader applies — so
- * a subagent turn or a `<synthetic>` all-zero row never becomes the newest turn.
+ * Malformed lines are dropped rather than aborting the scan: a transcript
+ * whose tail is being appended to while it is read is normal, and the rows
+ * before it still carry the session's usage.
  */
-async function readClaudeTokenUsage(
-  filename: string,
-  configuredContextWindow: string | undefined,
-  reportedContextWindow?: number,
-): Promise<ProviderTokenUsageResult> {
-  const usageRows: AnyRecord[] = [];
-  for await (const entry of readJsonlRecords(filename)) {
-    if (entry.type === 'assistant' && entry.message?.usage) {
-      usageRows.push({ type: entry.type, isSidechain: entry.isSidechain, message: { usage: entry.message.usage } });
+function parseClaudeTranscriptEntries(fileContent: string): AnyRecord[] {
+  const entries: AnyRecord[] = [];
+  for (const line of fileContent.split('\n')) {
+    if (!line.trim()) {
+      continue;
+    }
+    try {
+      entries.push(JSON.parse(line) as AnyRecord);
+    } catch {
+      // Skip malformed lines without discarding usage from earlier messages.
     }
   }
-  return summarizeClaudeTokenUsage(usageRows, configuredContextWindow, reportedContextWindow);
+  return entries;
 }
 
 /**
@@ -1897,11 +1894,11 @@ export class ClaudeSessionsProvider implements IProviderSessions {
       // Carried on every page, like the Codex and OpenCode readers do, so the
       // composer's counter tracks the conversation instead of being frozen at
       // whatever it was when the session was opened.
-      tokenUsage: summarizeClaudeTokenUsage(
-        rawMessages,
-        undefined,
-        getReportedClaudeContextWindow(providerSessionId),
-      ),
+      tokenUsage: summarizeClaudeTokenUsage(rawMessages, {
+        ...readClaudeSessionWindowSources(sessionId),
+        reported: getReportedClaudeContextWindow(providerSessionId),
+        configured: process.env.CONTEXT_WINDOW,
+      }),
     };
   }
 
@@ -1947,11 +1944,14 @@ export class ClaudeSessionsProvider implements IProviderSessions {
       });
     }
 
-    return readClaudeTokenUsage(
-      sessionFilePath,
-      process.env.CONTEXT_WINDOW,
-      getReportedClaudeContextWindow(input.nativeSessionId),
-    );
+    const fileContent = await fsp.readFile(sessionFilePath, 'utf8');
+    // Same summarizer the history page uses, so the endpoint and the page can
+    // never report a different occupancy or a different window for one session.
+    return summarizeClaudeTokenUsage(parseClaudeTranscriptEntries(fileContent), {
+      ...readClaudeSessionWindowSources(input.appSessionId),
+      reported: getReportedClaudeContextWindow(input.nativeSessionId),
+      configured: process.env.CONTEXT_WINDOW,
+    });
   }
 
   /**

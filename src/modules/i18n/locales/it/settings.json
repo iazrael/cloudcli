@@ -307,10 +307,7 @@
       "description": "Scopri come usare l'API esterna per avviare sessioni Claude/Cursor dalle tue applicazioni.",
       "viewLink": "Vedi documentazione API →"
     },
-    "loading": "Caricamento...",
-    "version": {
-      "updateAvailable": "Aggiornamento disponibile: v{{version}}"
-    }
+    "loading": "Caricamento..."
   },
   "agents": {
     "authStatus": {

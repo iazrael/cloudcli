@@ -675,8 +675,10 @@ test('only string project IDs are restored from browser storage', () => {
 
 test('unavailable browser storage does not prevent opening projects', () => {
   const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
-  vi.spyOn(localStorage, 'getItem').mockImplementation(() => { throw new Error('Storage disabled'); });
-  vi.spyOn(localStorage, 'setItem').mockImplementation(() => { throw new Error('Storage disabled'); });
+  // Spy on the prototype: the jsdom realm hands the hook a different Storage
+  // instance than the one this module binds at import time.
+  vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('Storage disabled'); });
+  vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('Storage disabled'); });
   const { result } = renderController(vi.fn(), { ...IDLE, keepProjectsExpanded: true });
   act(() => result.current.toggleProject('project-1'));
   act(() => result.current.toggleProject('project-2'));

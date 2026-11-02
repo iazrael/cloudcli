@@ -162,6 +162,15 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
       return null;
     }
 
+    // A transcript a session was edited away from stays on disk on purpose,
+    // but it is nobody's conversation any more. Re-indexing it would add a
+    // sidebar entry for the version the user replaced — and for a session that
+    // was itself discovered from disk (whose app id is its old provider id) it
+    // would hand the row back to that transcript after a full rescan.
+    if (sessionsDb.isProviderSessionSuperseded(parsed.sessionId, this.provider)) {
+      return null;
+    }
+
     // Claude names the session itself (`custom-title` from a manual /rename,
     // then `ai-title`); those generated titles are followed on every rescan.
     // `last-prompt` rotates every turn and history.jsonl holds raw prompts, so

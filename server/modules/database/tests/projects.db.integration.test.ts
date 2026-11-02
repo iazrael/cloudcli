@@ -7,6 +7,7 @@ import test from 'node:test';
 import { closeConnection } from '@/modules/database/connection.js';
 import { initializeDatabase } from '@/modules/database/init-db.js';
 import { projectsDb } from '@/modules/database/repositories/projects.db.js';
+import { normalizeProjectPath } from '@/shared/utils.js';
 
 async function withIsolatedDatabase(runTest: () => void | Promise<void>): Promise<void> {
   const previousDatabasePath = process.env.DATABASE_PATH;
@@ -36,7 +37,7 @@ test('projectsDb.createProjectPath returns created for fresh paths', async () =>
 
     assert.equal(created.outcome, 'created');
     assert.ok(created.project);
-    assert.equal(created.project?.project_path, '/workspace/new-project');
+    assert.equal(created.project?.project_path, normalizeProjectPath('/workspace/new-project'));
     assert.equal(created.project?.isArchived, 0);
   });
 });
@@ -75,7 +76,7 @@ test('projectsDb.ensureProjectPath creates row with isArchived=0 when not existi
   await withIsolatedDatabase(() => {
     const project = projectsDb.ensureProjectPath('/workspace/ensure-new-project');
     assert.ok(project);
-    assert.equal(project.project_path, '/workspace/ensure-new-project');
+    assert.equal(project.project_path, normalizeProjectPath('/workspace/ensure-new-project'));
     assert.equal(project.isArchived, 0);
   });
 });

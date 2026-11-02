@@ -5,6 +5,7 @@ import { oneDark } from '@codemirror/theme-one-dark';
 import type { Extension } from '@codemirror/state';
 
 import type { CodeEditorGotoTarget, MarkdownImageContext } from '@/shared/types';
+
 import MarkdownPreview from '@/modules/code-editor/markdown/MarkdownPreview';
 
 type CodeEditorSurfaceProps = {
@@ -18,7 +19,7 @@ type CodeEditorSurfaceProps = {
   extensions: Extension[];
   // Line to reveal once the document is loaded (`path:line` references).
   gotoTarget?: CodeEditorGotoTarget | null;
-  // Where the markdown preview resolves the document's local image references.
+  /** Where the markdown preview resolves relative image paths from; omitted for callers with no workspace document. */
   markdownImageContext?: MarkdownImageContext | null;
 };
 

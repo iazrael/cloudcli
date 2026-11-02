@@ -213,3 +213,35 @@ test('cost command returns immediate session token usage without blocking on quo
   assert.equal(data.tokenBreakdown?.input, 80);
   assert.equal(data.tokenBreakdown?.output, 20);
 });
+
+test('cost command flags a just-compacted session rather than reporting zero usage', async () => {
+  const cost = await executeCommand('/cost', {
+    provider: 'opencode',
+    sessionId: 'session-1',
+    tokenUsage: { used: 0, total: 200_000, compacted: true, summaryBytes: 9_651 },
+  });
+
+  const data = cost.data as { compacted?: boolean; summaryBytes?: number; tokenUsage: { used: number } };
+
+  assert.equal(data.compacted, true);
+  assert.equal(data.summaryBytes, 9_651);
+  assert.equal(data.tokenUsage.used, 0);
+});
+
+test('cost command forwards compaction reported only by the persisted snapshot', async () => {
+  const mockTokenUsage = {
+    getSessionTokenUsage: async () => ({ used: 0, compacted: true, summaryBytes: 4_096 }),
+  };
+
+  const cost = await executeCommand(
+    '/cost',
+    { provider: 'opencode', sessionId: 'session-1' },
+    {},
+    mockTokenUsage,
+  );
+
+  const data = cost.data as { compacted?: boolean; summaryBytes?: number };
+
+  assert.equal(data.compacted, true);
+  assert.equal(data.summaryBytes, 4_096);
+});
