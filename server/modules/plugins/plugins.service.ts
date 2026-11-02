@@ -52,6 +52,21 @@ function normalizePluginManifest(value: unknown): PluginManifest {
   return manifest as PluginManifest;
 }
 
+/**
+ * Wraps a non-AppError install/update failure so the settings screen shows the
+ * real reason instead of the global middleware's bare "Internal server
+ * error". Git failures already arrive as AppError with a stable code and pass
+ * through unchanged.
+ */
+function pluginOperationFailure(action: 'install' | 'update', error: unknown): AppError {
+  if (error instanceof AppError) return error;
+  const reason = error instanceof Error ? error.message : String(error);
+  return new AppError(`Could not ${action} the plugin: ${reason}`, {
+    code: action === 'install' ? 'PLUGIN_INSTALL_FAILED' : 'PLUGIN_UPDATE_FAILED',
+    statusCode: 500,
+  });
+}
+
 /** Creates plugin-management workflows around loader and process adapters. */
 export function createPluginsService(dependencies: PluginDependencies) {
   async function startServerIfAvailable(plugin: PluginManifest): Promise<void> {
@@ -109,7 +124,14 @@ export function createPluginsService(dependencies: PluginDependencies) {
       if (!url || (!url.startsWith('https://') && !url.startsWith('git@'))) {
         throw new AppError('URL must start with https:// or git@', { code: 'INVALID_PLUGIN_URL', statusCode: 400 });
       }
-      const plugin = normalizePluginManifest(await dependencies.install(url));
+      let installed: unknown;
+      try {
+        installed = await dependencies.install(url);
+      } catch (error) {
+        if (!(error instanceof AppError)) dependencies.logError(`Plugin install failed for ${url}`, error);
+        throw pluginOperationFailure('install', error);
+      }
+      const plugin = normalizePluginManifest(installed);
       await startServerIfAvailable(plugin);
       return { success: true, plugin };
     },
@@ -121,6 +143,7 @@ export function createPluginsService(dependencies: PluginDependencies) {
       try {
         updatedManifest = await dependencies.update(pluginName);
       } catch (error) {
+        if (!(error instanceof AppError)) dependencies.logError(`Plugin update failed for ${pluginName}`, error);
         // A failed update must not leave the plugin's server stopped. It is
         // restarted from whatever is on disk: the previous version when the
         // pull itself failed, the pulled one when npm install or the build
@@ -129,7 +152,7 @@ export function createPluginsService(dependencies: PluginDependencies) {
           const previousPlugin = dependencies.scanPlugins().find((candidate) => candidate.name === pluginName);
           if (previousPlugin) await startServerIfAvailable(previousPlugin);
         }
-        throw error;
+        throw pluginOperationFailure('update', error);
       }
       const plugin = normalizePluginManifest(updatedManifest);
       if (wasRunning) await startServerIfAvailable(plugin);

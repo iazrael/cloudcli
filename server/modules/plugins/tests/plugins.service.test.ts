@@ -1,9 +1,21 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { AppError } from '@/shared/utils.js';
+
 import { createPluginsService } from '../plugins.service.js';
 
 type Dependencies = Parameters<typeof createPluginsService>[0];
+
+async function rejection(operation: Promise<unknown>): Promise<AppError> {
+  try {
+    await operation;
+  } catch (error) {
+    assert.ok(error instanceof AppError, `expected an AppError, got: ${String(error)}`);
+    return error;
+  }
+  return assert.fail('the plugin operation unexpectedly succeeded');
+}
 
 function dependencies(overrides: Partial<Dependencies> = {}): Dependencies {
   return {
@@ -56,4 +68,49 @@ test('setEnabled persists configuration and starts an enabled plugin server', as
   }));
   await service.setEnabled('demo', true);
   assert.deepEqual(operations, ['save', 'start']);
+});
+
+test('an install failure from npm or the build becomes a coded AppError', async () => {
+  const logged: Array<[string, unknown]> = [];
+  const service = createPluginsService(dependencies({
+    install: async () => { throw new Error('npm run build failed (exit code 127): sh: 1: tsc: not found'); },
+    logError: (message, error) => { logged.push([message, error]); },
+  }));
+
+  const error = await rejection(service.install('https://github.com/acme/plugin'));
+
+  assert.equal(error.code, 'PLUGIN_INSTALL_FAILED');
+  assert.equal(error.statusCode, 500);
+  assert.match(error.message, /^Could not install the plugin: npm run build failed/);
+  assert.match(error.message, /tsc: not found/);
+  assert.equal(logged.length, 1);
+  assert.equal(logged[0][0], 'Plugin install failed for https://github.com/acme/plugin');
+});
+
+test('a git AppError passes through an install unchanged', async () => {
+  const gitFailure = new AppError('Could not install the plugin: the repository was not found.', {
+    code: 'PLUGIN_GIT_REPO_NOT_FOUND',
+    statusCode: 422,
+  });
+  const service = createPluginsService(dependencies({
+    install: async () => { throw gitFailure; },
+  }));
+
+  const error = await rejection(service.install('https://github.com/acme/plugin'));
+
+  assert.equal(error, gitFailure);
+  assert.equal(error.code, 'PLUGIN_GIT_REPO_NOT_FOUND');
+  assert.equal(error.statusCode, 422);
+});
+
+test('an update failure from npm or the build becomes a coded AppError', async () => {
+  const service = createPluginsService(dependencies({
+    update: async () => { throw new Error('npm install for demo failed (exit code 1)'); },
+  }));
+
+  const error = await rejection(service.update('demo'));
+
+  assert.equal(error.code, 'PLUGIN_UPDATE_FAILED');
+  assert.equal(error.statusCode, 500);
+  assert.match(error.message, /^Could not update the plugin: npm install for demo failed/);
 });
