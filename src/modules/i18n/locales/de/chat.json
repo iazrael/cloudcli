@@ -273,9 +273,9 @@
     "customLabel": "Oder Zeit wählen",
     "confirm": "Planen",
     "in": {
-      "15": "In 15 Minuten",
-      "60": "In einer Stunde",
-      "480": "In 8 Stunden",
+      "30": "In 30 Minuten",
+      "120": "In 2 Stunden",
+      "300": "In 5 Stunden",
       "1440": "Morgen"
     },
     "pending": "Geplant für {{when}}",

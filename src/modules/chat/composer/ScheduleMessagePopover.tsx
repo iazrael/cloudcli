@@ -18,7 +18,7 @@ type ScheduleMessagePopoverProps = {
 };
 
 /** Offsets people actually mean when they say "later". */
-const QUICK_OFFSETS_MINUTES = [15, 60, 8 * 60, 24 * 60];
+const QUICK_OFFSETS_MINUTES = [30, 2 * 60, 5 * 60, 24 * 60];
 
 /**
  * Turns the picker's `datetime-local` value into an absolute instant.

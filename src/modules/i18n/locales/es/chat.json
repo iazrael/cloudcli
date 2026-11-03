@@ -344,9 +344,9 @@
     "customLabel": "O elige una hora",
     "confirm": "Programar",
     "in": {
-      "15": "En 15 minutos",
-      "60": "En una hora",
-      "480": "En 8 horas",
+      "30": "En 30 minutos",
+      "120": "En 2 horas",
+      "300": "En 5 horas",
       "1440": "Mañana"
     },
     "pending": "Programado para {{when}}",

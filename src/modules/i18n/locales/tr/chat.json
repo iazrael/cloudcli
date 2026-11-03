@@ -273,9 +273,9 @@
     "customLabel": "Veya bir saat seç",
     "confirm": "Zamanla",
     "in": {
-      "15": "15 dakika sonra",
-      "60": "Bir saat sonra",
-      "480": "8 saat sonra",
+      "30": "30 dakika sonra",
+      "120": "2 saat sonra",
+      "300": "5 saat sonra",
       "1440": "Yarın"
     },
     "pending": "{{when}} için zamanlandı",

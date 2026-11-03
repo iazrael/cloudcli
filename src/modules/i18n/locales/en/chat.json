@@ -363,9 +363,9 @@
     "customLabel": "Or pick a time",
     "confirm": "Schedule",
     "in": {
-      "15": "In 15 minutes",
-      "60": "In an hour",
-      "480": "In 8 hours",
+      "30": "In 30 minutes",
+      "120": "In 2 hours",
+      "300": "In 5 hours",
       "1440": "Tomorrow"
     },
     "pending": "Scheduled for {{when}}",

@@ -352,9 +352,9 @@
     "customLabel": "Nebo vyberte čas",
     "confirm": "Naplánovat",
     "in": {
-      "15": "Za 15 minut",
-      "60": "Za hodinu",
-      "480": "Za 8 hodin",
+      "30": "Za 30 minut",
+      "120": "Za 2 hodiny",
+      "300": "Za 5 hodin",
       "1440": "Zítra"
     },
     "pending": "Naplánováno na {{when}}",

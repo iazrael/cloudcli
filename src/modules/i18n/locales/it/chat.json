@@ -273,9 +273,9 @@
     "customLabel": "Oppure scegli un orario",
     "confirm": "Programma",
     "in": {
-      "15": "Tra 15 minuti",
-      "60": "Tra un’ora",
-      "480": "Tra 8 ore",
+      "30": "Tra 30 minuti",
+      "120": "Tra 2 ore",
+      "300": "Tra 5 ore",
       "1440": "Domani"
     },
     "pending": "Programmato per {{when}}",
