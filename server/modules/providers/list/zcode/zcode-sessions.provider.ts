@@ -33,6 +33,7 @@ import {
   truncateSubagentActivity,
 } from '@/shared/utils.js';
 import { getGlobalImageAssetsDir } from '@/shared/image-attachments.js';
+import { prepareTranscriptMessages } from '@/shared/message-unification.js';
 import { resolveAttachmentAssetFile } from '@/modules/assets/index.js';
 
 import { zcodeBackgroundWork } from './zcode-background-work.js';
@@ -521,10 +522,18 @@ export class ZCodeSessionsProvider implements IProviderSessions {
       await this.attachSubagents(db, normalized, providerSessionId);
       const tokenUsage = aggregateZCodeSessionTokenUsage(db, providerSessionId);
 
+      // The same unification pass Claude and Codex run on their histories: it
+      // folds the user's AskUserQuestion answer out of the result prose into
+      // the call's input (the question card reads it from there — without this
+      // every answered question renders as Skipped), caps oversized outputs,
+      // and drops superseded checklist snapshots. ZCode histories carry every
+      // result attached to its call, so the pass drops nothing else here.
+      const transcript = prepareTranscriptMessages(normalized);
+
       const normalizedOffset = Math.max(0, offset);
       const normalizedLimit = limit === null ? null : Math.max(0, limit);
-      const total = normalized.length;
-      const { page, hasMore } = sliceTailPage(normalized, normalizedLimit, normalizedOffset);
+      const total = transcript.length;
+      const { page, hasMore } = sliceTailPage(transcript, normalizedLimit, normalizedOffset);
 
       return {
         messages: page,

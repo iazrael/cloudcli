@@ -748,6 +748,53 @@ test('fetchHistory hides model-only injections and surfaces compaction summaries
   });
 });
 
+test('fetchHistory folds the answered AskUserQuestion into its own card', async () => {
+  await withZCodeStorage(async (storageDir) => {
+    await createFixtureDatabase(storageDir, 'sess_ask');
+    const db = new Database(path.join(storageDir, 'cli', 'db', 'db.sqlite'));
+    try {
+      const insertMessage = db.prepare(
+        'INSERT INTO message (id, session_id, time_created, time_updated, data, sequence) VALUES (?, ?, ?, ?, ?, ?)'
+      );
+      const insertPart = db.prepare(
+        'INSERT INTO part (id, message_id, session_id, time_created, time_updated, data, sequence) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      );
+
+      // The engine records the question call with the original input, and the
+      // user's choices survive only inside the prose result sentence.
+      insertMessage.run('msg_ask', 'sess_ask', 3000, 3000, JSON.stringify({ role: 'assistant' }), 2);
+      insertPart.run(
+        'part_ask', 'msg_ask', 'sess_ask', 3000, 3000,
+        JSON.stringify({
+          type: 'tool',
+          callID: 'call_ask',
+          tool: 'AskUserQuestion',
+          state: {
+            status: 'completed',
+            input: { questions: [{ question: '这次要做的视频和它是什么关系？', header: '视频方向', options: [] }] },
+            output:
+              'User has answered your questions: "这次要做的视频和它是什么关系？"="换例子重讲". You can now continue with the user\'s answers in mind.',
+          },
+        }),
+        0
+      );
+    } finally {
+      db.close();
+    }
+
+    const provider = new ZCodeSessionsProvider();
+    const result = await provider.fetchHistory('sess_ask');
+
+    const ask = result.messages.find((message) => message.toolName === 'AskUserQuestion');
+    assert.ok(ask, 'the question call stays on the timeline');
+    assert.deepEqual(
+      (ask.toolInput as { answers?: unknown }).answers,
+      { '这次要做的视频和它是什么关系？': '换例子重讲' },
+      'the answer is folded onto the question card, not left as Skipped'
+    );
+  });
+});
+
 test('fetchHistory draws a compaction as the shared row with its hidden summary, named as live names them', async () => {
   // Engine 0.16.x: the compaction is a visible `timeline_event` message whose
   // `compaction` part carries the numbers; the summary is a user message the

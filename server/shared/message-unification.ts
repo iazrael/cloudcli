@@ -85,15 +85,19 @@ function readAnswerLabels(value: unknown): string {
 }
 
 /**
- * Recovers the answers from Claude's acknowledgement sentence.
+ * Recovers the answers from the acknowledgement sentence a provider writes
+ * into the result when a question is answered.
  *
  * A live turn only carries the prose result — `Your questions have been
  * answered: "<question>"="<answer>".` — because the structured `toolUseResult`
  * is written when the transcript is persisted, not when the tool returns. The
- * selection would otherwise be invisible for the whole run.
+ * selection would otherwise be invisible for the whole run. ZCode persists the
+ * same round trip as `User has answered your questions: "<q>"="<a>".` with no
+ * structured record at all, so both phrasings gate the parse. The "did not
+ * answer" prose contains neither phrase and must not parse as answers.
  */
 function readAnswersFromAcknowledgement(content: string): Record<string, string> {
-  if (!content.includes('questions have been answered')) {
+  if (!content.includes('questions have been answered') && !content.includes('answered your questions')) {
     return {};
   }
 
