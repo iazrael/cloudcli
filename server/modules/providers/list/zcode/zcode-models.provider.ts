@@ -18,19 +18,50 @@ import {
   readTrimmedStringRecord,
 } from '@/shared/utils.js';
 
-import { readDecryptedZCodeIndividualPlanApiKey } from './zcode-credentials.js';
+import { readDecryptedZCodeIndividualPlanApiKey, readDecryptedZCodeJwtToken } from './zcode-credentials.js';
 import { getZCodeDatabasePath, getZCodeStorageDir } from './zcode-data-root.js';
 import { resolveZCodeProviderApiType } from './zcode-provider-config.js';
 
 /**
- * Account id the removed start-plan (体验) group used to key its options by.
- * Only kept as a send-resolver alias so sessions saved before the removal keep
- * running on the individual plan; nothing reads it off the wire anymore.
+ * Account id of the BigModel trial plan (体验套餐). The picker keys its pinned
+ * option by it, the send resolver routes it to the trial quota, and the
+ * runtime header bridge answers it with the trial JWT.
  */
-const LEGACY_START_PLAN_PROVIDER_ID = 'account:bigmodel-start-plan';
+export const ZCODE_START_PLAN_PROVIDER_ID = 'account:bigmodel-start-plan';
 /** Used by the send model resolver and runtime header bridge to keep account identity consistent. */
 export const ZCODE_INDIVIDUAL_PLAN_PROVIDER_ID = 'account:bigmodel-individual-coding-plan';
+const ZCODE_START_PLAN_MODEL_ID = 'GLM-5.3-Flash';
+const ZCODE_START_PLAN_MODEL_VALUE = `${ZCODE_START_PLAN_PROVIDER_ID}/${ZCODE_START_PLAN_MODEL_ID}`;
+const ZCODE_START_PLAN_MODEL_LABEL = 'GLM-5.3-Flash（体验）';
 const ZCODE_PERSONAL_MODELS_WHITELIST = new Set(['GLM-5.3', 'GLM-5.3-Flash']);
+
+/**
+ * Appends the pinned trial-plan option when the account holds a trial JWT.
+ * The trial model stays a single hard-coded entry: the plan's billing API
+ * cannot be turned into a usable model catalog, so the plan grants exactly
+ * this Flash model. Kept ungrouped so the menu stays flat like claude's.
+ */
+function appendStartPlanModelIfEligible(options: ProviderModelOption[]): ProviderModelOption[] {
+  if (!readDecryptedZCodeJwtToken() || options.some((opt) => opt.value === ZCODE_START_PLAN_MODEL_VALUE)) {
+    return options;
+  }
+  return [
+    ...options,
+    {
+      value: ZCODE_START_PLAN_MODEL_VALUE,
+      label: ZCODE_START_PLAN_MODEL_LABEL,
+      description: 'ZCode 体验套餐专享模型',
+      effort: {
+        default: 'max',
+        values: [
+          { value: 'low', description: EFFORT_DESCRIPTIONS.low },
+          { value: 'high', description: EFFORT_DESCRIPTIONS.high },
+          { value: 'max', description: EFFORT_DESCRIPTIONS.max },
+        ],
+      },
+    },
+  ];
+}
 
 export const ZCODE_BUILTIN_MODELS: ProviderModelsDefinition = {
   OPTIONS: [
@@ -181,8 +212,10 @@ const readZCodeModelConfig = async (): Promise<ProviderModelsDefinition> => {
 
   // Model keys stay bare (`GLM-5.3`) so the picker reads like claude's and
   // antigravity's; the account scoping is applied at send resolution instead.
+  // The trial plan is the one exception: its pinned option carries the scoped
+  // id because the bare Flash id already belongs to the personal plan.
   return {
-    OPTIONS: baseDefinition.OPTIONS,
+    OPTIONS: appendStartPlanModelIfEligible(baseDefinition.OPTIONS),
     DEFAULT: baseDefinition.OPTIONS[0]?.value ?? baseDefinition.DEFAULT,
   };
 };
@@ -226,13 +259,22 @@ export function readZCodeSessionModelInfoFromDb(providerSessionId: string): { mo
       return null;
     }
 
-    // Account-scoped engine ids (start-plan/individual) map back onto the bare
-    // model keys the picker offers, so "current model" stays selectable there.
+    // Only the trial option is keyed by its account-scoped id in the picker,
+    // so its readback re-attaches the scope for exact matching; individual-plan
+    // sessions report bare ids that match the personal options directly.
+    const providerId = readOptionalString(messageData?.providerID)
+      || readOptionalString(messageData?.providerId)
+      || readOptionalString(modelRecord?.providerID)
+      || readOptionalString(modelRecord?.providerId);
+    const modelId = providerId === ZCODE_START_PLAN_PROVIDER_ID
+      ? `${ZCODE_START_PLAN_PROVIDER_ID}/${rawModelId}`
+      : rawModelId;
+
     const variant = readOptionalString(messageData?.variant)
       || readOptionalString(modelRecord?.variant);
 
     return {
-      modelId: rawModelId,
+      modelId,
       variant: variant || undefined,
     };
   } catch {
@@ -280,11 +322,11 @@ export function resolveZCodeModelRef(
     };
   }
 
-  if (requestedProviderId === LEGACY_START_PLAN_PROVIDER_ID || requestedProviderId === ZCODE_INDIVIDUAL_PLAN_PROVIDER_ID) {
-    // Legacy start-plan refs (sessions saved before that group was removed)
-    // alias onto the individual plan so they keep sending on personal quota.
+  if (requestedProviderId === ZCODE_START_PLAN_PROVIDER_ID || requestedProviderId === ZCODE_INDIVIDUAL_PLAN_PROVIDER_ID) {
+    // Explicit account-plan selections route to their own quota: the trial
+    // plan keeps its pinned option and the individual plan its personal quota.
     return {
-      providerId: ZCODE_INDIVIDUAL_PLAN_PROVIDER_ID,
+      providerId: requestedProviderId,
       modelId: requestedModelId,
       ...(normalizedReasoningLevel ? { options: { reasoningLevel: normalizedReasoningLevel } } : {}),
     };
@@ -376,10 +418,13 @@ export function buildZCodeSendModelParams(
 } | null {
   const explicitSelection = resolveZCodeModelRef(modelKey, reasoningLevel);
 
-  if (explicitSelection.providerId === ZCODE_INDIVIDUAL_PLAN_PROVIDER_ID) {
-    const apiKey = readDecryptedZCodeIndividualPlanApiKey();
+  if (explicitSelection.providerId === ZCODE_START_PLAN_PROVIDER_ID
+      || explicitSelection.providerId === ZCODE_INDIVIDUAL_PLAN_PROVIDER_ID) {
+    const apiKey = explicitSelection.providerId === ZCODE_START_PLAN_PROVIDER_ID
+      ? readDecryptedZCodeJwtToken() : readDecryptedZCodeIndividualPlanApiKey();
     if (!apiKey) {
-      throw new Error('ZCode individual plan credential is missing or ambiguous');
+      const plan = explicitSelection.providerId === ZCODE_START_PLAN_PROVIDER_ID ? 'start' : 'individual';
+      throw new Error(`ZCode ${plan} plan credential is missing or ambiguous`);
     }
     const selectedReasoningLevel = explicitSelection.options?.reasoningLevel ?? 'max';
     return {

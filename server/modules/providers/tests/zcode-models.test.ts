@@ -288,7 +288,7 @@ test('readZCodeSessionModelInfoFromDb returns model and variant from latest mess
   });
 });
 
-test('getSupportedModels stays personal-only with plain values even when a trial JWT exists', async () => {
+test('getSupportedModels appends the pinned trial Flash option when a trial JWT exists', async () => {
   await withZCodeStorage(async (storageDir) => {
     const cliDir = path.join(storageDir, 'cli');
     const v2Dir = path.join(storageDir, 'v2');
@@ -320,13 +320,20 @@ test('getSupportedModels stays personal-only with plain values even when a trial
     const models = new ZCodeProviderModels();
     const definition = await models.getSupportedModels();
 
-    // Trial credentials no longer add a start-plan group: the menu is the
-    // personal plan only, keyed by bare model ids like claude/antigravity.
+    // The trial plan appends exactly one pinned option keyed by its
+    // account-scoped id; personal options stay bare and ungrouped.
     assert.deepEqual(
       definition.OPTIONS.map((opt) => opt.value),
-      ['GLM-5.3', 'GLM-5.3-Flash']
+      ['GLM-5.3', 'GLM-5.3-Flash', 'account:bigmodel-start-plan/GLM-5.3-Flash']
     );
-    assert.ok(definition.OPTIONS.every((opt) => opt.group === undefined));
+    const trial = definition.OPTIONS[2];
+    assert.equal(trial.label, 'GLM-5.3-Flash（体验）');
+    assert.equal(trial.group, undefined);
+    assert.equal(trial.effort?.default, 'max');
+    assert.deepEqual(
+      trial.effort?.values.map((value) => value.value),
+      ['low', 'high', 'max']
+    );
     assert.equal(definition.DEFAULT, 'GLM-5.3');
   });
 });
@@ -362,31 +369,29 @@ test('getSupportedModels falls back to the builtin catalog when only the legacy 
   });
 });
 
-test('buildZCodeSendModelParams aliases legacy start-plan refs onto the individual plan', async () => {
+test('buildZCodeSendModelParams sends start-plan refs on the trial plan with its JWT', async () => {
   await withZCodeStorage(async (storageDir) => {
     const v2Dir = path.join(storageDir, 'v2');
     await mkdir(v2Dir, { recursive: true });
+    const encryptedToken = encryptZCodeCredentialValue('trial-jwt-token');
+    assert.match(encryptedToken, /^enc:v1:/);
     await writeFile(
       path.join(v2Dir, 'credentials.json'),
-      JSON.stringify({
-        'account-provider:coding-plan:account:bigmodel-individual-coding-plan:account:123:api-key':
-          encryptZCodeCredentialValue('personal-plan-key'),
-      }),
+      JSON.stringify({ zcodejwttoken: encryptedToken }),
       'utf8'
     );
 
-    // Sessions saved before the start-plan group was removed still carry the
-    // account-prefixed ref; it must keep sending on the personal plan.
     const params = buildZCodeSendModelParams('account:bigmodel-start-plan/GLM-5.3-Flash', 'high');
     assert.ok(params);
     assert.deepEqual(params.modelSelection, {
-      providerId: 'account:bigmodel-individual-coding-plan',
+      providerId: 'account:bigmodel-start-plan',
       modelId: 'GLM-5.3-Flash',
       options: { reasoningLevel: 'high' },
     });
+    // The decrypted plain token must be passed, never raw ciphertext.
     assert.deepEqual(params.modelExecution, {
       selectionScope: 'execution',
-      requestAuth: { apiKey: 'personal-plan-key' },
+      requestAuth: { apiKey: 'trial-jwt-token' },
     });
   });
 });
@@ -463,10 +468,10 @@ test('account plan selection fails when its credential is missing', async () => 
   await withZCodeStorage(async () => {
     assert.throws(() => buildZCodeSendModelParams('account:bigmodel-individual-coding-plan/GLM-5.3-Flash'),
       /individual.*credential/i);
-    // Legacy start-plan refs alias onto the individual plan, so the missing
-    // credential they hit is the individual one.
+    // The trial selection needs its own trial JWT; it never falls back to the
+    // individual key or the engine default.
     assert.throws(() => buildZCodeSendModelParams('account:bigmodel-start-plan/GLM-5.3-Flash'),
-      /individual.*credential/i);
+      /start.*credential/i);
   });
 });
 
@@ -494,7 +499,7 @@ test('a same-name custom model keeps its provider when an individual-plan key ex
   });
 });
 
-test('readZCodeSessionModelInfoFromDb reports the bare model id regardless of the account plan', async () => {
+test('readZCodeSessionModelInfoFromDb re-scopes start-plan sessions for picker highlighting', async () => {
   await withZCodeStorage(async (storageDir) => {
     const dbDir = path.join(storageDir, 'cli', 'db');
     await mkdir(dbDir, { recursive: true });
@@ -523,12 +528,27 @@ test('readZCodeSessionModelInfoFromDb reports the bare model id regardless of th
           variant: 'max',
         },
       }), 0);
+      insert.run('m_ind', 'sess_individual', 3000, 3000, JSON.stringify({
+        role: 'user',
+        model: {
+          providerID: 'account:bigmodel-individual-coding-plan',
+          modelID: 'GLM-5.3-Flash',
+          variant: 'max',
+        },
+      }), 1);
     } finally {
       db.close();
     }
 
     const { readZCodeSessionModelInfoFromDb } = await import('@/modules/providers/list/zcode/zcode-models.provider.js');
+    // The trial option is the only picker entry keyed by its scoped id, so
+    // the start-plan readback re-attaches the scope for exact matching.
     assert.deepEqual(readZCodeSessionModelInfoFromDb('sess_start_plan'), {
+      modelId: 'account:bigmodel-start-plan/GLM-5.3-Flash',
+      variant: 'max',
+    });
+    // Individual-plan sessions report bare ids that match the personal options.
+    assert.deepEqual(readZCodeSessionModelInfoFromDb('sess_individual'), {
       modelId: 'GLM-5.3-Flash',
       variant: 'max',
     });
