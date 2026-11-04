@@ -102,6 +102,16 @@ function storeDisplayAsset(bytes: Buffer | string, filename: string): void {
   }
 }
 
+/** Image formats by the base64 of their first bytes; Codex sends generated images without a media type. */
+const BASE64_IMAGE_SIGNATURES: ReadonlyArray<readonly [prefix: string, mimeType: string]> = [
+  ['iVBORw0KGgo', 'image/png'], ['/9j/', 'image/jpeg'], ['UklGR', 'image/webp'],
+];
+
+function isCodexGeneratedImage(record: Record<string, unknown>): boolean {
+  return record.type === 'imageGeneration'
+    || (record.type === 'Extension' && record.kind === 'image_gen.generation');
+}
+
 function storeInlineImage(mimeType: string, encoded: string): string {
   const extension = INLINE_IMAGE_EXTENSIONS[mimeType.toLowerCase()];
   if (!extension) throw new Error(`Unsupported inline image type: ${mimeType}`);
@@ -191,6 +201,15 @@ export function compactProviderPayload<T>(value: T): T {
       const result = { ...rest, uri: storeInlineImage(String(record.mimeType ?? record.mime_type), data) };
       seen.set(input, result);
       return result;
+    }
+    if (isCodexGeneratedImage(record) && typeof record.result === 'string') {
+      const encoded = record.result;
+      const mimeType = BASE64_IMAGE_SIGNATURES.find(([prefix]) => encoded.startsWith(prefix))?.[1];
+      if (mimeType) {
+        const result = { ...record, result: storeInlineImage(mimeType, encoded) };
+        seen.set(input, result);
+        return result;
+      }
     }
     seen.set(input, input);
     let result: unknown = input;

@@ -297,3 +297,10 @@ test('an updated event finds a call launched before this page loaded through its
   const [row] = normalizedToChatMessages([workflowCall, launchAck, killed]);
   assert.equal(row?.taskStatus?.status, 'stopped');
 });
+
+test('keeps the images of an assistant row that has no text', () => {
+  const images = [{ path: `/api/assets/images/inline-${'a'.repeat(64)}.png`, name: 'a menu' }];
+  const [row] = normalizedToChatMessages([message('generated', { content: '', images })]);
+  assert.equal(row.type, 'assistant');
+  assert.deepEqual(row.images, images);
+});

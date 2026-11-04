@@ -531,6 +531,8 @@ id 必须字节相同。** 这条有两道闸门守着：
 
 一次 `read` 工具返回截图时，引擎仍保留原始图片供模型使用。CloudCLI 在保存展示副本前，通过 `server/shared/utils.ts` 的 `compactProviderPayload` 把内嵌图片写入全局资源目录，再用稳定的资源地址替换图片正文。相同图片在实时事件和历史记录中得到同一引用。超过展示阈值的结果文本保留预览，全文通过文件资源提供，阈值以该函数为准。用户提示词保留完整原文，供编辑重发和复制；联表记录在处理 part 时携带父消息的用户角色。
 
+Codex 的图片生成项不带媒体类型，`result` 是裸 base64。`compactProviderPayload` 识别实时的 `imageGeneration` 和历史的 `Extension`（`kind: image_gen.generation`），按文件头判断格式后存成图片资源，`result` 换成资源地址，因此不走大文本预览。`codex-thread-items.ts` 把两边读成同一个 `image_generation` 项：成功时是一条带 `images` 的助手行，失败时是一条错误行，没有图片字节但有 `savedPath` 时用文字说明保存位置。`ImageView` 项读成 `Read` 行，只记录路径，不复制文件。子代理时间线只显示文字和工具，不显示生成的图片。
+
 ```mermaid
 flowchart LR
   A[引擎原始结果] --> B[展示副本]

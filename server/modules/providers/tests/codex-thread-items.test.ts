@@ -13,6 +13,9 @@
  */
 
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
 import {
@@ -238,4 +241,94 @@ test('a completed spawn acknowledgement keeps its child running in live and roll
     assert.equal(rows[0].status, 'in_progress');
     assert.deepEqual(rows[1].toolUseResult, { isAsync: true, agentId: 'child-1' });
   }
+});
+
+// A one-pixel PNG: the engine sends generated images as bare base64.
+const PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+const STORED_PNG = /^\/api\/assets\/images\/inline-[a-f0-9]{64}\.png$/;
+
+function withTemporaryHome(run: () => void): void {
+  const home = mkdtempSync(path.join(tmpdir(), 'codex-image-'));
+  const previous = process.env.HOME;
+  process.env.HOME = home;
+  try {
+    run();
+  } finally {
+    process.env.HOME = previous;
+    rmSync(home, { recursive: true, force: true });
+  }
+}
+
+test('a generated image reads the same live and from history, as a stored image on an assistant row', () => {
+  withTemporaryHome(() => {
+    const live = readCodexAppServerItem({
+      type: 'imageGeneration', id: 'exec-1', status: 'completed', revisedPrompt: 'a menu',
+      result: PNG_BASE64, failure: null, savedPath: '/home/u/.codex/generated_images/t/exec-1.png', generationId: null,
+    });
+    const history = readCodexRolloutItem({
+      type: 'Extension', kind: 'image_gen.generation', id: 'exec-1', status: 'completed', revisedPrompt: 'a menu',
+      result: PNG_BASE64, transparentBackground: false, failure: null,
+      savedPath: '/home/u/.codex/generated_images/t/exec-1.png',
+    });
+    assert.deepEqual(live, history);
+
+    const [row, ...rest] = codexThreadItemToRows(live!, TIMESTAMP);
+    assert.equal(rest.length, 0);
+    assert.equal(row.uuid, 'exec-1');
+    assert.equal(row.type, 'assistant');
+    assert.match(row.images[0].path, STORED_PNG);
+    assert.equal(row.images[0].name, 'a menu');
+
+    const [message] = new CodexSessionsProvider().normalizeMessage(row, 's');
+    assert.equal(message.kind, 'text');
+    assert.equal(message.role, 'assistant');
+    assert.deepEqual(message.images, row.images);
+  });
+});
+
+test('a large generated image is stored whole, not cut down to a text preview', () => {
+  withTemporaryHome(() => {
+    const padded = Buffer.concat([Buffer.from(PNG_BASE64, 'base64'), Buffer.alloc(300 * 1024, 7)]).toString('base64');
+    const item = readCodexAppServerItem({ type: 'imageGeneration', id: 'exec-big', status: 'completed', result: padded });
+    assert.ok(item?.kind === 'image_generation');
+    assert.match(item.imageUrl ?? '', STORED_PNG);
+  });
+});
+
+test('a generated image reports the outcomes that have no image bytes', () => {
+  const failed = readCodexAppServerItem({
+    type: 'imageGeneration', id: 'exec-2', status: 'failed', revisedPrompt: null,
+    failure: { type: 'usageLimitExceeded', limitId: 'images', resetsAt: null },
+  });
+  const [failedRow] = codexThreadItemToRows(failed!, TIMESTAMP);
+  assert.equal(failedRow.type, 'error');
+  assert.match(failedRow.content, /usage limit/i);
+
+  const savedOnly = readCodexAppServerItem({
+    type: 'imageGeneration', id: 'exec-3', status: 'completed', failure: null,
+    fileId: 'file-1', savedPath: '/home/u/.codex/generated_images/t/exec-3.png',
+  });
+  const [savedRow] = codexThreadItemToRows(savedOnly!, TIMESTAMP);
+  assert.equal(savedRow.type, 'assistant');
+  assert.match(savedRow.message.content, /exec-3\.png/);
+  assert.equal(savedRow.images, undefined);
+});
+
+test('a generated image in an unknown format is not treated as an image', () => {
+  const item = readCodexAppServerItem({ type: 'imageGeneration', id: 'exec-4', status: 'completed', result: 'AAAA' });
+  assert.ok(item?.kind === 'image_generation');
+  assert.equal(item.imageUrl, undefined);
+});
+
+test('viewing an image reads the same live and from history, as a Read of that file', () => {
+  const live = readCodexAppServerItem({ type: 'imageView', id: 'exec-5', path: '/work/temp/%E5%9B%BE.png' });
+  const history = readCodexRolloutItem({ type: 'ImageView', id: 'exec-5', path: 'file:///work/temp/%25E5%259B%25BE.png' });
+  assert.deepEqual(live, history);
+  assert.ok(live?.kind === 'image_view');
+
+  const [use, result] = codexThreadItemToRows(live!, TIMESTAMP);
+  assert.equal(use.toolName, 'Read');
+  assert.deepEqual(JSON.parse(use.toolInput), { file_path: '/work/temp/%E5%9B%BE.png' });
+  assert.equal(result.type, 'tool_result');
+  assert.equal(result.toolCallId, 'exec-5');
 });

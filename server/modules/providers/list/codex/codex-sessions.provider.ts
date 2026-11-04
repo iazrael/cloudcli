@@ -1771,7 +1771,8 @@ export class CodexSessionsProvider implements IProviderSessions {
             .filter(Boolean)
             .join('\n')
           : '';
-      if (!content.trim()) {
+      const images = Array.isArray(raw.images) && raw.images.length > 0 ? raw.images : undefined;
+      if (!content.trim() && !images) {
         return [];
       }
       // A proposed plan is a plan card, not an assistant paragraph that
@@ -1799,6 +1800,7 @@ export class CodexSessionsProvider implements IProviderSessions {
         kind: 'text',
         role: 'assistant',
         content,
+        images,
         memoryCitations: raw.memoryCitations,
       })];
     }

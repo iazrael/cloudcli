@@ -441,6 +441,7 @@ function convertRow(
             type: 'assistant',
             content: text,
             timestamp: msg.timestamp,
+            images,
             memoryCitations: msg.memoryCitations,
             model: msg.model,
             ...sharedMetadata,

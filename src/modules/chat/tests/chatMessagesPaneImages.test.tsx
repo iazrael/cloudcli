@@ -57,3 +57,17 @@ it('switching the transcript project reloads the reference under the new project
   rerender(renderPane({ ...project, projectId: 'another-project' }, `![Fast 原图](${imagePath})`));
   await waitFor(() => expect(requestImageUrls).toHaveBeenCalledWith([expect.objectContaining({ kind: 'external', path: imagePath, projectId: 'another-project' })]));
 });
+
+it('shows an assistant image with no text, at reading size and not as a thumbnail', async () => {
+  const images = [{ path: `/api/assets/images/inline-${'a'.repeat(64)}.png`, name: 'A menu concept' }];
+  const message: ChatMessage = { id: 'generated', type: 'assistant', content: '', images, timestamp: '2026-10-26T07:24:16Z' };
+  render(<ThemeProvider><UiPreferencesProvider>
+    <ChatMessagesPane scrollRef={createRef()} virtualizerRef={createRef()} onScroll={() => {}}
+      shiftOnPrepend={false} transcriptItems={[message]} chatMessages={[message]} selectedSession={null}
+      provider="codex" isLoadingMoreMessages={false} highlightedItemIndex={null} createDiff={() => []}
+      selectedProject={project} />
+  </UiPreferencesProvider></ThemeProvider>);
+  const image = await screen.findByRole('img', { name: 'A menu concept' });
+  expect(image.getAttribute('src')).toBe('/api/media/images?ticket=transcript');
+  expect(image.className).not.toContain('h-28');
+});

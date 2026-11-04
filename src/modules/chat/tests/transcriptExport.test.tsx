@@ -75,6 +75,15 @@ describe('markdown export', () => {
     expect(agyMd).toContain('### Antigravity');
   });
 
+  it('notes the images of an assistant row, even one with no text', async () => {
+    const markdown = await buildTranscriptExport('markdown', {
+      ...input,
+      messages: [{ type: 'assistant', content: '', images: [{ path: '/api/assets/images/x.png' }], timestamp: exportedAt }],
+    }, exportedAt);
+    expect(markdown).toContain('1 image attachment(s)');
+    expect(markdown).toContain('1 messages');
+  });
+
   it('fences an error block that already contains a fence', async () => {
     const markdown = await buildTranscriptExport('markdown', {
       ...input,
