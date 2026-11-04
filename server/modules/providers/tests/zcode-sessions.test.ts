@@ -649,6 +649,40 @@ test('normalizeMessage ignores unknown event types', () => {
   assert.deepEqual(provider.normalizeMessage('not-an-object', 'sess_1'), []);
 });
 
+test('fetchHistory orders equal-time parts by sequence before random ids', async () => {
+  await withZCodeStorage(async (storageDir) => {
+    await createFixtureDatabase(storageDir, 'sess_order');
+    const db = new Database(path.join(storageDir, 'cli', 'db', 'db.sqlite'));
+    try {
+      // The engine can persist reasoning and text with the same timestamp.
+      // Deliberately make their ids sort opposite to their native sequence.
+      db.exec(`
+        UPDATE part SET id = 'part_z_reasoning' WHERE id = 'part_reasoning';
+        UPDATE part SET id = 'part_a_text', time_created = 2000 WHERE id = 'part_text';
+      `);
+    } finally {
+      db.close();
+    }
+
+    const provider = new ZCodeSessionsProvider();
+    const history = await provider.fetchHistory('sess_order');
+    assert.deepEqual(history.messages.map((message) => message.kind),
+      ['text', 'text', 'thinking', 'text', 'tool_use']);
+    const page = await provider.fetchHistory('sess_order', { limit: 2, offset: 1 });
+    assert.deepEqual(page.messages.map((message) => message.kind), ['thinking', 'text']);
+
+    const legacyDb = new Database(path.join(storageDir, 'cli', 'db', 'db.sqlite'));
+    try {
+      legacyDb.exec('UPDATE part SET sequence = NULL');
+    } finally {
+      legacyDb.close();
+    }
+    const legacyHistory = await provider.fetchHistory('sess_order');
+    assert.deepEqual(legacyHistory.messages.map((message) => message.kind),
+      ['text', 'text', 'text', 'thinking', 'tool_use']);
+  });
+});
+
 test('fetchHistory loads and paginates the fixture database', async () => {
   await withZCodeStorage(async (storageDir) => {
     await createFixtureDatabase(storageDir, 'sess_hist');

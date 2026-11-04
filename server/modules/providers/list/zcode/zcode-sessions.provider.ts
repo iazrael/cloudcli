@@ -574,6 +574,7 @@ export class ZCodeSessionsProvider implements IProviderSessions {
         m.sequence,
         m.id,
         COALESCE(p.time_created, 0),
+        p.sequence,
         p.id
     `).iterate(providerSessionId) as Iterable<ZCodeHistoryRow>;
   }
