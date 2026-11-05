@@ -31,10 +31,40 @@ import {
   ZCODE_BUILTIN_PROVIDER_CONFIG_ENV,
   ZCODE_PERSONAL_PROVIDER_CONFIG_ENV,
 } from './zcode-provider-config.js';
-import { tryResolveEnginePath } from './zcode-engine-path.js';
+import { readZCodeAppVersion, tryResolveEnginePath } from './zcode-engine-path.js';
 
 /** How much of the engine's stderr to keep for crash explanations. */
 const STDERR_TAIL_LIMIT = 4000;
+
+/**
+ * Builds the environment for one engine spawn.
+ *
+ * Consumers: the default `spawnProcess` below and the supervisor tests, which
+ * assert what reaches the engine without starting a real process. Called per
+ * spawn so a restart after a ZCode App upgrade reports the new version.
+ */
+export function buildZCodeEngineSpawnEnv(enginePath: string): NodeJS.ProcessEnv {
+  const appVersion = readZCodeAppVersion(enginePath);
+  return {
+    ...process.env,
+    // Ensure ZCode uses the expected storage directory (shared data-root
+    // helper, so ZCODE_STORAGE_DIR isolation applies uniformly).
+    ZCODE_STORAGE_DIR: getZCodeStorageDir(),
+    // Ambient ZCODE_* provider-config values inherited from a parent
+    // ZCode App session point at the App's runtime files, not at this
+    // engine's config; strip them so the engine runs only on the config
+    // resolved below (see zcode-provider-config).
+    [ZCODE_BUILTIN_PROVIDER_CONFIG_ENV]: undefined,
+    [ZCODE_PERSONAL_PROVIDER_CONFIG_ENV]: undefined,
+    // The packaged engine cannot locate its own built-in provider config
+    // (see zcode-provider-config); hand it the resolved paths instead.
+    ...resolveZCodeProviderConfigEnv(enginePath),
+    // The engine stamps this into each model request's User-Agent and
+    // X-ZCode-App-Version. Without it they fall back to the engine's own
+    // version, and the trial-plan gateway answers 405 (code 3012).
+    ...(appVersion ? { ZCODE_APP_VERSION: appVersion } : {}),
+  };
+}
 
 /**
  * Tunables for the supervisor; defaults match the original client behavior.
@@ -105,21 +135,7 @@ export class EngineSupervisor {
     this.dependencies = {
       resolveEnginePath: dependencies.resolveEnginePath ?? tryResolveEnginePath,
       spawnProcess: dependencies.spawnProcess ?? ((enginePath) => spawn('node', [enginePath, 'app-server'], {
-        env: {
-          ...process.env,
-          // Ensure ZCode uses the expected storage directory (shared data-root
-          // helper, so ZCODE_STORAGE_DIR isolation applies uniformly).
-          ZCODE_STORAGE_DIR: getZCodeStorageDir(),
-          // Ambient ZCODE_* provider-config values inherited from a parent
-          // ZCode App session point at the App's runtime files, not at this
-          // engine's config; strip them so the engine runs only on the config
-          // resolved below (see zcode-provider-config).
-          [ZCODE_BUILTIN_PROVIDER_CONFIG_ENV]: undefined,
-          [ZCODE_PERSONAL_PROVIDER_CONFIG_ENV]: undefined,
-          // The packaged engine cannot locate its own built-in provider config
-          // (see zcode-provider-config); hand it the resolved paths instead.
-          ...resolveZCodeProviderConfigEnv(enginePath),
-        },
+        env: buildZCodeEngineSpawnEnv(enginePath),
         stdio: ['pipe', 'pipe', 'pipe'],
         detached: false,
       })),

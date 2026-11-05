@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import * as fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,6 +8,7 @@ import test from 'node:test';
 import {
   clearEnginePathCache,
   getEngineVersion,
+  readZCodeAppVersion,
   tryResolveEnginePath,
 } from '@/modules/providers/list/zcode/zcode-engine-path.js';
 
@@ -78,4 +79,63 @@ test('getEngineVersion returns null or a semver string without throwing', async 
     const version = getEngineVersion();
     assert.ok(version === null || /^\d+\.\d+\.\d+$/.test(version));
   });
+});
+
+/** Builds a fake `ZCode.app/Contents` tree and returns its engine path. */
+const createAppBundle = async (infoPlist: string | null): Promise<{ root: string; enginePath: string }> => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'zcode-app-bundle-'));
+  const contentsDir = path.join(root, 'ZCode.app', 'Contents');
+  const engineDir = path.join(contentsDir, 'Resources', 'glm');
+  await mkdir(engineDir, { recursive: true });
+  const enginePath = path.join(engineDir, 'zcode.cjs');
+  await writeFile(enginePath, '', 'utf8');
+  if (infoPlist !== null) {
+    await writeFile(path.join(contentsDir, 'Info.plist'), infoPlist, 'utf8');
+  }
+  return { root, enginePath };
+};
+
+const plistWithVersion = (version: string): string => `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+    <key>CFBundleVersion</key>
+    <string>9999</string>
+    <key>CFBundleShortVersionString</key>
+    <string>${version}</string>
+</dict>
+</plist>
+`;
+
+test('readZCodeAppVersion reads the short version from the enclosing app bundle', async () => {
+  const { root, enginePath } = await createAppBundle(plistWithVersion('3.17.2'));
+  try {
+    assert.equal(readZCodeAppVersion(enginePath), '3.17.2');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('readZCodeAppVersion returns null outside an app bundle', async () => {
+  const { root, enginePath } = await createAppBundle(null);
+  try {
+    assert.equal(readZCodeAppVersion(enginePath), null);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('readZCodeAppVersion returns null when the plist has no usable version', async () => {
+  const unusable = [
+    '<plist><dict><key>CFBundleVersion</key><string>1.2.3</string></dict></plist>',
+    plistWithVersion('not-a-version'),
+    'bplist00\u0000binary',
+  ];
+  for (const content of unusable) {
+    const { root, enginePath } = await createAppBundle(content);
+    try {
+      assert.equal(readZCodeAppVersion(enginePath), null, content);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
 });
