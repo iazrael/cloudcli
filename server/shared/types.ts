@@ -1280,6 +1280,15 @@ export type FileTreeProjectGateway = {
  */
 export type FileTreeWorkspaceGateway = {
   rootPath: string;
+  /**
+   * The workspace root the viewer may read from — normally `rootPath`, so
+   * transcript references to sibling workspace folders resolve like the file
+   * browser lists them. `null` disables workspace-root reads entirely: the
+   * composition root injects null when the configured `WORKSPACES_ROOT` is a
+   * system-critical directory, and a misconfiguration must not widen the read
+   * policy. Write endpoints do not consult this.
+   */
+  readOnlyRoot: string | null;
   validatePath(candidatePath: string): Promise<WorkspacePathValidationResult>;
   /**
    * Resolves a path readable outside the workspace root — the system temp

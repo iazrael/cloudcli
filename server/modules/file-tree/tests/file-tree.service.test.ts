@@ -87,6 +87,7 @@ function createDependencies(
     },
     workspace: {
       rootPath: projectRoot,
+      readOnlyRoot: null,
       validatePath: async (candidatePath) => ({ valid: true, resolvedPath: candidatePath }),
       resolveReadOnlyRootPath: async () => null,
     },
@@ -575,7 +576,7 @@ test('readExternalTextFile and openExternalFile allow reading inside a linked wo
  * which is the only way to exercise the read-only roots: the whole guarantee
  * rests on `realpath` resolving symlinks before the comparison.
  */
-function createRealFileSystemService(projectRoot: string): FileTreeServices {
+function createRealFileSystemService(projectRoot: string, workspaceRoot = projectRoot): FileTreeServices {
   return createFileTreeService({
     fileSystem: {
       access: (candidatePath) => fsPromises.access(candidatePath),
@@ -600,7 +601,8 @@ function createRealFileSystemService(projectRoot: string): FileTreeServices {
     },
     projects: { getProjectPathById: async () => projectRoot },
     workspace: {
-      rootPath: projectRoot,
+      rootPath: workspaceRoot,
+      readOnlyRoot: workspaceRoot,
       validatePath: (candidatePath) => validateWorkspacePath(candidatePath),
       resolveReadOnlyRootPath: (candidatePath) => resolveReadOnlyRootPath(candidatePath),
     },
@@ -707,6 +709,75 @@ test('reading through a symlink out of the temp directory is still refused', { s
   } finally {
     await fsPromises.rm(temporaryDirectory, { recursive: true, force: true });
     await fsPromises.rm(projectRoot, { recursive: true, force: true });
+    await fsPromises.rm(outsideDirectory, { recursive: true, force: true });
+  }
+});
+
+test('a null readOnlyRoot disables the workspace-root read grant even when rootPath points elsewhere', async () => {
+  // WORKSPACES_ROOT 误配系统目录时守卫注入 null：即使 rootPath 仍指向某个
+  // 目录，工作区根授权也必须不生效，路径回落到项目边界被拒。
+  const siblingPath = path.resolve('file-tree-test-workspace/sibling.txt');
+  const fileSystem = createFakeFileSystem({
+    realpath: async (candidatePath) => candidatePath,
+  });
+  const dependencies = createDependencies(fileSystem, path.resolve('file-tree-test-project'), []);
+  dependencies.workspace.rootPath = path.resolve('file-tree-test-workspace');
+  dependencies.workspace.readOnlyRoot = null;
+
+  const service = createFileTreeService(dependencies);
+  await assert.rejects(
+    service.readTextFile('project-1', siblingPath),
+    (error: unknown) => error instanceof AppError
+      && error.statusCode === 403
+      && error.code === 'PATH_OUTSIDE_PROJECT',
+  );
+});
+
+test('a file in another folder of the workspace can be read, but never written to', { skip: repoUnderReadOnlyRoot }, async () => {
+  // Both sit beside this file, outside every read-only root, for the reason
+  // given in the symlink test above; only the workspace-root grant may admit
+  // the sibling file, so the temp roots must stay out of the picture.
+  const workspaceRoot = await fsPromises.mkdtemp(path.join(testDirectory, 'file-tree-workspace-'));
+  const projectRoot = path.join(workspaceRoot, 'project');
+  const siblingDirectory = path.join(workspaceRoot, 'packages', 'run-1');
+  const outsideDirectory = await fsPromises.mkdtemp(path.join(testDirectory, 'file-tree-outside-'));
+
+  try {
+    await fsPromises.mkdir(projectRoot, { recursive: true });
+    await fsPromises.mkdir(siblingDirectory, { recursive: true });
+    const reportPath = path.join(siblingDirectory, 'report.md');
+    await fsPromises.writeFile(reportPath, 'what the run found', 'utf8');
+    await fsPromises.writeFile(path.join(outsideDirectory, 'secret.txt'), 'secret', 'utf8');
+    await fsPromises.symlink(outsideDirectory, path.join(workspaceRoot, 'escape'));
+
+    const service = createRealFileSystemService(projectRoot, workspaceRoot);
+
+    const opened = await service.readTextFile('project-1', reportPath);
+    assert.equal(opened.content, 'what the run found');
+    const streamed = await service.openFile('project-1', reportPath);
+    streamed.stream.destroy();
+
+    // 聊天链接的可点性走批量探测接口，工作区根下的路径必须同样给出 200。
+    const probes = await service.checkPathsExist([{ id: 'sibling', path: reportPath, projectId: 'p' }]);
+    assert.deepEqual(probes, [{ id: 'sibling', status: 200 }]);
+
+    await assert.rejects(
+      service.saveTextFile('project-1', reportPath, 'overwritten'),
+      (error: unknown) => (error as AppError).code === 'PATH_OUTSIDE_PROJECT',
+    );
+    await assert.rejects(
+      service.deleteEntry({ projectId: 'project-1', targetPath: reportPath }),
+      (error: unknown) => (error as AppError).code === 'PATH_OUTSIDE_PROJECT',
+    );
+    assert.equal(await fsPromises.readFile(reportPath, 'utf8'), 'what the run found');
+
+    // 工作区里的符号链接不能打开它指向的外部文件。
+    await assert.rejects(
+      service.readTextFile('project-1', path.join(workspaceRoot, 'escape', 'secret.txt')),
+      (error: unknown) => (error as AppError).code === 'PATH_OUTSIDE_PROJECT',
+    );
+  } finally {
+    await fsPromises.rm(workspaceRoot, { recursive: true, force: true });
     await fsPromises.rm(outsideDirectory, { recursive: true, force: true });
   }
 });

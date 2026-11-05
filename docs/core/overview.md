@@ -99,7 +99,7 @@ docs/
 - **执行 MCP**：`/mcp/execution` 在通用 `/api` 鉴权之外单独挂载，默认关闭。专用令牌、本机连接、Host 和代理头校验由 execution 模块负责；执行目录、记录及生命周期见 providers.md「本机执行 MCP」。
 - **可选 API key**：普通 `/api` 请求受 `validateApiKey` 保护；任务桥接和签名图片读取入口在此前挂载并使用各自专用凭据；agent 模块另走 API key / 平台双模鉴权。
 - **上传白名单**：`chat.send` 的附件只放行 `~/.cloudcli/assets` 直接子文件，防止任意路径读。
-- **`file:` 链接白名单**：会话里引擎产出的本地文件链接走只读端点，目录白名单含各引擎数据根与系统临时目录（`server` 侧 fileLink 相关服务），防止越权读盘。
+- **`file:` 链接白名单**：会话里引擎产出的本地文件链接走只读端点，目录白名单含工作区根（`WORKSPACES_ROOT`，默认用户主目录）、`~/Downloads`、各引擎数据根与系统临时目录（`server/modules/file-tree` 的 `externalReadOnlyRoots` 与 `resolveReadablePath`），防止越权读盘；全部只读，realpath 前缀比对防符号链接逃逸，写路径仍只锁项目根。
 - **本机服务代理**（`server/modules/local-proxy`）：聊天里出现的 `http://localhost:<port>/…` 只在服务器那台机器上可达，远程浏览器打不开。前端（`src/modules/chat/utils/localProxyLink.ts`）在"链接指向本机、而页面自身不是本机地址"时改走代理：先用 JWT 换一张 60 秒一次性票据，首个文档请求用票据换 `HttpOnly` 会话 cookie（`Path=/api/local-proxy`，8 小时）并 302 把票据从地址栏抹掉，之后页面的子资源靠该 cookie 放行——浏览器不会给它们带 Authorization 头。转发只允许 GET/HEAD，目标 host 固定 `127.0.0.1`，禁服务自身端口；请求侧丢掉 `cookie`/`authorization`，响应侧剥掉 `set-cookie`/CSP/HSTS 并把 `Location` 改写回代理前缀。页面里写死的根绝对路径资源由 `localProxyAbsolutePathFallback` 按 `Referer` 送回对应端口，该中间件必须排在静态资源处理之前。
 - **代理的固有代价**：任何已登录用户都能读到服务器本机任意端口的 GET 内容；被代理页面运行在 cloudcli 同源下，其脚本能访问本源的 `localStorage`。代理的对象是用户自己机器上的本地服务，以此为前提接受这两点。
 

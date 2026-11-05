@@ -33,7 +33,9 @@
   },
   "binaryFile": {
     "title": "二进制文件",
-    "message": "文件 \"{{fileName}}\" 无法在文本编辑器中显示，因为它是二进制文件。"
+    "message": "文件 \"{{fileName}}\" 无法在文本编辑器中显示，因为它是二进制文件。",
+    "download": "下载",
+    "downloadFailed": "下载失败"
   },
   "filePreview": {
     "loading": "正在加载预览...",

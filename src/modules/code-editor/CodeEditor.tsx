@@ -288,6 +288,8 @@ export default function CodeEditor({
         onToggleFullscreen={() => setIsFullscreen((previous) => !previous)}
         title={t('binaryFile.title', 'Binary File')}
         message={t('binaryFile.message', 'The file "{{fileName}}" cannot be displayed in the text editor because it is a binary file.', { fileName: file.name })}
+        downloadLabel={t('binaryFile.download', 'Download')}
+        downloadFailedLabel={t('binaryFile.downloadFailed', 'Download failed')}
       />
     );
   }
