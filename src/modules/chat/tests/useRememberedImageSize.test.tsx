@@ -3,7 +3,7 @@ import { expect, it } from 'vitest';
 
 import { reservedImageBox, useRememberedImageSize } from '@/modules/chat/hooks/useRememberedImageSize';
 
-function Probe({ imageKey }: { imageKey: string | null }) {
+function Probe({ imageKey }: { imageKey: string }) {
   const { size, remember } = useRememberedImageSize(imageKey);
   return <img alt="probe" data-size={size ? `${size.width}x${size.height}` : ''} onLoad={remember} />;
 }
@@ -37,12 +37,6 @@ it('ignores images that decoded without a size', () => {
   expect(screen.getByRole('img').dataset.size).toBe('');
 });
 
-it('remembers nothing without a key', () => {
-  render(<Probe imageKey={null} />);
-  loadWith(screen.getByRole('img'), 100, 50);
-  expect(screen.getByRole('img').dataset.size).toBe('');
-});
-
 it('caps memory by dropping the oldest size', () => {
   const first = render(<Probe imageKey="oldest.png" />);
   loadWith(screen.getByRole('img'), 10, 10);
@@ -56,10 +50,6 @@ it('caps memory by dropping the oldest size', () => {
   expect(screen.getByRole('img').dataset.size).toBe('');
 });
 
-it('derives a box that never upscales, overflows or passes the height cap', () => {
-  expect(reservedImageBox({ width: 852, height: 1846 }, '32rem')).toEqual({
-    width: `min(852px, 100%, calc(32rem * ${852 / 1846}))`,
-    aspectRatio: '852 / 1846',
-  });
+it('derives a box that never upscales or overflows', () => {
   expect(reservedImageBox({ width: 400, height: 300 })).toEqual({ width: 'min(400px, 100%)', aspectRatio: '400 / 300' });
 });

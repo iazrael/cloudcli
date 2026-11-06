@@ -1,7 +1,8 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { beforeEach, expect, it, vi } from 'vitest';
 
 import type * as sharedApi from '@/shared/api';
+import { TranscriptRenderContext } from '@/modules/chat/context/TranscriptRenderContext';
 import { ChatMessageImage } from '@/modules/chat/transcript/ChatMessageImages';
 import type { ImageMediaRequest } from '@/shared/types';
 
@@ -27,43 +28,25 @@ it('preserves legacy project attachment fallback information when signing', asyn
   await screen.findByRole('img');
   expect(requestImageUrls).toHaveBeenCalledWith([expect.objectContaining({ kind: 'asset', filename: 'image.png', projectId: 'legacy', fallbackPath: '/old/project/image.png' })]);
 });
-it('reserves the decoded box for an assistant image when its row remounts', async () => {
-  const image = { path: '/api/assets/images/remount-box.png', name: 'generated' };
-  const first = render(<ChatMessageImage image={image} variant="assistant" />);
-  const loaded = await screen.findByRole('img');
-  Object.defineProperty(loaded, 'naturalWidth', { value: 852, configurable: true });
-  Object.defineProperty(loaded, 'naturalHeight', { value: 1846, configurable: true });
-  fireEvent.load(loaded);
-  await waitFor(() => expect(screen.getByRole('button').style.aspectRatio).toBe('852 / 1846'));
-  first.unmount();
-
-  // 票据还有效：挂载首帧就出图，不经过占位。
-  render(<ChatMessageImage image={image} variant="assistant" />);
-  expect(screen.getByRole('img').getAttribute('src')).toBe('/api/media/images?ticket=attachment');
-  expect(screen.getByRole('button').style.aspectRatio).toBe('852 / 1846');
+it('shows a generated image as a fixed thumbnail with the whole image visible', async () => {
+  render(<ChatMessageImage image={{ path: '/api/assets/images/thumbnail.png', name: 'generated' }} variant="assistant" />);
+  const image = await screen.findByRole('img');
+  expect(image.className).toContain('h-28 w-28');
+  expect(image.className).toContain('object-contain');
 });
-it('keeps the reserved box while a remounted image waits for a new ticket', async () => {
-  const image = { path: '/api/assets/images/expired-box.png', name: 'generated' };
-  requestImageUrls.mockImplementationOnce(async (images: ImageMediaRequest[]) => ({ ok: true, json: async () => ({ images: images.map(({ id }) => ({ id, url: '/api/media/images?ticket=short', expiresAt: Date.now() + 1_000 })) }) }));
-  const first = render(<ChatMessageImage image={image} variant="assistant" />);
-  const loaded = await screen.findByRole('img');
-  Object.defineProperty(loaded, 'naturalWidth', { value: 800, configurable: true });
-  Object.defineProperty(loaded, 'naturalHeight', { value: 400, configurable: true });
-  fireEvent.load(loaded);
-  await waitFor(() => expect(screen.getByRole('button').style.aspectRatio).toBe('800 / 400'));
-  first.unmount();
-
-  const { container } = render(<ChatMessageImage image={image} variant="assistant" />);
-  const placeholder = container.querySelector<HTMLElement>('.animate-pulse');
-  expect(placeholder?.style.aspectRatio).toBe('800 / 400');
-  expect(placeholder?.className).not.toContain('h-28');
+it('keeps the same fixed box while a generated image waits for its ticket', () => {
+  const { container } = render(<ChatMessageImage image={{ path: '/api/assets/images/waiting.png', name: 'generated' }} variant="assistant" />);
+  expect(container.querySelector('.animate-pulse')?.className).toContain('h-28 w-28');
 });
-it('keeps attachment thumbnails on their fixed square', async () => {
+it('shows a generated image at reading size in exports, which have no viewer to open', () => {
+  render(
+    <TranscriptRenderContext.Provider value={{ isExporting: true, assetData: { '/api/assets/images/exported.png': 'data:image/png;base64,QUJD' } }}>
+      <ChatMessageImage image={{ path: '/api/assets/images/exported.png', name: 'generated' }} variant="assistant" />
+    </TranscriptRenderContext.Provider>,
+  );
+  expect(screen.getByRole('img').className).toContain('max-h-[32rem]');
+});
+it('keeps user attachments cropped to their square', async () => {
   render(<ChatMessageImage image={{ path: '/api/assets/images/thumb.png', name: 'thumb' }} />);
-  const loaded = await screen.findByRole('img');
-  Object.defineProperty(loaded, 'naturalWidth', { value: 852, configurable: true });
-  Object.defineProperty(loaded, 'naturalHeight', { value: 1846, configurable: true });
-  fireEvent.load(loaded);
-  expect(screen.getByRole('button').style.aspectRatio).toBe('');
-  expect(loaded.className).toContain('h-28');
+  expect((await screen.findByRole('img')).className).toContain('h-28 w-28 object-cover');
 });

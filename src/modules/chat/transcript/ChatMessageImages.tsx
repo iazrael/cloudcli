@@ -1,25 +1,25 @@
 import { useContext, useState } from 'react';
-import type { SyntheticEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useSignedImage } from '@/shared/hooks/useSignedImage';
 import { UnifiedImageViewer } from '@/shared/ui';
 import type { ChatImage } from '@/shared/types';
 import { TranscriptRenderContext } from '@/modules/chat/context/TranscriptRenderContext';
-import { reservedImageBox, useRememberedImageSize } from '@/modules/chat/hooks/useRememberedImageSize';
 
 type ChatMessageImagesProps = {
   images: ChatImage[];
   projectId?: string | null;
-  /** `assistant` shows images the engine made at reading size; `attachment` is the user's thumbnail. */
+  /** Both are fixed thumbnails. `attachment` fills its square; `assistant` shows the whole image the engine made. */
   variant?: 'attachment' | 'assistant';
 };
 
-const ASSISTANT_IMAGE_MAX_HEIGHT = '32rem';
+// 缩略图尺寸与图片无关，虚拟列表重新挂载这一行时高度不变。
 const IMAGE_CLASS_NAMES = {
   attachment: 'h-28 w-28 object-cover',
-  assistant: 'h-auto max-h-[32rem] w-auto max-w-full object-contain',
+  assistant: 'h-28 w-28 object-contain',
 };
+// 导出文件没有查看器，生成的图片无法点开，只能按阅读尺寸放在正文里。
+const EXPORTED_ASSISTANT_IMAGE_CLASS_NAME = 'h-auto max-h-[32rem] w-auto max-w-full object-contain';
 
 // 导出保留嵌入字节；交互式历史签发引用，JS 不读取图片字节。
 function useChatImageSrc(image: ChatImage, projectId?: string | null) {
@@ -45,18 +45,13 @@ export function ImageLightbox({ src, alt, filePath, onClose }: { src: string; al
 /** 聊天时间线用此组件显示签名附件预览并打开统一查看器。 */
 export function ChatMessageImage({ image, projectId, variant = 'attachment' }: { image: ChatImage; projectId?: string | null; variant?: ChatMessageImagesProps['variant'] }) {
   const { t } = useTranslation();
+  const { isExporting } = useContext(TranscriptRenderContext);
   const { observe, ...signed } = useChatImageSrc(image, projectId);
   const { src, failed } = signed;
   // 展开由用户点击决定，与图片加载状态分开。
   const [expanded, setExpanded] = useState(false);
   const alt = image.name || 'Attached image';
-  // 只有助手图片高度不定；用户附件是固定方形，不需要记尺寸。
-  const { size, remember } = useRememberedImageSize(variant === 'assistant' ? image.path || image.data || null : null);
-  const box = size ? reservedImageBox(size, ASSISTANT_IMAGE_MAX_HEIGHT) : undefined;
-  const handleLoad = (event: SyntheticEvent<HTMLImageElement>) => {
-    signed.onLoad();
-    remember(event);
-  };
+  const imageClassName = isExporting && variant === 'assistant' ? EXPORTED_ASSISTANT_IMAGE_CLASS_NAME : IMAGE_CLASS_NAMES[variant];
 
   if (failed) {
     return (
@@ -68,7 +63,7 @@ export function ChatMessageImage({ image, projectId, variant = 'attachment' }: {
   }
 
   if (!src) {
-    return <div ref={observe} style={box} className={`${box ? '' : 'h-28 w-28 '}animate-pulse rounded-xl border border-border/50 bg-muted`} />;
+    return <div ref={observe} className="h-28 w-28 animate-pulse rounded-xl border border-border/50 bg-muted" />;
   }
 
   return (
@@ -78,14 +73,13 @@ export function ChatMessageImage({ image, projectId, variant = 'attachment' }: {
         type="button"
         onClick={() => setExpanded(true)}
         aria-label={t('chat:misc.expandImage', { name: alt })}
-        style={box}
         className="block overflow-hidden rounded-xl border border-border/50 shadow-sm focus:outline-none focus:ring-2 focus:ring-primary/60"
       >
         <img
-          loading="lazy" decoding="async" referrerPolicy="no-referrer" onLoad={handleLoad} onError={signed.onError}
+          loading="lazy" decoding="async" referrerPolicy="no-referrer" onLoad={signed.onLoad} onError={signed.onError}
           src={src}
           alt={alt}
-          className={`${box ? 'h-full w-full object-contain' : IMAGE_CLASS_NAMES[variant]} cursor-zoom-in transition-transform duration-200 hover:scale-105`}
+          className={`${imageClassName} cursor-zoom-in transition-transform duration-200 hover:scale-105`}
         />
       </button>
       {expanded && (
@@ -109,7 +103,7 @@ export function ChatMessageImage({ image, projectId, variant = 'attachment' }: {
  * expands to a fullscreen lightbox on click.
  *
  * Rendered by chat's MessageComponent for the images attached to a user turn
- * and, as the `assistant` variant, for the images an engine generated.
+ * and, as the `assistant` variant, as the same card for images an engine generated.
  */
 export default function ChatMessageImages({ images, projectId, variant = 'attachment' }: ChatMessageImagesProps) {
   if (!images || images.length === 0) {
