@@ -1,4 +1,4 @@
-import { createHmac, randomUUID } from 'node:crypto';
+import { createHmac } from 'node:crypto';
 
 import jwt from 'jsonwebtoken';
 
@@ -8,6 +8,9 @@ import { AppError, errorStatusCode } from '@/shared/utils.js';
 const ISSUER = 'cloudcli-media';
 const AUDIENCE = 'image-read';
 const LIFETIME_SECONDS = 600;
+
+/** 字节响应的私有缓存时长，与签发窗口等长；图片路由响应用它设置 `Cache-Control: max-age`。 */
+export const IMAGE_CACHE_SECONDS = LIFETIME_SECONDS;
 
 function denied(): never {
   throw new AppError('Invalid or expired image ticket', { statusCode: 403, code: 'IMAGE_TICKET_INVALID' });
@@ -22,15 +25,18 @@ export function createImageMediaService(dependencies: ImageMediaDependencies) {
   return {
     async issueBatch(userId: string, requests: ImageMediaRequest[], authExpiresAt?: number): Promise<ImageMediaResult[]> {
       const issuedAt = now();
-      const expiresAt = Math.min(issuedAt + LIFETIME_SECONDS, authExpiresAt ?? Infinity);
+      // 票据按签发窗口确定性计算：iat 取窗口起点、寿命到下一窗口结束（最短 LIFETIME_SECONDS），
+      // 同一资源在同一窗口内两次签发得到相同 URL，浏览器 HTTP 缓存以完整 URL 为键。
+      const windowStart = Math.floor(issuedAt / LIFETIME_SECONDS) * LIFETIME_SECONDS;
+      const expiresAt = Math.min(windowStart + LIFETIME_SECONDS * 2, authExpiresAt ?? Infinity);
       if (expiresAt <= issuedAt || !await dependencies.userExists(userId)) denied();
       // 顺序检查元数据，限制单批申请的磁盘并发。
       const results: ImageMediaResult[] = [];
       for (const { id, ...source } of requests) {
         try {
           const file = await dependencies.resolveImage(source);
-          const ticket = jwt.sign({ v: 1, purpose: AUDIENCE, source: file.source, sub: userId, iat: issuedAt, exp: expiresAt }, key, {
-            algorithm: 'HS256', issuer: ISSUER, audience: AUDIENCE, jwtid: randomUUID(),
+          const ticket = jwt.sign({ v: 1, purpose: AUDIENCE, source: file.source, sub: userId, iat: windowStart, exp: expiresAt }, key, {
+            algorithm: 'HS256', issuer: ISSUER, audience: AUDIENCE,
           });
           results.push({ id, url: `/api/media/images?ticket=${encodeURIComponent(ticket)}`, expiresAt: expiresAt * 1000 });
         } catch (error) {
@@ -48,7 +54,7 @@ export function createImageMediaService(dependencies: ImageMediaDependencies) {
         claims = jwt.verify(ticket, key, { algorithms: ['HS256'], issuer: ISSUER, audience: AUDIENCE, clockTimestamp: now() }) as typeof claims;
       } catch { denied(); }
       if (claims.v !== 1 || claims.purpose !== AUDIENCE || typeof claims.sub !== 'string'
-        || !Number.isFinite(claims.exp) || !Number.isFinite(claims.iat) || claims.exp - claims.iat > LIFETIME_SECONDS
+        || !Number.isFinite(claims.exp) || !Number.isFinite(claims.iat) || claims.exp - claims.iat > LIFETIME_SECONDS * 2
         || !await dependencies.userExists(claims.sub)) denied();
       // 字节传输或返回 304 前都重新检查，目录权限和符号链接可能已变化。
       const file = await dependencies.resolveImage(claims.source);
