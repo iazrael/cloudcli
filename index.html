@@ -14,7 +14,7 @@
     
     <!-- iOS Safari PWA Meta Tags -->
     <meta name="mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="Claude UI" />
     
     <!-- iOS Safari Icons -->
@@ -29,6 +29,7 @@
     <meta name="format-detection" content="telephone=no" />
   </head>
   <body>
+    <div class="ios-pwa-status-strip" aria-hidden="true"></div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
     

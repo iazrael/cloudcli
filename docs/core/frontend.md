@@ -159,6 +159,7 @@ MCP 服务器表单按 `useProviderMcpCapabilities()` 渲染。首屏与请求�
 ## PWA 与版本
 
 - `public/manifest.json` + `public/sw.js`（当前由 `src/main.tsx` 与 `index.html` 注册）；HTML 始终走网络，hash 静态资源走 cache-first，API 与 WebSocket 永不经 SW；因此刷新可拿到新版本，已缓存资源可复用。设置 → 关于的版本提示用 `__APP_VERSION__`（vite define）与含 git describe 的 `__BUILD_INFO__` 判断长驻窗口是否过期。
+- iOS 状态栏：`apple-mobile-web-app-status-bar-style` 固定为 `default`，运行时不改。iOS 27 会给已安装的 PWA 顶部叠一层系统模糊，CSS 和 meta 都关不掉；只有状态栏不透明、且页面顶部有固定定位元素时，系统才改用该元素的背景色铺满状态栏并撤掉模糊。`black-translucent` 下这条路径不生效。因此 `index.html` 的 `body` 首个子元素是 `.ios-pwa-status-strip`：只在 iOS standalone 显示，11px 高，取 `--background`，用 `background-clip: text` 不实际绘制。这是未公开的系统行为，升级 iOS 时要回看。已安装的图标要删掉重新添加才会用上新的状态栏样式。
 - 冷启动会话恢复：`src/shared/sessionProtection*` / `useSessionProtection`——仅 standalone 模式记忆并预验证回跳；恢复 effect 必须声明在记录 effect 之前（顺序敏感）。
 - Web Push 复用 SW：`src/modules/settings/hooks/useWebPush.ts`，服务端 VAPID 在 `server/modules/notifications/`。
 

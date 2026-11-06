@@ -180,6 +180,34 @@
     bottom: 0;
   }
   
+  /* iOS 27 draws a system blur over the top of installed web apps, and no CSS
+     or meta switches it off. WebKit drops it when it finds a full-width fixed
+     element at the top edge, painting the opaque status bar in that element's
+     computed background colour instead. Boxes of 10px or less are ignored, and
+     clipping the background to (absent) text keeps the strip invisible. This
+     only works with the `default` status bar style; see docs/core/frontend.md. */
+  .ios-pwa-status-strip {
+    display: none;
+  }
+
+  @supports (-webkit-touch-callout: none) {
+    @media (display-mode: standalone) {
+      .ios-pwa-status-strip {
+        display: block;
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 11px;
+        z-index: 2147483647;
+        pointer-events: none;
+        background-color: hsl(var(--background));
+        -webkit-background-clip: text;
+        background-clip: text;
+      }
+    }
+  }
+
   /* Global transition defaults */
   button, 
   a, 
