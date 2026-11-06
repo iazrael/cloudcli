@@ -342,7 +342,11 @@ function readUserImages(item: AnyRecord): Array<{ path?: string; data?: string }
       attachments.push(...toImageAttachments([localPath]));
       continue;
     }
-    const url = record.type === 'image' ? readNonEmptyString(record.url) : undefined;
+    // The two serializations spell the URL differently: the rollout's
+    // assembled items write `image_url`, the app-server's live items `url`.
+    const url = record.type === 'image'
+      ? readNonEmptyString(record.url) ?? readNonEmptyString(record.image_url)
+      : undefined;
     if (url) {
       attachments.push(url.startsWith('data:') ? { data: url } : { path: url });
     }

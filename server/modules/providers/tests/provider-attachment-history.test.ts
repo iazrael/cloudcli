@@ -158,6 +158,25 @@ test('codex history: base64 data URLs become stored image attachments', () => {
   );
 });
 
+test('codex history: rollout spelling image_url becomes a stored image attachment', () => {
+  // Captured from a real rollout: the assembled UserMessage item spells the
+  // data URL `image_url`, while the app-server's live item spells it `url`.
+  // Both serializations must read back, or the transcript loses the prompt's
+  // images the moment history takes over.
+  const dataUrl = 'data:image/png;base64,QUJD';
+  assert.deepEqual(
+    codexPromptImages({
+      type: 'UserMessage',
+      id: 'u-rollout',
+      content: [
+        { type: 'text', text: 'look', text_elements: [] },
+        { type: 'image', image_url: dataUrl },
+      ],
+    }),
+    [{ path: storedImage('QUJD', 'png') }],
+  );
+});
+
 test('codex history: normalized user entries keep their images', () => {
   const provider = new CodexSessionsProvider();
   const messages = provider.normalizeMessage(
