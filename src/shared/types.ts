@@ -1783,3 +1783,28 @@ export type MarkdownNode = {
   url?: string;
   children?: MarkdownNode[];
 };
+
+//----------------- BROWSER USE ------------
+/** Browser 面板的会话形状（监控列表与遥控视图共用），字段对齐 server/modules/browser-use 的公开会话。 */
+export type BrowserUseSession = {
+  id: string;
+  status: 'ready' | 'stopped' | 'unavailable';
+  url: string | null;
+  title: string | null;
+  screenshotDataUrl: string | null;
+  createdAt: string;
+  updatedAt: string;
+  lastAction: string | null;
+  message: string | null;
+  createdBy: 'agent' | 'manual';
+  profileName: string | null;
+  viewport: {
+    width: number;
+    height: number;
+  } | null;
+  cursor: {
+    x: number;
+    y: number;
+    actor: 'agent' | 'user';
+  } | null;
+};

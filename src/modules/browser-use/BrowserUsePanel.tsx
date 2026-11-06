@@ -6,6 +6,7 @@ import {
   Download,
   Expand,
   ExternalLink,
+  Globe,
   Loader2,
   MonitorPlay,
   RefreshCw,
@@ -18,7 +19,8 @@ import {
 import { cn } from '@/shared/utils';
 import { Badge, Button } from '@/shared/ui';
 import { api, readApiJson, ApiRequestError } from '@/shared/api';
-import type { SettingsMainTab } from '@/shared/types';
+import type { BrowserUseSession, SettingsMainTab } from '@/shared/types';
+import { ManualBrowserViewer } from '@/modules/browser-use/ManualBrowserViewer';
 
 type BrowserUseStatus = {
   enabled: boolean;
@@ -28,29 +30,6 @@ type BrowserUseStatus = {
   installInProgress: boolean;
   sessionCount: number;
   message: string;
-};
-
-type BrowserUseSession = {
-  id: string;
-  status: 'ready' | 'stopped' | 'unavailable';
-  url: string | null;
-  title: string | null;
-  screenshotDataUrl: string | null;
-  createdAt: string;
-  updatedAt: string;
-  lastAction: string | null;
-  message: string | null;
-  createdBy: 'agent';
-  profileName: string | null;
-  viewport: {
-    width: number;
-    height: number;
-  } | null;
-  cursor: {
-    x: number;
-    y: number;
-    actor: 'agent';
-  } | null;
 };
 
 type BrowserUsePanelProps = {
@@ -63,6 +42,9 @@ type TranslateFn = (key: string, options?: Record<string, unknown>) => string;
 const BROWSER_USE_PANEL_ERROR_KEYS: Record<string, string> = {
   BROWSER_USE_STATUS_LOAD_FAILED: 'browserUse.loadFailed',
   BROWSER_USE_SESSIONS_LOAD_FAILED: 'browserUse.loadFailed',
+  BROWSER_USE_SESSION_CREATE_FAILED: 'browserUse.createFailed',
+  BROWSER_USE_SESSION_CONTROL_FAILED: 'browserUse.controlFailed',
+  BROWSER_USE_SESSION_SCREEN_LOAD_FAILED: 'browserUse.screenLoadFailed',
   BROWSER_USE_SESSION_STOP_FAILED: 'browserUse.actionFailed',
   BROWSER_USE_SESSION_DELETE_FAILED: 'browserUse.actionFailed',
   BROWSER_USE_RUNTIME_INSTALL_FAILED: 'browserUse.installFailed',
@@ -204,18 +186,37 @@ export default function BrowserUsePanel({ isVisible, onShowSettings }: BrowserUs
     void refresh();
   }, [isVisible, refresh]);
 
-  const runAction = useCallback(async (action: () => Promise<void>) => {
+  const runAction = useCallback(async (action: () => Promise<void>, fallbackKey = 'browserUse.actionFailed') => {
     setIsBusy(true);
     setError(null);
     try {
       await action();
       await refresh();
     } catch (err) {
-      setError(localizeApiError(err, 'browserUse.actionFailed', t));
+      setError(localizeApiError(err, fallbackKey, t));
     } finally {
       setIsBusy(false);
     }
   }, [refresh, t]);
+
+  // Merges a refreshed manual session (fresh screenshot/metadata from a control
+  // action or poll tick) into the list without a full list reload.
+  const mergeSession = useCallback((next: BrowserUseSession) => {
+    setSessions((prev) => prev.map((session) => (session.id === next.id ? next : session)));
+  }, []);
+
+  const reportViewerError = useCallback((err: unknown) => {
+    setError(localizeApiError(err, 'browserUse.controlFailed', t));
+  }, [t]);
+
+  const openManualSession = () => runAction(async () => {
+    const response = await api.browserUse.createSession();
+    const data = await readApiJson<{ data: { session: BrowserUseSession } }>(response);
+    setSelectedSessionId(data.data.session.id);
+    if (typeof window !== 'undefined' && window.innerWidth < 1024) {
+      setIsFullscreen(true);
+    }
+  }, 'browserUse.createFailed');
 
   const stopSession = () => runAction(async () => {
     if (!selectedSession) return;
@@ -264,6 +265,9 @@ export default function BrowserUsePanel({ isVisible, onShowSettings }: BrowserUs
           </div>
           <Badge variant="outline" className="shrink-0 border-border bg-background text-[10px] text-muted-foreground">
             {getStatusLabel(session.status, t)}
+          </Badge>
+          <Badge variant="outline" className="shrink-0 border-border bg-background text-[10px] text-muted-foreground">
+            {session.createdBy === 'manual' ? t('browserUse.sourceManual') : t('browserUse.sourceAgent')}
           </Badge>
         </div>
         <div className="mt-2 flex items-center gap-1.5 text-[11px] text-muted-foreground">
@@ -330,8 +334,21 @@ export default function BrowserUsePanel({ isVisible, onShowSettings }: BrowserUs
     </div>
   );
 
-  const renderBrowserSurface = (fullscreen = false) => (
-    <div className={cn('flex flex-1 items-center justify-center bg-neutral-950', fullscreen ? 'min-h-[80vh]' : 'min-h-[420px]')}>
+  const renderBrowserSurface = (fullscreen = false) => {
+    if (selectedSession?.createdBy === 'manual') {
+      return (
+        <div className={cn('flex flex-1 flex-col bg-background', fullscreen ? 'min-h-[80vh]' : 'min-h-[420px]')}>
+          <ManualBrowserViewer
+            session={selectedSession}
+            onSessionUpdated={mergeSession}
+            onError={reportViewerError}
+          />
+        </div>
+      );
+    }
+
+    return (
+      <div className={cn('flex flex-1 items-center justify-center bg-neutral-950', fullscreen ? 'min-h-[80vh]' : 'min-h-[420px]')}>
       {selectedSession?.screenshotDataUrl ? (
         <div className="relative inline-block max-h-full">
           <img
@@ -355,8 +372,9 @@ export default function BrowserUsePanel({ isVisible, onShowSettings }: BrowserUs
           <p className="mt-1 text-xs text-neutral-400">{t('browserUse.waitingScreenshotHint')}</p>
         </div>
       )}
-    </div>
-  );
+      </div>
+    );
+  };
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-background">
@@ -372,6 +390,17 @@ export default function BrowserUsePanel({ isVisible, onShowSettings }: BrowserUs
           <p className="mt-0.5 text-xs text-muted-foreground">{t('browserUse.subtitle')}</p>
         </div>
         <div className="flex items-center gap-1.5">
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 gap-1.5 px-2 text-xs"
+            onClick={openManualSession}
+            disabled={isBusy || !status?.available}
+            title={t('browserUse.openBrowser')}
+          >
+            <Globe className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">{t('browserUse.openBrowser')}</span>
+          </Button>
           {onShowSettings && (
             <Button
               variant="ghost"

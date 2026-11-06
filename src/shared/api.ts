@@ -632,6 +632,20 @@ export const api = {
     settings: () => get('/api/browser-use/settings'),
     saveSettings: (settings: unknown) => put('/api/browser-use/settings', settings),
     sessions: () => get('/api/browser-use/sessions'),
+    createSession: () => post('/api/browser-use/sessions'),
+    screen: (sessionId: string) => get(`/api/browser-use/sessions/${sessionId}/screen`),
+    navigate: (sessionId: string, url: string) =>
+      post(`/api/browser-use/sessions/${sessionId}/navigate`, { url }),
+    nav: (sessionId: string, action: 'back' | 'forward' | 'reload') =>
+      post(`/api/browser-use/sessions/${sessionId}/nav`, { action }),
+    click: (sessionId: string, x: number, y: number) =>
+      post(`/api/browser-use/sessions/${sessionId}/click`, { x, y }),
+    scroll: (sessionId: string, deltaX: number, deltaY: number) =>
+      post(`/api/browser-use/sessions/${sessionId}/scroll`, { deltaX, deltaY }),
+    typeText: (sessionId: string, text: string) =>
+      post(`/api/browser-use/sessions/${sessionId}/type`, { text }),
+    pressKey: (sessionId: string, key: string) =>
+      post(`/api/browser-use/sessions/${sessionId}/key`, { key }),
     stopSession: (sessionId: string) => post(`/api/browser-use/sessions/${sessionId}/stop`),
     deleteSession: (sessionId: string) => del(`/api/browser-use/sessions/${sessionId}`),
     installRuntime: () => post('/api/browser-use/runtime/install'),
