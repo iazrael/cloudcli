@@ -226,12 +226,13 @@ export function createBrowserUseRouter(service: BrowserUseRouterService): expres
   router.post('/sessions/:sessionId/click', async (req, res) => {
     try {
       const body = readBody(req.body);
-      const point = { x: readNumber(body.x), y: readNumber(body.y) };
-      if (point.x === null || point.y === null) {
+      const x = readNumber(body.x);
+      const y = readNumber(body.y);
+      if (x === null || y === null) {
         throw new Error('Click coordinates must be numbers.');
       }
 
-      const session = await service.manualClick(readParam(req.params.sessionId), point);
+      const session = await service.manualClick(readParam(req.params.sessionId), { x, y });
       res.json({ success: true, data: { session } });
     } catch (error) {
       sendError(
@@ -247,14 +248,15 @@ export function createBrowserUseRouter(service: BrowserUseRouterService): expres
   router.post('/sessions/:sessionId/scroll', async (req, res) => {
     try {
       const body = readBody(req.body);
-      const delta = { deltaX: readNumber(body.deltaX), deltaY: readNumber(body.deltaY) };
-      if (delta.deltaX === null || delta.deltaY === null
-        || Math.abs(delta.deltaX) > MANUAL_MAX_SCROLL_DELTA
-        || Math.abs(delta.deltaY) > MANUAL_MAX_SCROLL_DELTA) {
+      const deltaX = readNumber(body.deltaX);
+      const deltaY = readNumber(body.deltaY);
+      if (deltaX === null || deltaY === null
+        || Math.abs(deltaX) > MANUAL_MAX_SCROLL_DELTA
+        || Math.abs(deltaY) > MANUAL_MAX_SCROLL_DELTA) {
         throw new Error(`Scroll deltas must be finite and within ±${MANUAL_MAX_SCROLL_DELTA}.`);
       }
 
-      const session = await service.manualScroll(readParam(req.params.sessionId), delta);
+      const session = await service.manualScroll(readParam(req.params.sessionId), { deltaX, deltaY });
       res.json({ success: true, data: { session } });
     } catch (error) {
       sendError(

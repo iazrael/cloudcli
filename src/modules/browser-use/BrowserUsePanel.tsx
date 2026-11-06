@@ -207,7 +207,10 @@ export default function BrowserUsePanel({ isVisible, onShowSettings }: BrowserUs
 
   const reportViewerError = useCallback((err: unknown) => {
     setError(localizeApiError(err, 'browserUse.controlFailed', t));
-  }, [t]);
+    // Pull the list so a session stopped elsewhere (or expired) flips to its
+    // real status instead of staying "ready" in this tab.
+    void refresh();
+  }, [refresh, t]);
 
   const openManualSession = () => runAction(async () => {
     const response = await api.browserUse.createSession();
@@ -336,6 +339,12 @@ export default function BrowserUsePanel({ isVisible, onShowSettings }: BrowserUs
 
   const renderBrowserSurface = (fullscreen = false) => {
     if (selectedSession?.createdBy === 'manual') {
+      // The fullscreen overlay mounts its own viewer; skip the inline one so a
+      // session never has two live pollers fighting over the same state.
+      if (isFullscreen && !fullscreen) {
+        return <div className="flex min-h-[420px] flex-1 bg-background" />;
+      }
+
       return (
         <div className={cn('flex flex-1 flex-col bg-background', fullscreen ? 'min-h-[80vh]' : 'min-h-[420px]')}>
           <ManualBrowserViewer

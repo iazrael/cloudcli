@@ -52,6 +52,13 @@ export function ManualBrowserViewer({ session, onSessionUpdated, onError }: Manu
   const imageRef = useRef<HTMLImageElement | null>(null);
   const addressInputRef = useRef<HTMLInputElement | null>(null);
   const touchStartRef = useRef<{ x: number; y: number } | null>(null);
+  // Guards against overlapping poll ticks when a screenshot takes longer than
+  // the interval; late responses would otherwise roll back newer frames.
+  const pollInFlightRef = useRef(false);
+  // Stops polling after repeated failures (e.g. the session was stopped
+  // elsewhere) so the viewer surfaces one error instead of looping on 500s.
+  const pollStoppedRef = useRef(false);
+  const consecutivePollFailuresRef = useRef(0);
 
   const runControl = useCallback(async (action: () => Promise<Response>) => {
     setIsBusy(true);
@@ -66,25 +73,41 @@ export function ManualBrowserViewer({ session, onSessionUpdated, onError }: Manu
     }
   }, [onSessionUpdated, onError]);
 
+  // Reset the failure latch when the viewer switches to another session so a
+  // previously stopped session cannot keep the new one from polling.
+  useEffect(() => {
+    pollStoppedRef.current = false;
+    consecutivePollFailuresRef.current = 0;
+  }, [session.id]);
+
   // Poll a fresh screenshot while the session is live so the view keeps up
-  // with pages that move on their own (redirects, timers, animations). Poll
-  // failures stay silent: the next tick retries and action errors surface.
+  // with pages that move on their own (redirects, timers, animations). Transient
+  // poll failures stay silent; after three in a row (session likely stopped
+  // elsewhere) the loop halts and surfaces the error once.
   useEffect(() => {
     if (session.status !== 'ready') return;
     const timer = window.setInterval(() => {
-      if (isBusy || document.visibilityState !== 'visible') return;
+      if (isBusy || pollStoppedRef.current || pollInFlightRef.current || document.visibilityState !== 'visible') return;
       void (async () => {
+        pollInFlightRef.current = true;
         try {
           const response = await api.browserUse.screen(session.id);
           const data = await readApiJson<{ data: { session: BrowserUseSession } }>(response);
+          consecutivePollFailuresRef.current = 0;
           onSessionUpdated(data.data.session);
-        } catch {
-          // Transient poll hiccup; the next tick retries.
+        } catch (error) {
+          consecutivePollFailuresRef.current += 1;
+          if (consecutivePollFailuresRef.current >= 3) {
+            pollStoppedRef.current = true;
+            onError(error);
+          }
+        } finally {
+          pollInFlightRef.current = false;
         }
       })();
     }, POLL_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, [session.id, session.status, isBusy, onSessionUpdated]);
+  }, [session.id, session.status, isBusy, onSessionUpdated, onError]);
 
   // Follow page redirects in the address bar, but never clobber what the user is typing.
   useEffect(() => {
@@ -137,6 +160,10 @@ export function ManualBrowserViewer({ session, onSessionUpdated, onError }: Manu
     if (Math.abs(delta.deltaX) < SWIPE_THRESHOLD_PX && Math.abs(delta.deltaY) < SWIPE_THRESHOLD_PX) {
       return;
     }
+
+    // Suppress the synthetic click some platforms still fire after a drag
+    // that already exceeded the tap threshold.
+    event.preventDefault();
 
     void runControl(() => api.browserUse.scroll(
       session.id,

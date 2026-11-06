@@ -494,6 +494,9 @@ async function getManualSession(sessionId: string): Promise<BrowserUseSession> {
 }
 
 async function getReadyManualPage(sessionId: string): Promise<{ session: BrowserUseSession; page: any }> {
+  // Sweep the TTL first so an idle-expired session is rejected instead of
+  // being revived by the next control request or screenshot poll.
+  await expireStaleSessions();
   const session = await getManualSession(sessionId);
   if (session.status !== 'ready') {
     throw new Error(session.message || 'Browser session is not available.');
