@@ -214,3 +214,41 @@ describe('Markdown local image resolution', () => {
       kind: 'external', path: '/Users/azrael/workspaces/MirLite-worktrees/feat/shot.png', projectId: 'proj-worktree', projectFallback: true,
     })]);  });
 });
+
+describe('Markdown image remount', () => {
+  it('reserves the decoded size when its row remounts, for local and web images alike', async () => {
+    const markdown = '![local](/Users/azrael/brain/remount.png) ![web](https://example.com/remount.png)';
+    const first = render(<Markdown>{markdown}</Markdown>);
+    const images = await waitFor(() => {
+      const found = [screen.getByAltText('local'), screen.getByAltText('web')];
+      return found;
+    });
+    for (const image of images) {
+      Object.defineProperty(image, 'naturalWidth', { value: 800, configurable: true });
+      Object.defineProperty(image, 'naturalHeight', { value: 400, configurable: true });
+      fireEvent.load(image);
+    }
+    first.unmount();
+
+    render(<Markdown>{markdown}</Markdown>);
+    for (const alt of ['local', 'web']) {
+      const image = screen.getByAltText(alt);
+      expect(image.getAttribute('width')).toBe('800');
+      expect(image.getAttribute('height')).toBe('400');
+    }
+  });
+
+  it('keeps that size on the placeholder when the ticket has to be renewed', async () => {
+    const markdown = '![renew](/Users/azrael/brain/renew.png)';
+    requestImageUrls.mockImplementationOnce(async (images: ImageMediaRequest[]) => ({ ok: true, json: async () => ({ images: images.map(({ id }) => ({ id, url: '/api/media/images?ticket=short', expiresAt: Date.now() + 1_000 })) }) }));
+    const first = render(<Markdown>{markdown}</Markdown>);
+    const image = await screen.findByAltText('renew');
+    Object.defineProperty(image, 'naturalWidth', { value: 800, configurable: true });
+    Object.defineProperty(image, 'naturalHeight', { value: 400, configurable: true });
+    fireEvent.load(image);
+    first.unmount();
+
+    const { container } = render(<Markdown>{markdown}</Markdown>);
+    expect(container.querySelector<HTMLElement>('.animate-pulse')?.style.aspectRatio).toBe('800 / 400');
+  });
+});

@@ -143,5 +143,11 @@ export function createBatchedAccountRequester<TItem, TValue, TFail = Error>(
     return promise;
   }
 
-  return { request, subscribe, snapshot };
+  /** 同步读取已完成且仍可复用的结果，让重新挂载的组件首帧就能用上缓存。 */
+  function peek(item: TItem): TValue | undefined {
+    const entry = cache.get(config.cacheKey(item));
+    return entry && (!config.reusable || config.reusable(entry, item)) ? entry.value : undefined;
+  }
+
+  return { request, peek, subscribe, snapshot };
 }

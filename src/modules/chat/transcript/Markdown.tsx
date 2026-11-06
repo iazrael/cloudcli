@@ -7,6 +7,7 @@ import rehypeKatex from 'rehype-katex';
 import { oneDark, oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { useTranslation } from 'react-i18next';
 
+import { reservedImageBox, useRememberedImageSize } from '@/modules/chat/hooks/useRememberedImageSize';
 import { useSignedImageCandidates } from '@/modules/chat/hooks/useSignedImageCandidates';
 import { usePathExistsCandidates } from '@/modules/chat/hooks/usePathExists';
 import { SyntaxHighlighter, isRegisteredLanguage } from '@/modules/chat/composer/codeHighlightLanguages';
@@ -326,6 +327,7 @@ function MarkdownImageContent({ src = '', alt, node: _node, projectId, worktreeP
   const sources = signedImageSources(target, projectId, worktreePath);
   const { observe, ...signed } = useSignedImageCandidates(sources.primary, sources.fallback);
   const key = JSON.stringify([projectId, worktreePath, src]);
+  const { size, remember } = useRememberedImageSize(key);
   // 网页图片保留自己的加载错误；本地错误由签名 Hook 提供。
   const [browserFailed, setBrowserFailed] = useState(false);
   // 显示复制结果，让用户知道是否需要手动复制路径。
@@ -360,11 +362,14 @@ function MarkdownImageContent({ src = '', alt, node: _node, projectId, worktreeP
   }
 
   if (!imageSrc) {
-    return <span ref={observe} aria-hidden className="my-1 block h-28 max-w-sm animate-pulse rounded-lg bg-muted" />;
+    return size
+      ? <span ref={observe} aria-hidden style={reservedImageBox(size)} className="my-2 block animate-pulse rounded-lg bg-muted" />
+      : <span ref={observe} aria-hidden className="my-2 block h-28 max-w-sm animate-pulse rounded-lg bg-muted" />;
   }
 
-  const image = <img {...props} src={imageSrc} alt={alt} loading="lazy" decoding="async" className="rounded-lg"
-    referrerPolicy="no-referrer" onLoad={signed.onLoad} onError={() => browserSrc ? setBrowserFailed(true) : signed.onError()} />;
+  // width/height 让浏览器在解码前就按比例占位；my-2 盖掉 prose 的图片外边距，与占位保持一致。
+  const image = <img {...props} {...size} src={imageSrc} alt={alt} loading="lazy" decoding="async" className="my-2 rounded-lg"
+    referrerPolicy="no-referrer" onLoad={(event) => { signed.onLoad(); remember(event); }} onError={() => browserSrc ? setBrowserFailed(true) : signed.onError()} />;
   if (browserSrc) return image;
   return (
     <>

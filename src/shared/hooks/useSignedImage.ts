@@ -46,8 +46,11 @@ export function useSignedImage(source: ImageMediaSource | null, { eager = false 
   const [element, setElement] = useState<HTMLElement | null>(null);
   // 可见性归属当前引用，切换图片后重新判断。
   const [visibleKey, setVisibleKey] = useState('');
-  // 只展示当前引用的票据或错误，忽略旧异步结果。
-  const [loaded, setLoaded] = useState<{ key: string; ticket?: Ticket; error?: ImageFailure } | null>(null);
+  // 只展示当前引用的票据或错误，忽略旧异步结果；重新挂载时直接接上仍有效的票据，首帧不闪占位。
+  const [loaded, setLoaded] = useState<{ key: string; ticket?: Ticket; error?: ImageFailure } | null>(() => {
+    const ticket = source ? imageTickets.peek({ source, scope }) : undefined;
+    return ticket ? { key, ticket } : null;
+  });
   // 请求代次、重试次数和显示状态只供异步流程使用，不参与渲染。
   const active = useRef({ key, serial: 0, retries: 0, displayed: false });
   useEffect(() => {

@@ -101,3 +101,15 @@ it('logout invalidates tickets even while all image components are unmounted', a
   await screen.findByRole('img');
   expect(fetchMock).toHaveBeenCalledTimes(2);
 });
+
+it('shows a still-valid ticket on the first render of a remount, without waiting for the viewport', async () => {
+  const first = render(<Probe eager />);
+  const url = (await screen.findByRole('img')).getAttribute('src');
+  first.unmount();
+
+  // jsdom 没有 IntersectionObserver；这里给一个永不触发的，证明首帧不依赖可见性。
+  vi.stubGlobal('IntersectionObserver', class { observe() {} disconnect() {} });
+  render(<Probe />);
+  expect(screen.getByRole('img').getAttribute('src')).toBe(url);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+});
