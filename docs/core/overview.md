@@ -115,7 +115,7 @@ npm run lint         # oxlint src/ server/
 npm run typecheck    # 前后端双 tsconfig --noEmit
 ```
 
-- 本仓库生产实例用 **PM2** 托管，应用名为 `cloudcli`。`pnpm run deploy` 用部署锁串行执行，先构建 tarball，在独立的 `~/.cloudcli/runtime-next-<pid>` 完成生产依赖安装和原生依赖检查，再受控切换为 `~/.cloudcli/runtime`；服务入口固定为 `~/.cloudcli/runtime/node_modules/cloudcli/dist-server/server/index.js`，上一版保留在 `~/.cloudcli/runtime-previous`，启动或健康检查失败时自动恢复。首次从其他入口迁移时会重建 PM2 进程条目，固定入口生效后的部署只做原地重启。全局 `cloudcli` 命令稳定指向该运行目录。部署脚本启动时会把自己重新拉起成 detached 后台进程（日志 `~/.cloudcli/deploy.log`），调用方只跟读日志——终端关闭或 pm2 切换重启了托管调用方的服务，都不会让部署停在半路；中断时 exit 钩子清理暂存目录并明确告知线上未变更。PM2 配置在宿主机，不在仓库内；重启会切断在线 WebSocket（详见根目录 `AGENTS.md`）。
+- 本仓库生产实例用 **PM2** 托管，应用名为 `cloudcli`。`pnpm run deploy` 用部署锁串行执行，先构建 tarball，在独立的 `~/.cloudcli/runtime-next-<pid>` 完成生产依赖安装和原生依赖检查，再受控切换为 `~/.cloudcli/runtime`；服务入口固定为 `~/.cloudcli/runtime/node_modules/cloudcli/dist-server/server/index.js`，上一版保留在 `~/.cloudcli/runtime-previous`，启动或健康检查失败时自动恢复。部署包 tarball 落在 `~/.cloudcli/deploy`，成功部署后只保留最新 2 个——回滚走 `runtime-previous`、源码回退走 git，不依赖部署包；失败部署不动存量。首次从其他入口迁移时会重建 PM2 进程条目，固定入口生效后的部署只做原地重启。全局 `cloudcli` 命令稳定指向该运行目录。部署脚本启动时会把自己重新拉起成 detached 后台进程（日志 `~/.cloudcli/deploy.log`），调用方只跟读日志——终端关闭或 pm2 切换重启了托管调用方的服务，都不会让部署停在半路；中断时 exit 钩子清理暂存目录并明确告知线上未变更。PM2 配置在宿主机，不在仓库内；重启会切断在线 WebSocket（详见根目录 `AGENTS.md`）。
 - 提交钩子：husky + lint-staged（oxlint）+ commitlint（Conventional Commits）+ 核心文档同步守卫（`scripts/hooks/check-doc-sync.mjs`）。
 
 ## 扩展检查单
