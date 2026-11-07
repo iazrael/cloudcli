@@ -468,4 +468,29 @@ if (globalBinDir) {
 
 cutoverInProgress = false;
 deployCompleted = true;
+
+// ── 6. 清理历史部署包 ───────────────────────────────────────
+// tarball 只在本次安装 runtime-next 时用一次；回滚不依赖它——线上回滚走
+// runtime-previous，源码回退走 git。部署成功后只留最新 2 个包（本次 + 一个旧版），
+// 更早的自动删掉，防止 deploy 目录随版本无限膨胀。放在成功路径上：失败部署
+// 不动存量；清理本身出错也只警告，部署结果已经成立，不能被收尾步骤掀翻。
+function pruneDeployTarballs(keepCount = 2) {
+  try {
+    const tarballs = fs.readdirSync(deployDir)
+      .filter((f) => f.endsWith('.tgz'))
+      .map((f) => ({ name: f, mtimeMs: fs.statSync(path.join(deployDir, f)).mtimeMs }))
+      .sort((a, b) => b.mtimeMs - a.mtimeMs);
+    for (const old of tarballs.slice(keepCount)) {
+      fs.rmSync(path.join(deployDir, old.name), { force: true });
+    }
+    if (tarballs.length > keepCount) {
+      const kept = tarballs.slice(0, keepCount).map((t) => t.name).join('、');
+      console.log(`[deploy] 已清理 ${tarballs.length - keepCount} 个历史部署包，保留：${kept}`);
+    }
+  } catch (error) {
+    console.warn(`[deploy] ! 历史部署包清理失败（不影响部署）：${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+pruneDeployTarballs();
+
 console.log(`\n[deploy] ✓ 部署完成，访问 http://localhost:${PORT}`);
