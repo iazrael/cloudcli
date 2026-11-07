@@ -116,6 +116,22 @@ export const MAX_FILE_UPLOAD_SIZE_LABEL = `${MAX_FILE_UPLOAD_SIZE_MB}MB`;
 
 // ---------------------------
 
+//----------------- CHAT ATTACHMENT LIMITS ------------
+
+/** Most attachments one composer draft can hold. */
+export const MAX_ATTACHMENT_COUNT = 10;
+
+/** Largest chat attachment in megabytes, matching the limit `/api/assets/files` enforces. */
+export const MAX_ATTACHMENT_SIZE_MB = 10;
+
+/** `MAX_ATTACHMENT_SIZE_MB` in bytes, for comparing against `File.size` before uploading. */
+export const MAX_ATTACHMENT_SIZE_BYTES = MAX_ATTACHMENT_SIZE_MB * 1024 * 1024;
+
+/** Human-readable form of the attachment size limit, shown on an oversized attachment. */
+export const MAX_ATTACHMENT_SIZE_LABEL = `${MAX_ATTACHMENT_SIZE_MB}MB`;
+
+// ---------------------------
+
 //----------------- GIT CHANGE GROUPS ------------
 
 /** Shape of one entry in `FILE_STATUS_GROUPS`; only that constant needs it. */

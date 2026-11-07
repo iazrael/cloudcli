@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type {
   ChangeEvent,
   ClipboardEvent,
@@ -13,9 +13,11 @@ import { useDropzone } from 'react-dropzone';
 import { useTranslation } from 'react-i18next';
 
 import { api, ApiRequestError, authenticatedFetch } from '@/shared/api';
+import { MAX_ATTACHMENT_COUNT } from '@/shared/constants';
 import { createClientRequestId, isEnginePromptCommand, isImageAttachment } from '@/shared/utils';
 import type { MarkSessionProcessing, SessionActivityMap } from '@/shared/types';
 import { uploadAttachmentFiles } from '@/modules/chat/utils/attachmentUpload';
+import { createAttachmentUploadQueue } from '@/modules/chat/utils/attachmentUploadQueue';
 import { grantClaudeToolPermission } from '@/modules/chat/utils/chatPermissions';
 import { readProviderToolsSettings, safeLocalStorage } from '@/modules/chat/utils/chatStorage';
 import {
@@ -33,10 +35,14 @@ import type {
   ActiveBackgroundTask,
   ChatAttachment,
   ChatMessage,
+  ComposerAttachmentBlock,
+  ComposerAttachmentItem,
+  ComposerAttachmentQueue,
   PendingPermissionRequest,
   PermissionMode,
   QueuedSendOptions,
   SessionEstablishedContext,
+  UploadedComposerAttachment,
 } from '@/shared/types';
 import type { Project, ProjectSession, LLMProvider, ProviderModelOption, ProviderQuotaData } from '@/shared/types';
 import { escapeRegExp } from '@/modules/chat/utils/chatFormatting';
@@ -212,9 +218,6 @@ const createFakeSubmitEvent = () => {
   return { preventDefault: () => undefined } as unknown as FormEvent<HTMLFormElement>;
 };
 
-const MAX_ATTACHMENT_COUNT = 10;
-const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024;
-
 export type QueuedDraft = {
   content: string;
   /** Browser files retained while this composer stays mounted, for editing. */
@@ -252,6 +255,21 @@ const restoreQueuedDraft = (sessionKey: string): QueuedDraft | null => {
         options: saved.options,
       }
     : null;
+};
+
+/** Pairs a queued draft's files with their stored descriptors, so putting them back needs no upload. */
+const toUploadedAttachments = (files: File[], draft: QueuedDraft): UploadedComposerAttachment[] => (
+  files.map((file, index) => ({ file, uploaded: draft.uploadedAttachments?.[index] }))
+);
+
+/** Uploads one attachment for the queue, in a request of its own so a timeout costs only this file. */
+const uploadComposerAttachment: Parameters<typeof createAttachmentUploadQueue>[0] = async (file, options) => (
+  (await uploadAttachmentFiles([file], options))[0]
+);
+
+const deriveAttachmentBlock = (items: readonly ComposerAttachmentItem[]): ComposerAttachmentBlock => {
+  if (items.some(({ status }) => status === 'queued' || status === 'uploading')) return 'uploading';
+  return items.some(({ status }) => status !== 'done') ? 'failed' : null;
 };
 
 const recoverQueuedFiles = async (draft: QueuedDraft): Promise<File[]> => {
@@ -326,9 +344,9 @@ export function useChatComposerState({
     }
     return '';
   });
-  const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
-  const [uploadingFiles, setUploadingFiles] = useState<Map<string, number>>(new Map());
-  const [fileErrors, setFileErrors] = useState<Map<string, string>>(new Map());
+  // The queue owns attachments across scopes because an upload must survive a
+  // session switch and a send must read its state synchronously.
+  const [attachmentQueue] = useState<ComposerAttachmentQueue>(() => createAttachmentUploadQueue(uploadComposerAttachment));
   const [isTextareaExpanded, setIsTextareaExpanded] = useState(false);
   const [editingAnchorId, setEditingAnchorId] = useState<string | null>(null);
   const [commandModalPayload, setCommandModalPayload] = useState<CommandModalPayload | null>(null);
@@ -357,7 +375,13 @@ export function useChatComposerState({
   const draftScopeRef = useRef(draftScope);
   draftScopeRef.current = draftScope;
   const inputOwnerRef = useRef(draftScope);
-  const scopeFilesRef = useRef(new Map<string, File[]>());
+  // The queue's list for the open chat. Only structure and status changes reach
+  // here; percents go straight to the thumbnail.
+  const attachments = useSyncExternalStore(
+    attachmentQueue.subscribe,
+    () => attachmentQueue.getItems(draftScope ?? ''),
+  );
+  const attachmentBlock = useMemo(() => deriveAttachmentBlock(attachments), [attachments]);
 
   // Every programmatic input write goes through the same pair of stores a send
   // reads: the state (for the render) and inputValueRef (so an immediate Enter
@@ -370,9 +394,6 @@ export function useChatComposerState({
     inputValueRef.current = next;
     if (draftScopeRef.current) writeDraftText(draftScopeRef.current, next);
   }, []);
-  // The chat scope a draft belongs to: the open session, or the project for a
-  // chat that has not been sent yet and so has no session id.
-  const failedSubmissionsRef = useRef(new Map<string, File[]>());
   const { recordSentMessage, handleHistoryKeyDown } = useInputHistory({
     setInput: updateInput,
     textareaRef,
@@ -665,34 +686,8 @@ export function useChatComposerState({
   }, []);
 
   const handleAttachmentFiles = useCallback((files: File[]) => {
-    const validFiles = files.filter((file) => {
-      try {
-        if (!file || typeof file !== 'object') {
-          console.warn('Invalid file object:', file);
-          return false;
-        }
-
-        if (file.size > MAX_ATTACHMENT_SIZE) {
-          const fileName = file.name || 'Unknown file';
-          setFileErrors((previous) => {
-            const next = new Map(previous);
-            next.set(fileName, 'File too large (max 10MB)');
-            return next;
-          });
-          return false;
-        }
-
-        return true;
-      } catch (error) {
-        console.error('Error validating file:', error, file);
-        return false;
-      }
-    });
-
-    if (validFiles.length > 0) {
-      setAttachedFiles((previous) => [...previous, ...validFiles].slice(0, MAX_ATTACHMENT_COUNT));
-    }
-  }, []);
+    attachmentQueue.add(draftScopeRef.current ?? '', files);
+  }, [attachmentQueue]);
 
   const handlePaste = useCallback(
     (event: ClipboardEvent<HTMLTextAreaElement>) => {
@@ -720,7 +715,6 @@ export function useChatComposerState({
   );
 
   const { getRootProps, getInputProps, isDragActive, open } = useDropzone({
-    maxSize: MAX_ATTACHMENT_SIZE,
     maxFiles: MAX_ATTACHMENT_COUNT,
     onDrop: handleAttachmentFiles,
     noClick: true,
@@ -728,8 +722,8 @@ export function useChatComposerState({
   });
 
   // A submit is only "in flight" for the window between the click and the
-  // backend accepting the message — uploading attachments and allocating the
-  // session id both live there. The ref is the gate (readable synchronously,
+  // backend accepting the message, which covers queueing it and allocating the
+  // session id. The ref is the gate (readable synchronously,
   // so two clicks in the same tick cannot both pass); the state drives the
   // button's spinner. Both are keyed by draft scope: a brand-new chat still
   // waiting for its session id must not block a send from another session the
@@ -745,9 +739,6 @@ export function useChatComposerState({
    */
   const clearComposerForSubmit = useCallback(() => {
     updateInput('');
-    setAttachedFiles([]);
-    setUploadingFiles(new Map());
-    setFileErrors(new Map());
     resetCommandMenuState();
     setIsTextareaExpanded(false);
     if (textareaRef.current) {
@@ -759,18 +750,20 @@ export function useChatComposerState({
   }, [resetCommandMenuState, selectedProjectId, updateInput]);
 
   /** Puts a failed submit's text and attachments back so nothing is lost. */
-  const restoreComposerAfterFailedSubmit = useCallback((content: string, attachments: File[], ownerScope: string) => {
+  const restoreComposerAfterFailedSubmit = useCallback((
+    content: string,
+    attachments: UploadedComposerAttachment[],
+    ownerScope: string,
+  ) => {
     if (draftGenerationRef.current !== getChatDraftSessionGeneration()) return;
+    attachmentQueue.restore(ownerScope, attachments);
     if (draftScopeRef.current !== ownerScope) {
-      const previous = failedSubmissionsRef.current.get(ownerScope);
       const restored = [content, readDraftText(ownerScope)].filter((part) => part.trim()).join('\n\n');
-      failedSubmissionsRef.current.set(ownerScope, [...attachments, ...(previous ?? scopeFilesRef.current.get(ownerScope) ?? [])]);
       writeDraftText(ownerScope, restored);
       return;
     }
     updateInput([content, inputValueRef.current].filter((part) => part.trim()).join('\n\n'));
-    setAttachedFiles((current) => [...attachments, ...current]);
-  }, [updateInput]);
+  }, [attachmentQueue, updateInput]);
 
   // Snapshot of everything `chat.send` needs beyond the text itself. Built at
   // send time for immediate sends and at queue time for queued ones, so a
@@ -813,8 +806,8 @@ export function useChatComposerState({
 
   /**
    * Submits the composer's message. Resolves to whether this call was taken:
-   * `false` means nothing was sent (empty message, or another submit already
-   * in flight), which is how a caller that owns the message — the queued-draft
+   * `false` means nothing was sent (empty message, an unfinished attachment, or
+   * another submit already in flight), which is how a caller that owns the message — the queued-draft
    * flush — knows to keep its draft instead of dropping it.
    */
   const handleSubmit = useCallback(
@@ -827,16 +820,27 @@ export function useChatComposerState({
       event.preventDefault();
       if (draftGenerationRef.current !== getChatDraftSessionGeneration()) return false;
       const currentInput = queuedSubmission?.content ?? inputValueRef.current;
-      const currentAttachments = queuedSubmission?.attachments ?? attachedFiles;
-      const previouslyUploadedAttachments = queuedSubmission?.uploadedAttachments ?? [];
+      // Read from the queue, not from render state, so an Enter in the same
+      // tick as an upload change sees the truth. A queued flush brings its own
+      // stored attachments and is not held by what the composer is uploading.
+      const submitScope = draftScope ?? '';
+      const composerAttachments = queuedSubmission ? [] : attachmentQueue.getItems(submitScope);
+      const currentAttachments = queuedSubmission?.attachments ?? composerAttachments.map(({ file }) => file);
+      const uploadedAttachments = queuedSubmission?.uploadedAttachments
+        ?? composerAttachments.map(({ uploaded }) => uploaded);
       if (
         (
           !currentInput.trim()
           && currentAttachments.length === 0
-          && previouslyUploadedAttachments.length === 0
+          && uploadedAttachments.length === 0
         )
         || !selectedProject
       ) {
+        return false;
+      }
+
+      // The one gate every send path passes: button, Enter, voice and expanded commands.
+      if (!queuedSubmission && !attachmentQueue.isReady(submitScope)) {
         return false;
       }
 
@@ -849,7 +853,6 @@ export function useChatComposerState({
       // `project:<id>` to its session id when the id lands mid-submit. That id
       // joins the held scopes below, so the chat stays latched under its new
       // scope too, and the release frees exactly what was taken.
-      const submitScope = draftScope ?? '';
       if (submittingScopesRef.current.has(submitScope)) {
         return false;
       }
@@ -865,7 +868,10 @@ export function useChatComposerState({
       // immediately and the button stops looking dead. A queued flush carries
       // its own copy of the message and must leave the composer alone — the
       // user may already be typing the next one.
+      let takenAttachments: UploadedComposerAttachment[] = [];
       if (!queuedSubmission) {
+        takenAttachments = attachmentQueue.take(submitScope)
+          .map(({ file, uploaded }) => ({ file, uploaded }));
         clearComposerForSubmit();
       }
 
@@ -900,14 +906,13 @@ export function useChatComposerState({
           }
         }
 
-        // A turn or background work is already in flight: stash this message instead of sending it.
-        // Upload attached files now so the queued record contains durable image
-        // descriptors that can be sent even if another session is open later.
+        // A turn or background work is already in flight: stash this message
+        // instead of sending it. It carries stored descriptors, so it can be
+        // sent even if another session is open later.
         const isBusy = isInputBlocked ?? (isLoading || Boolean(hasActiveBackgroundTasks));
         if (isBusy && !isForced) {
           // A run can restart in the tiny gap between scheduling and flushing a
-          // queued submission. Put the same durable draft back without uploading
-          // its files again.
+          // queued submission. Put the same durable draft back.
           if (queuedSubmission) {
             queuedDraftSessionRef.current = sessionKey;
             setQueuedDraft(queuedSubmission);
@@ -916,16 +921,6 @@ export function useChatComposerState({
 
           const queuedOptions = buildSendOptions(currentInput);
           const queuedSessionKey = sessionKey;
-          let uploadedAttachments: unknown[] = [];
-          try {
-            uploadedAttachments = await uploadAttachmentFiles(currentAttachments);
-          } catch (error) {
-            const message = error instanceof Error ? error.message : 'Unknown error';
-            console.error('Queued file upload failed:', error);
-            throw new ComposerSubmitError(`Failed to upload files: ${message}`);
-          }
-
-          if (draftGenerationRef.current !== getChatDraftSessionGeneration()) return false;
           if (!queuedSessionKey) {
             throw new ComposerSubmitError('No session is available to queue this message.');
           }
@@ -946,7 +941,7 @@ export function useChatComposerState({
           // recallable even when it dispatches without this composer.
           recordSentMessage(currentInput, queuedSessionKey);
 
-          // The upload is asynchronous. If the user changed sessions while it
+          // The append is asynchronous. If the user changed sessions while it
           // was running, the message is already queued on the server for the
           // session where Queue was pressed; the newly opened chat must not
           // take it into its own queue.
@@ -972,19 +967,6 @@ export function useChatComposerState({
         }
 
         const messageContent = currentInput;
-
-        let uploadedAttachments = previouslyUploadedAttachments;
-        if (uploadedAttachments.length === 0 && currentAttachments.length > 0) {
-          try {
-            uploadedAttachments = await uploadAttachmentFiles(currentAttachments);
-          } catch (error) {
-            const message = error instanceof Error ? error.message : 'Unknown error';
-            console.error('File upload failed:', error);
-            throw new ComposerSubmitError(`Failed to upload files: ${message}`);
-          }
-        }
-
-        if (draftGenerationRef.current !== getChatDraftSessionGeneration()) return false;
         const resolvedProjectPath = selectedProject.fullPath || selectedProject.path || '';
         const sessionSummary = getNotificationSessionSummary(selectedSession, currentInput);
 
@@ -1097,7 +1079,7 @@ export function useChatComposerState({
           queuedDraftSessionRef.current = sessionKey;
           setQueuedDraft(queuedSubmission);
         } else {
-          restoreComposerAfterFailedSubmit(currentInput, currentAttachments, submitScope);
+          restoreComposerAfterFailedSubmit(currentInput, takenAttachments, submitScope);
         }
         addMessage({
           type: 'error',
@@ -1121,7 +1103,7 @@ export function useChatComposerState({
     },
     [
       selectedSession,
-      attachedFiles,
+      attachmentQueue,
       buildSendOptions,
       currentSessionId,
       executeCommand,
@@ -1204,7 +1186,7 @@ export function useChatComposerState({
     }
     if (!await clearQueuedDraftOnServer(owner, draft)) return;
     if (sessionKeyRef.current === owner) setQueuedDraft(null);
-    restoreComposerAfterFailedSubmit(draft.content, files, owner ?? '');
+    restoreComposerAfterFailedSubmit(draft.content, toUploadedAttachments(files, draft), owner ?? '');
     textareaRef.current?.focus();
   }, [queuedDraft, clearQueuedDraftOnServer, restoreComposerAfterFailedSubmit, addMessage]);
 
@@ -1247,7 +1229,7 @@ export function useChatComposerState({
         }
       } catch (error) {
         if (sessionKeyRef.current === sessionKey) setQueuedDraft(null);
-        restoreComposerAfterFailedSubmit(draft.content, draft.attachments, sessionKey);
+        restoreComposerAfterFailedSubmit(draft.content, toUploadedAttachments(draft.attachments, draft), sessionKey);
         addMessage({ type: 'error', content: `Failed to restore queued message: ${String(error)}`, timestamp: new Date() });
       }
     }
@@ -1271,17 +1253,24 @@ export function useChatComposerState({
     if (draftGenerationRef.current !== getChatDraftSessionGeneration()) return;
     const previousScope = inputOwnerRef.current;
     if (previousScope !== draftScope) {
-      if (previousScope) scopeFilesRef.current.set(previousScope, attachedFiles);
       inputOwnerRef.current = draftScope;
-      const failed = draftScope ? failedSubmissionsRef.current.get(draftScope) : undefined;
       updateInput(draftScope ? readDraftText(draftScope) : '');
-      setAttachedFiles(failed ?? (draftScope ? scopeFilesRef.current.get(draftScope) : undefined) ?? []);
-      if (draftScope) failedSubmissionsRef.current.delete(draftScope);
     } else if (draftScope) {
       writeDraftText(draftScope, inputValueRef.current);
     }
     if (selectedProjectId) safeLocalStorage.removeItem(`draft_input_${selectedProjectId}`);
-  }, [attachedFiles, draftScope, selectedProjectId, updateInput]);
+  }, [draftScope, selectedProjectId, updateInput]);
+
+  // Uploads belong to this composer and this signed-in user: ending either ends them.
+  useEffect(() => {
+    const unsubscribe = subscribeToChatDrafts(() => {
+      if (draftGenerationRef.current !== getChatDraftSessionGeneration()) attachmentQueue.abortAll();
+    });
+    return () => {
+      unsubscribe();
+      attachmentQueue.abortAll();
+    };
+  }, [attachmentQueue]);
 
   // Switching sessions swaps in that session's queued draft. Browser File
   // objects are local to the mounted composer, while their already-uploaded
@@ -1544,16 +1533,15 @@ export function useChatComposerState({
     selectedFileIndex,
     renderInputWithMentions,
     selectFile,
-    attachedFiles,
-    setAttachedFiles,
-    uploadingFiles,
-    fileErrors,
+    attachments,
+    attachmentQueue,
+    attachmentBlock,
     getRootProps,
     getInputProps,
     isDragActive,
     openAttachmentPicker: open,
     handleSubmit,
-    /** True while a submitted message is being uploaded or allocated a session. */
+    /** True while a submitted message is being queued or allocated a session. */
     isSubmitting,
     queuedDraft,
     editQueuedDraft,

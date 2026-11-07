@@ -1,10 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DragEvent } from 'react';
 
-import { IS_PLATFORM } from '@/shared/utils';
 import type { FileTreeUploadProgressState, Project } from '@/shared/types';
-import { api } from '@/shared/api';
-import { expireAuthSession, getStoredAuthToken, storeAuthToken } from '@/shared/authToken';
+import { api, authenticatedUpload } from '@/shared/api';
 import { MAX_FILE_UPLOAD_SIZE_BYTES, MAX_FILE_UPLOAD_SIZE_LABEL } from '@/shared/constants';
 
 type UseFileTreeUploadOptions = {
@@ -52,13 +50,13 @@ const validateFilesForUpload = (files: File[]): string | null => {
   return null;
 };
 
-const parseUploadResponse = (xhr: XMLHttpRequest): UploadResponse => {
-  if (!xhr.responseText) {
+const parseUploadResponse = (responseText: string): UploadResponse => {
+  if (!responseText) {
     return {};
   }
 
   try {
-    return JSON.parse(xhr.responseText) as UploadResponse;
+    return JSON.parse(responseText) as UploadResponse;
   } catch {
     return {};
   }
@@ -95,54 +93,26 @@ const buildUploadFormData = (files: File[], targetPath: string) => {
   return formData;
 };
 
-const uploadFormDataWithProgress = (
+const uploadFormDataWithProgress = async (
   projectId: string,
   formData: FormData,
   onProgress: (progress: number) => void,
-) =>
-  new Promise<UploadResponse>((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
+): Promise<UploadResponse> => {
+  let response: Response;
+  try {
+    // Progress stops at 99 until the response, so the UI can tell transfer
+    // completion from the final write/refresh step.
+    response = await authenticatedUpload(api.uploadFilesUrl(projectId), { method: 'POST', body: formData }, onProgress);
+  } catch (error) {
+    throw error instanceof TypeError ? new Error('Upload failed. Check your connection and try again.') : error;
+  }
 
-    xhr.open('POST', api.uploadFilesUrl(projectId));
-
-    const token = getStoredAuthToken();
-    if (!IS_PLATFORM && token) {
-      xhr.setRequestHeader('Authorization', `Bearer ${token}`);
-    }
-
-    xhr.upload.onprogress = (event) => {
-      if (!event.lengthComputable) {
-        return;
-      }
-
-      // Keep 100% for the server response so the UI can distinguish transfer
-      // completion from the final write/refresh step.
-      onProgress(Math.min(99, Math.round((event.loaded / event.total) * 100)));
-    };
-
-    xhr.onload = () => {
-      const refreshedToken = xhr.getResponseHeader('X-Refreshed-Token');
-      if (refreshedToken) {
-        storeAuthToken(refreshedToken);
-      }
-      if (xhr.getResponseHeader('X-Auth-Error')) {
-        expireAuthSession();
-      }
-
-      const payload = parseUploadResponse(xhr);
-      if (xhr.status >= 200 && xhr.status < 300) {
-        resolve(payload);
-        return;
-      }
-
-      reject(new Error(payload.error || payload.message || `Upload failed with status ${xhr.status}`));
-    };
-
-    xhr.onerror = () => reject(new Error('Upload failed. Check your connection and try again.'));
-    xhr.onabort = () => reject(new Error('Upload canceled.'));
-
-    xhr.send(formData);
-  });
+  const payload = parseUploadResponse(await response.text());
+  if (response.ok) {
+    return payload;
+  }
+  throw new Error(payload.error || payload.message || `Upload failed with status ${response.status}`);
+};
 
 // Helper function to read all files from a directory entry recursively
 const readAllDirectoryEntries = async (directoryEntry: FileSystemDirectoryEntry, basePath = ''): Promise<File[]> => {

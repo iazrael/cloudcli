@@ -8,13 +8,9 @@ import type { ChatMessage, Project, ProjectSession } from '@/shared/types';
 
 const queueRequest = vi.fn();
 const clearRequest = vi.fn();
-const upload = vi.fn();
 const readAsset = vi.fn();
 let remoteDrafts: unknown[] = [];
 
-vi.mock('@/modules/chat/utils/attachmentUpload', () => ({
-  uploadAttachmentFiles: (...args: unknown[]) => upload(...args),
-}));
 vi.mock('@/shared/api', async (importOriginal) => ({
   ...(await importOriginal<typeof Api>()),
   api: {
@@ -75,7 +71,6 @@ beforeEach(async () => {
     success: true, queuedMessage, appended: false,
   })));
   clearRequest.mockReset().mockResolvedValue(new Response('{}'));
-  upload.mockReset().mockResolvedValue([]);
   readAsset.mockReset().mockResolvedValue(new Response('stored attachment'));
 });
 
@@ -202,22 +197,6 @@ test('returning to a failed submission keeps a newer draft received from another
   assert.equal(result.current.input, 'first plus phone edit');
 });
 
-test('an upload completed after sign-out never appends to the next user\'s queue', async () => {
-  const drafts = await import('@/shared/chatDrafts');
-  let finishUpload!: (value: unknown[]) => void;
-  upload.mockImplementationOnce(() => new Promise<unknown[]>((resolve) => { finishUpload = resolve; }));
-  const { result, unmount, type } = await setup();
-  await type('private uploaded message');
-  let submitting!: Promise<boolean>;
-  await act(async () => { submitting = result.current.handleSubmit(event); });
-  drafts.resetChatDrafts();
-  unmount();
-  finishUpload([]);
-  await submitting;
-  assert.equal(queueRequest.mock.calls.length, 0);
-  assert.equal(localStorage.getItem('chat-drafts'), null);
-});
-
 test('clearing input through the public setter cannot revive scheduled text on a session switch', async () => {
   const { result, rerender, type } = await setup();
   await type('already scheduled prompt');
@@ -263,8 +242,8 @@ test('editing a restored attachment-only queue recovers every file before cancel
   ] });
   const { result } = await setup();
   await act(async () => { await result.current.editQueuedDraft(); });
-  assert.equal(result.current.attachedFiles[0]?.name, 'original.txt');
-  assert.equal(result.current.attachedFiles[0]?.size, 'stored attachment'.length);
+  assert.equal(result.current.attachments[0]?.file.name, 'original.txt');
+  assert.equal(result.current.attachments[0]?.file.size, 'stored attachment'.length);
   assert.equal(readAsset.mock.calls[0]?.[0], 'stored.txt');
   assert.equal(result.current.queuedDraft, null);
 });

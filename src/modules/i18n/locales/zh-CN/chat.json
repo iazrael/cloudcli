@@ -155,6 +155,13 @@
     "send": "发送",
     "sending": "发送中…",
     "stop": "停止",
+    "attachments": {
+      "stillUploading": "附件还在上传",
+      "needsAttention": "请重试或移除上传失败的附件后再发送",
+      "progress": "{{name}} 的上传进度",
+      "retry": "重新上传 {{name}}",
+      "tooLarge": "超过 {{size}}"
+    },
     "hintText": {
       "ctrlEnter": "Ctrl+Enter 发送 • Shift+Enter 换行 • Tab 切换模式 • / 斜杠命令",
       "enter": "Enter 发送 • Shift+Enter 换行 • Tab 切换模式 • / 斜杠命令",

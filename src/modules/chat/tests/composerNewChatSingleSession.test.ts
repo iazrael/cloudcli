@@ -77,21 +77,13 @@ const renderComposer = (initialSession: ProjectSession | null) => {
 const renderNewChat = () => renderComposer(null);
 
 let fetchMock: ReturnType<typeof vi.fn>;
-let pendingUploads: PendingCreate[] = [];
-
-const uploadRequests = () => fetchMock.mock.calls
-  .filter(([url, init]) => String(url) === '/api/assets/files' && (init as RequestInit | undefined)?.method === 'POST');
 
 beforeEach(() => {
   pendingCreates = [];
-  pendingUploads = [];
   createdCount = 0;
   fetchMock = vi.fn((url: RequestInfo | URL, init?: RequestInit) => {
     if (String(url) === '/api/providers/sessions' && init?.method === 'POST') {
       return new Promise<Response>((resolve) => { pendingCreates.push({ resolve }); });
-    }
-    if (String(url) === '/api/assets/files' && init?.method === 'POST') {
-      return new Promise<Response>((resolve) => { pendingUploads.push({ resolve }); });
     }
     return Promise.resolve(jsonResponse([]));
   });
@@ -147,34 +139,6 @@ test('a failed session creation does not block the retry', async () => {
   assert.equal(createRequests(fetchMock).length, 2);
   assert.deepEqual(established, ['session-2']);
   assert.deepEqual(chatSends().map((message) => message.sessionId), ['session-2']);
-});
-
-test('submitting again while an attachment uploads sends the message once', async () => {
-  const { view, chatSends } = renderComposer({ id: 'session-existing' });
-  const image = new File(['png'], 'shot.png', { type: 'image/png' });
-  await act(async () => {
-    view.result.current.setInput('look at this');
-    view.result.current.handlePaste({
-      clipboardData: { items: [{ type: 'image/png', getAsFile: () => image }], files: [] },
-    } as never);
-  });
-
-  await act(async () => {
-    void view.result.current.handleSubmit({ preventDefault: () => undefined } as never);
-    void view.result.current.handleSubmit({ preventDefault: () => undefined } as never);
-  });
-  await act(async () => {
-    for (const pending of pendingUploads) {
-      pending.resolve(jsonResponse({ attachments: [{ name: 'shot.png', mimeType: 'image/png' }] }));
-    }
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  });
-
-  assert.equal(uploadRequests().length, 1, 'the attachment is uploaded once');
-  assert.deepEqual(
-    chatSends().map((message) => [message.sessionId, message.content]),
-    [['session-existing', 'look at this']],
-  );
 });
 
 test('a pending new chat does not hold up a submit in another session', async () => {

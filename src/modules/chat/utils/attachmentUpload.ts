@@ -1,13 +1,19 @@
-import { authenticatedFetch, uploadChatAttachments } from '@/shared/api';
+import type { authenticatedFetch } from '@/shared/api';
+import { authenticatedUpload, uploadChatAttachments } from '@/shared/api';
 import { createClientRequestId } from '@/shared/utils';
 
 type UploadAttachmentOptions = {
   maxRetries?: number;
   retryDelayMs?: number;
   fetchFn?: typeof authenticatedFetch;
+  /** The upload's identity; a caller that retries by hand passes the same one so the server can dedupe. */
+  requestId?: string;
+  onProgress?: (progress: number) => void;
+  signal?: AbortSignal;
 };
 
-const RETRYABLE_STATUS_CODES = new Set([408, 429, 500, 502, 503, 504]);
+// 520-524 are Cloudflare's own gateway errors, seen when a slow upload outlives its response window.
+const RETRYABLE_STATUS_CODES = new Set([408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524]);
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
@@ -34,6 +40,7 @@ const isTransientStreamAbortMessage = (message?: string | null): boolean => {
 /**
  * Uploads attached files to `/api/assets/files` with automatic retries for transient
  * gateway/network glitches (such as 502 Bad Gateway from reverse proxy keep-alive race conditions).
+ * The default transport reports progress; `signal` aborts the upload and any pending retry.
  */
 export async function uploadAttachmentFiles(
   files: File[],
@@ -46,15 +53,18 @@ export async function uploadAttachmentFiles(
   const {
     maxRetries = 2,
     retryDelayMs = 300,
-    fetchFn = authenticatedFetch,
+    requestId = createClientRequestId(),
+    onProgress,
+    signal,
+    fetchFn = (url, init) => authenticatedUpload(url, { ...init, signal }, onProgress),
   } = options;
 
-  const requestId = createClientRequestId();
   let lastError: unknown = null;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     if (attempt > 0) {
       await sleep(retryDelayMs * Math.pow(2, attempt - 1));
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
     }
 
     const formData = new FormData();

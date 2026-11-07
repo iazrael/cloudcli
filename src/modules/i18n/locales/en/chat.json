@@ -162,6 +162,13 @@
     "send": "Send",
     "sending": "Sending…",
     "stop": "Stop",
+    "attachments": {
+      "stillUploading": "Attachments are still uploading",
+      "needsAttention": "Retry or remove failed attachments before sending",
+      "progress": "Upload progress for {{name}}",
+      "retry": "Retry uploading {{name}}",
+      "tooLarge": "Over {{size}}"
+    },
     "hintText": {
       "ctrlEnter": "Ctrl+Enter to send • Shift+Enter for new line • Tab to change modes • / for slash commands",
       "enter": "Enter to send • Shift+Enter for new line • Tab to change modes • / for slash commands",

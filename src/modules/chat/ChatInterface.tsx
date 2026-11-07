@@ -188,10 +188,9 @@ function ChatInterface({
     selectedFileIndex,
     renderInputWithMentions,
     selectFile,
-    attachedFiles,
-    setAttachedFiles,
-    uploadingFiles,
-    fileErrors,
+    attachments,
+    attachmentQueue,
+    attachmentBlock,
     getRootProps,
     getInputProps,
     isDragActive,
@@ -517,14 +516,9 @@ function ChatInterface({
           queuedDraft={queuedDraft}
           onEditQueuedDraft={editQueuedDraft}
           onDeleteQueuedDraft={deleteQueuedDraft}
-          attachedFiles={attachedFiles}
-          onRemoveAttachment={(index) =>
-            setAttachedFiles((previous) =>
-              previous.filter((_, currentIndex) => currentIndex !== index),
-            )
-          }
-          uploadingFiles={uploadingFiles}
-          fileErrors={fileErrors}
+          attachments={attachments}
+          attachmentQueue={attachmentQueue}
+          attachmentBlock={attachmentBlock}
           showFileDropdown={showFileDropdown}
           filteredFiles={filteredFiles}
           selectedFileIndex={selectedFileIndex}

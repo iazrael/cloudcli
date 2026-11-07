@@ -424,6 +424,44 @@ export type ChatAttachment = {
   size?: number;
 }
 
+/** Where one composer attachment stands: waiting for a slot, uploading, stored, failed and retryable, or rejected before upload for its size. */
+export type ComposerAttachmentStatus = 'queued' | 'uploading' | 'done' | 'failed' | 'tooLarge';
+
+/** One attachment in the composer. `id` doubles as its upload identity, so retries reuse it and same-named files never mix. */
+export type ComposerAttachmentItem = {
+  id: string;
+  file: File;
+  status: ComposerAttachmentStatus;
+  /** The server's descriptor, sent with the message; set once `status` is `done`. */
+  uploaded?: unknown;
+  /** Why the last upload failed; set while `status` is `failed`. */
+  error?: string;
+};
+
+/** Why the composer cannot send yet: an attachment is unfinished, or one needs a retry or removal. `null` means nothing holds it back. */
+export type ComposerAttachmentBlock = 'uploading' | 'failed' | null;
+
+/** A file with its stored descriptor, for putting an already uploaded attachment back in the composer. */
+export type UploadedComposerAttachment = {
+  file: File;
+  uploaded: unknown;
+};
+
+/** Owns every composer attachment and its upload, grouped by draft scope, so uploads outlive session switches. Progress has its own subscription so a percent change repaints one thumbnail, not the composer. */
+export type ComposerAttachmentQueue = {
+  add: (scope: string, files: File[]) => void;
+  restore: (scope: string, entries: UploadedComposerAttachment[]) => void;
+  remove: (id: string) => void;
+  retry: (id: string) => void;
+  take: (scope: string) => readonly ComposerAttachmentItem[];
+  abortAll: () => void;
+  getItems: (scope: string) => readonly ComposerAttachmentItem[];
+  isReady: (scope: string) => boolean;
+  getProgress: (id: string) => number;
+  subscribe: (listener: () => void) => () => void;
+  subscribeProgress: (id: string, listener: () => void) => () => void;
+};
+
 /** A chat attachment that is an image, extending ChatAttachment with the inline base64 data URL that Claude history uses when no stored path is available. */
 export type ChatImage = {
   /** Inline data URL (Claude history stores image attachments as base64). */

@@ -61,6 +61,61 @@ export const authenticatedFetch = (
   });
 };
 
+/**
+ * `authenticatedFetch` for uploads that report progress, which fetch cannot do.
+ * It keeps fetch's contract so callers need no second code path: HTTP failures
+ * resolve as a Response, a network failure rejects with TypeError, and an abort
+ * rejects with AbortError. Progress is a whole percent capped at 99, because
+ * sending the last byte does not mean the server has stored the file.
+ */
+export const authenticatedUpload = (
+  url: string,
+  options: ApiRequestOptions = {},
+  onProgress?: (progress: number) => void,
+): Promise<Response> => new Promise((resolve, reject) => {
+  const { method = 'POST', headers = {}, body, signal } = options;
+  if (signal?.aborted) {
+    reject(new DOMException('Aborted', 'AbortError'));
+    return;
+  }
+
+  const xhr = new XMLHttpRequest();
+  xhr.open(method, url);
+  const token = getStoredAuthToken();
+  if (!IS_PLATFORM && token) {
+    xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+  }
+  Object.entries(headers).forEach(([name, value]) => xhr.setRequestHeader(name, value));
+
+  const abort = () => xhr.abort();
+  signal?.addEventListener('abort', abort, { once: true });
+  const settle = () => signal?.removeEventListener('abort', abort);
+
+  xhr.upload.onprogress = (event) => {
+    if (event.lengthComputable) onProgress?.(Math.min(99, Math.round((event.loaded / event.total) * 100)));
+  };
+  xhr.onload = () => {
+    settle();
+    const refreshedToken = xhr.getResponseHeader('X-Refreshed-Token');
+    if (refreshedToken) {
+      storeAuthToken(refreshedToken);
+    }
+    if (xhr.status === 401 && xhr.getResponseHeader('X-Auth-Error')) {
+      expireAuthSession();
+    }
+    resolve(new Response(xhr.responseText || null, { status: xhr.status, statusText: xhr.statusText }));
+  };
+  xhr.onerror = () => {
+    settle();
+    reject(new TypeError('Failed to fetch'));
+  };
+  xhr.onabort = () => {
+    settle();
+    reject(new DOMException('Aborted', 'AbortError'));
+  };
+  xhr.send(body as XMLHttpRequestBodyInit | null | undefined);
+});
+
 /** Chat uses one upload identity across retries so a lost response cannot duplicate stored files. */
 export const uploadChatAttachments = (
   body: FormData,

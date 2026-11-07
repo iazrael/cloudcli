@@ -150,6 +150,8 @@ MCP 服务器表单按 `useProviderMcpCapabilities()` 渲染。首屏与请求�
 9. **折叠体首次展开才挂载**：`CollapsibleContent`（thinking、工具输出共用）从未展开过就不渲染内容，展开过一次后保持挂载，用于收起动画；原生 `<details>` 导出形态始终保留内容。贴底打开会话时，视口内的折叠 thinking 不应为了隐藏而解析 markdown。
 10. **Markdown 解析预算**：micromark 解析强调标记的耗时，与单个行内文本块的长度成平方关系。`MarkdownBody` 在最长的行内文本块（不计围栏代码，表格逐行计算）超过 `INLINE_RUN_PARSE_LIMIT`（10,000 字符）时，原样输出纯文本。模型复读出来的 190KB 单行 thinking 曾让页面卡死近一分钟。
 
+11. **高频进度不走 React state**：聊天附件的上传百分比存在上传队列里，缩略图用 `useSyncExternalStore` 单独订阅，只在整数百分比变化时通知。进度变化不能重渲染输入框和 `ChatInterface`。
+
 ## i18n
 
 - 目录 `src/modules/i18n/`：15 种语言目录，命名空间按文件存在（7 种：auth/chat/codeEditor/common/git/settings/sidebar），覆盖面以 `src/modules/i18n/locales/` 现状为准；语言清单在 `languages.ts`。

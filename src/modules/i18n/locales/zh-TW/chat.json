@@ -146,6 +146,13 @@
     "send": "傳送",
     "sending": "傳送中…",
     "stop": "停止",
+    "attachments": {
+      "stillUploading": "附件還在上傳",
+      "needsAttention": "請重試或移除上傳失敗的附件後再傳送",
+      "progress": "{{name}} 的上傳進度",
+      "retry": "重新上傳 {{name}}",
+      "tooLarge": "超過 {{size}}"
+    },
     "hintText": {
       "ctrlEnter": "Ctrl+Enter 傳送 • Shift+Enter 換行 • Tab 切換模式 • / 斜線指令",
       "enter": "Enter 傳送 • Shift+Enter 換行 • Tab 切換模式 • / 斜線指令",

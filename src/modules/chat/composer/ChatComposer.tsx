@@ -17,6 +17,7 @@ import { useVoiceAvailable } from '@/modules/chat/hooks/useVoiceAvailable';
 import type { QueuedDraft } from '@/modules/chat/hooks/useChatComposerState';
 import type { LLMProvider, SessionActivity, ScheduledMessage } from '@/shared/types';
 import type { PendingPermissionRequest, PermissionMode } from '@/shared/types';
+import type { ComposerAttachmentBlock, ComposerAttachmentItem, ComposerAttachmentQueue } from '@/shared/types';
 import type { ProviderModelOption } from '@/shared/types';
 import {
   PromptInput,
@@ -95,8 +96,8 @@ type ChatComposerProps = {
   onSubmit: (event: FormEvent<HTMLFormElement> | MouseEvent<HTMLButtonElement> | TouchEvent<HTMLButtonElement>) => void;
   /**
    * True from the moment a submit is accepted until the backend has the
-   * message — the window where attachments upload and a new conversation's id
-   * is allocated. Shown as a spinning, disabled send button so the click is
+   * message — the window where it is queued or a new conversation's id is
+   * allocated. Shown as a spinning, disabled send button so the click is
    * visibly acknowledged instead of looking ignored.
    */
   isSubmitting: boolean;
@@ -110,10 +111,10 @@ type ChatComposerProps = {
   onScheduleMessage: (scheduledFor: Date) => void;
   onCancelScheduledMessage: (id: string) => void;
   onDeleteQueuedDraft: () => void;
-  attachedFiles: File[];
-  onRemoveAttachment: (index: number) => void;
-  uploadingFiles: Map<string, number>;
-  fileErrors: Map<string, string>;
+  attachments: readonly ComposerAttachmentItem[];
+  attachmentQueue: ComposerAttachmentQueue;
+  /** Why attachments hold the send back; the hook's submit gate enforces it, this only shows it. */
+  attachmentBlock: ComposerAttachmentBlock;
   showFileDropdown: boolean;
   filteredFiles: MentionableFile[];
   selectedFileIndex: number;
@@ -202,10 +203,9 @@ function ChatComposer({
   onScheduleMessage,
   onCancelScheduledMessage,
   onDeleteQueuedDraft,
-  attachedFiles,
-  onRemoveAttachment,
-  uploadingFiles,
-  fileErrors,
+  attachments,
+  attachmentQueue,
+  attachmentBlock,
   showFileDropdown,
   filteredFiles,
   selectedFileIndex,
@@ -307,7 +307,7 @@ function ChatComposer({
 
   const hasQueuedDraft = Boolean(queuedDraft);
   const isBusy = isInputBlocked ?? (isLoading || Boolean(hasActiveBackgroundTasks));
-  const hasDraftContent = Boolean(input.trim() || attachedFiles.length > 0);
+  const hasDraftContent = Boolean(input.trim() || attachments.length > 0);
   // The button is Stop only when stopping can do something. Otherwise it stays
   // the send button: disabled while the input is empty, queueing once typed.
   // A typed message that nothing holds back (Claude's background phase) is
@@ -330,6 +330,10 @@ function ChatComposer({
   const sendButtonLabel = `${t('input.send')} (${sendByCtrlEnter ? 'Ctrl+Enter' : 'Enter'})`;
   const submitAriaLabel = isSubmitting
     ? t('input.sending')
+    : attachmentBlock === 'uploading'
+    ? t('input.attachments.stillUploading')
+    : attachmentBlock === 'failed'
+    ? t('input.attachments.needsAttention')
     : canQueueDraft
     ? hasQueuedDraft
       ? t('input.queue.append', { defaultValue: 'Add to queued message' })
@@ -471,18 +475,12 @@ function ChatComposer({
             </div>
           )}
 
-          {attachedFiles.length > 0 && (
+          {attachments.length > 0 && (
             <PromptInputHeader>
               <div className="rounded-xl bg-muted/40 p-2">
                 <div className="flex flex-wrap gap-2">
-                  {attachedFiles.map((file, index) => (
-                    <ComposerAttachment
-                      key={`${file.name}-${file.lastModified}-${index}`}
-                      file={file}
-                      onRemove={() => onRemoveAttachment(index)}
-                      uploadProgress={uploadingFiles.get(file.name)}
-                      error={fileErrors.get(file.name)}
-                    />
+                  {attachments.map((item) => (
+                    <ComposerAttachment key={item.id} item={item} queue={attachmentQueue} />
                   ))}
                 </div>
               </div>
@@ -606,8 +604,11 @@ function ChatComposer({
                         }
                       : undefined
               }
+              // Attachments win over Stop: a button the user reached for to send
+              // must not turn into one that interrupts the turn. Stop stays in
+              // the activity bar.
               disabled={
-                isSubmitting
+                isSubmitting || attachmentBlock
                   ? true
                   : offersStop
                     ? false
@@ -615,7 +616,7 @@ function ChatComposer({
                       ? false
                       : isTranscribing
                         ? true
-                        : !input.trim() && attachedFiles.length === 0
+                        : !input.trim() && attachments.length === 0
               }
               aria-label={submitAriaLabel}
               title={submitAriaLabel}
