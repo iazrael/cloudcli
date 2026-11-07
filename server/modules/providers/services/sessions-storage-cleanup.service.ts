@@ -12,6 +12,7 @@ import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import { providerRuntimeService } from '@/modules/providers/services/provider-runtime.service.js';
 import { sessionsService } from '@/modules/providers/services/sessions.service.js';
 import type { IProviderSessions } from '@/shared/interfaces.js';
+import type { SessionPurgeResult } from '@/shared/types.js';
 import { AppError, measurePathBytes } from '@/shared/utils.js';
 
 /**
@@ -231,8 +232,10 @@ export function createSessionsStorageCleanupService(deps: SessionsCleanupDepende
       await deps.deleteSession(row.session_id);
       report.sessionsDeleted += 1;
       report.bytesFreed += bytes;
+      return true;
     } catch (error) {
       fail(`delete ${row.session_id}: ${describeError(error)}`);
+      return false;
     }
   };
 
@@ -257,37 +260,44 @@ export function createSessionsStorageCleanupService(deps: SessionsCleanupDepende
     fail: (reason: string) => void,
   ) => {
     const sessions = deps.resolveSessions(provider);
-    let result;
-    // No turn may start between the last eligibility check and the engine's delete.
+    const deletedIds = new Set<string>();
+    // No turn may start between the last eligibility check and the row's
+    // removal. Everything closed here reopens below unless it is really gone.
     rows.forEach((row) => deps.runtime.closeSessionAdmission(row.session_id));
     try {
-      const current = await currentlyPurgeable(rows, report);
-      if (current.length === 0) return true;
-      result = await sessions.purgeSessions!(current.map(nativeIdOf));
-      rows = current;
-    } catch (error) {
-      fail(`${provider} purge: ${describeError(error)}`);
-      return false;
-    } finally {
-      rows.forEach((row) => deps.runtime.openSessionAdmission(row.session_id));
-    }
-    const bytesById = new Map(result.deleted.map(({ sessionId, bytes }) => [sessionId, bytes]));
-    const keptIds = new Set(result.kept.map(({ sessionId }) => sessionId));
-    report.skipped += keptIds.size;
-    for (const { sessionId, code } of result.failed) {
-      fail(`${provider} purge of ${sessionId ?? 'a session'}: ${code}`);
-    }
-    const failedIds = new Set(result.failed.map(({ sessionId }) => sessionId));
-    for (const row of rows) {
-      const id = nativeIdOf(row);
-      if (bytesById.has(id)) {
-        await deleteRow(row, bytesById.get(id)!, report, fail);
-      } else if (!keptIds.has(id) && !failedIds.has(id)) {
-        // An engine that says nothing about a session has not deleted it.
-        fail(`${provider} purge gave no result for ${row.session_id}`);
+      let current: ArchivedSessionRow[];
+      let result: SessionPurgeResult;
+      try {
+        current = await currentlyPurgeable(rows, report);
+        if (current.length === 0) return true;
+        result = await sessions.purgeSessions!(current.map(nativeIdOf));
+      } catch (error) {
+        fail(`${provider} purge: ${describeError(error)}`);
+        return false;
       }
+
+      const bytesById = new Map(result.deleted.map(({ sessionId, bytes }) => [sessionId, bytes]));
+      const keptIds = new Set(result.kept.map(({ sessionId }) => sessionId));
+      report.skipped += keptIds.size;
+      for (const { sessionId, code } of result.failed) {
+        fail(`${provider} purge of ${sessionId ?? 'a session'}: ${code}`);
+      }
+      const failedIds = new Set(result.failed.map(({ sessionId }) => sessionId));
+      for (const row of current) {
+        const id = nativeIdOf(row);
+        if (bytesById.has(id)) {
+          if (await deleteRow(row, bytesById.get(id)!, report, fail)) deletedIds.add(row.session_id);
+        } else if (!keptIds.has(id) && !failedIds.has(id)) {
+          // An engine that says nothing about a session has not deleted it.
+          fail(`${provider} purge gave no result for ${row.session_id}`);
+        }
+      }
+      return true;
+    } finally {
+      rows
+        .filter((row) => !deletedIds.has(row.session_id))
+        .forEach((row) => deps.runtime.openSessionAdmission(row.session_id));
     }
-    return true;
   };
 
   /** Returns false when any engine's data may remain unaccounted for, which stops the upload sweep. */
@@ -463,8 +473,8 @@ export function createSessionsStorageCleanupService(deps: SessionsCleanupDepende
 
         if (settings.purgeConversations) {
           const purgeable = withoutSurvivorDependencies(eligible);
-          report.skipped += eligible.length - purgeable.length;
           const batch = takeBatch(purgeable);
+          report.skipped += eligible.length - batch.length;
           try {
             if (batch.length > 0 && !appConfigDb.get(BACKUP_KEY)) {
               await (options.backupDatabase ?? (() => backupApplicationDatabase(deps.now())))();

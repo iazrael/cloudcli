@@ -145,6 +145,8 @@ export async function sweepUnreferencedUploads({
     throw new Error('Refusing to sweep uploads without reference roots');
   }
   const uploads = await listOldAssets(assetsDir, cutoffMs, UPLOAD_NAME_PATTERN);
+  // Nothing to prove, so the daily pass leaves every engine's storage unread.
+  if (uploads.length === 0) return { files: 0, bytes: 0 };
   const idOf = (name: string) => UPLOAD_NAME_PATTERN.exec(name)![1].toLowerCase();
   const mentioned = new Set<string>();
   const scan = {
@@ -154,6 +156,7 @@ export async function sweepUnreferencedUploads({
     readFileStream,
   };
   for (const rootPath of referenceRoots) {
+    if (mentioned.size === uploads.length) break;
     await collectMentionedUploadIds(rootPath, scan);
   }
 

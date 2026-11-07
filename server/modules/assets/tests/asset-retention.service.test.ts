@@ -189,3 +189,17 @@ test('a dry run of the upload sweep deletes nothing', async () => {
     assert.equal((await readdir(assets)).length, 1);
   });
 });
+
+test('with no old uploads nothing is read', async () => {
+  await withDirs(async (assets, roots) => {
+    await put(assets, `${UUID_A}-recent.png`, false);
+    await writeFile(path.join(roots, 'chat.jsonl'), 'x');
+    const result = await sweepUnreferencedUploads({
+      cutoffMs: CUTOFF_MS,
+      assetsDir: assets,
+      referenceRoots: [roots],
+      readFileStream: () => { throw new Error('should not read'); },
+    });
+    assert.equal(result.files, 0);
+  });
+});

@@ -32,6 +32,7 @@ type Harness = {
   busy: Set<string>;
   admission: string[];
   setPurge: (fn: (ids: string[]) => Promise<SessionPurgeResult>) => void;
+  onDelete: (fn: (id: string) => void) => void;
   /** Runs once after the artifact step, the way a user acts during a long pass. */
   setAfterArtifacts: (fn: () => void) => void;
   setRoots: (provider: string, roots: string[] | undefined) => void;
@@ -59,6 +60,7 @@ async function withHarness(run: (harness: Harness, dir: string) => Promise<void>
     failed: [],
   });
   let afterArtifacts: (() => void) | null = null;
+  let onDelete: ((id: string) => void) | null = null;
   const roots: Record<string, string[] | undefined> = { claude: ['/roots/claude'], zcode: ['/roots/zcode'] };
 
   const sessionsFor = (provider: string): Partial<IProviderSessions> => ({
@@ -88,6 +90,7 @@ async function withHarness(run: (harness: Harness, dir: string) => Promise<void>
         openSessionAdmission: (id) => { admission.push(`open:${id}`); },
       },
       deleteSession: async (id) => {
+        onDelete?.(id);
         if (failDelete.has(id)) throw new Error('delete failed');
         deleted.push(id);
         getConnection().prepare('DELETE FROM sessions WHERE session_id = ?').run(id);
@@ -115,6 +118,7 @@ async function withHarness(run: (harness: Harness, dir: string) => Promise<void>
     admission,
     setPurge: (fn) => { purge = fn; },
     setAfterArtifacts: (fn) => { afterArtifacts = fn; },
+    onDelete: (fn) => { onDelete = fn; },
     setRoots: (provider, value) => { roots[provider] = value; },
     failDelete,
   };
@@ -603,5 +607,70 @@ test('the upload scan also reads the write-ahead log', async () => {
     enablePurge(harness);
     await harness.service.run({ confirmPurge: true });
     assert.ok(harness.uploadSweeps[0].includes(path.join(dir, 'auth.db-wal')));
+  });
+});
+
+test('a session dropped at the last check gets its admission back', async () => {
+  await withHarness(async (harness) => {
+    addSession('restored');
+    addSession('purged');
+    enablePurge(harness);
+    harness.setAfterArtifacts(() => {
+      getConnection().prepare(`UPDATE sessions SET isArchived = 0 WHERE session_id = 'restored'`).run();
+    });
+    await harness.service.run({ confirmPurge: true });
+    const closes = harness.admission.filter((entry) => entry === 'close:restored').length;
+    const opens = harness.admission.filter((entry) => entry === 'open:restored').length;
+    assert.equal(opens, closes);
+  });
+});
+
+test('a deleted session stays closed; a kept or failed one reopens', async () => {
+  await withHarness(async (harness) => {
+    addSession('gone');
+    addSession('kept');
+    addSession('broken');
+    enablePurge(harness);
+    harness.failDelete.add('broken');
+    harness.setPurge(async () => ({
+      deleted: [{ sessionId: 'native-gone', bytes: 1 }, { sessionId: 'native-broken', bytes: 1 }],
+      kept: [{ sessionId: 'native-kept', reason: 'referenced' }],
+      failed: [],
+    }));
+    await harness.service.run({ confirmPurge: true });
+    const lastFor = (id: string) => harness.admission.filter((entry) => entry.endsWith(`:${id}`)).at(-1);
+    assert.equal(lastFor('gone'), 'close:gone');
+    assert.equal(lastFor('kept'), 'open:kept');
+    assert.equal(lastFor('broken'), 'open:broken');
+  });
+});
+
+test('admission stays closed while the row of a purged session is deleted', async () => {
+  await withHarness(async (harness) => {
+    addSession('a');
+    enablePurge(harness);
+    const seen: (string | undefined)[] = [];
+    harness.onDelete((id) => { seen.push(harness.admission.filter((entry) => entry.endsWith(`:${id}`)).at(-1)); });
+    await harness.service.run({ confirmPurge: true });
+    assert.deepEqual(seen, ['close:a']);
+  });
+});
+
+test('every admission closed by a failing purge reopens', async () => {
+  await withHarness(async (harness) => {
+    addSession('a');
+    enablePurge(harness);
+    harness.setPurge(async () => { throw new Error('engine down'); });
+    await harness.service.run({ confirmPurge: true });
+    assert.equal(harness.admission.at(-1), 'open:a');
+  });
+});
+
+test('deferred sessions past the batch cap count as skipped', async () => {
+  await withHarness(async (harness) => {
+    for (let index = 0; index < 205; index += 1) addSession(`s${index}`);
+    enablePurge(harness);
+    const report = await harness.service.run({ confirmPurge: true });
+    assert.equal(report.skipped, 5);
   });
 });
