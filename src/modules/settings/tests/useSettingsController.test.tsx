@@ -4,6 +4,7 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, test, vi } from 'vitest';
 
 import type * as ChatModule from '@/modules/chat';
+import type * as ApiModule from '@/shared/api';
 
 /**
  * The settings dialog is one of two writers of per-provider tool permissions
@@ -20,7 +21,7 @@ vi.setConfig({ testTimeout: 15_000 });
 // 其余导出保留真实实现：chat barrel 会经 usePathExists 等真实模块读取它们，
 // 全量 mock 会在模块初始化时抛缺失导出。
 vi.mock('@/shared/api', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/shared/api')>()),
+  ...(await importOriginal<typeof ApiModule>()),
   authenticatedFetch: vi.fn(async () =>
     new Response(
       JSON.stringify({ success: true, preferences: null }),
