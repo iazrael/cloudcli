@@ -14,8 +14,10 @@ import type {
   ProviderTokenUsageResult,
   SubagentActivity,
   SubagentInfo,
+  SessionPurgeResult,
 } from '@/shared/types.js';
 import {
+  measurePathBytes,
   ProviderDisplayAssetError,
   compactProviderPayload,
   AppError,
@@ -38,6 +40,7 @@ import { resolveAttachmentAssetFile } from '@/modules/assets/index.js';
 
 import { zcodeBackgroundWork } from './zcode-background-work.js';
 import { getZCodeAgentSidecarDir, getZCodeDatabasePath, getZCodeStorageDir } from './zcode-data-root.js';
+import { ZCodeProtocolClient } from './zcode-protocol.client.js';
 import {
   buildZCodeTextRowKey,
   createZCodeCompactionMessage,
@@ -452,6 +455,12 @@ type ZCodeSessionsProviderOptions = {
    */
   isSubagentRunning?: (agentId: string) => boolean;
 };
+
+/** The engine's own session id rule; anything else is refused before it can reach a path. */
+const ZCODE_SESSION_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+
+/** The purge's reference check scans every message part, so it needs far longer than a normal request. */
+const ZCODE_SESSION_DATA_TIMEOUT_MS = 5 * 60 * 1000;
 
 /**
  * Session history provider for ZCode's SQLite-backed session store.
@@ -956,6 +965,52 @@ export class ZCodeSessionsProvider implements IProviderSessions {
   /**
    * Cleans up ZCode native storage (SQLite session row and jsonl file if any).
    */
+  /**
+   * Removes the image cache and shell output of one session. The engine
+   * rebuilds the cache from `artifacts` on demand and only reads shell output
+   * while running. `artifacts` and `agents` are never touched here: resume,
+   * rewind and subagent cards read them.
+   */
+  async cleanupSessionArtifacts(nativeSessionId: string, options: { dryRun?: boolean } = {}): Promise<number> {
+    if (!ZCODE_SESSION_ID_PATTERN.test(nativeSessionId)) {
+      return 0;
+    }
+    const cliRoot = path.join(getZCodeStorageDir(), 'cli');
+    let bytes = 0;
+    for (const target of [
+      path.join(cliRoot, 'image-cache', nativeSessionId),
+      path.join(cliRoot, 'exec', nativeSessionId),
+      path.join(cliRoot, 'exec', 'bash-startup', nativeSessionId),
+    ]) {
+      bytes += await measurePathBytes(target);
+      if (!options.dryRun) {
+        await fsp.rm(target, { recursive: true, force: true });
+      }
+    }
+    return bytes;
+  }
+
+  async measureSessionStorage(nativeSessionIds: string[]): Promise<Map<string, number>> {
+    const result = await ZCodeProtocolClient.getInstance().sendRequest<{
+      sessions: { sessionId: string; bytes: number }[];
+    }>('v4/storage/sessionData/measure', { sessionIds: nativeSessionIds, directories: [] }, ZCODE_SESSION_DATA_TIMEOUT_MS);
+    return new Map(result.sessions.map(({ sessionId, bytes }) => [sessionId, bytes]));
+  }
+
+  /** Delegates to the engine, which owns session trees and cross-session artifact references. */
+  async purgeSessions(nativeSessionIds: string[]): Promise<SessionPurgeResult> {
+    const { deleted, kept, failed } = await ZCodeProtocolClient.getInstance().sendRequest<SessionPurgeResult>(
+      'v4/storage/sessionData/purge',
+      { sessionIds: nativeSessionIds, directories: [] },
+      ZCODE_SESSION_DATA_TIMEOUT_MS,
+    );
+    return { deleted, kept, failed };
+  }
+
+  listStorageRoots(): string[] {
+    return [path.join(getZCodeStorageDir(), 'cli', 'db')];
+  }
+
   async cleanupSession(nativeSessionId: string, jsonlPath?: string | null): Promise<boolean> {
     let removed = false;
     if (jsonlPath) {

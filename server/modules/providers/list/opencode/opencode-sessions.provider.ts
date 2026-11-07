@@ -1201,6 +1201,10 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
   /**
    * Cleans up OpenCode native storage (SQLite session row and jsonl file if any).
    */
+  listStorageRoots(): string[] {
+    return [path.dirname(getOpenCodeDatabasePath())];
+  }
+
   async cleanupSession(nativeSessionId: string, jsonlPath?: string | null): Promise<boolean> {
     let removed = false;
     if (jsonlPath) {

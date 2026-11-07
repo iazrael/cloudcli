@@ -187,6 +187,14 @@ export const sessionDraftsDb = {
     }));
   },
 
+  /** Lists every scope holding a queued turn, claimed or not, for checks that must not miss one. */
+  listScopesWithQueuedMessage(): string[] {
+    const rows = getConnection()
+      .prepare('SELECT DISTINCT draft_scope FROM session_drafts WHERE queued_message IS NOT NULL')
+      .all() as { draft_scope: string }[];
+    return rows.map((row) => row.draft_scope);
+  },
+
   /** Reserves one snapshot for the scheduled dispatcher without losing it on failed startup. */
   claimQueuedMessage(candidate: QueuedSessionMessageRecord): boolean {
     const message = readQueuedChatMessage(candidate.queuedMessage);

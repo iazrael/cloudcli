@@ -518,6 +518,12 @@ export const api = {
       projectPath: string;
       initialMessage?: unknown;
     }) => post('/api/providers/sessions', payload),
+    storageCleanupSettings: () => get('/api/providers/sessions/storage-cleanup/settings'),
+    updateStorageCleanupSettings: (input: unknown) =>
+      put('/api/providers/sessions/storage-cleanup/settings', input),
+    previewStorageCleanup: () => post('/api/providers/sessions/storage-cleanup/preview'),
+    runStorageCleanup: (input: { confirmPurge: boolean }) =>
+      post('/api/providers/sessions/storage-cleanup/run', input),
     sessionMessages: (
       sessionId: string,
       pagination: { limit?: number | null; offset?: number } = {},

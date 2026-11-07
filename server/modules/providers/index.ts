@@ -40,6 +40,10 @@ export {
   type SessionsAutoArchiveSettings,
 } from './services/sessions-auto-archive.service.js';
 
+// sessionsStorageCleanupService: used by the server bootstrap to run the
+// scheduler and by Provider routes for settings, preview and manual runs.
+export { sessionsStorageCleanupService } from './services/sessions-storage-cleanup.service.js';
+
 
 // shutdownZCodeRuntime: used by the server entrypoint (server/index.ts) to stop
 // the shared ZCode app-server subprocess during the shutdown flow.

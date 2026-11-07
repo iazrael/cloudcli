@@ -1940,6 +1940,10 @@ export class CodexSessionsProvider implements IProviderSessions {
   /**
    * Cleans up Codex native storage (JSONL file).
    */
+  listStorageRoots(): string[] {
+    return ['sessions', 'archived_sessions'].map((directory) => path.join(getCodexHome(), directory));
+  }
+
   async cleanupSession(_nativeSessionId: string, jsonlPath?: string | null): Promise<boolean> {
     let removed = false;
     if (jsonlPath) {

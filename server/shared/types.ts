@@ -1843,3 +1843,16 @@ export type ImageMediaDependencies = {
   resolveImage: (source: ImageMediaSource) => Promise<ImageMediaFile>;
   openImage: (file: ImageMediaFile) => Promise<Readable>;
 };
+
+// ---------------------------
+//----------------- SESSION STORAGE CLEANUP ------------
+/**
+ * Outcome of one engine-owned batch purge, by native session id. `deleted` is
+ * the only group whose application rows may be removed: `kept` sessions stay
+ * for a later pass and `failed` ones stay untouched.
+ */
+export type SessionPurgeResult = {
+  deleted: { sessionId: string; bytes: number }[];
+  kept: { sessionId: string; reason: 'running' | 'referenced' }[];
+  failed: { sessionId?: string; code: string }[];
+};

@@ -10,6 +10,10 @@ import { providerSkillsService } from '@/modules/providers/services/skills.servi
 import { sessionConversationsSearchService } from '@/modules/providers/services/session-conversations-search.service.js';
 import { codexSessionTitleService } from '@/modules/providers/services/codex-session-title.service.js';
 import { sessionsAutoArchiveService } from '@/modules/providers/services/sessions-auto-archive.service.js';
+import {
+  sessionsStorageCleanupService,
+  STORAGE_CLEANUP_RETENTION_OPTIONS,
+} from '@/modules/providers/services/sessions-storage-cleanup.service.js';
 import { sessionsService } from '@/modules/providers/services/sessions.service.js';
 import type {
   CustomProviderModelEffort,
@@ -987,6 +991,52 @@ router.post(
   }),
 );
 
+
+router.get(
+  '/sessions/storage-cleanup/settings',
+  asyncHandler(async (_req: Request, res: Response) => {
+    res.json(createApiSuccessResponse({
+      settings: sessionsStorageCleanupService.getSettings(),
+      lastReport: sessionsStorageCleanupService.getLastReport(),
+    }));
+  }),
+);
+
+router.put(
+  '/sessions/storage-cleanup/settings',
+  asyncHandler(async (req: Request, res: Response) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    if (body.retentionDays !== undefined && !STORAGE_CLEANUP_RETENTION_OPTIONS.includes(body.retentionDays as number)) {
+      throw new AppError(`retentionDays must be one of ${STORAGE_CLEANUP_RETENTION_OPTIONS.join(', ')}.`, {
+        code: 'INVALID_RETENTION_DAYS',
+        statusCode: 400,
+      });
+    }
+    res.json(createApiSuccessResponse(sessionsStorageCleanupService.updateSettings({
+      ...(typeof body.enabled === 'boolean' ? { enabled: body.enabled } : {}),
+      ...(body.retentionDays !== undefined ? { retentionDays: body.retentionDays as number } : {}),
+      ...(typeof body.purgeConversations === 'boolean' ? { purgeConversations: body.purgeConversations } : {}),
+      confirmPurge: body.confirmPurge === true,
+    })));
+  }),
+);
+
+router.post(
+  '/sessions/storage-cleanup/preview',
+  asyncHandler(async (_req: Request, res: Response) => {
+    res.json(createApiSuccessResponse(await sessionsStorageCleanupService.preview()));
+  }),
+);
+
+router.post(
+  '/sessions/storage-cleanup/run',
+  asyncHandler(async (req: Request, res: Response) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    res.json(createApiSuccessResponse(await sessionsStorageCleanupService.run({
+      confirmPurge: body.confirmPurge === true,
+    })));
+  }),
+);
 
 router.get(
   '/sessions/:sessionId/provider-id',

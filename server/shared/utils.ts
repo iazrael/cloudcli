@@ -1890,6 +1890,29 @@ export function sanitizeLeafDirectoryName(inputName: string, label = 'directory 
  * remove transcript files, subagents, and provider project folders safely.
  * Returns true if deletion succeeded, false if path was missing or failed.
  */
+/**
+ * Sums the bytes under one file or directory. Missing paths count as zero and
+ * symlinks are not followed, so a link can never pull outside data into a
+ * measurement that decides what gets deleted. Used by the session storage
+ * cleanup and by provider session measurements.
+ */
+export async function measurePathBytes(targetPath: string): Promise<number> {
+  let stats: Awaited<ReturnType<typeof lstat>>;
+  try {
+    stats = await lstat(targetPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 0;
+    throw error;
+  }
+  if (stats.isSymbolicLink()) return 0;
+  if (!stats.isDirectory()) return stats.size;
+  let total = 0;
+  for (const entry of await readdir(targetPath)) {
+    total += await measurePathBytes(path.join(targetPath, entry));
+  }
+  return total;
+}
+
 export async function removePathIfExists(targetPath: string): Promise<boolean> {
   try {
     await rm(targetPath, { recursive: true, force: true });

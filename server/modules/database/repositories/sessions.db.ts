@@ -105,6 +105,14 @@ function normalizeProjectPathForProvider(provider: string, projectPath: string):
   return normalizeProjectPath(projectPath);
 }
 
+/** The fields a storage cleanup needs from one archived session. */
+export type ArchivedSessionRow = {
+  session_id: string;
+  provider: string;
+  provider_session_id: string | null;
+  jsonl_path: string | null;
+};
+
 export const sessionsDb = {
   /**
    * Upserts one session row discovered on disk by a provider synchronizer.
@@ -860,6 +868,49 @@ export const sessionsDb = {
       )
       .all(cutoffIsoString) as { session_id: string }[];
     return rows.map((row) => row.session_id);
+  },
+
+  /**
+   * Lists archived, unpinned sessions whose last activity is before the cutoff.
+   *
+   * Unlike the archive query, a missing or unparseable timestamp never
+   * qualifies: nothing destructive runs on a date that cannot be read.
+   * Used by Providers module (sessionsStorageCleanupService).
+   */
+  listArchivedSessionsOlderThanCutoff(cutoffIsoString: string): ArchivedSessionRow[] {
+    return getConnection()
+      .prepare(
+        `SELECT session_id, provider, provider_session_id, jsonl_path FROM sessions
+         WHERE isArchived = 1
+           AND COALESCE(isPinned, 0) = 0
+           AND datetime(updated_at) IS NOT NULL
+           AND datetime(updated_at) < datetime(?)
+         ORDER BY datetime(updated_at) ASC`,
+      )
+      .all(cutoffIsoString) as ArchivedSessionRow[];
+  },
+
+  /**
+   * Lists every session's engine identity, so a cleanup can see two rows that
+   * share one engine session. Used by Providers module (sessionsStorageCleanupService).
+   */
+  listNativeSessionRefs(): { session_id: string; provider: string; provider_session_id: string | null }[] {
+    return getConnection()
+      .prepare('SELECT session_id, provider, provider_session_id FROM sessions')
+      .all() as { session_id: string; provider: string; provider_session_id: string | null }[];
+  },
+
+  /**
+   * Lists every fork link, so a cleanup can keep a parent whose fork survives.
+   * Used by Providers module (sessionsStorageCleanupService).
+   */
+  listForkLinks(): { session_id: string; forked_from_session_id: string }[] {
+    return getConnection()
+      .prepare(
+        `SELECT session_id, forked_from_session_id FROM sessions
+         WHERE forked_from_session_id IS NOT NULL`,
+      )
+      .all() as { session_id: string; forked_from_session_id: string }[];
   },
 
   /**

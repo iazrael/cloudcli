@@ -22,6 +22,7 @@ import type {
   ProviderSessionUsageInput,
   ProviderSessionWatchTarget,
   ProviderSkill,
+  SessionPurgeResult,
   ProviderSkillCreateInput,
   ProviderSkillListOptions,
   ProviderSkillRemoveInput,
@@ -305,6 +306,26 @@ export interface IProviderSessions {
   fetchHistory(sessionId: string, options?: FetchHistoryOptions): Promise<FetchHistoryResult>;
   cleanupSession?(nativeSessionId: string, jsonlPath?: string | null): Promise<boolean>;
   cleanupProjectStorage?(projectPath: string): Promise<void>;
+  /**
+   * Removes data the engine can rebuild or no longer needs, and returns the
+   * bytes freed. History and resume must keep working afterwards, so this may
+   * only touch data proven to be derived. `dryRun` measures without deleting.
+   */
+  cleanupSessionArtifacts?(nativeSessionId: string, options?: { dryRun?: boolean }): Promise<number>;
+  /** Bytes each session's permanent deletion would free, keyed by native id. */
+  measureSessionStorage?(nativeSessionIds: string[]): Promise<Map<string, number>>;
+  /**
+   * Permanently deletes sessions through the engine when it owns the rules:
+   * session trees, cross-session references, running sessions. Only ids in
+   * `deleted` may lose their application row.
+   */
+  purgeSessions?(nativeSessionIds: string[]): Promise<SessionPurgeResult>;
+  /**
+   * Paths holding every reference this engine keeps to chat attachments. A
+   * storage cleanup deletes an upload only when no provider's paths mention it,
+   * so a provider omitting this stops the upload sweep.
+   */
+  listStorageRoots?(): string[];
 
   /**
    * Reads the latest token-usage snapshot for one provider-native session.

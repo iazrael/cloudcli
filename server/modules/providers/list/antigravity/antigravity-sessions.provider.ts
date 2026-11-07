@@ -39,6 +39,7 @@ import {
   readObjectRecord,
   readOptionalString,
   readUsageNumber,
+  measurePathBytes,
   removePathIfExists,
   sanitizeLeafDirectoryName,
   SUBAGENT_TOOL_NAME,
@@ -795,6 +796,26 @@ export class AntigravitySessionsProvider implements IProviderSessions {
   /**
    * Cleans up Antigravity native storage (summary DB row, brain directory, and conversations directory).
    */
+  listStorageRoots(): string[] {
+    return [...getAntigravityBrainRoots(), path.join(getAntigravityDataRoot(), 'conversations')];
+  }
+
+  async measureSessionStorage(nativeSessionIds: string[]): Promise<Map<string, number>> {
+    const dataRoot = getAntigravityDataRoot();
+    const sizes = new Map<string, number>();
+    for (const nativeSessionId of nativeSessionIds) {
+      const safeId = sanitizeLeafDirectoryName(nativeSessionId, 'antigravity session id');
+      const paths = [
+        ...getAntigravityBrainRoots().map((brainRoot) => path.join(brainRoot, safeId)),
+        path.join(dataRoot, 'conversations', `${safeId}.db`),
+        path.join(dataRoot, 'conversations', safeId),
+      ];
+      const bytes = await Promise.all(paths.map(measurePathBytes));
+      sizes.set(nativeSessionId, bytes.reduce((total, value) => total + value, 0));
+    }
+    return sizes;
+  }
+
   async cleanupSession(nativeSessionId: string, jsonlPath?: string | null): Promise<boolean> {
     let removed = false;
 

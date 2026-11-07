@@ -636,6 +636,10 @@ export class CursorSessionsProvider implements IProviderSessions {
   /**
    * Cleans up Cursor native storage (JSONL file and subagent directory).
    */
+  listStorageRoots(): string[] {
+    return ['chats', 'projects'].map((directory) => path.join(os.homedir(), '.cursor', directory));
+  }
+
   async cleanupSession(nativeSessionId: string, jsonlPath?: string | null): Promise<boolean> {
     let removed = false;
     if (jsonlPath) {

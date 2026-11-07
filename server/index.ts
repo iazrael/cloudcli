@@ -16,6 +16,7 @@ import {
     initializeSessionsWatcher,
     providerRuntimeService,
     sessionsAutoArchiveService,
+    sessionsStorageCleanupService,
     setSessionWorktreeHomeResolver,
     closeClaudeResidentSessions,
     closeCodexResidentSessions,
@@ -475,6 +476,9 @@ async function startServer() {
             // Start periodic auto-archive scheduler for historical sessions
             sessionsAutoArchiveService.startScheduler();
 
+            // Off by default; frees storage from long-idle archived sessions.
+            sessionsStorageCleanupService.startScheduler();
+
             // Start server-side plugin processes for enabled plugins
             startEnabledPluginServers().catch(err => {
                 console.error('[Plugins] Error during startup:', err.message);
@@ -498,6 +502,7 @@ async function startServer() {
         const shutdownRuntimeServices = async () => {
             activeContinuationWorker?.stop();
             sessionsAutoArchiveService.stopScheduler();
+            sessionsStorageCleanupService.stopScheduler();
             try {
                 await closeSessionsWatcher();
             } catch (err) {
