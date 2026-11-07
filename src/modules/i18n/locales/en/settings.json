@@ -175,6 +175,7 @@
       "runTitle": "Clean up now",
       "runDescription": "Runs one pass with the settings above.",
       "runButton": "Clean Up Now",
+      "runningHint": "Cleaning up in the background. This can take a few minutes; closing this page will not stop it.",
       "lastRun": "Last run {{time}}: freed {{size}}, cleaned {{cleaned}}, deleted {{deleted}}, skipped {{skipped}}, failed {{failed}}."
     },
     "manualSection": {

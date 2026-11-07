@@ -674,3 +674,37 @@ test('deferred sessions past the batch cap count as skipped', async () => {
     assert.equal(report.skipped, 5);
   });
 });
+
+test('start checks consent and overlap before returning, then runs in the background', async () => {
+  await withHarness(async (harness) => {
+    addSession('a');
+    enablePurge(harness);
+    assert.throws(() => harness.service.start(), (error: unknown) => (
+      error instanceof AppError && error.code === 'STORAGE_CLEANUP_CONFIRMATION_REQUIRED'
+    ));
+    assert.equal(harness.service.getStatus().running, false);
+
+    const pass = harness.service.start({ confirmPurge: true });
+    assert.equal(harness.service.getStatus().running, true);
+    assert.throws(() => harness.service.start({ confirmPurge: true }), (error: unknown) => (
+      error instanceof AppError && error.code === 'STORAGE_CLEANUP_RUNNING'
+    ));
+    await pass;
+    assert.deepEqual(harness.service.getStatus(), { running: false, error: null });
+    assert.deepEqual(harness.deleted, ['a']);
+    assert.equal(harness.service.getLastReport()?.sessionsDeleted, 1);
+  });
+});
+
+test('a background pass that breaks reports why until the next pass starts', async () => {
+  await withHarness(async (harness) => {
+    addSession('a');
+    harness.setAfterArtifacts(() => { throw new Error('disk gone'); });
+    await harness.service.start();
+    assert.deepEqual(harness.service.getStatus(), { running: false, error: 'disk gone' });
+
+    harness.setAfterArtifacts(() => undefined);
+    await harness.service.start();
+    assert.deepEqual(harness.service.getStatus(), { running: false, error: null });
+  });
+});

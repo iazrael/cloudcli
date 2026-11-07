@@ -290,7 +290,7 @@ opencode 的自动命名由引擎自己做，CloudCLI 只负责不挡路。引�
 
 ## 会话存储清理
 
-`sessions-storage-cleanup.service.ts` 定期清理已归档、未置顶、长期不活动的会话，默认关闭。有运行中任务、排队消息或定时消息的会话不进候选，`updated_at` 无法解析的也不进。引擎通过 `sessions` 切面的四个可选方法接入：
+`sessions-storage-cleanup.service.ts` 定期清理已归档、未置顶、长期不活动的会话，默认关闭。有运行中任务、排队消息或定时消息的会话不进候选，`updated_at` 无法解析的也不进。手动清理在后台执行：`POST .../run` 校验后立即返回 202，界面轮询 `GET .../settings` 的 `running` 直到结束，避免长任务撞上反向代理超时。引擎通过 `sessions` 切面的四个可选方法接入：
 
 - `cleanupSessionArtifacts`：删除能重建的数据。历史和继续对话必须不受影响。目前只有 ZCode 实现，范围是 `image-cache` 和 `exec`。ZCode 的 `artifacts` 不能动：引擎恢复历史时要读，rewind 快照和附件也存在同样的文件名下。
 - `purgeSessions`：由引擎负责永久删除，只有回报 `deleted` 的会话才删除应用行。ZCode 用 `v4/storage/sessionData/purge`，它处理子会话树，跳过运行中和被其他会话引用产物的会话。它的引用检查会同步扫描 `part` 表，所以一轮只调用一次，一批最多 200 个。没有实现的引擎走现有的强制删除路径。

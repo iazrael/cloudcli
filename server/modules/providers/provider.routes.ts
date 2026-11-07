@@ -998,6 +998,7 @@ router.get(
     res.json(createApiSuccessResponse({
       settings: sessionsStorageCleanupService.getSettings(),
       lastReport: sessionsStorageCleanupService.getLastReport(),
+      ...sessionsStorageCleanupService.getStatus(),
     }));
   }),
 );
@@ -1032,9 +1033,9 @@ router.post(
   '/sessions/storage-cleanup/run',
   asyncHandler(async (req: Request, res: Response) => {
     const body = (req.body ?? {}) as Record<string, unknown>;
-    res.json(createApiSuccessResponse(await sessionsStorageCleanupService.run({
-      confirmPurge: body.confirmPurge === true,
-    })));
+    // The pass runs on; the settings tab polls GET .../settings for the result.
+    void sessionsStorageCleanupService.start({ confirmPurge: body.confirmPurge === true });
+    res.status(202).json(createApiSuccessResponse({ running: true }));
   }),
 );
 

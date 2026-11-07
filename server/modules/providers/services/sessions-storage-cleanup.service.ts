@@ -165,8 +165,26 @@ function takeBatch(rows: ArchivedSessionRow[]): ArchivedSessionRow[] {
  */
 export function createSessionsStorageCleanupService(deps: SessionsCleanupDependencies) {
   let isRunning = false;
+  // Why the last pass broke off; kept in memory for the settings tab's polling.
+  let lastRunError: string | null = null;
   let schedulerTimer: ReturnType<typeof setInterval> | null = null;
   let startupTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** Refuses a pass synchronously, so `start` can answer before anything runs. */
+  const assertCanRun = (settings: SessionsStorageCleanupSettings, options: RunOptions) => {
+    if (settings.purgeConversations && !options.confirmPurge) {
+      throw new AppError('Deleting conversations must be confirmed.', {
+        code: 'STORAGE_CLEANUP_CONFIRMATION_REQUIRED',
+        statusCode: 400,
+      });
+    }
+    if (isRunning) {
+      throw new AppError('A storage cleanup is already running.', {
+        code: 'STORAGE_CLEANUP_RUNNING',
+        statusCode: 409,
+      });
+    }
+  };
 
   const cutoffFor = (retentionDays: number) => new Date(deps.now().getTime() - retentionDays * DAY_MS);
 
@@ -428,20 +446,11 @@ export function createSessionsStorageCleanupService(deps: SessionsCleanupDepende
 
     async run(options: RunOptions = {}): Promise<SessionsStorageCleanupReport> {
       const settings = service.getSettings();
-      if (settings.purgeConversations && !options.confirmPurge) {
-        throw new AppError('Deleting conversations must be confirmed.', {
-          code: 'STORAGE_CLEANUP_CONFIRMATION_REQUIRED',
-          statusCode: 400,
-        });
-      }
-      if (isRunning) {
-        throw new AppError('A storage cleanup is already running.', {
-          code: 'STORAGE_CLEANUP_RUNNING',
-          statusCode: 409,
-        });
-      }
+      assertCanRun(settings, options);
 
+      // Claimed before the first await, so a `start` right after sees it.
       isRunning = true;
+      lastRunError = null;
       const report: SessionsStorageCleanupReport = {
         ranAt: deps.now().toISOString(),
         retentionDays: settings.retentionDays,
@@ -494,9 +503,31 @@ export function createSessionsStorageCleanupService(deps: SessionsCleanupDepende
           + `skipped ${report.skipped}, failed ${report.failed}`,
         );
         return report;
+      } catch (error) {
+        lastRunError = describeError(error);
+        throw error;
       } finally {
         isRunning = false;
       }
+    },
+
+    /**
+     * Starts a manual pass without waiting for it: a pass can outlast a
+     * reverse proxy's timeout. Refusals throw before anything runs; the returned
+     * promise settles when the pass ends and never rejects.
+     */
+    start(options: RunOptions = {}): Promise<void> {
+      assertCanRun(service.getSettings(), options);
+      return service.run(options).then(
+        () => undefined,
+        (error: unknown) => {
+          console.error('[SessionsStorageCleanup] Manual run failed:', error);
+        },
+      );
+    },
+
+    getStatus(): { running: boolean; error: string | null } {
+      return { running: isRunning, error: lastRunError };
     },
 
     /** Runs a pass when enabled and a full day has passed, so restarts do not repeat it. */

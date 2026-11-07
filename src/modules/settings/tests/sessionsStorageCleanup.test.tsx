@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import SessionsStorageCleanup from '@/modules/settings/tabs/sessions-settings/SessionsStorageCleanup';
@@ -28,8 +28,14 @@ const ok = (data: unknown) => new Response(JSON.stringify({ success: true, data 
 const settings = (overrides = {}) => ({ enabled: false, retentionDays: 30, purgeConversations: false, ...overrides });
 const preview = { cutoff: '', sessions: 12, skipped: 1, artifactBytes: 5 * 1024 * 1024, purgeableSessions: 9, purgeBytes: 2 * 1024 * 1024 * 1024, partial: false };
 
+const report = (overrides = {}) => ({ ranAt: '2026-11-07T00:00:00.000Z', bytesFreed: 1024, sessionsCleaned: 2, sessionsDeleted: 0, skipped: 0, failed: 0, ...overrides });
+const state = (current = settings(), lastReport: unknown = null, status = {}) => ok({ settings: current, lastReport, running: false, error: null, ...status });
+
+/** Lets the settings tab's next status poll fire and settle. */
+const nextPoll = () => act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+
 const open = async (current = settings(), lastReport: unknown = null) => {
-  providers.storageCleanupSettings.mockResolvedValue(ok({ settings: current, lastReport }));
+  providers.storageCleanupSettings.mockImplementation(async () => state(current, lastReport));
   render(<SessionsStorageCleanup />);
   await screen.findByRole('switch', { name: 'sessions.storageCleanup.enableLabel' });
 };
@@ -40,7 +46,10 @@ describe('SessionsStorageCleanup', () => {
     providers.previewStorageCleanup.mockImplementation(async () => ok(preview));
     providers.updateStorageCleanupSettings.mockImplementation(async (input: object) => ok(settings(input)));
   });
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
 
   it('shows the defaults with the purge option unchecked', async () => {
     await open();
@@ -129,22 +138,48 @@ describe('SessionsStorageCleanup', () => {
       .toHaveBeenCalledWith({ purgeConversations: false }));
   });
 
-  it('runs right away in the default mode', async () => {
-    providers.runStorageCleanup.mockImplementation(async () => ok({ ranAt: '2026-11-07T00:00:00.000Z', bytesFreed: 1024, sessionsCleaned: 2, sessionsDeleted: 0, skipped: 0, failed: 0 }));
+  it('runs right away in the default mode and polls until the pass ends', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    providers.runStorageCleanup.mockImplementation(async () => ok({ running: true }));
     await open();
+    providers.storageCleanupSettings.mockImplementation(async () => state(settings(), null, { running: true }));
     fireEvent.click(screen.getByRole('button', { name: 'sessions.storageCleanup.runButton' }));
     await waitFor(() => expect(providers.runStorageCleanup).toHaveBeenCalledWith({ confirmPurge: false }));
-    expect(await screen.findByText(/lastRun.*"cleaned":2/)).toBeTruthy();
+
+    await nextPoll();
+    expect(screen.getByRole('button', { name: 'sessions.storageCleanup.runButton' })).toHaveProperty('disabled', true);
+    expect(screen.queryByText(/lastRun/)).toBeNull();
+    expect(screen.getByText('sessions.storageCleanup.runningHint')).toBeTruthy();
+
+    providers.storageCleanupSettings.mockImplementation(async () => state(settings(), report()));
+    await nextPoll();
+    expect(screen.getByText(/lastRun.*"cleaned":2/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'sessions.storageCleanup.runButton' })).toHaveProperty('disabled', false);
+    expect(providers.previewStorageCleanup).toHaveBeenCalled();
+  });
+
+  it('keeps following a pass that was already running when the tab opened', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    providers.storageCleanupSettings.mockImplementation(async () => state(settings(), null, { running: true }));
+    render(<SessionsStorageCleanup />);
+    await screen.findByRole('switch');
+    expect(screen.getByRole('button', { name: 'sessions.storageCleanup.runButton' })).toHaveProperty('disabled', true);
+
+    providers.storageCleanupSettings.mockImplementation(async () => state(settings(), report(), { error: 'disk gone' }));
+    await nextPoll();
+    expect(screen.getByText('disk gone')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'sessions.storageCleanup.runButton' })).toHaveProperty('disabled', false);
   });
 
   it('asks before a run that deletes conversations', async () => {
-    providers.runStorageCleanup.mockImplementation(async () => ok({ ranAt: '2026-11-07T00:00:00.000Z', bytesFreed: 0, sessionsCleaned: 0, sessionsDeleted: 9, skipped: 0, failed: 0 }));
+    providers.runStorageCleanup.mockImplementation(async () => ok({ running: true }));
     await open(settings({ purgeConversations: true }));
     await screen.findByText(/previewPurge/);
     fireEvent.click(screen.getByRole('button', { name: 'sessions.storageCleanup.runButton' }));
     expect(providers.runStorageCleanup).not.toHaveBeenCalled();
-    expect(screen.getByText(/runConfirmBody.*"count":9/)).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'sessions.storageCleanup.purgeConfirmButton' }));
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText(/runConfirmBody.*"count":9/)).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'sessions.storageCleanup.purgeConfirmButton' }));
     await waitFor(() => expect(providers.runStorageCleanup).toHaveBeenCalledWith({ confirmPurge: true }));
   });
 

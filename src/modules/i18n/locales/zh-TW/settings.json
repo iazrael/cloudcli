@@ -575,6 +575,7 @@
       "runTitle": "立即清理",
       "runDescription": "按上面的設定執行一次。",
       "runButton": "立即清理",
+      "runningHint": "正在背景清理，可能需要幾分鐘。關掉這個頁面不影響。",
       "lastRun": "上次執行 {{time}}：釋放 {{size}}，清理 {{cleaned}}，刪除 {{deleted}}，略過 {{skipped}}，失敗 {{failed}}。"
     },
     "manualSection": {

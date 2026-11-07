@@ -175,6 +175,7 @@
       "runTitle": "立即清理",
       "runDescription": "按上面的设置执行一次。",
       "runButton": "立即清理",
+      "runningHint": "正在后台清理，可能需要几分钟。关掉这个页面不影响。",
       "lastRun": "上次运行 {{time}}：释放 {{size}}，清理 {{cleaned}}，删除 {{deleted}}，跳过 {{skipped}}，失败 {{failed}}。"
     },
     "manualSection": {
