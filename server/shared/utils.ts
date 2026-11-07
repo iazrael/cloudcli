@@ -1884,13 +1884,6 @@ export function sanitizeLeafDirectoryName(inputName: string, label = 'directory 
 // ---------------------------
 //----------------- SESSION SYNCHRONIZER FILESYSTEM HELPERS ------------
 /**
- * Removes one file or directory recursively if it exists.
- *
- * Used by provider session implementations and session cleanup services to
- * remove transcript files, subagents, and provider project folders safely.
- * Returns true if deletion succeeded, false if path was missing or failed.
- */
-/**
  * Sums the bytes under one file or directory. Missing paths count as zero and
  * symlinks are not followed, so a link can never pull outside data into a
  * measurement that decides what gets deleted. Used by the session storage

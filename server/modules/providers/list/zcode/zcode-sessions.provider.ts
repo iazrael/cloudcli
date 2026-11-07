@@ -963,9 +963,6 @@ export class ZCodeSessionsProvider implements IProviderSessions {
   }
 
   /**
-   * Cleans up ZCode native storage (SQLite session row and jsonl file if any).
-   */
-  /**
    * Removes the image cache and shell output of one session. The engine
    * rebuilds the cache from `artifacts` on demand and only reads shell output
    * while running. `artifacts` and `agents` are never touched here: resume,
@@ -1011,6 +1008,9 @@ export class ZCodeSessionsProvider implements IProviderSessions {
     return [path.join(getZCodeStorageDir(), 'cli', 'db')];
   }
 
+  /**
+   * Cleans up ZCode native storage (SQLite session row and jsonl file if any).
+   */
   async cleanupSession(nativeSessionId: string, jsonlPath?: string | null): Promise<boolean> {
     let removed = false;
     if (jsonlPath) {
