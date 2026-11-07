@@ -397,6 +397,13 @@ export function isManualKeyAllowed(key: string): boolean {
   return MANUAL_KEY_ALLOWLIST.has(key);
 }
 
+/** True for a supported manual viewport size (panel layout switch range); used by manual-control HTTP routes and unit tests. */
+export function isManualViewportSize(size: { width: number; height: number }): boolean {
+  return Number.isInteger(size.width) && Number.isInteger(size.height)
+    && size.width >= 320 && size.width <= 1920
+    && size.height >= 240 && size.height <= 1440;
+}
+
 /** True when a manual click point lands inside the session viewport; used by manual service methods and unit tests. */
 export function isManualPointWithinViewport(
   point: { x: number; y: number },
@@ -1030,6 +1037,20 @@ export const browserUseService = {
   /** Fresh screenshot for the manual-control polling loop; also refreshes url/title/viewport metadata. */
   async getManualScreen(sessionId: string) {
     const { session, page } = await getReadyManualPage(sessionId);
+    await captureSession(session, page);
+    return publicSession(session);
+  },
+
+  /** Resizes a manual session live for the panel's mobile/desktop layout switch. */
+  async manualViewport(sessionId: string, viewport: { width: number; height: number }) {
+    const { session, page } = await getReadyManualPage(sessionId);
+    if (!isManualViewportSize(viewport)) {
+      throw new Error('Viewport size is out of the supported range.');
+    }
+
+    await page.setViewportSize({ ...viewport });
+    session.lastAction = `viewport:${viewport.width}x${viewport.height}`;
+    session.cursor = null;
     await captureSession(session, page);
     return publicSession(session);
   },

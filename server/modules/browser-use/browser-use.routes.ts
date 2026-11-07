@@ -6,6 +6,7 @@ import {
   MANUAL_TYPE_MAX_LENGTH,
   browserUseService,
   isManualKeyAllowed,
+  isManualViewportSize,
   normalizeManualUrl,
 } from '@/modules/browser-use/browser-use.service.js';
 
@@ -297,6 +298,28 @@ export function createBrowserUseRouter(service: BrowserUseRouterService): expres
       }
 
       const session = await service.manualPressKey(readParam(req.params.sessionId), key);
+      res.json({ success: true, data: { session } });
+    } catch (error) {
+      sendError(
+        res,
+        400,
+        BROWSER_USE_ERROR_CODES.SESSION_CONTROL_FAILED,
+        'Failed to control the browser session.',
+        errorDetails(error),
+      );
+    }
+  });
+
+  router.post('/sessions/:sessionId/viewport', async (req, res) => {
+    try {
+      const body = readBody(req.body);
+      const width = readNumber(body.width);
+      const height = readNumber(body.height);
+      if (width === null || height === null || !isManualViewportSize({ width, height })) {
+        throw new Error('Viewport size must be integers within 320-1920 x 240-1440.');
+      }
+
+      const session = await service.manualViewport(readParam(req.params.sessionId), { width, height });
       res.json({ success: true, data: { session } });
     } catch (error) {
       sendError(

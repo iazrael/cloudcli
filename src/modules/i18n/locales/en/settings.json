@@ -941,6 +941,8 @@
     "back": "Back",
     "forward": "Forward",
     "reload": "Reload",
+    "layoutMobile": "Mobile layout",
+    "layoutDesktop": "Desktop layout",
     "textPlaceholder": "Type text to send to the page",
     "send": "Send text",
     "enterLabel": "Press Enter",

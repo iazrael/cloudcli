@@ -646,6 +646,8 @@ export const api = {
       post(`/api/browser-use/sessions/${sessionId}/type`, { text }),
     pressKey: (sessionId: string, key: string) =>
       post(`/api/browser-use/sessions/${sessionId}/key`, { key }),
+    setViewport: (sessionId: string, width: number, height: number) =>
+      post(`/api/browser-use/sessions/${sessionId}/viewport`, { width, height }),
     stopSession: (sessionId: string) => post(`/api/browser-use/sessions/${sessionId}/stop`),
     deleteSession: (sessionId: string) => del(`/api/browser-use/sessions/${sessionId}`),
     installRuntime: () => post('/api/browser-use/runtime/install'),

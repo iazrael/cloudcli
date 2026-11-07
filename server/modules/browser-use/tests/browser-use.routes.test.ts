@@ -42,6 +42,7 @@ function fakeService(overrides: Record<string, (input: unknown) => unknown> = {}
       manualScroll: record('manualScroll', manualSession),
       manualType: record('manualType', manualSession),
       manualPressKey: record('manualPressKey', manualSession),
+      manualViewport: record('manualViewport', { ...manualSession, viewport: { width: 390, height: 844 } }),
     } as unknown as BrowserUseRouterService,
   };
 }
@@ -264,6 +265,44 @@ test('POST key only forwards allowlisted keys', async () => {
       assert.equal(invalid.status, 400, key);
     }
     assert.equal(fake.calls.manualPressKey?.length, 4);
+  });
+});
+
+test('POST viewport switches the manual session layout', async () => {
+  const fake = fakeService();
+  await withServer(fake.service, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/browser-use/sessions/session-1/viewport`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ width: 390, height: 844 }),
+    });
+    assert.equal(response.status, 200);
+    const body = await json(response);
+    assert.deepEqual(body.data.session.viewport, { width: 390, height: 844 });
+    assert.deepEqual(fake.calls.manualViewport?.[0].args[1], { width: 390, height: 844 });
+  });
+});
+
+test('POST viewport rejects non-integer and out-of-range sizes', async () => {
+  const fake = fakeService();
+  await withServer(fake.service, async (baseUrl) => {
+    for (const size of [
+      { width: 200, height: 400 },
+      { width: 3000, height: 400 },
+      { width: 390.5, height: 844 },
+      { width: '390', height: 844 },
+      { width: null, height: 844 },
+    ]) {
+      const response = await fetch(`${baseUrl}/api/browser-use/sessions/session-1/viewport`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(size),
+      });
+      assert.equal(response.status, 400, JSON.stringify(size));
+      const body = await json(response);
+      assert.equal(body.error.code, 'BROWSER_USE_SESSION_CONTROL_FAILED');
+    }
+    assert.equal(fake.calls.manualViewport, undefined);
   });
 });
 

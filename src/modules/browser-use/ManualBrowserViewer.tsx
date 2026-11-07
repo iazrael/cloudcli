@@ -7,8 +7,10 @@ import {
   CornerDownLeft,
   Delete,
   Loader2,
+  Monitor,
   RotateCw,
   Send,
+  Smartphone,
 } from 'lucide-react';
 
 import { cn } from '@/shared/utils';
@@ -23,6 +25,18 @@ const MANUAL_SCROLL_LIMIT = 5000;
 // Taps below this distance count as clicks; larger drags become scroll wheels.
 const SWIPE_THRESHOLD_PX = 12;
 const POLL_INTERVAL_MS = 1500;
+// The two layout presets offered by the toggle: portrait phone (renders ~1:1 on
+// a phone screen) and the desktop viewport sessions start with.
+const MOBILE_LAYOUT = { width: 390, height: 844 };
+const DESKTOP_LAYOUT = { width: 1024, height: 768 };
+
+const matchesLayout = (
+  viewport: { width: number; height: number } | null,
+  target: { width: number; height: number },
+): boolean =>
+  !!viewport
+  && Math.abs(viewport.width - target.width) <= 2
+  && Math.abs(viewport.height - target.height) <= 2;
 
 const clampScrollDelta = (value: number): number =>
   Math.max(-MANUAL_SCROLL_LIMIT, Math.min(MANUAL_SCROLL_LIMIT, value));
@@ -118,6 +132,13 @@ export function ManualBrowserViewer({ session, onSessionUpdated, onError }: Manu
 
   const isReady = session.status === 'ready';
 
+  const isMobileLayout = matchesLayout(session.viewport, MOBILE_LAYOUT);
+
+  const switchLayout = (target: { width: number; height: number }) => {
+    if (isBusy || matchesLayout(session.viewport, target)) return;
+    void runControl(() => api.browserUse.setViewport(session.id, target.width, target.height));
+  };
+
   const submitAddress = () => {
     const url = urlDraft.trim();
     if (!url || isBusy) return;
@@ -210,6 +231,30 @@ export function ManualBrowserViewer({ session, onSessionUpdated, onError }: Manu
         >
           <RotateCw className={cn('h-3.5 w-3.5', isBusy && 'animate-spin')} />
         </Button>
+        <div className="flex shrink-0 items-center rounded-md border border-border bg-background p-0.5">
+          <Button
+            variant="ghost"
+            size="sm"
+            className={cn('h-6 w-6 p-0', isMobileLayout ? 'bg-primary/10 text-foreground' : 'text-muted-foreground')}
+            disabled={!isReady || isBusy}
+            onClick={() => switchLayout(MOBILE_LAYOUT)}
+            title={t('browserUse.layoutMobile')}
+            aria-label={t('browserUse.layoutMobile')}
+          >
+            <Smartphone className="h-3.5 w-3.5" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className={cn('h-6 w-6 p-0', !isMobileLayout ? 'bg-primary/10 text-foreground' : 'text-muted-foreground')}
+            disabled={!isReady || isBusy}
+            onClick={() => switchLayout(DESKTOP_LAYOUT)}
+            title={t('browserUse.layoutDesktop')}
+            aria-label={t('browserUse.layoutDesktop')}
+          >
+            <Monitor className="h-3.5 w-3.5" />
+          </Button>
+        </div>
         <form
           className="flex min-w-0 flex-1 items-center gap-1.5"
           onSubmit={(event) => {

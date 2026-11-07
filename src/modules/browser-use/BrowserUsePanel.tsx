@@ -578,7 +578,14 @@ export default function BrowserUsePanel({ isVisible, onShowSettings }: BrowserUs
           <div className="flex h-full flex-col rounded-md border border-white/10 bg-black">
             <div className="flex items-center justify-between border-b border-white/10 px-4 py-3 text-sm text-white/80">
               <div className="min-w-0 truncate">{selectedSession.title || selectedSession.url || t('browserUse.sessionFallback')}</div>
-              <Button variant="outline" size="sm" onClick={() => setIsFullscreen(false)}>
+              {/* Explicit overlay colors: the outline variant inherits the
+                  header's white text onto a white background otherwise. */}
+              <Button
+                variant="outline"
+                size="sm"
+                className="border-white/20 bg-white/10 text-white hover:bg-white/20 hover:text-white"
+                onClick={() => setIsFullscreen(false)}
+              >
                 <X className="h-4 w-4" />
                 {t('browserUse.close')}
               </Button>
