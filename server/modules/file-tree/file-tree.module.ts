@@ -3,10 +3,12 @@ import fs, { promises as fsPromises } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { rgPath } from '@vscode/ripgrep';
 import mime from 'mime-types';
 import multer from 'multer';
 
 import { projectsDb } from '@/modules/database/index.js';
+import { createRipgrepFileIndexer } from '@/modules/file-tree/file-tree-file-index.js';
 import { createFileTreeRouter } from '@/modules/file-tree/file-tree.routes.js';
 import { createFileTreeService } from '@/modules/file-tree/file-tree.service.js';
 import {
@@ -140,6 +142,8 @@ const fileTreeServices = createFileTreeService({
   resolveMimeType: (filePath) => mime.lookup(filePath) || 'application/octet-stream',
   fileSystemConcurrency: readFileSystemConcurrency(),
   logger: fileTreeLogger,
+  fileIndexer: createRipgrepFileIndexer(rgPath),
+  now: () => Date.now(),
   // Providers store chat-referenced artifacts outside the active workspace:
   // Antigravity uses brain directories, Claude uses its per-project tree, and
   // ZCode uses narrow memory/skill/instruction paths. Attachments live in

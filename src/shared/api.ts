@@ -393,8 +393,18 @@ export const api = {
     get(fileContentPath(projectId, filePath), options),
   saveFile: (projectId: string, filePath: string, content: string) =>
     put(`/api/file-tree/projects/${projectId}/file`, { filePath, content }),
-  getFiles: (projectId: string, options: ApiRequestOptions = {}) =>
-    get(`/api/file-tree/projects/${projectId}/files${query({ respectGitignore: true })}`, options),
+  // Lists project directories one level deep, up to 50 per call; '' is the
+  // project root, other paths are relative to it or absolute inside it.
+  listDirectories: (projectId: string, paths: string[], options: ApiRequestOptions = {}) =>
+    post(`/api/file-tree/projects/${projectId}/directories`, { paths }, options),
+  // Searches the project's files by name and path on the server (best name
+  // matches first); type 'any' also returns matching folders. Answers with a
+  // `FileTreeSearchResponse`.
+  searchFiles: (
+    projectId: string,
+    { query: searchQuery, limit, type }: { query: string; limit: number; type: 'file' | 'any' },
+    options: ApiRequestOptions = {},
+  ) => get(`/api/file-tree/projects/${projectId}/files/search${query({ q: searchQuery, limit, type })}`, options),
 
   // File operations
   createFile: (

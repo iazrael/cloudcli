@@ -1,6 +1,6 @@
 import type { DragEvent, ReactNode, RefObject } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronRight, Folder, FolderOpen, Upload } from 'lucide-react';
+import { ChevronRight, Folder, FolderOpen, Loader2, Upload } from 'lucide-react';
 
 import { cn } from '@/shared/utils';
 import type { FileTreeNode as FileTreeNodeType, FileTreeViewMode } from '@/shared/types';
@@ -13,6 +13,7 @@ type FileTreeNodeProps = {
   viewMode: FileTreeViewMode;
   expandedDirs: Set<string>;
   onItemClick: (item: FileTreeNodeType) => void;
+  onRetryDirectory?: (path: string) => void;
   renderFileIcon: (filename: string) => ReactNode;
   formatFileSize: (bytes?: number) => string;
   formatRelativeTime: (date?: string) => string;
@@ -79,6 +80,7 @@ export default function FileTreeNode({
   viewMode,
   expandedDirs,
   onItemClick,
+  onRetryDirectory,
   renderFileIcon,
   formatFileSize,
   formatRelativeTime,
@@ -103,7 +105,8 @@ export default function FileTreeNode({
   const { t } = useTranslation();
   const isDirectory = item.type === 'directory';
   const isOpen = isDirectory && expandedDirs.has(item.path);
-  const hasChildren = Boolean(isDirectory && item.children && item.children.length > 0);
+  // An open folder shows its children, or a row saying why there are none yet.
+  const showsChildArea = isDirectory && isOpen && (item.children !== undefined || item.childrenStatus !== undefined);
   const isRenaming = renamingItem?.path === item.path;
   const dragTargetPath = isDirectory ? item.path : getParentDirectoryPath(item.path);
   const isDropTarget = isDirectory && dropTarget === item.path;
@@ -180,6 +183,8 @@ export default function FileTreeNode({
     <div
       className={rowClassName}
       style={{ paddingLeft: `${level * 16 + 4}px` }}
+      // Lets the tree scroll a revealed folder into view.
+      data-tree-path={item.path}
       onClick={() => onItemClick(item)}
       onDragOver={onItemDragOver ? (event) => onItemDragOver(event, dragTargetPath) : undefined}
     >
@@ -243,13 +248,48 @@ export default function FileTreeNode({
         rowContent
       )}
 
-      {isDirectory && isOpen && hasChildren && (
+      {showsChildArea && (
         <div className="relative">
           <span
             className="absolute bottom-0 top-0 border-l border-border/40"
             style={{ left: `${level * 16 + 14}px` }}
             aria-hidden="true"
           />
+          {item.childrenStatus === 'loading' ? (
+            <div
+              className="flex items-center gap-1.5 py-[3px] text-xs text-muted-foreground"
+              style={{ paddingLeft: `${(level + 1) * 16 + 22}px` }}
+            >
+              <Loader2 className="h-3 w-3 animate-spin" />
+              {t('fileTree.loadingFolder')}
+            </div>
+          ) : item.childrenStatus === 'error' ? (
+            <div
+              className="flex items-center gap-2 py-[3px] pr-2 text-xs text-destructive"
+              style={{ paddingLeft: `${(level + 1) * 16 + 22}px` }}
+            >
+              <span className="truncate">{item.childrenError || t('fileTree.folderLoadFailed')}</span>
+              {onRetryDirectory && (
+                <button
+                  type="button"
+                  className="flex-shrink-0 rounded px-1.5 py-0.5 text-foreground hover:bg-accent"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onRetryDirectory(item.path);
+                  }}
+                >
+                  {t('fileTree.retry')}
+                </button>
+              )}
+            </div>
+          ) : item.children?.length === 0 ? (
+            <div
+              className="py-[3px] text-xs italic text-muted-foreground"
+              style={{ paddingLeft: `${(level + 1) * 16 + 22}px` }}
+            >
+              {t('fileTree.emptyFolder')}
+            </div>
+          ) : null}
           {item.children?.map((child) => (
             <FileTreeNode
               key={child.path}
@@ -258,6 +298,7 @@ export default function FileTreeNode({
               viewMode={viewMode}
               expandedDirs={expandedDirs}
               onItemClick={onItemClick}
+          onRetryDirectory={onRetryDirectory}
               renderFileIcon={renderFileIcon}
               formatFileSize={formatFileSize}
               formatRelativeTime={formatRelativeTime}
@@ -280,6 +321,14 @@ export default function FileTreeNode({
               operationLoading={operationLoading}
             />
           ))}
+          {item.childrenTruncated && (
+            <div
+              className="py-[3px] text-xs text-muted-foreground"
+              style={{ paddingLeft: `${(level + 1) * 16 + 22}px` }}
+            >
+              {t('fileTree.folderTruncated')}
+            </div>
+          )}
         </div>
       )}
     </div>

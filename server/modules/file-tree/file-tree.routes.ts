@@ -21,6 +21,23 @@ const pathExistenceBatchSchema = z.object({
 }).strict()
   .refine(({ items }) => new Set(items.map(({ id }) => id)).size === items.length);
 
+/**
+ * Directories the browser expands, refreshes or reveals arrive as one batch.
+ * An empty string is the project root, so paths here may be empty.
+ */
+const directoryBatchSchema = z.object({
+  paths: z.array(z.string().max(8192).refine((value) => !value.includes('\0'))).min(1).max(50),
+}).strict();
+
+const DEFAULT_SEARCH_LIMIT = 50;
+
+/** Search parameters come from the query string, so every value is optional text. */
+const fileSearchQuerySchema = z.object({
+  q: z.string().max(1024).optional(),
+  limit: z.string().regex(/^\d+$/).transform(Number).pipe(z.number().int().min(1).max(200)).optional(),
+  type: z.enum(['file', 'any']).optional(),
+});
+
 type FileTreeUploadLimits = {
   maximumFileSizeMegabytes: number;
   maximumFileCount: number;
@@ -210,9 +227,24 @@ export function createFileTreeRouter(
     response.json(await services.saveTextFile(readProjectId(request), filePath, body.content));
   }, logger));
 
-  router.get('/projects/:projectId/files', createRouteHandler(async (request, response) => {
-    response.json(await services.listProjectFiles(readProjectId(request), {
-      respectGitignore: request.query.respectGitignore === 'true',
+  router.post('/projects/:projectId/directories', createRouteHandler(async (request, response) => {
+    const parsed = directoryBatchSchema.safeParse(readBody(request));
+    if (!parsed.success) {
+      throw new AppError('Invalid directory batch', { code: 'INVALID_FILE_TREE_REQUEST', statusCode: 400 });
+    }
+    response.json({ directories: await services.listDirectories(readProjectId(request), parsed.data.paths) });
+  }, logger));
+
+  router.get('/projects/:projectId/files/search', createRouteHandler(async (request, response) => {
+    const parsed = fileSearchQuerySchema.safeParse(request.query);
+    if (!parsed.success) {
+      throw new AppError('Invalid file search', { code: 'INVALID_FILE_TREE_REQUEST', statusCode: 400 });
+    }
+    response.json(await services.searchFiles({
+      projectId: readProjectId(request),
+      query: parsed.data.q ?? '',
+      limit: parsed.data.limit ?? DEFAULT_SEARCH_LIMIT,
+      type: parsed.data.type ?? 'file',
     }));
   }, logger));
 

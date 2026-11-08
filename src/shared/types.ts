@@ -867,7 +867,7 @@ export type DirectoryRevealRequest = {
   path: string;
 };
 
-/** One file or directory entry in a project's file listing, with directories carrying their loaded `children`; used across the file tree for rendering, searching and filtering. */
+/** One file or directory entry in a project's file listing; used across the file tree for rendering. The server lists one directory level at a time, so `children` and the `children*` flags are attached by the file tree itself for expanded folders and search results. */
 export type FileTreeNode = {
   name: string;
   type: FileTreeItemType;
@@ -876,7 +876,22 @@ export type FileTreeNode = {
   modified?: string;
   permissionsRwx?: string;
   children?: FileTreeNode[];
+  // Set on an expanded folder whose entries are still being fetched or failed to load.
+  childrenStatus?: 'loading' | 'error';
+  childrenError?: string;
+  // The server stopped listing this folder at its per-directory entry cap.
+  childrenTruncated?: boolean;
   [key: string]: unknown;
+};
+
+/** One match from the project file search endpoint: a file-tree node plus its `/`-separated path relative to the project root. Used by the file tree search box, chat `@` mentions, the command palette and chat file-reference resolution. */
+export type FileTreeSearchMatch = FileTreeNode & { relativePath: string };
+
+/** Body of the project file search endpoint. `truncated` means more entries matched than the requested limit; `indexIncomplete` means the project was too large to index fully, so some files can never match. */
+export type FileTreeSearchResponse = {
+  results: FileTreeSearchMatch[];
+  truncated: boolean;
+  indexIncomplete: boolean;
 };
 
 /** The image the file tree asked to preview, carrying the path plus the DB `projectId` the image viewer needs to build its raw content URL. */

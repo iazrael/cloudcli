@@ -99,7 +99,7 @@ function CommandPalette({
 
   const sessions = useSessionsSource(projectId, open && showSessions);
   const messageMatches = useSessionMessageSearch(projectId, search, open && showSessions);
-  const files = useFilesSource(projectId, open && showFiles);
+  const files = useFilesSource(projectId, open && showFiles, search);
   const commits = useCommitsSource(projectId, open && showCommits);
   const branches = useBranchesSource(projectId, open && showBranches);
   const git = useGitActions(projectId);
@@ -301,6 +301,10 @@ function CommandPalette({
                   <CommandItem
                     key={f.path}
                     value={f.path}
+                    // The server already matched these against the search
+                    // text; echoing it as a keyword makes cmdk count them as
+                    // matches instead of filtering them out again.
+                    keywords={[search]}
                     onSelect={() => run(() => ops.openFile(f.path))}
                   >
                     <FileText className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />

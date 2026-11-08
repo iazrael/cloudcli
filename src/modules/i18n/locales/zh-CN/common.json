@@ -141,7 +141,17 @@
       "refresh": "刷新",
       "menuLabel": "文件上下文菜单",
       "loading": "加载中..."
-    }
+    },
+    "loadFailed": "无法加载文件",
+    "searching": "正在搜索…",
+    "searchFailed": "搜索失败",
+    "searchTruncated": "只显示最相关的结果，输入更具体的关键词可以缩小范围。",
+    "searchIndexIncomplete": "项目过大，无法完整建立索引，部分文件可能搜不到。",
+    "loadingFolder": "正在加载…",
+    "folderLoadFailed": "无法加载此文件夹",
+    "retry": "重试",
+    "emptyFolder": "空文件夹",
+    "folderTruncated": "仅显示前 5,000 项。"
   },
   "projectWizard": {
     "title": "创建新项目",

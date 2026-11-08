@@ -8,6 +8,7 @@ type FileTreeListProps = {
   viewMode: FileTreeViewMode;
   expandedDirs: Set<string>;
   onItemClick: (item: FileTreeNodeType) => void;
+  onRetryDirectory?: (path: string) => void;
   renderFileIcon: (filename: string) => ReactNode;
   formatFileSize: (bytes?: number) => string;
   formatRelativeTime: (date?: string) => string;
@@ -38,6 +39,7 @@ export default function FileTreeList({
   viewMode,
   expandedDirs,
   onItemClick,
+  onRetryDirectory,
   renderFileIcon,
   formatFileSize,
   formatRelativeTime,
@@ -69,6 +71,7 @@ export default function FileTreeList({
           viewMode={viewMode}
           expandedDirs={expandedDirs}
           onItemClick={onItemClick}
+          onRetryDirectory={onRetryDirectory}
           renderFileIcon={renderFileIcon}
           formatFileSize={formatFileSize}
           formatRelativeTime={formatRelativeTime}

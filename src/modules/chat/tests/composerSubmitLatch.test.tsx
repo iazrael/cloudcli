@@ -23,7 +23,7 @@ vi.mock('@/shared/api', async (importOriginal) => ({
   ...(await importOriginal<typeof Api>()),
   authenticatedFetch: (...args: unknown[]) => authenticatedFetch(...args),
   api: {
-    getFiles: () => Promise.resolve({ ok: false }),
+    searchFiles: () => Promise.resolve({ ok: false }),
     slashCommands: () => Promise.resolve({ ok: false }),
     user: {
       saveDraft: () => Promise.resolve(new Response('{}')),

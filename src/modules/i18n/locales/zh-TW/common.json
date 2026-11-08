@@ -139,7 +139,17 @@
       "refresh": "重新整理",
       "menuLabel": "檔案右鍵選單",
       "loading": "載入中..."
-    }
+    },
+    "searching": "正在搜尋…",
+    "searchFailed": "搜尋失敗",
+    "searchTruncated": "只顯示最相關的結果，輸入更具體的關鍵字可以縮小範圍。",
+    "searchIndexIncomplete": "專案過大，無法完整建立索引，部分檔案可能搜尋不到。",
+    "loadingFolder": "正在載入…",
+    "folderLoadFailed": "無法載入此資料夾",
+    "retry": "重試",
+    "emptyFolder": "空資料夾",
+    "folderTruncated": "僅顯示前 5,000 項。",
+    "loadFailed": "無法載入檔案"
   },
   "projectWizard": {
     "title": "建立新專案",

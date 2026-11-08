@@ -144,7 +144,16 @@
       "refresh": "Refresh",
       "menuLabel": "File context menu",
       "loading": "Loading..."
-    }
+    },
+    "searching": "Searching…",
+    "searchFailed": "Search failed",
+    "searchTruncated": "Showing the best matches only. Type more to narrow the search.",
+    "searchIndexIncomplete": "This project is too large to index fully, so some files may be missing from search.",
+    "loadingFolder": "Loading…",
+    "folderLoadFailed": "Unable to load this folder",
+    "retry": "Retry",
+    "emptyFolder": "Empty folder",
+    "folderTruncated": "Only the first 5,000 items are shown."
   },
   "projectWizard": {
     "title": "Create New Project",

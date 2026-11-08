@@ -14,7 +14,7 @@ let remoteDrafts: unknown[] = [];
 vi.mock('@/shared/api', async (importOriginal) => ({
   ...(await importOriginal<typeof Api>()),
   api: {
-    getFiles: () => Promise.resolve({ ok: false }),
+    searchFiles: () => Promise.resolve({ ok: false }),
     commands: { list: () => Promise.resolve(new Response('{"commands":[]}')) },
     providers: {
       capabilities: () => Promise.resolve(new Response('{}', { status: 503 })),

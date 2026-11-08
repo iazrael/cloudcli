@@ -1,11 +1,13 @@
 import path from 'node:path';
 
-import ignore from 'ignore';
+import ignore, { type Ignore } from 'ignore';
 
 import type {
   FileTreeDirectoryEntry,
+  FileTreeDirectoryListing,
   FileTreeFileSystem,
   FileTreeNode,
+  FileTreeSearchMatch,
   FileTreeServiceDependencies,
   FileTreeServices,
   FileTreeUploadedFile,
@@ -34,20 +36,100 @@ const COMMON_WORKSPACE_DIRECTORY_NAMES = [
   'workspace',
 ];
 
-// File Tree consumes this guard when recursively listing a project so a very
-// broad workspace (for example, a user's home directory) cannot exhaust the
-// server heap before the browser has a chance to switch to a narrower project.
-const MAXIMUM_FILE_TREE_ENTRIES = 10_000;
+// One directory listing stops reading here so a directory holding millions of
+// entries cannot exhaust the server heap or flood the browser; the listing is
+// returned with `truncated` set instead.
+const MAXIMUM_DIRECTORY_ENTRIES = 5_000;
 
-type FileTreeEntryFilter = (entryPath: string, isDirectory: boolean) => boolean;
+// A search index is a snapshot of the project's file list. It is rebuilt after
+// this long so files written outside the File Tree API (agents, the terminal,
+// git) show up in search without a manual refresh.
+const SEARCH_INDEX_LIFETIME_MS = 15_000;
+const MAXIMUM_CACHED_SEARCH_INDEXES = 8;
+// Bounds the index of a pathologically broad project root (such as a home
+// directory); searches then report `indexIncomplete`.
+const MAXIMUM_INDEXED_FILES = 200_000;
 
-function includeEntryByHardExclusions(entryPath: string, isDirectory: boolean): boolean {
-  return !isDirectory || !HARD_EXCLUDED_DIRECTORY_NAMES.has(path.basename(entryPath));
+/**
+ * One ignore file in effect for a directory listing. `baseDirectory` is the
+ * project-relative directory the rules are written against ('' for the root).
+ */
+type IgnoreLayer = { baseDirectory: string; matcher: Ignore };
+
+/** One indexed search candidate with the lowercase forms matching uses. */
+type SearchIndexEntry = {
+  relativePath: string;
+  lowerPath: string;
+  lowerName: string;
+  type: 'file' | 'directory';
+};
+
+type SearchIndex = { entries: SearchIndexEntry[]; incomplete: boolean; builtAt: number };
+
+/**
+ * Applies hard exclusions, the fallback directory names, and the ignore layers
+ * from the lowest precedence (`.git/info/exclude`, then the root `.gitignore`)
+ * to the highest (the directory's own `.gitignore`), so a deeper `!pattern`
+ * re-includes what a shallower rule excluded, as git does.
+ */
+function isEntryVisible(
+  entryRelativePath: string,
+  isDirectory: boolean,
+  layers: IgnoreLayer[],
+  useFallbackDirectoryNames: boolean,
+): boolean {
+  if (isDirectory) {
+    const name = path.posix.basename(entryRelativePath);
+    if (HARD_EXCLUDED_DIRECTORY_NAMES.has(name)) return false;
+    if (useFallbackDirectoryNames && IGNORED_DIRECTORY_NAMES.has(name)) return false;
+  }
+
+  let ignored = false;
+  for (const layer of layers) {
+    const layerRelativePath = layer.baseDirectory
+      ? entryRelativePath.slice(layer.baseDirectory.length + 1)
+      : entryRelativePath;
+    const verdict = layer.matcher.test(isDirectory ? `${layerRelativePath}/` : layerRelativePath);
+    if (verdict.ignored) {
+      ignored = true;
+    } else if (verdict.unignored) {
+      ignored = false;
+    }
+  }
+  return !ignored;
 }
 
-function includeEntryByFallbackDirectoryNames(entryPath: string, isDirectory: boolean): boolean {
-  return includeEntryByHardExclusions(entryPath, isDirectory)
-    && (!isDirectory || !IGNORED_DIRECTORY_NAMES.has(path.basename(entryPath)));
+/** Best name matches first; see `FileTreeServices.searchFiles`. */
+function rankSearchEntry(entry: SearchIndexEntry, tokens: string[], phrase: string): number {
+  if (entry.lowerName === phrase) return 0;
+  if (tokens.every((token) => entry.lowerName.includes(token))) {
+    return entry.lowerName.startsWith(tokens[0] ?? '') ? 1 : 2;
+  }
+  return 3;
+}
+
+/**
+ * Translates a filesystem failure while resolving or reading a requested
+ * directory into the per-directory error the batch reports; anything
+ * unexpected is rethrown and logged by the caller.
+ */
+function throwDirectoryReadError(error: unknown): never {
+  switch (readErrorCode(error)) {
+    case 'ENOENT':
+      throw createFileTreeError('Directory not found', 404, 'FILE_TREE_PATH_NOT_FOUND');
+    case 'ENOTDIR':
+      throw createFileTreeError('Path is not a directory', 400, 'FILE_TREE_NOT_A_DIRECTORY');
+    case 'EACCES':
+    case 'EPERM':
+      throw createFileTreeError('Permission denied', 403, 'FILE_TREE_PERMISSION_DENIED');
+    default:
+      throw error;
+  }
+}
+
+function compareRelativePaths(left: string, right: string): number {
+  if (left === right) return 0;
+  return left < right ? -1 : 1;
 }
 
 function createFileTreeError(message: string, statusCode: number, code: string): AppError {
@@ -211,21 +293,6 @@ function mapFileSystemError(
   throw error;
 }
 
-function createGitignoreEntryFilter(
-  projectRoot: string,
-  gitignoreContent: string,
-): FileTreeEntryFilter {
-  const gitignore = ignore().add(gitignoreContent);
-
-  return (entryPath, isDirectory) => {
-    if (!includeEntryByHardExclusions(entryPath, isDirectory)) return false;
-
-    const relativePath = path.relative(projectRoot, entryPath).split(path.sep).join('/');
-    const matchPath = isDirectory ? `${relativePath}/` : relativePath;
-    return !gitignore.ignores(matchPath);
-  };
-}
-
 /**
  * Creates File Tree workflows for the module composition root and route tests.
  * Every filesystem, project, workspace, environment, and logging dependency is
@@ -247,128 +314,219 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
     return projectRoot;
   }
 
+  // Search indexes keyed by project root, least recently used first, plus the
+  // builds in flight so concurrent searches share one ripgrep run.
+  const searchIndexes = new Map<string, SearchIndex>();
+  const pendingSearchIndexes = new Map<string, Promise<SearchIndex>>();
+
+  /** Drops a project's search index after the File Tree API changed its files. */
+  function forgetSearchIndex(projectRoot: string): void {
+    searchIndexes.delete(projectRoot);
+    pendingSearchIndexes.delete(projectRoot);
+  }
+
+  async function pathExists(candidatePath: string): Promise<boolean> {
+    try {
+      await fileSystem.access(candidatePath);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   /**
-   * Streams one directory and keeps only the entries the tree will show.
-   *
-   * Entries are filtered and charged against the shared budget one at a time,
-   * so a pathologically large directory stops the walk at the cap instead of
-   * being read into memory in full first.
+   * Describes one entry with `lstat` metadata. Returns null when the entry
+   * vanished since it was listed or indexed; other metadata failures keep the
+   * entry with placeholder metadata rather than hiding it.
    */
-  async function collectVisibleEntries(
-    directoryPath: string,
-    includeEntry: FileTreeEntryFilter,
-    remainingEntries: { value: number },
-  ): Promise<FileTreeDirectoryEntry[]> {
-    const visibleEntries: FileTreeDirectoryEntry[] = [];
+  async function describeEntry(itemPath: string, type: 'file' | 'directory'): Promise<FileTreeNode | null> {
+    const item: FileTreeNode = {
+      name: path.basename(itemPath),
+      path: itemPath,
+      type,
+      size: 0,
+      modified: null,
+      permissions: '000',
+      permissionsRwx: '---------',
+    };
 
     await acquire();
     try {
-      for await (const entry of fileSystem.openDirectory(directoryPath)) {
-        const isDirectory = entry.isDirectory();
-        if (!includeEntry(path.join(directoryPath, entry.name), isDirectory)) {
-          continue;
-        }
+      const stats = await fileSystem.lstat(itemPath);
+      const ownerPermissions = (stats.mode >> 6) & 7;
+      const groupPermissions = (stats.mode >> 3) & 7;
+      const otherPermissions = stats.mode & 7;
 
-        // Charged after visibility filtering so ignored entries never consume
-        // the budget. Every recursive branch shares one counter, so the cap
-        // applies to the whole tree rather than per directory.
-        if (remainingEntries.value <= 0) {
-          throw createFileTreeError(
-            `Project file tree exceeds the ${MAXIMUM_FILE_TREE_ENTRIES.toLocaleString()} entry limit. Choose a narrower project directory or add ignore rules.`,
-            413,
-            'FILE_TREE_TOO_LARGE',
-          );
-        }
-        remainingEntries.value -= 1;
-        visibleEntries.push(entry);
+      item.size = stats.size;
+      item.modified = stats.mtime.toISOString();
+      item.permissions = `${ownerPermissions}${groupPermissions}${otherPermissions}`;
+      item.permissionsRwx = permissionBitsToRwx(ownerPermissions)
+        + permissionBitsToRwx(groupPermissions)
+        + permissionBitsToRwx(otherPermissions);
+      if (stats.isSymbolicLink()) {
+        item.isSymlink = true;
       }
     } catch (error) {
-      // The entry cap is a caller-visible outcome, not an unreadable directory.
-      if (error instanceof AppError) {
-        throw error;
+      if (readErrorCode(error) === 'ENOENT') {
+        return null;
       }
-      const errorCode = readErrorCode(error);
-      if (errorCode !== 'EACCES' && errorCode !== 'EPERM') {
-        dependencies.logger.error(`Error reading directory "${directoryPath}"`, error);
-      }
-      return [];
     } finally {
       release();
     }
 
-    return visibleEntries;
+    return item;
   }
 
-  async function buildFileTree(
+  /**
+   * Resolves one requested directory to its path under the project root.
+   *
+   * The lexical check rejects `..` traversal and foreign absolute paths before
+   * the filesystem is touched; the realpath check then rejects a symlink inside
+   * the project that points out of it. The returned path stays under the
+   * configured project root so node paths match the rest of the File Tree API.
+   */
+  async function resolveListableDirectory(
+    projectRoot: string,
+    realProjectRoot: string,
+    requestPath: string,
+  ): Promise<string> {
+    const rootPath = path.resolve(projectRoot);
+    const lexicalPath = path.resolve(rootPath, requestPath);
+    if (lexicalPath !== rootPath && !lexicalPath.startsWith(rootPath + path.sep)) {
+      throw createFileTreeError('Path must be under project root', 403, 'PATH_OUTSIDE_PROJECT');
+    }
+
+    let realPath: string;
+    try {
+      realPath = await fileSystem.realpath(lexicalPath);
+    } catch (error) {
+      throwDirectoryReadError(error);
+    }
+    if (realPath !== realProjectRoot && !realPath.startsWith(realProjectRoot + path.sep)) {
+      throw createFileTreeError('Path must be under project root', 403, 'PATH_OUTSIDE_PROJECT');
+    }
+    // Pseudo-filesystems such as /proc are never valid project content.
+    if (FORBIDDEN_WORKSPACE_PATHS.includes(normalizeProjectPath(lexicalPath))) {
+      throw createFileTreeError('Path is a protected system directory', 403, 'PATH_NOT_ALLOWED');
+    }
+    return lexicalPath;
+  }
+
+  async function listOneDirectory(
+    rootPath: string,
     directoryPath: string,
-    maximumDepth: number,
-    currentDepth = 0,
-    includeEntry: FileTreeEntryFilter = includeEntryByFallbackDirectoryNames,
-    remainingEntries = { value: MAXIMUM_FILE_TREE_ENTRIES },
-  ): Promise<FileTreeNode[]> {
-    const visibleEntries = await collectVisibleEntries(directoryPath, includeEntry, remainingEntries);
+    loadIgnoreFile: (relativeFilePath: string) => Promise<Ignore | null>,
+  ): Promise<{ entries: FileTreeNode[]; truncated: boolean }> {
+    const relativeDirectory = path.relative(rootPath, directoryPath).split(path.sep).join('/');
+    const rootGitignore = await loadIgnoreFile('.gitignore');
+    const layers: IgnoreLayer[] = [];
+    const exclude = await loadIgnoreFile('.git/info/exclude');
+    if (exclude) layers.push({ baseDirectory: '', matcher: exclude });
+    if (rootGitignore) layers.push({ baseDirectory: '', matcher: rootGitignore });
+    const segments = relativeDirectory ? relativeDirectory.split('/') : [];
+    for (let depth = 1; depth <= segments.length; depth += 1) {
+      const baseDirectory = segments.slice(0, depth).join('/');
+      const matcher = await loadIgnoreFile(`${baseDirectory}/.gitignore`);
+      if (matcher) layers.push({ baseDirectory, matcher });
+    }
 
-    const items = await Promise.all(visibleEntries.map(async (entry): Promise<FileTreeNode> => {
-      const itemPath = path.join(directoryPath, entry.name);
-      const item: FileTreeNode = {
-        name: entry.name,
-        path: itemPath,
-        type: entry.isDirectory() ? 'directory' : 'file',
-        size: 0,
-        modified: null,
-        permissions: '000',
-        permissionsRwx: '---------',
-      };
-
-      try {
-        await acquire();
-        try {
-          const stats = await fileSystem.lstat(itemPath);
-          const ownerPermissions = (stats.mode >> 6) & 7;
-          const groupPermissions = (stats.mode >> 3) & 7;
-          const otherPermissions = stats.mode & 7;
-
-          item.size = stats.size;
-          item.modified = stats.mtime.toISOString();
-          item.permissions = `${ownerPermissions}${groupPermissions}${otherPermissions}`;
-          item.permissionsRwx = permissionBitsToRwx(ownerPermissions)
-            + permissionBitsToRwx(groupPermissions)
-            + permissionBitsToRwx(otherPermissions);
-          if (stats.isSymbolicLink()) {
-            item.isSymlink = true;
-          }
-        } finally {
-          release();
+    const visibleEntries: FileTreeDirectoryEntry[] = [];
+    let truncated = false;
+    await acquire();
+    try {
+      for await (const entry of fileSystem.openDirectory(directoryPath)) {
+        const entryRelativePath = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
+        if (!isEntryVisible(entryRelativePath, entry.isDirectory(), layers, rootGitignore === null)) {
+          continue;
         }
-      } catch {
-        // Metadata failures should not hide an otherwise readable tree entry.
+        // Leaving the loop closes the directory stream, so the rest of a huge
+        // directory is never read.
+        if (visibleEntries.length >= MAXIMUM_DIRECTORY_ENTRIES) {
+          truncated = true;
+          break;
+        }
+        visibleEntries.push(entry);
       }
+    } catch (error) {
+      throwDirectoryReadError(error);
+    } finally {
+      release();
+    }
 
-      // Skip recursing into pseudo-filesystems and other system-critical
-      // directories (e.g. /proc, /sys) — they're never valid project roots,
-      // and /proc in particular can contain thousands of virtual entries
-      // that make traversal from a broad root (e.g. "/") pathologically slow.
-      const isForbiddenSystemDir = FORBIDDEN_WORKSPACE_PATHS.includes(normalizeProjectPath(itemPath));
-
-      if (entry.isDirectory() && currentDepth < maximumDepth && !isForbiddenSystemDir) {
-        item.children = await buildFileTree(
-          itemPath,
-          maximumDepth,
-          currentDepth + 1,
-          includeEntry,
-          remainingEntries,
-        );
-      }
-
-      return item;
-    }));
-
-    return items.sort((left, right) => {
+    const described = await Promise.all(visibleEntries.map((entry) => describeEntry(
+      path.join(directoryPath, entry.name),
+      entry.isDirectory() ? 'directory' : 'file',
+    )));
+    const entries = described.filter((item): item is FileTreeNode => item !== null);
+    entries.sort((left, right) => {
       if (left.type !== right.type) {
         return left.type === 'directory' ? -1 : 1;
       }
       return left.name.localeCompare(right.name);
     });
+    return { entries, truncated };
+  }
+
+  async function buildSearchIndex(projectRoot: string): Promise<SearchIndex> {
+    const useFallbackDirectoryNames = !(await pathExists(path.join(projectRoot, '.gitignore')));
+    const { files, incomplete } = await dependencies.fileIndexer.listFiles({
+      rootPath: projectRoot,
+      excludedDirectoryNames: [...(useFallbackDirectoryNames ? IGNORED_DIRECTORY_NAMES : HARD_EXCLUDED_DIRECTORY_NAMES)],
+      maximumFiles: MAXIMUM_INDEXED_FILES,
+    });
+
+    // The index lists files only; directories are derived from their paths, so
+    // an empty directory is not searchable.
+    const directories = new Set<string>();
+    for (const file of files) {
+      for (let separator = file.indexOf('/'); separator !== -1; separator = file.indexOf('/', separator + 1)) {
+        directories.add(file.slice(0, separator));
+      }
+    }
+    const toEntry = (relativePath: string, type: 'file' | 'directory'): SearchIndexEntry => {
+      const lowerPath = relativePath.toLowerCase();
+      return { relativePath, lowerPath, lowerName: path.posix.basename(lowerPath), type };
+    };
+    const entries = [
+      ...files.map((file) => toEntry(file, 'file')),
+      ...[...directories].map((directory) => toEntry(directory, 'directory')),
+    ].sort((left, right) => compareRelativePaths(left.relativePath, right.relativePath));
+    return { entries, incomplete, builtAt: dependencies.now() };
+  }
+
+  async function loadSearchIndex(projectRoot: string): Promise<SearchIndex> {
+    const cached = searchIndexes.get(projectRoot);
+    if (cached && dependencies.now() - cached.builtAt < SEARCH_INDEX_LIFETIME_MS) {
+      // Re-inserting keeps the Map ordered from least to most recently used.
+      searchIndexes.delete(projectRoot);
+      searchIndexes.set(projectRoot, cached);
+      return cached;
+    }
+
+    const pending = pendingSearchIndexes.get(projectRoot);
+    if (pending) return pending;
+
+    const build = buildSearchIndex(projectRoot);
+    pendingSearchIndexes.set(projectRoot, build);
+    try {
+      const index = await build;
+      // A write that invalidated the project while ripgrep ran also dropped
+      // this build, so a possibly stale listing is used once but not cached.
+      if (pendingSearchIndexes.get(projectRoot) === build) {
+        searchIndexes.delete(projectRoot);
+        searchIndexes.set(projectRoot, index);
+        while (searchIndexes.size > MAXIMUM_CACHED_SEARCH_INDEXES) {
+          const leastRecentlyUsed = searchIndexes.keys().next().value;
+          if (leastRecentlyUsed === undefined) break;
+          searchIndexes.delete(leastRecentlyUsed);
+        }
+      }
+      return index;
+    } finally {
+      if (pendingSearchIndexes.get(projectRoot) === build) {
+        pendingSearchIndexes.delete(projectRoot);
+      }
+    }
   }
 
   /**
@@ -488,10 +646,27 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
         throw createFileTreeError('Directory not accessible', 404, 'DIRECTORY_NOT_ACCESSIBLE');
       }
 
-      const fileTree = await buildFileTree(resolvedPath, 1);
-      const directories = fileTree
-        .filter((item) => item.type === 'directory')
-        .map((item) => ({ path: item.path, name: item.name, type: 'directory' as const }))
+      // Only folder names are suggested, so no metadata is read. An unreadable
+      // folder suggests nothing rather than failing the browse.
+      const directoryNames: string[] = [];
+      await acquire();
+      try {
+        for await (const entry of fileSystem.openDirectory(resolvedPath)) {
+          if (entry.isDirectory() && !IGNORED_DIRECTORY_NAMES.has(entry.name)) {
+            directoryNames.push(entry.name);
+            if (directoryNames.length >= MAXIMUM_DIRECTORY_ENTRIES) break;
+          }
+        }
+      } catch (error) {
+        const errorCode = readErrorCode(error);
+        if (errorCode !== 'EACCES' && errorCode !== 'EPERM') {
+          dependencies.logger.error(`Error reading directory "${resolvedPath}"`, error);
+        }
+      } finally {
+        release();
+      }
+      const directories = directoryNames
+        .map((name) => ({ path: path.join(resolvedPath, name), name, type: 'directory' as const }))
         .sort((left, right) => {
           const leftHidden = left.name.startsWith('.');
           const rightHidden = right.name.startsWith('.');
@@ -687,30 +862,85 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
         });
       }
 
+      forgetSearchIndex(path.resolve(projectRoot));
       return { success: true, path: resolvedPath, message: 'File saved successfully' };
     },
 
-    async listProjectFiles(projectId, options) {
+    async listDirectories(projectId, paths) {
       const projectRoot = await resolveProjectRoot(projectId);
+      let realProjectRoot: string;
       try {
-        await fileSystem.access(projectRoot);
+        realProjectRoot = await fileSystem.realpath(projectRoot);
       } catch {
         throw createFileTreeError(`Project path not found: ${projectRoot}`, 404, 'PROJECT_PATH_NOT_FOUND');
       }
+      const rootPath = path.resolve(projectRoot);
 
-      let includeEntry: FileTreeEntryFilter | undefined;
-      if (options?.respectGitignore) {
-        try {
-          const gitignoreContent = await fileSystem.readTextFile(path.join(projectRoot, '.gitignore'));
-          includeEntry = createGitignoreEntryFilter(projectRoot, gitignoreContent);
-        } catch (error) {
-          if (readErrorCode(error) !== 'ENOENT') {
-            dependencies.logger.error(`Error reading .gitignore in "${projectRoot}"`, error);
-          }
+      // Ignore files are shared by every directory of the batch, so each one is
+      // read and parsed once per request. A missing or unreadable file simply
+      // contributes no rules.
+      const ignoreFiles = new Map<string, Promise<Ignore | null>>();
+      const loadIgnoreFile = (relativeFilePath: string): Promise<Ignore | null> => {
+        let loaded = ignoreFiles.get(relativeFilePath);
+        if (!loaded) {
+          loaded = fileSystem.readTextFile(path.join(rootPath, ...relativeFilePath.split('/')))
+            .then((content) => ignore().add(content))
+            .catch((error: unknown) => {
+              const errorCode = readErrorCode(error);
+              if (errorCode !== 'ENOENT' && errorCode !== 'ENOTDIR') {
+                dependencies.logger.error(`Error reading ignore file "${relativeFilePath}" in "${rootPath}"`, error);
+              }
+              return null;
+            });
+          ignoreFiles.set(relativeFilePath, loaded);
         }
-      }
+        return loaded;
+      };
 
-      return buildFileTree(projectRoot, 10, 0, includeEntry);
+      return Promise.all(paths.map(async (request): Promise<FileTreeDirectoryListing> => {
+        try {
+          const directoryPath = await resolveListableDirectory(rootPath, realProjectRoot, request);
+          const { entries, truncated } = await listOneDirectory(rootPath, directoryPath, loadIgnoreFile);
+          return { request, path: directoryPath, entries, truncated };
+        } catch (error) {
+          if (error instanceof AppError) {
+            return { request, error: { code: error.code, message: error.message } };
+          }
+          dependencies.logger.error(`Error listing directory "${request}" in "${rootPath}"`, error);
+          return { request, error: { code: 'FILE_TREE_READ_FAILED', message: 'Unable to read directory' } };
+        }
+      }));
+    },
+
+    async searchFiles(input) {
+      const projectRoot = path.resolve(await resolveProjectRoot(input.projectId));
+      const index = await loadSearchIndex(projectRoot);
+
+      const tokens = input.query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+      const phrase = tokens.join(' ');
+      const candidates = input.type === 'file'
+        ? index.entries.filter((entry) => entry.type === 'file')
+        : index.entries;
+      // An empty query browses the index, which is already in path order.
+      const matches = tokens.length === 0
+        ? candidates
+        : candidates
+          .filter((entry) => tokens.every((token) => entry.lowerPath.includes(token)))
+          .map((entry) => ({ entry, rank: rankSearchEntry(entry, tokens, phrase) }))
+          .sort((left, right) => left.rank - right.rank
+            || left.entry.relativePath.length - right.entry.relativePath.length
+            || compareRelativePaths(left.entry.relativePath, right.entry.relativePath))
+          .map(({ entry }) => entry);
+
+      const described = await Promise.all(matches.slice(0, input.limit).map(async (entry) => {
+        const node = await describeEntry(path.join(projectRoot, ...entry.relativePath.split('/')), entry.type);
+        return node ? { ...node, relativePath: entry.relativePath } : null;
+      }));
+      return {
+        results: described.filter((match): match is FileTreeSearchMatch => match !== null),
+        truncated: matches.length > input.limit,
+        indexIncomplete: index.incomplete,
+      };
     },
 
     async createEntry(input) {
@@ -751,6 +981,7 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
         });
       }
 
+      forgetSearchIndex(path.resolve(projectRoot));
       return {
         success: true,
         path: resolvedPath,
@@ -794,6 +1025,7 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
         });
       }
 
+      forgetSearchIndex(path.resolve(projectRoot));
       return {
         success: true,
         oldPath: resolvedOldPath,
@@ -832,6 +1064,7 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
       }
 
       const entryType = stats.isDirectory() ? 'directory' as const : 'file' as const;
+      forgetSearchIndex(path.resolve(projectRoot));
       return {
         success: true,
         path: resolvedPath,
@@ -892,6 +1125,7 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
           });
         }
 
+        forgetSearchIndex(path.resolve(projectRoot));
         return {
           success: true,
           files: uploadedFiles,

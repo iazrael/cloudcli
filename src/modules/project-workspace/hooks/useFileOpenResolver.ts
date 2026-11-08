@@ -1,14 +1,7 @@
-import { useCallback, useRef } from 'react';
+import { useCallback } from 'react';
 
 import { api } from '@/shared/api';
-import type { Project } from '@/shared/types';
-
-type FileNode = {
-  type: 'file' | 'directory';
-  name: string;
-  path: string;
-  children?: FileNode[];
-};
+import type { FileTreeSearchResponse, Project } from '@/shared/types';
 
 type FlatFile = {
   name: string;
@@ -26,15 +19,9 @@ const normalize = (value: string): string => value.replace(/\\/g, '/');
 // POSIX one answer an honest 404 instead of opening some other file.
 const isAbsoluteRef = (value: string): boolean => /^(\/|[A-Za-z]:\/)/.test(value);
 
-const flatten = (nodes: FileNode[], out: FlatFile[]): void => {
-  for (const node of nodes) {
-    if (node.type === 'file') {
-      out.push({ name: node.name, path: node.path });
-    } else if (node.children && node.children.length > 0) {
-      flatten(node.children, out);
-    }
-  }
-};
+// Same-named files beyond this many are not considered; the best name matches
+// come first, so the exact basename matches fill it before anything else.
+const CANDIDATE_LIMIT = 200;
 
 // References inside chat messages are often bare basenames (`foo.ts`) or partial
 // paths (`utils/foo.ts`) rather than full paths, so match by path suffix and
@@ -59,45 +46,30 @@ const findBestMatch = (files: FlatFile[], ref: string): string | null => {
 
 /**
  * Wraps an `onFileOpen` handler so a possibly bare/partial file reference is
- * resolved against the project's file tree (cached per project) before the file
- * is opened in the in-app editor.
+ * resolved against the project's files (searched by the reference's file name
+ * on the server) before the file is opened in the in-app editor.
  */
 export function useFileOpenResolver(
   selectedProject: Project | null | undefined,
   onFileOpen: OnFileOpen,
 ): OnFileOpen {
   const projectId = selectedProject?.projectId;
-  const cacheRef = useRef<{ projectId?: string; files: Promise<FlatFile[]> | null }>({
-    projectId: undefined,
-    files: null,
-  });
 
-  const loadFiles = useCallback((): Promise<FlatFile[]> => {
-    if (!projectId) {
-      return Promise.resolve([]);
+  const findCandidates = useCallback(async (ref: string): Promise<FlatFile[]> => {
+    const fileName = ref.split('/').filter(Boolean).pop();
+    if (!projectId || !fileName) {
+      return [];
     }
-    if (cacheRef.current.projectId === projectId && cacheRef.current.files) {
-      return cacheRef.current.files;
-    }
-
-    const filesPromise = (async () => {
-      try {
-        const response = await api.getFiles(projectId);
-        if (!response.ok) {
-          return [];
-        }
-        const data = await response.json();
-        const tree: FileNode[] = Array.isArray(data) ? data : [];
-        const flat: FlatFile[] = [];
-        flatten(tree, flat);
-        return flat;
-      } catch {
+    try {
+      const response = await api.searchFiles(projectId, { query: fileName, limit: CANDIDATE_LIMIT, type: 'file' });
+      if (!response.ok) {
         return [];
       }
-    })();
-
-    cacheRef.current = { projectId, files: filesPromise };
-    return filesPromise;
+      const body = (await response.json()) as FileTreeSearchResponse;
+      return body.results.map((match) => ({ name: match.name, path: match.path }));
+    } catch {
+      return [];
+    }
   }, [projectId]);
 
   return useCallback(
@@ -115,11 +87,11 @@ export function useFileOpenResolver(
         onFileOpen(ref, diffInfo, line);
         return;
       }
-      void loadFiles().then((files) => {
+      void findCandidates(ref).then((files) => {
         const match = findBestMatch(files, ref);
         onFileOpen(match ?? ref, diffInfo, line);
       });
     },
-    [loadFiles, onFileOpen],
+    [findCandidates, onFileOpen],
   );
 }
