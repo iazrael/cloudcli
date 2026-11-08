@@ -214,7 +214,14 @@ test('a rotating job keeps its session until it reaches the rotation age', async
 
 test('a rotating job moves to a fresh session and archives the old one once it is due', async () => {
   await withIsolatedDatabase(async (userId, projectPath) => {
-    const job = createReuseJob(userId, { rotateAfterDays: 7 });
+    // No `options.model`: the run keeps the session's stored selection, which
+    // is exactly the shape of a job whose model comes from the conversation.
+    const job = createReuseJob(userId, {
+      rotateAfterDays: 7,
+      options: { permissionMode: 'bypassPermissions' },
+    });
+    sessionsDb.setSessionModel(SESSION_ID, 'opencode-go/deepseek-v4.1-flash');
+    sessionsDb.setSessionEffort(SESSION_ID, 'max');
 
     const runs: RunCall[] = [];
     const now = new Date(Date.now() + 8 * 24 * 60 * 60 * 1000);
@@ -233,6 +240,10 @@ test('a rotating job moves to a fresh session and archives the old one once it i
     const fresh = sessionsDb.getSessionById(rebound as string);
     assert.equal(fresh?.project_path, projectPath);
     assert.match(fresh?.custom_name ?? '', /^Nightly checks/);
+    // The rotated conversation must keep running with the same selection;
+    // dropping it would silently fall back to the engine's default model.
+    assert.equal(fresh?.model, 'opencode-go/deepseek-v4.1-flash');
+    assert.equal(fresh?.effort, 'max');
     assert.equal(sessionsDb.getSessionById(SESSION_ID)?.isArchived, 1);
   });
 });

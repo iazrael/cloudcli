@@ -95,6 +95,16 @@ async function rotateReuseSessionIfDue(job: ScheduledJobRow, now: Date): Promise
     job.prompt,
   );
   sessionsService.renameSessionById(created.sessionId, buildRunSessionName(job, now));
+  // The outgoing session's model/effort are the only record of what this job
+  // should keep running with. Without them the fresh session falls back to
+  // the engine's current default model, which can belong to an unrelated (or
+  // unusable) provider group — the job silently changes models on rotation.
+  if (bound?.model) {
+    sessionsDb.setSessionModel(created.sessionId, bound.model);
+  }
+  if (bound?.effort) {
+    sessionsDb.setSessionEffort(created.sessionId, bound.effort);
+  }
   scheduledJobsDb.update(job.user_id, job.id, { sessionId: created.sessionId });
   broadcastScheduledJobsChanged();
 
