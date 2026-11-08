@@ -1,6 +1,7 @@
 import { scheduledJobsDb, sessionsDb } from '@/modules/database/index.js';
 import type { ScheduledJobRow } from '@/modules/database/index.js';
-import { sessionsService } from '@/modules/providers/index.js';
+import { providerModelsService, sessionsService } from '@/modules/providers/index.js';
+import { readOptionalString } from '@/shared/utils.js';
 import type { LLMProvider } from '@/shared/types.js';
 import { broadcastScheduledJobsChanged, chatRunRegistry, runDetachedChatTurn } from '@/modules/websocket/index.js';
 import type { ProviderRuntimeGateway } from '@/modules/websocket/index.js';
@@ -124,6 +125,81 @@ async function rotateReuseSessionIfDue(job: ScheduledJobRow, now: Date): Promise
 }
 
 /**
+ * Gives a run session a model selection when it has none of its own.
+ *
+ * A `new` job creates a fresh session per occurrence, so there is no bound
+ * session to inherit from; without a selection the engine falls back to its
+ * current default model, which can belong to a different provider group
+ * entirely (and may not even be connected). Follow, in order: an explicit
+ * `options.model`, the job's most recent run session, the workspace's most
+ * recent session for the same provider, and finally the provider's catalog
+ * default. A session that already records its own model (a `reuse` job, or a
+ * user pick) is left untouched.
+ */
+async function ensureRunSessionModel(job: ScheduledJobRow, sessionId: string): Promise<void> {
+  const session = sessionsDb.getSessionById(sessionId);
+  if (!session || session.model) {
+    return;
+  }
+
+  const options = readOptions(job.options);
+  const selectedModel = readOptionalString(options.model)?.trim();
+  const selectedEffort = readOptionalString(options.effort)?.trim();
+
+  if (selectedModel) {
+    sessionsDb.setSessionModel(sessionId, selectedModel);
+    if (selectedEffort) {
+      sessionsDb.setSessionEffort(sessionId, selectedEffort);
+    }
+    return;
+  }
+
+  // The job's own last run is the conversation the user most recently saw,
+  // so its selection is the closest thing to "what this task runs with".
+  for (const previousRun of scheduledJobsDb.listRuns(job.id, 10)) {
+    if (!previousRun.session_id) {
+      continue;
+    }
+    const previousSession = sessionsDb.getSessionById(previousRun.session_id);
+    if (previousSession?.provider === job.provider && previousSession.model) {
+      sessionsDb.setSessionModel(sessionId, previousSession.model);
+      if (previousSession.effort) {
+        sessionsDb.setSessionEffort(sessionId, previousSession.effort);
+      }
+      return;
+    }
+  }
+
+  // A job that has not run yet (or whose old sessions are gone) continues
+  // with what the workspace last ran for this provider.
+  const projectModel = sessionsDb.getSessionsByProjectPath(job.project_path)
+    .filter((candidate) => candidate.provider === job.provider && candidate.model)
+    .sort((left, right) => (
+      Date.parse(right.updated_at ?? right.created_at)
+      - Date.parse(left.updated_at ?? left.created_at)
+    ))[0];
+  if (projectModel?.model) {
+    sessionsDb.setSessionModel(sessionId, projectModel.model);
+    if (projectModel.effort) {
+      sessionsDb.setSessionEffort(sessionId, projectModel.effort);
+    }
+    return;
+  }
+
+  // Last resort: the provider's own catalog default. It is still a model
+  // this provider can route, unlike the engine's free-model fallback.
+  const providerDefault = await providerModelsService.resolveSessionModel(
+    job.provider as LLMProvider,
+  );
+  if (providerDefault.model) {
+    sessionsDb.setSessionModel(sessionId, providerDefault.model);
+    if (providerDefault.effort) {
+      sessionsDb.setSessionEffort(sessionId, providerDefault.effort);
+    }
+  }
+}
+
+/**
  * Runs one claimed occurrence and records how it ended.
  *
  * Never interrupts a run already in progress: a recurring job can wait for the
@@ -150,6 +226,11 @@ export async function executeScheduledJobRun(
       scheduledJobsDb.recordJobOutcome(job.id, 'skipped');
       return;
     }
+
+    // A fresh `new`-mode session (or a reused one that never recorded a
+    // selection) starts from the task's last-known model instead of the
+    // engine's default.
+    await ensureRunSessionModel(runJob, sessionId);
 
     const result = await runDetachedChatTurn(
       {

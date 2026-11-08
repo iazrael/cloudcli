@@ -590,24 +590,15 @@ function ChatComposer({
               </div>
             )}
 
-<<<<<<< HEAD
             {SHOW_SCHEDULE_TRIGGER && (
               <ScheduleMessagePopover
                 disabled={!input.trim()}
                 onSchedule={onScheduleMessage}
-                onScheduleRecurring={onScheduleRecurring}
+                onScheduleTask={onScheduleTask}
                 supportsNativeScheduling={supportsNativeScheduling}
+                recurringEnabled={scheduledJobsEnabled}
               />
             )}
-=======
-            <ScheduleMessagePopover
-              disabled={!input.trim()}
-              onSchedule={onScheduleMessage}
-              onScheduleTask={onScheduleTask}
-              supportsNativeScheduling={supportsNativeScheduling}
-              recurringEnabled={scheduledJobsEnabled}
-            />
->>>>>>> 06f080ae (feat(scheduled-jobs): expose scheduled tasks to agents over MCP)
 
             <ComposerModelMenu
               effort={effort}

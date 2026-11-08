@@ -259,4 +259,3 @@ export const REMARK_SKIP_CONTAINER_RE = /^(?:link|linkReference|image|imageRefer
  * both offer the same choices.
  */
 export const SCHEDULED_JOB_ROTATE_AFTER_DAYS_OPTIONS = [0, 1, 3, 7, 14, 30];
->>>>>>> 6d861795 (feat(chat): offer session rotation when scheduling a task from the composer)
