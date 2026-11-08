@@ -198,6 +198,73 @@ test('a new-mode job creates a session per occurrence', async () => {
   });
 });
 
+test('a new-mode job starts from the workspace\'s last model', async () => {
+  await withIsolatedDatabase(async (userId, projectPath) => {
+    sessionsDb.setSessionModel(SESSION_ID, 'claude-opus-5');
+    sessionsDb.setSessionEffort(SESSION_ID, 'high');
+
+    const job = scheduledJobsService.create({
+      userId,
+      name: 'Daily audit',
+      provider: 'claude',
+      projectPath,
+      sessionId: undefined,
+      sessionMode: 'new',
+      prompt: 'audit the workspace',
+      options: { permissionMode: 'bypassPermissions' },
+      cronExpression: CRON_EVERY_MINUTE,
+      timezone: TIMEZONE,
+    });
+
+    const runs: RunCall[] = [];
+    await dispatchDueScheduledJobs(createRuntime(runs), new Date(Date.now() + 120_000));
+
+    const history = scheduledJobsService.listRuns(userId, job.id);
+    const created = sessionsDb.getSessionById(history[0].sessionId as string);
+    // A fresh `new`-mode session has no selection of its own; it must not
+    // fall through to the engine's default model.
+    assert.equal(created?.model, 'claude-opus-5');
+    assert.equal(created?.effort, 'high');
+  });
+});
+
+test('a new-mode job follows its own last run before the workspace default', async () => {
+  await withIsolatedDatabase(async (userId, projectPath) => {
+    const previousSessionId = 'previous-run-session';
+    sessionsDb.createAppSession(previousSessionId, 'claude', projectPath, 'Previous run');
+    sessionsDb.setSessionModel(previousSessionId, 'claude-sonnet-4-5');
+    sessionsDb.setSessionEffort(previousSessionId, 'low');
+    sessionsDb.setSessionModel(SESSION_ID, 'claude-opus-5');
+
+    const job = scheduledJobsService.create({
+      userId,
+      name: 'Daily audit',
+      provider: 'claude',
+      projectPath,
+      sessionId: undefined,
+      sessionMode: 'new',
+      prompt: 'audit the workspace',
+      options: { permissionMode: 'bypassPermissions' },
+      cronExpression: CRON_EVERY_MINUTE,
+      timezone: TIMEZONE,
+    });
+    scheduledJobsDb.insertRun({
+      jobId: job.id,
+      sessionId: previousSessionId,
+      trigger: 'schedule',
+      status: 'succeeded',
+    });
+
+    const runs: RunCall[] = [];
+    await dispatchDueScheduledJobs(createRuntime(runs), new Date(Date.now() + 120_000));
+
+    const history = scheduledJobsService.listRuns(userId, job.id);
+    const created = sessionsDb.getSessionById(history[0].sessionId as string);
+    assert.equal(created?.model, 'claude-sonnet-4-5');
+    assert.equal(created?.effort, 'low');
+  });
+});
+
 test('a rotating job keeps its session until it reaches the rotation age', async () => {
   await withIsolatedDatabase(async (userId) => {
     const job = createReuseJob(userId, { rotateAfterDays: 7 });
