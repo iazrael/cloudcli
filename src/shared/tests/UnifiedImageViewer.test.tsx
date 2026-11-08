@@ -52,6 +52,20 @@ test.each([
   expect(screen.queryByRole('alert')).toBeNull();
 });
 
+test('toggles the solid backing behind the image between black and white', () => {
+  render(<UnifiedImageViewer src="blob:http://localhost/diagram" title="流程图.png" onClose={vi.fn()} />);
+  const backdrop = screen.getByRole('region', { name: '流程图.png' }).firstElementChild as HTMLElement;
+
+  // Dark matches the viewer chrome by default; light rescues light-stroked diagrams.
+  expect(backdrop).toHaveProperty('style.backgroundColor', 'rgb(0, 0, 0)');
+
+  fireEvent.click(screen.getByRole('button', { name: '切换图片背景颜色' }));
+  expect(backdrop).toHaveProperty('style.backgroundColor', 'rgb(255, 255, 255)');
+
+  fireEvent.click(screen.getByRole('button', { name: '切换图片背景颜色' }));
+  expect(backdrop).toHaveProperty('style.backgroundColor', 'rgb(0, 0, 0)');
+});
+
 test('disables duplicate downloads while the save hand-off is pending', async () => {
   let finishSave!: () => void;
   vi.mocked(saveOrShareBlob).mockImplementationOnce(() => new Promise<void>((resolve) => { finishSave = resolve; }));
