@@ -514,6 +514,37 @@ test('searchFiles excludes conventional directory names only when the root has n
   assert.ok(withoutGitignore[0]?.excludedDirectoryNames.includes('node_modules'));
 });
 
+test('searchFiles indexes visible symlinks by name without following them', async () => {
+  const fileSystem = createTreeFileSystem(fakeProjectRoot, {}, {
+    files: { '.gitignore': 'ignored-link' },
+    overrides: {
+      lstat: async () => createStats(false, 0o644),
+      openDirectory: async function* (directoryPath) {
+        const link = (name: string): FileTreeDirectoryEntry => ({ name, isDirectory: () => false, isSymbolicLink: () => true });
+        if (directoryPath === fakeProjectRoot) {
+          yield createDirectoryEntry('AGENTS.md', false);
+          yield link('CLAUDE.md');
+          yield link('ignored-link');
+        } else if (directoryPath === path.join(fakeProjectRoot, 'docs')) {
+          yield link('linked-dir');
+        }
+      },
+    },
+  });
+  const service = createFileTreeService(createDependencies(fileSystem, fakeProjectRoot, [], {
+    fileIndexer: createStaticIndexer(['AGENTS.md', 'docs/guide.md']),
+  }));
+
+  const result = await service.searchFiles({ projectId: 'project-1', query: '', limit: 50, type: 'file' });
+
+  assert.deepEqual(result.results.map((match) => match.relativePath), [
+    'AGENTS.md',
+    'CLAUDE.md',
+    'docs/guide.md',
+    'docs/linked-dir',
+  ]);
+});
+
 test('searchFiles reuses the index within its lifetime and shares a build in flight', async () => {
   let clock = 1_000;
   let builds = 0;

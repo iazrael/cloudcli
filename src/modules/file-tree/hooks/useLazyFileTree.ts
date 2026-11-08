@@ -58,6 +58,11 @@ async function readResponseErrorMessage(response: Response): Promise<string> {
   }
 }
 
+// Paths come from the server with its own separator, so both are accepted.
+function isInside(candidate: string, ancestor: string): boolean {
+  return candidate.startsWith(`${ancestor}/`) || candidate.startsWith(`${ancestor}\\`);
+}
+
 function chunk<T>(values: T[], size: number): T[][] {
   const chunks: T[][] = [];
   for (let index = 0; index < values.length; index += size) {
@@ -195,6 +200,10 @@ export function useLazyFileTree(selectedProject: Project | null): UseLazyFileTre
 
     setDirectories((previous) => {
       const next = new Map(previous);
+      // Everything cached below a vanished folder went with it.
+      for (const key of next.keys()) {
+        if (vanished.some((path) => isInside(key, path))) next.delete(key);
+      }
       for (const listing of listings) {
         if ('entries' in listing) {
           const key = listing.request === ROOT_KEY ? ROOT_KEY : listing.path;
@@ -223,7 +232,9 @@ export function useLazyFileTree(selectedProject: Project | null): UseLazyFileTre
     if (vanished.length > 0) {
       setExpandedDirs((previous) => {
         const next = new Set(previous);
-        vanished.forEach((path) => next.delete(path));
+        for (const path of previous) {
+          if (vanished.some((gone) => path === gone || isInside(path, gone))) next.delete(path);
+        }
         return next;
       });
     }
@@ -253,8 +264,13 @@ export function useLazyFileTree(selectedProject: Project | null): UseLazyFileTre
 
     setExpandedDirs((previous) => new Set(previous).add(path));
     const state = known.get(path);
-    if (!state || state.stale || state.status === 'error') {
-      void fetchDirectories([path], { markLoading: true });
+    const reload = !state || state.stale || state.status === 'error' ? [path] : [];
+    // Folders still open inside this one went stale with it while it was closed.
+    for (const openPath of open) {
+      if (isInside(openPath, path) && known.get(openPath)?.stale) reload.push(openPath);
+    }
+    if (reload.length > 0) {
+      void fetchDirectories(reload, { markLoading: true });
     }
   }, [fetchDirectories]);
 

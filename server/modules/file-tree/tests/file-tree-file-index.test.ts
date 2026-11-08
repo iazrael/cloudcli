@@ -91,3 +91,38 @@ test('ripgrep indexer rejects when ripgrep cannot run', async () => {
     }),
   );
 });
+
+test('ripgrep indexer never follows symlinks, so nothing outside the project is listed', async (t) => {
+  const root = await createProject({ 'AGENTS.md': '', 'inside/real.txt': '' });
+  const outside = await createProject({ 'secret.txt': '' });
+  t.after(() => fsPromises.rm(root, { recursive: true, force: true }));
+  t.after(() => fsPromises.rm(outside, { recursive: true, force: true }));
+  await fsPromises.symlink(outside, path.join(root, 'linked-dir'));
+  await fsPromises.symlink(path.join(outside, 'secret.txt'), path.join(root, 'inside', 'secret-link.txt'));
+
+  const result = await createRipgrepFileIndexer(rgPath).listFiles({
+    rootPath: root,
+    excludedDirectoryNames: [],
+    maximumFiles: 100,
+  });
+
+  assert.deepEqual([...result.files].sort(), ['AGENTS.md', 'inside/real.txt']);
+});
+
+test('ripgrep indexer gives up on a listing that runs too long', async (t) => {
+  const scratch = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'cloudcli-slow-rg-'));
+  t.after(() => fsPromises.rm(scratch, { recursive: true, force: true }));
+  // Stands in for ripgrep stuck on a slow mount: prints one file, then hangs.
+  const slowRipgrep = path.join(scratch, 'slow-rg');
+  await fsPromises.writeFile(slowRipgrep, '#!/bin/sh\nprintf \'first.txt\\0\'\nexec sleep 30\n', { mode: 0o755 });
+
+  const started = Date.now();
+  const result = await createRipgrepFileIndexer(slowRipgrep, { timeoutMs: 200 }).listFiles({
+    rootPath: scratch,
+    excludedDirectoryNames: [],
+    maximumFiles: 10,
+  });
+
+  assert.equal(result.incomplete, true);
+  assert.ok(Date.now() - started < 5_000);
+});

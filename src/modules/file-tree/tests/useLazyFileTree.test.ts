@@ -116,6 +116,37 @@ describe('useLazyFileTree', () => {
     expect(result.current.items.map((item) => item.name)).toEqual(['src', 'README.md']);
   });
 
+  it('reopening a folder also re-reads the open folders inside it that went stale', async () => {
+    const { result } = await renderTree();
+    act(() => result.current.toggleDirectory(`${ROOT}/src`));
+    await waitFor(() => expect(find(result.current.items, 'src')?.children).toHaveLength(2));
+    act(() => result.current.toggleDirectory(`${ROOT}/src/lib`));
+    await waitFor(() => expect(find(find(result.current.items, 'src')?.children ?? [], 'lib')?.children).toHaveLength(1));
+    act(() => result.current.toggleDirectory(`${ROOT}/src`));
+
+    act(() => result.current.refresh());
+    await waitFor(() => expect(fake.calls.at(-1)).toEqual(['']));
+    fake.directories['src/lib'] = ['util.ts', 'added.ts'];
+    act(() => result.current.toggleDirectory(`${ROOT}/src`));
+
+    await waitFor(() => expect(find(find(result.current.items, 'src')?.children ?? [], 'lib')?.children?.map((item) => item.name)).toEqual(['util.ts', 'added.ts']));
+    expect(fake.calls.at(-1)).toEqual([`${ROOT}/src`, `${ROOT}/src/lib`]);
+  });
+
+  it('forgets the open folders inside a folder that disappeared', async () => {
+    const { result } = await renderTree();
+    act(() => result.current.toggleDirectory(`${ROOT}/src`));
+    await waitFor(() => expect(find(result.current.items, 'src')?.children).toHaveLength(2));
+    act(() => result.current.toggleDirectory(`${ROOT}/src/lib`));
+    await waitFor(() => expect(result.current.expandedDirs.size).toBe(2));
+
+    delete fake.directories.src;
+    delete fake.directories['src/lib'];
+    act(() => result.current.refresh());
+
+    await waitFor(() => expect(result.current.expandedDirs.size).toBe(0));
+  });
+
   it('reports why the root could not be listed', async () => {
     listDirectories.mockImplementation(async () => new Response(JSON.stringify({ error: 'Project not found' }), { status: 404 }));
     const { result } = await renderTree();

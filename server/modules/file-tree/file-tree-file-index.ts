@@ -6,6 +6,10 @@ import type { FileTreeFileIndexer } from '@/shared/types.js';
 // Enough of ripgrep's stderr to explain a failure without buffering a flood of
 // per-directory permission errors.
 const MAXIMUM_CAPTURED_STDERR_BYTES = 4_096;
+// A listing still running after this long (a slow network mount, a huge root
+// with few files) is cut short and used as an incomplete index, so searches
+// waiting on it are not held indefinitely.
+const DEFAULT_LISTING_TIMEOUT_MS = 20_000;
 
 /**
  * Ripgrep-backed project file listing used by the File Tree composition root
@@ -15,9 +19,13 @@ const MAXIMUM_CAPTURED_STDERR_BYTES = 4_096;
  * outside git repositories (`--no-require-git`), while `.ignore`/`.rgignore`,
  * global and parent ignore files are switched off so search sees the same
  * files the directory listing shows. Output is NUL-separated so any file name
- * survives, and the child is killed as soon as `maximumFiles` is reached.
+ * survives, and the child is killed as soon as `maximumFiles` is reached or
+ * `timeoutMs` passes, either way reporting an incomplete listing.
  */
-export function createRipgrepFileIndexer(ripgrepPath: string): FileTreeFileIndexer {
+export function createRipgrepFileIndexer(
+  ripgrepPath: string,
+  { timeoutMs = DEFAULT_LISTING_TIMEOUT_MS }: { timeoutMs?: number } = {},
+): FileTreeFileIndexer {
   return {
     listFiles({ rootPath, excludedDirectoryNames, maximumFiles }) {
       const args = [
@@ -40,6 +48,10 @@ export function createRipgrepFileIndexer(ripgrepPath: string): FileTreeFileIndex
         let pending = '';
         let stderr = '';
         let incomplete = false;
+        const timer = setTimeout(() => {
+          incomplete = true;
+          child.kill();
+        }, timeoutMs);
 
         child.stdout.setEncoding('utf8');
         child.stdout.on('data', (chunk: string) => {
@@ -61,8 +73,12 @@ export function createRipgrepFileIndexer(ripgrepPath: string): FileTreeFileIndex
             stderr += chunk.slice(0, MAXIMUM_CAPTURED_STDERR_BYTES - stderr.length);
           }
         });
-        child.on('error', reject);
+        child.on('error', (error) => {
+          clearTimeout(timer);
+          reject(error);
+        });
         child.on('close', (code) => {
+          clearTimeout(timer);
           if (incomplete) {
             resolve({ files, incomplete: true });
             return;

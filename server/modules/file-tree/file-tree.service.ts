@@ -325,15 +325,6 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
     pendingSearchIndexes.delete(projectRoot);
   }
 
-  async function pathExists(candidatePath: string): Promise<boolean> {
-    try {
-      await fileSystem.access(candidatePath);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
   /**
    * Describes one entry with `lstat` metadata. Returns null when the entry
    * vanished since it was listed or indexed; other metadata failures keep the
@@ -412,23 +403,61 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
     return lexicalPath;
   }
 
+  /**
+   * The ignore rules of one project for the length of one request or index
+   * build. Each ignore file is read and parsed at most once; a missing or
+   * unreadable file simply contributes no rules.
+   */
+  function createIgnoreRules(rootPath: string) {
+    const ignoreFiles = new Map<string, Promise<Ignore | null>>();
+    const loadIgnoreFile = (relativeFilePath: string): Promise<Ignore | null> => {
+      let loaded = ignoreFiles.get(relativeFilePath);
+      if (!loaded) {
+        loaded = fileSystem.readTextFile(path.join(rootPath, ...relativeFilePath.split('/')))
+          .then((content) => ignore().add(content))
+          .catch((error: unknown) => {
+            const errorCode = readErrorCode(error);
+            if (errorCode !== 'ENOENT' && errorCode !== 'ENOTDIR') {
+              dependencies.logger.error(`Error reading ignore file "${relativeFilePath}" in "${rootPath}"`, error);
+            }
+            return null;
+          });
+        ignoreFiles.set(relativeFilePath, loaded);
+      }
+      return loaded;
+    };
+
+    return {
+      /** Fallback directory names apply only to a root without a `.gitignore`. */
+      async usesFallbackDirectoryNames(): Promise<boolean> {
+        return (await loadIgnoreFile('.gitignore')) === null;
+      },
+      /** The layers in effect for entries of `relativeDirectory`, lowest precedence first. */
+      async layersFor(relativeDirectory: string): Promise<IgnoreLayer[]> {
+        const layers: IgnoreLayer[] = [];
+        const exclude = await loadIgnoreFile('.git/info/exclude');
+        if (exclude) layers.push({ baseDirectory: '', matcher: exclude });
+        const rootGitignore = await loadIgnoreFile('.gitignore');
+        if (rootGitignore) layers.push({ baseDirectory: '', matcher: rootGitignore });
+        const segments = relativeDirectory ? relativeDirectory.split('/') : [];
+        for (let depth = 1; depth <= segments.length; depth += 1) {
+          const baseDirectory = segments.slice(0, depth).join('/');
+          const matcher = await loadIgnoreFile(`${baseDirectory}/.gitignore`);
+          if (matcher) layers.push({ baseDirectory, matcher });
+        }
+        return layers;
+      },
+    };
+  }
+
   async function listOneDirectory(
     rootPath: string,
     directoryPath: string,
-    loadIgnoreFile: (relativeFilePath: string) => Promise<Ignore | null>,
+    rules: ReturnType<typeof createIgnoreRules>,
   ): Promise<{ entries: FileTreeNode[]; truncated: boolean }> {
     const relativeDirectory = path.relative(rootPath, directoryPath).split(path.sep).join('/');
-    const rootGitignore = await loadIgnoreFile('.gitignore');
-    const layers: IgnoreLayer[] = [];
-    const exclude = await loadIgnoreFile('.git/info/exclude');
-    if (exclude) layers.push({ baseDirectory: '', matcher: exclude });
-    if (rootGitignore) layers.push({ baseDirectory: '', matcher: rootGitignore });
-    const segments = relativeDirectory ? relativeDirectory.split('/') : [];
-    for (let depth = 1; depth <= segments.length; depth += 1) {
-      const baseDirectory = segments.slice(0, depth).join('/');
-      const matcher = await loadIgnoreFile(`${baseDirectory}/.gitignore`);
-      if (matcher) layers.push({ baseDirectory, matcher });
-    }
+    const layers = await rules.layersFor(relativeDirectory);
+    const useFallbackDirectoryNames = await rules.usesFallbackDirectoryNames();
 
     const visibleEntries: FileTreeDirectoryEntry[] = [];
     let truncated = false;
@@ -436,7 +465,7 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
     try {
       for await (const entry of fileSystem.openDirectory(directoryPath)) {
         const entryRelativePath = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
-        if (!isEntryVisible(entryRelativePath, entry.isDirectory(), layers, rootGitignore === null)) {
+        if (!isEntryVisible(entryRelativePath, entry.isDirectory(), layers, useFallbackDirectoryNames)) {
           continue;
         }
         // Leaving the loop closes the directory stream, so the rest of a huge
@@ -467,22 +496,63 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
     return { entries, truncated };
   }
 
+  /**
+   * Symlinks in the given project directories that the ignore rules leave
+   * visible. Ripgrep skips symlinks unless it follows them, and following them
+   * would index files outside the project, so they are collected here by name
+   * only, like the directory listing shows them.
+   */
+  async function listVisibleSymlinks(
+    projectRoot: string,
+    relativeDirectories: string[],
+    rules: ReturnType<typeof createIgnoreRules>,
+    useFallbackDirectoryNames: boolean,
+  ): Promise<string[]> {
+    const found = await Promise.all(relativeDirectories.map(async (relativeDirectory) => {
+      const layers = await rules.layersFor(relativeDirectory);
+      const links: string[] = [];
+      await acquire();
+      try {
+        for await (const entry of fileSystem.openDirectory(path.join(projectRoot, ...relativeDirectory.split('/')))) {
+          if (!entry.isSymbolicLink?.()) continue;
+          const relativePath = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
+          if (isEntryVisible(relativePath, false, layers, useFallbackDirectoryNames)) {
+            links.push(relativePath);
+          }
+        }
+      } catch {
+        // A directory that vanished or became unreadable since ripgrep listed
+        // it contributes no symlinks.
+      } finally {
+        release();
+      }
+      return links;
+    }));
+    return found.flat();
+  }
+
   async function buildSearchIndex(projectRoot: string): Promise<SearchIndex> {
-    const useFallbackDirectoryNames = !(await pathExists(path.join(projectRoot, '.gitignore')));
-    const { files, incomplete } = await dependencies.fileIndexer.listFiles({
+    // Stamped before listing so the index never claims to be newer than it is.
+    const builtAt = dependencies.now();
+    const rules = createIgnoreRules(projectRoot);
+    const useFallbackDirectoryNames = await rules.usesFallbackDirectoryNames();
+    const listing = await dependencies.fileIndexer.listFiles({
       rootPath: projectRoot,
       excludedDirectoryNames: [...(useFallbackDirectoryNames ? IGNORED_DIRECTORY_NAMES : HARD_EXCLUDED_DIRECTORY_NAMES)],
       maximumFiles: MAXIMUM_INDEXED_FILES,
     });
+    const { incomplete } = listing;
 
     // The index lists files only; directories are derived from their paths, so
     // an empty directory is not searchable.
     const directories = new Set<string>();
-    for (const file of files) {
+    for (const file of listing.files) {
       for (let separator = file.indexOf('/'); separator !== -1; separator = file.indexOf('/', separator + 1)) {
         directories.add(file.slice(0, separator));
       }
     }
+    const symlinks = await listVisibleSymlinks(projectRoot, ['', ...directories], rules, useFallbackDirectoryNames);
+    const files = [...listing.files, ...symlinks.slice(0, Math.max(0, MAXIMUM_INDEXED_FILES - listing.files.length))];
     const toEntry = (relativePath: string, type: 'file' | 'directory'): SearchIndexEntry => {
       const lowerPath = relativePath.toLowerCase();
       return { relativePath, lowerPath, lowerName: path.posix.basename(lowerPath), type };
@@ -491,7 +561,7 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
       ...files.map((file) => toEntry(file, 'file')),
       ...[...directories].map((directory) => toEntry(directory, 'directory')),
     ].sort((left, right) => compareRelativePaths(left.relativePath, right.relativePath));
-    return { entries, incomplete, builtAt: dependencies.now() };
+    return { entries, incomplete, builtAt };
   }
 
   async function loadSearchIndex(projectRoot: string): Promise<SearchIndex> {
@@ -876,31 +946,13 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
       }
       const rootPath = path.resolve(projectRoot);
 
-      // Ignore files are shared by every directory of the batch, so each one is
-      // read and parsed once per request. A missing or unreadable file simply
-      // contributes no rules.
-      const ignoreFiles = new Map<string, Promise<Ignore | null>>();
-      const loadIgnoreFile = (relativeFilePath: string): Promise<Ignore | null> => {
-        let loaded = ignoreFiles.get(relativeFilePath);
-        if (!loaded) {
-          loaded = fileSystem.readTextFile(path.join(rootPath, ...relativeFilePath.split('/')))
-            .then((content) => ignore().add(content))
-            .catch((error: unknown) => {
-              const errorCode = readErrorCode(error);
-              if (errorCode !== 'ENOENT' && errorCode !== 'ENOTDIR') {
-                dependencies.logger.error(`Error reading ignore file "${relativeFilePath}" in "${rootPath}"`, error);
-              }
-              return null;
-            });
-          ignoreFiles.set(relativeFilePath, loaded);
-        }
-        return loaded;
-      };
+      // Ignore files are shared by every directory of the batch.
+      const rules = createIgnoreRules(rootPath);
 
       return Promise.all(paths.map(async (request): Promise<FileTreeDirectoryListing> => {
         try {
           const directoryPath = await resolveListableDirectory(rootPath, realProjectRoot, request);
-          const { entries, truncated } = await listOneDirectory(rootPath, directoryPath, loadIgnoreFile);
+          const { entries, truncated } = await listOneDirectory(rootPath, directoryPath, rules);
           return { request, path: directoryPath, entries, truncated };
         } catch (error) {
           if (error instanceof AppError) {

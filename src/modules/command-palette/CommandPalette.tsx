@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { defaultFilter } from 'cmdk';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
@@ -53,6 +54,16 @@ const NAV_TABS: Array<{ id: AppTab; labelKey: string; keywords: string }> = [
   { id: 'shell', labelKey: 'commandPalette.navShell', keywords: 'shell terminal console' },
   { id: 'git', labelKey: 'commandPalette.navGit', keywords: 'git diff branches' },
 ];
+
+// Marks items the server already matched and ranked (the files group), so the
+// palette's own fuzzy filter neither hides nor re-sorts them.
+const SERVER_MATCHED_KEYWORD = '\u0000server-matched';
+const SERVER_MATCHED_KEYWORDS = [SERVER_MATCHED_KEYWORD];
+
+function filterPaletteItem(value: string, search: string, keywords?: string[]): number {
+  // An equal score keeps cmdk's sort stable, preserving the server's order.
+  return keywords?.includes(SERVER_MATCHED_KEYWORD) ? 1 : defaultFilter(value, search, keywords);
+}
 
 /** Rendered by the project-workspace module to search projects, sessions, files, branches and commits and run their actions. */
 function CommandPalette({
@@ -160,7 +171,7 @@ function CommandPalette({
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent className="max-w-xl overflow-hidden p-0">
         <DialogTitle>{t('commandPalette.title')}</DialogTitle>
-        <Command label={t('commandPalette.title')} onKeyDown={handleKeyDown}>
+        <Command label={t('commandPalette.title')} onKeyDown={handleKeyDown} filter={filterPaletteItem}>
           {page && (
             <div className="flex items-center gap-2 border-b px-3 py-2">
               <span className="inline-flex items-center gap-1 rounded-md bg-accent px-2 py-0.5 text-xs font-medium text-accent-foreground">
@@ -301,10 +312,7 @@ function CommandPalette({
                   <CommandItem
                     key={f.path}
                     value={f.path}
-                    // The server already matched these against the search
-                    // text; echoing it as a keyword makes cmdk count them as
-                    // matches instead of filtering them out again.
-                    keywords={[search]}
+                    keywords={SERVER_MATCHED_KEYWORDS}
                     onSelect={() => run(() => ops.openFile(f.path))}
                   >
                     <FileText className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />

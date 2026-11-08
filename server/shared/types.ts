@@ -1273,6 +1273,8 @@ export type FileTreeFileIndexer = {
 export type FileTreeDirectoryEntry = {
   name: string;
   isDirectory(): boolean;
+  /** Present on Node `Dirent`s; search uses it to index symlinks without following them. */
+  isSymbolicLink?(): boolean;
 };
 
 /**
