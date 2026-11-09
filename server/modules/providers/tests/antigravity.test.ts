@@ -1158,6 +1158,146 @@ test('AntigravitySessionsProvider fetchHistory filters pure SYSTEM_MESSAGE entri
   }
 });
 
+test('AntigravitySessionsProvider fetchHistory collapses a terminally failed turn into one error row', async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-data-err-'));
+  const sessionId = 'agy-err-terminal';
+  const transcriptDir = path.join(tempRoot, 'brain', sessionId, '.system_generated', 'logs');
+  await fs.mkdir(transcriptDir, { recursive: true });
+  // Mirrors a real exhausted-retry turn: agy logs one ERROR_MESSAGE per
+  // attempt and produces no assistant rows at all.
+  const entries = [
+    { step_index: 226, source: 'USER_EXPLICIT', type: 'USER_INPUT', status: 'DONE', created_at: '2026-11-09T13:36:14Z', content: '<USER_REQUEST>\n提交所有文件\n</USER_REQUEST>' },
+    { step_index: 228, source: 'SYSTEM', type: 'ERROR_MESSAGE', status: 'DONE', created_at: '2026-11-09T13:37:39Z', error: 'API error (attempt 1): UNAVAILABLE (code 503): No capacity available for model gemini-4-argon-high on the server' },
+    { step_index: 229, source: 'SYSTEM', type: 'ERROR_MESSAGE', status: 'DONE', created_at: '2026-11-09T13:39:59Z', error: 'API error (attempt 2): request failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse": unexpected EOF' },
+    { step_index: 230, source: 'SYSTEM', type: 'ERROR_MESSAGE', status: 'DONE', created_at: '2026-11-09T13:44:12Z', error: 'API error (attempt 3): request failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse": unexpected EOF' },
+  ];
+  await fs.writeFile(
+    path.join(transcriptDir, 'transcript.jsonl'),
+    entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n',
+  );
+
+  const restoreDataDir = withEnvValue('CLOUDCLI_ANTIGRAVITY_DATA_DIR', tempRoot);
+  try {
+    const sessions = new AntigravitySessionsProvider();
+    const { messages } = await sessions.fetchHistory(sessionId, {});
+
+    // One user row plus exactly one collapsed error row for the whole turn.
+    assert.equal(messages.length, 2);
+    const [, errorMsg] = messages;
+    assert.equal(errorMsg?.kind, 'error');
+    assert.equal(
+      errorMsg?.content,
+      'API error (attempt 3): request failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse": unexpected EOF (failed after 3 attempts)',
+    );
+    assert.equal(errorMsg?.sequence, 230);
+    assert.equal(errorMsg?.timestamp, '2026-11-09T13:44:12Z');
+  } finally {
+    restoreDataDir();
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('AntigravitySessionsProvider fetchHistory stays silent on retry errors the engine recovered from', async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-data-err-recover-'));
+  const sessionId = 'agy-err-recovered';
+  const transcriptDir = path.join(tempRoot, 'brain', sessionId, '.system_generated', 'logs');
+  await fs.mkdir(transcriptDir, { recursive: true });
+  // A transient failure the engine retried past: the turn went on to produce
+  // a reply, which is what the live view showed, so history must stay quiet.
+  const entries = [
+    { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', status: 'DONE', created_at: '2026-11-09T13:00:00Z', content: '<USER_REQUEST>\nhello\n</USER_REQUEST>' },
+    { step_index: 1, source: 'SYSTEM', type: 'ERROR_MESSAGE', status: 'DONE', created_at: '2026-11-09T13:00:10Z', error: 'API error (attempt 1): UNAVAILABLE (code 503): No capacity available' },
+    { step_index: 2, source: 'SYSTEM', type: 'ERROR_MESSAGE', status: 'DONE', created_at: '2026-11-09T13:00:20Z', error: 'API error (attempt 2): request failed: unexpected EOF' },
+    { step_index: 3, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', created_at: '2026-11-09T13:00:30Z', content: 'Recovered reply.' },
+  ];
+  await fs.writeFile(
+    path.join(transcriptDir, 'transcript.jsonl'),
+    entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n',
+  );
+
+  const restoreDataDir = withEnvValue('CLOUDCLI_ANTIGRAVITY_DATA_DIR', tempRoot);
+  try {
+    const sessions = new AntigravitySessionsProvider();
+    const { messages } = await sessions.fetchHistory(sessionId, {});
+
+    assert.equal(messages.length, 2);
+    assert.equal(messages.some((msg) => msg.kind === 'error'), false);
+    assert.equal(messages[0]?.kind, 'text');
+    assert.equal(messages[1]?.kind, 'text');
+    assert.equal(messages[1]?.content, 'Recovered reply.');
+  } finally {
+    restoreDataDir();
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('AntigravitySessionsProvider fetchHistory keeps a single terminal error verbatim', async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-data-err-single-'));
+  const sessionId = 'agy-err-single';
+  const transcriptDir = path.join(tempRoot, 'brain', sessionId, '.system_generated', 'logs');
+  await fs.mkdir(transcriptDir, { recursive: true });
+  const entries = [
+    { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', status: 'DONE', created_at: '2026-11-09T13:00:00Z', content: '<USER_REQUEST>\nhello\n</USER_REQUEST>' },
+    { step_index: 1, source: 'SYSTEM', type: 'ERROR_MESSAGE', status: 'DONE', created_at: '2026-11-09T13:00:10Z', error: 'API error (attempt 1): request failed: unexpected EOF' },
+  ];
+  await fs.writeFile(
+    path.join(transcriptDir, 'transcript.jsonl'),
+    entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n',
+  );
+
+  const restoreDataDir = withEnvValue('CLOUDCLI_ANTIGRAVITY_DATA_DIR', tempRoot);
+  try {
+    const sessions = new AntigravitySessionsProvider();
+    const { messages } = await sessions.fetchHistory(sessionId, {});
+
+    assert.equal(messages.length, 2);
+    const errorMsg = messages[1];
+    assert.equal(errorMsg?.kind, 'error');
+    assert.equal(errorMsg?.content, 'API error (attempt 1): request failed: unexpected EOF');
+    assert.equal((errorMsg?.content as string)?.includes('failed after'), false);
+  } finally {
+    restoreDataDir();
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('AntigravitySessionsProvider fetchHistory reports an error that follows partial output and stops at the turn boundary', async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-data-err-partial-'));
+  const sessionId = 'agy-err-partial';
+  const transcriptDir = path.join(tempRoot, 'brain', sessionId, '.system_generated', 'logs');
+  await fs.mkdir(transcriptDir, { recursive: true });
+  // The turn produced text before dying; the next turn must not inherit the
+  // failure notice.
+  const entries = [
+    { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', status: 'DONE', created_at: '2026-11-09T13:00:00Z', content: '<USER_REQUEST>\ndo it\n</USER_REQUEST>' },
+    { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', created_at: '2026-11-09T13:00:10Z', content: 'Working on it.' },
+    { step_index: 2, source: 'SYSTEM', type: 'ERROR_MESSAGE', status: 'DONE', created_at: '2026-11-09T13:00:20Z', error: 'API error (attempt 1): request failed: unexpected EOF' },
+    { step_index: 3, source: 'USER_EXPLICIT', type: 'USER_INPUT', status: 'DONE', created_at: '2026-11-09T13:05:00Z', content: '<USER_REQUEST>\nagain\n</USER_REQUEST>' },
+    { step_index: 4, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', created_at: '2026-11-09T13:05:10Z', content: 'Done.' },
+  ];
+  await fs.writeFile(
+    path.join(transcriptDir, 'transcript.jsonl'),
+    entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n',
+  );
+
+  const restoreDataDir = withEnvValue('CLOUDCLI_ANTIGRAVITY_DATA_DIR', tempRoot);
+  try {
+    const sessions = new AntigravitySessionsProvider();
+    const { messages } = await sessions.fetchHistory(sessionId, {});
+
+    assert.deepEqual(messages.map((msg) => [msg.kind, msg.role, msg.content]), [
+      ['text', 'user', 'do it'],
+      ['text', 'assistant', 'Working on it.'],
+      ['error', undefined, 'API error (attempt 1): request failed: unexpected EOF'],
+      ['text', 'user', 'again'],
+      ['text', 'assistant', 'Done.'],
+    ]);
+  } finally {
+    restoreDataDir();
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test('AntigravitySessionsProvider fetchHistory returns empty for unknown sessions', async () => {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-data-empty-'));
   const restoreDataDir = withEnvValue('CLOUDCLI_ANTIGRAVITY_DATA_DIR', tempRoot);
