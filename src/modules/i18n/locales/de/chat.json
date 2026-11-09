@@ -310,7 +310,8 @@
     "resetMinutes": "Zurücksetzung in {{minutes}}Min",
     "emptyQuotaHint": {
       "claude": "API-Schlüssel-, Bedrock- und Vertex-Anmeldungen haben keine Abo-Limits von Claude.ai",
-      "codex": "API-Schlüssel-Anmeldungen liefern in der Regel keine 5-Stunden- oder Wochenlimits"
+      "codex": "API-Schlüssel-Anmeldungen liefern in der Regel keine 5-Stunden- oder Wochenlimits",
+      "opencode": "Kein OpenCode-Go-Abo oder die CLI ist nicht in einem Go-Workspace angemeldet"
     },
     "resetCardTitle": "Nutzungs-Reset-Karten",
     "resetCardHint": "Mit einer Karte wird das abgedeckte Kontingent sofort aufgefüllt — ohne Wartezeit auf das Fenster.",

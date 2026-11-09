@@ -312,7 +312,8 @@
     "resetMinutes": "Réinitialisation dans {{minutes}}m",
     "emptyQuotaHint": {
       "claude": "Les connexions par clé API, Bedrock ou Vertex n'ont pas de limites d'abonnement claude.ai",
-      "codex": "La connexion par clé API n'indique généralement pas de limite de 5 h ou hebdomadaire"
+      "codex": "La connexion par clé API n'indique généralement pas de limite de 5 h ou hebdomadaire",
+      "opencode": "Aucun abonnement OpenCode Go, ou la CLI n'est pas connectée à un espace de travail Go"
     },
     "resetCardTitle": "Cartes de réinitialisation d'utilisation",
     "resetCardHint": "Utiliser une carte replit immédiatement le quota concerné, sans attendre la fenêtre de réinitialisation.",

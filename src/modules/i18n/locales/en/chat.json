@@ -414,7 +414,8 @@
     "resetMinutes": "Resets in {{minutes}}m",
     "emptyQuotaHint": {
       "claude": "API key, Bedrock and Vertex logins have no claude.ai subscription limits",
-      "codex": "API Key logins typically do not report 5-hour or weekly account limits"
+      "codex": "API Key logins typically do not report 5-hour or weekly account limits",
+      "opencode": "No OpenCode Go subscription, or the CLI isn't signed in to a Go workspace"
     },
     "resetCardTitle": "Usage reset cards",
     "resetCardHint": "Spending a card refills the covered allowance immediately — no waiting for the window to roll over.",

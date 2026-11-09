@@ -323,7 +323,8 @@
     "resetMinutes": "{{minutes}}분 후 리셋",
     "emptyQuotaHint": {
       "claude": "API 키, Bedrock, Vertex 로그인에는 claude.ai 구독 한도가 없습니다",
-      "codex": "API 키 로그인은 일반적으로 5시간 또는 주간 한도를 제공하지 않습니다"
+      "codex": "API 키 로그인은 일반적으로 5시간 또는 주간 한도를 제공하지 않습니다",
+      "opencode": "OpenCode Go 플랜이 없거나 CLI가 Go 워크스페이스에 로그인하지 않았습니다"
     },
     "resetCardTitle": "사용량 리셋 카드",
     "resetCardHint": "카드를 사용하면 해당 한도가 즉시 충전되며, 리셋 주기를 기다릴 필요가 없습니다.",

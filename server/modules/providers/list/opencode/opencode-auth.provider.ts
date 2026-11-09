@@ -6,9 +6,10 @@ import Database from 'better-sqlite3';
 
 import { getOpenCodeDatabasePath } from '@/modules/providers/list/opencode/opencode-data-root.js';
 import { tryResolveOpenCodeEnginePath } from '@/modules/providers/list/opencode/opencode-engine-path.js';
+import { fetchOpenCodeQuota } from '@/modules/providers/list/opencode/opencode-quota.provider.js';
 import { createCliInstallationProbe } from '@/modules/providers/shared/installation/cli-installation-probe.js';
 import type { IProviderAuth } from '@/shared/interfaces.js';
-import type { ProviderAuthStatus } from '@/shared/types.js';
+import type { ProviderAuthStatus, ProviderQuotaData } from '@/shared/types.js';
 import { readObjectRecord, readOptionalString } from '@/shared/utils.js';
 
 type OpenCodeCredentialsStatus = {
@@ -55,6 +56,15 @@ export class OpenCodeProviderAuth implements IProviderAuth {
       method: credentials.method,
       error: credentials.authenticated ? undefined : credentials.error || 'Not authenticated',
     };
+  }
+
+  /**
+   * Reads the signed-in workspace's OpenCode Go plan usage meters (5-hour,
+   * weekly, monthly). Consumer: the provider token-usage service
+   * (GET /providers/quota).
+   */
+  async getQuota(options?: { forceRefresh?: boolean }): Promise<ProviderQuotaData | null> {
+    return fetchOpenCodeQuota(options);
   }
 
   /**

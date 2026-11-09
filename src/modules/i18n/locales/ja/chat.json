@@ -292,7 +292,8 @@
     "resetMinutes": "{{minutes}}分後にリセット",
     "emptyQuotaHint": {
       "claude": "API キー・Bedrock・Vertex でのログインには claude.ai のサブスクリプション制限がありません",
-      "codex": "API キーでのログインでは通常、5時間や週間の制限は提供されません"
+      "codex": "API キーでのログインでは通常、5時間や週間の制限は提供されません",
+      "opencode": "OpenCode Go プランが未契約か、CLI が Go ワークスペースに未ログインです"
     },
     "resetCardTitle": "使用量リセットカード",
     "resetCardHint": "使用すると対象の枠が即座に回復し、リセット期間を待つ必要がありません。",

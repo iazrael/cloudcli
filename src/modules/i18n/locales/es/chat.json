@@ -381,7 +381,8 @@
     "resetMinutes": "Se reinicia en {{minutes}}m",
     "emptyQuotaHint": {
       "claude": "Los inicios de sesión con API key, Bedrock o Vertex no tienen límites de suscripción de claude.ai",
-      "codex": "Los inicios de sesión con API Key no suelen indicar límites de 5 horas o semanales"
+      "codex": "Los inicios de sesión con API Key no suelen indicar límites de 5 horas o semanales",
+      "opencode": "Sin suscripción a OpenCode Go, o la CLI no ha iniciado sesión en un espacio de trabajo Go"
     },
     "resetCardTitle": "Tarjetas de reinicio de uso",
     "resetCardHint": "Usar una tarjeta rellena de inmediato la cuota cubierta, sin esperar la ventana de reinicio.",

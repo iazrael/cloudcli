@@ -330,7 +330,9 @@ opencode 的自动命名由引擎自己做，CloudCLI 只负责不挡路。引�
 `account/rateLimits/read`，zcode 直接打 BigModel / Z.AI 的 HTTP 端点，
 claude 则借 Agent SDK 的 control request（`/usage` 背后那个实验接口）——
 因为 OAuth 令牌与静默续期都归 SDK 管，绕过它就得自己碰凭据。
-三家都要拉起进程或走网络，因此统一用 `createProviderQuotaCache`（TTL 两分钟）挡在前面，
+opencode 打 Go 套餐的内部端点 `/zen/go/v1/usage`（官方文档未列，随 CLI 版本可能变动），
+凭证读 CLI 共享库 credential 表的令牌与工作区 id，令牌续期归 CLI 管，403/401/超时一律降级为"无配额"。
+各家都要拉起进程或走网络，因此统一用 `createProviderQuotaCache`（TTL 两分钟）挡在前面，
 `?refresh=true` 才穿透。claude 那条路额外有一点要守住：喂给 SDK 的输入流一条消息都不产出，
 CLI 只是挂着等输入，既不会落 transcript，也不会消耗它正在汇报的额度。
 

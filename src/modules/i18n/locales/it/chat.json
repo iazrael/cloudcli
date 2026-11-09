@@ -310,7 +310,8 @@
     "resetMinutes": "Si ripristina in {{minutes}}m",
     "emptyQuotaHint": {
       "claude": "Gli accessi con chiave API, Bedrock o Vertex non hanno limiti di abbonamento claude.ai",
-      "codex": "L'accesso tramite chiave API di solito non riporta limiti di 5 ore o settimanali"
+      "codex": "L'accesso tramite chiave API di solito non riporta limiti di 5 ore o settimanali",
+      "opencode": "Nessun abbonamento OpenCode Go, oppure la CLI non ha effettuato l'accesso a un workspace Go"
     },
     "resetCardTitle": "Carte di reset dell'utilizzo",
     "resetCardHint": "Usare una carta ricarica immediatamente la quota coperta, senza attendere la finestra di reset.",

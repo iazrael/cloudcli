@@ -116,7 +116,8 @@ const BASELINE: Record<string, Omit<ProviderCapabilities, 'provider'>> = {
     // forms surface as cards answered through the service API.
     supportsPermissionRequests: true,
     supportsTokenUsage: true,
-    supportsQuota: false,
+    // The auth facet reads the OpenCode Go plan usage meters (5h/weekly/monthly).
+    supportsQuota: true,
     supportsQuotaReset: false,
     supportsEffort: true,
     // Runtime levels; a custom model may only declare from this list.

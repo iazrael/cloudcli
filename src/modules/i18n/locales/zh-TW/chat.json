@@ -405,7 +405,8 @@
     "resetMinutes": "{{minutes}} 分鐘後重設",
     "emptyQuotaHint": {
       "claude": "API Key、Bedrock、Vertex 登入沒有 claude.ai 訂閱限額",
-      "codex": "API Key 登入通常不會提供 5 小時和週限額"
+      "codex": "API Key 登入通常不會提供 5 小時和週限額",
+      "opencode": "未開通 OpenCode Go 套餐，或 CLI 未登入到 Go 工作區"
     },
     "resetCardTitle": "用量重置卡",
     "resetCardHint": "使用後立即補滿對應額度，無需等待刷新視窗",
