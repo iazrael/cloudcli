@@ -16,8 +16,8 @@ staging 安装（`pnpm install --prod`，每次部署全量解析 900+ 包元数
 
 staging 安装按顺序尝试，任一档成功即继续，全失败才报错退出：
 
-1. 环境继承（现状：npmmirror）。
-2. 失败后注入 `npm_config_registry=https://registry.npmjs.org` 重试一次（官方源经本机代理实测可用，2026-11-09 部署即由此跑通）。
+1. **镜像源直连**：默认源 npmmirror（`~/.npmrc`），剥掉全部代理环境变量（`http(s)_proxy`/`all_proxy`/`HTTP(S)_PROXY`/`ALL_PROXY`/`npm_config_proxy`/`npm_config_https_proxy`）。镜像必须直连：代理出口 IP 请求 npmmirror 实测吃 500，国内直连才通（2026-11-09 实测：走代理 500；直连可通但当日镜像自身也在抽风、元数据接口超时）。
+2. **官方源走代理**：失败后注入 `npm_config_registry=https://registry.npmjs.org` 并继承代理重试一次（官方源在墙外，走代理实测 200、1.6s；2026-11-09 第一次部署即由此跑通）。
 
 ## 为什么不做 staging 锁文件（决策记录）
 

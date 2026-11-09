@@ -237,14 +237,24 @@ fs.writeFileSync(path.join(NEXT_RUNTIME_DIR, 'package.json'), JSON.stringify({
   dependencies: { [APP_NAME]: `file:${tarball}` },
   pnpm: { onlyBuiltDependencies: BUILD_ALLOWLIST },
 }, null, 2) + '\n');
-// staging 安装按档回退：镜像源（环境继承）失败后用 npm 官方源重试一次。
-// 每次部署都对 900+ 包全量解析元数据，镜像源元数据接口抽风（连续 500）曾把
-// 部署卡死在安装阶段；官方源经代理可用，只在此兜底档启用，正常部署零开销。
+// staging 安装按档回退：
+// ① 镜像源直连——默认源是 npmmirror（~/.npmrc），它必须走直连：剥掉全部代理
+//    环境变量，代理出口 IP 请求镜像会吃 500（2026-11-09 实测：走代理 500、
+//    直连可通；官方源走代理 200）。
+// ② 官方源走代理——registry.npmjs.org 在墙外，必须继承代理；镜像抽风时兜底。
+// 每次部署都对 900+ 包全量解析元数据，曾把部署卡死在安装阶段。
 // 不做 staging 锁持久化 + frozen 安装的原因见 docs/design/部署registry源回退.md。
 const OFFICIAL_REGISTRY = 'https://registry.npmjs.org';
+const PROXY_ENV_KEYS = [
+  'http_proxy', 'https_proxy', 'all_proxy',
+  'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY',
+  'npm_config_proxy', 'npm_config_https_proxy',
+];
+const mirrorDirectEnv = { ...process.env };
+for (const key of PROXY_ENV_KEYS) delete mirrorDirectEnv[key];
 const installAttempts = [
-  { name: '默认源（环境继承）', env: process.env },
-  { name: `npm 官方源（${OFFICIAL_REGISTRY}）`, env: { ...process.env, npm_config_registry: OFFICIAL_REGISTRY } },
+  { name: '镜像源直连（npmmirror，禁代理）', env: mirrorDirectEnv },
+  { name: `npm 官方源走代理（${OFFICIAL_REGISTRY}）`, env: { ...process.env, npm_config_registry: OFFICIAL_REGISTRY } },
 ];
 let installed = false;
 for (const attempt of installAttempts) {
@@ -261,7 +271,7 @@ for (const attempt of installAttempts) {
     console.log(`\n[deploy] ✗ ${attempt.name} 安装失败${attempt === installAttempts.at(-1) ? '' : '，换下一档重试'}`);
   }
 }
-if (!installed) fail(`staging 安装失败（默认源与官方源均尝试过）：${NEXT_RUNTIME_DIR}`);
+if (!installed) fail(`staging 安装失败（镜像直连与官方源走代理均尝试过）：${NEXT_RUNTIME_DIR}`);
 
 let pkgDir = path.join(NEXT_RUNTIME_DIR, 'node_modules', APP_NAME);
 const serverEntry = path.join(pkgDir, 'dist-server', 'server', 'index.js');
