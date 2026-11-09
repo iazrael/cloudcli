@@ -16,8 +16,10 @@ staging 安装（`pnpm install --prod`，每次部署全量解析 900+ 包元数
 
 staging 安装按顺序尝试，任一档成功即继续，全失败才报错退出：
 
-1. **镜像源直连**：默认源 npmmirror（`~/.npmrc`），剥掉全部代理环境变量（`http(s)_proxy`/`all_proxy`/`HTTP(S)_PROXY`/`ALL_PROXY`/`npm_config_proxy`/`npm_config_https_proxy`）。镜像必须直连：代理出口 IP 请求 npmmirror 实测吃 500，国内直连才通（2026-11-09 实测：走代理 500；直连可通但当日镜像自身也在抽风、元数据接口超时）。
-2. **官方源走代理**：失败后注入 `npm_config_registry=https://registry.npmjs.org` 并继承代理重试一次（官方源在墙外，走代理实测 200、1.6s；2026-11-09 第一次部署即由此跑通）。
+1. **默认源直连**：剥掉全部代理环境变量（`http(s)_proxy`/`all_proxy`/`HTTP(S)_PROXY`/`ALL_PROXY`/`npm_config_proxy`/`npm_config_https_proxy`）后走默认源。默认源来自 `~/.npmrc`，2026-11-09 起是官方源 `registry.npmjs.org`——它经本机 TUN 直连实测可达（200/2.1s，免代理）；若日后换回 npmmirror，直连同样是镜像的唯一正确姿势：代理出口 IP 请求镜像实测吃 500。
+2. **官方源走代理**：失败后显式注入 `npm_config_registry=https://registry.npmjs.org` 并继承代理重试一次，兜默认源不可用（镜像抽风/TUN 故障）的底（走代理实测 200、1.6s；2026-11-09 第一次部署即由此跑通）。
+
+2026-11-09 晚间全局源切官方后的首次部署：第一档直连一次过，未触发回退。
 
 ## 为什么不做 staging 锁文件（决策记录）
 

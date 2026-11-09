@@ -238,11 +238,12 @@ fs.writeFileSync(path.join(NEXT_RUNTIME_DIR, 'package.json'), JSON.stringify({
   pnpm: { onlyBuiltDependencies: BUILD_ALLOWLIST },
 }, null, 2) + '\n');
 // staging 安装按档回退：
-// ① 镜像源直连——默认源是 npmmirror（~/.npmrc），它必须走直连：剥掉全部代理
-//    环境变量，代理出口 IP 请求镜像会吃 500（2026-11-09 实测：走代理 500、
-//    直连可通；官方源走代理 200）。
-// ② 官方源走代理——registry.npmjs.org 在墙外，必须继承代理；镜像抽风时兜底。
-// 每次部署都对 900+ 包全量解析元数据，曾把部署卡死在安装阶段。
+// ① 默认源直连——剥掉全部代理环境变量走直连。默认源来自 ~/.npmrc（2026-11-09
+//    起是官方源，官方源经本机 TUN 直连实测可达；若换回 npmmirror 镜像，直连
+//    同样是它的唯一正确姿势：代理出口 IP 请求镜像实测吃 500）。
+// ② 官方源走代理——显式指到 registry.npmjs.org 并继承代理环境，兜默认源不可
+//    用（镜像抽风/TUN 故障）时的底。
+// 每次安装都对 900+ 包全量解析元数据，曾把部署卡死在安装阶段。
 // 不做 staging 锁持久化 + frozen 安装的原因见 docs/design/部署registry源回退.md。
 const OFFICIAL_REGISTRY = 'https://registry.npmjs.org';
 const PROXY_ENV_KEYS = [
@@ -250,10 +251,10 @@ const PROXY_ENV_KEYS = [
   'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY',
   'npm_config_proxy', 'npm_config_https_proxy',
 ];
-const mirrorDirectEnv = { ...process.env };
-for (const key of PROXY_ENV_KEYS) delete mirrorDirectEnv[key];
+const directEnv = { ...process.env };
+for (const key of PROXY_ENV_KEYS) delete directEnv[key];
 const installAttempts = [
-  { name: '镜像源直连（npmmirror，禁代理）', env: mirrorDirectEnv },
+  { name: '默认源直连（禁代理）', env: directEnv },
   { name: `npm 官方源走代理（${OFFICIAL_REGISTRY}）`, env: { ...process.env, npm_config_registry: OFFICIAL_REGISTRY } },
 ];
 let installed = false;
