@@ -986,7 +986,7 @@ function ResetCreditsCard({
   );
 }
 
-function CostContent({ data }: { data: CostCommandData }) {
+function CostContent({ data, pending }: { data: CostCommandData; pending: boolean }) {
   const { t } = useTranslation('chat');
   const used = Number(data.tokenUsage?.used ?? 0);
   const total = Number(data.tokenUsage?.total ?? 0);
@@ -1098,6 +1098,10 @@ function CostContent({ data }: { data: CostCommandData }) {
       : []),
   ];
 
+  // Opened on click before `/cost` answered, and the composer had no usage of
+  // its own: say it is reading rather than show a total of 0.
+  const isReadingUsage = pending && used <= 0 && !hasBreakdown;
+
   const quotaGroups = sortQuotaGroupsForModel(
     quotaData?.groups ?? [],
     data.model,
@@ -1108,7 +1112,13 @@ function CostContent({ data }: { data: CostCommandData }) {
     <div className="scrollbar-thin h-full min-h-0 space-y-4 overflow-y-auto pr-1">
       {/* Session Context Token Usage */}
       <div className="overflow-hidden rounded-2xl border border-border/70 bg-background/75">
-        {usageRows.map((row) => {
+        {isReadingUsage && (
+          <div className="flex items-center gap-3 px-4 py-3 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin text-primary" />
+            {t('cost.readingUsage')}
+          </div>
+        )}
+        {!isReadingUsage && usageRows.map((row) => {
           const Icon = row.icon;
 
           return (
@@ -1293,6 +1303,7 @@ export default function CommandResultModal({
   const isOpen = Boolean(payload);
   const kind = payload?.kind;
   const isModelsModal = kind === 'models';
+  const isWaitingForData = Boolean(payload?.pending) && kind !== 'cost';
 
   const modalMeta = {
     help: {
@@ -1368,8 +1379,15 @@ export default function CommandResultModal({
         </div>
 
         <div className="settings-content-enter min-h-0 flex-1 overflow-hidden px-4 py-4 sm:px-6 sm:py-5">
-          {payload?.kind === 'help' && <HelpContent data={payload.data as HelpCommandData} />}
-          {payload?.kind === 'models' && (
+          {/* Only /cost has local data to show while its answer is on the way. */}
+          {isWaitingForData && (
+            <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin text-primary" />
+              {t('chat:misc.commandModalLoading')}
+            </div>
+          )}
+          {!isWaitingForData && payload?.kind === 'help' && <HelpContent data={payload.data as HelpCommandData} />}
+          {!isWaitingForData && payload?.kind === 'models' && (
             <ModelsContent
               data={payload.data as ModelCommandData}
               providerModelCatalog={providerModelCatalog}
@@ -1381,8 +1399,10 @@ export default function CommandResultModal({
               onSelectProviderModel={onSelectProviderModel}
             />
           )}
-          {payload?.kind === 'cost' && <CostContent data={payload.data as CostCommandData} />}
-          {payload?.kind === 'status' && <StatusContent data={payload.data as StatusCommandData} />}
+          {payload?.kind === 'cost' && (
+            <CostContent data={payload.data as CostCommandData} pending={Boolean(payload.pending)} />
+          )}
+          {!isWaitingForData && payload?.kind === 'status' && <StatusContent data={payload.data as StatusCommandData} />}
         </div>
 
         <div className="flex shrink-0 flex-col gap-3 border-t border-border/70 bg-muted/20 px-4 py-3 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between sm:px-6">

@@ -13,6 +13,7 @@
     "recoveryFailed": "聊天同步失败，正在自动重试，已有内容已保留。也可以刷新页面重试。"
   },
   "misc": {
+    "commandModalLoading": "正在加载…",
     "outputAssets": "结果附件（{{count}}）",
     "fullOutput": "完整输出.txt",
     "compacted": "已压缩",
@@ -360,6 +361,7 @@
     "dismiss": "关闭失败提示"
   },
   "cost": {
+    "readingUsage": "正在读取会话用量…",
     "totalTokensUsed": "总用量",
     "inputTokens": "输入用量",
     "outputTokens": "输出用量",

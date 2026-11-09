@@ -381,6 +381,7 @@
     "dismiss": "Dismiss failure notice"
   },
   "cost": {
+    "readingUsage": "Reading session usage…",
     "totalTokensUsed": "Total tokens used",
     "inputTokens": "Input tokens",
     "outputTokens": "Output tokens",
@@ -440,6 +441,7 @@
     "resetCardWeeklyAlso5h": "Resetting the weekly allowance also refills the 5-hour pool, without spending a 5-hour card."
   },
   "misc": {
+    "commandModalLoading": "Loading…",
     "outputAssets": "Output attachments ({{count}})",
     "fullOutput": "Full output.txt",
     "copyToClipboard": "Copy to clipboard",

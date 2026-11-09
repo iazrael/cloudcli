@@ -183,7 +183,47 @@ export type CommandModalKind = 'help' | 'models' | 'cost' | 'status';
 export type CommandModalPayload = {
   kind: CommandModalKind;
   data: HelpCommandData | ModelCommandData | CostCommandData | StatusCommandData;
+  /**
+   * The modal opened on click and `/api/commands/execute` has not answered.
+   * `data` holds what the browser already knew (only `/cost` has any).
+   */
+  pending?: boolean;
 };
+
+/** Built-in commands whose answer is shown in the command modal, by modal kind. */
+const BUILTIN_MODAL_COMMAND_KINDS: Record<string, CommandModalKind> = {
+  '/help': 'help',
+  '/models': 'models',
+  '/cost': 'cost',
+  '/status': 'status',
+};
+
+/**
+ * What the `/cost` modal can show before the server answers: the composer's
+ * own provider, model and token count. Usage is left out when the composer has
+ * none, so the modal says it is reading instead of showing 0.
+ */
+function buildLocalCostData(
+  provider: string,
+  model: string,
+  tokenBudget: Record<string, unknown> | null,
+): CostCommandData {
+  const data: CostCommandData = { provider, model };
+  const breakdown = tokenBudget?.breakdown && typeof tokenBudget.breakdown === 'object'
+    ? tokenBudget.breakdown as Record<string, unknown>
+    : null;
+  const input = Number(tokenBudget?.inputTokens ?? breakdown?.input) || 0;
+  const output = Number(tokenBudget?.outputTokens ?? breakdown?.output) || 0;
+  const used = Math.max(Number(tokenBudget?.used) || 0, input + output);
+  if (used <= 0) {
+    return data;
+  }
+  data.tokenUsage = { used, total: Number(tokenBudget?.total) || 0 };
+  if (input + output > 0) {
+    data.tokenBreakdown = { input, output };
+  }
+  return data;
+}
 
 /**
  * Thrown by the submit path when a message could not be handed to the backend.
@@ -350,6 +390,10 @@ export function useChatComposerState({
   const [isTextareaExpanded, setIsTextareaExpanded] = useState(false);
   const [editingAnchorId, setEditingAnchorId] = useState<string | null>(null);
   const [commandModalPayload, setCommandModalPayload] = useState<CommandModalPayload | null>(null);
+  // Which modal opening an `/api/commands/execute` answer may still fill.
+  // Opening a modal bumps it; closing bumps it again, so a late answer neither
+  // reopens a modal the user dismissed nor overwrites the composer's tokens.
+  const commandModalRequestRef = useRef(0);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const inputHighlightRef = useRef<HTMLDivElement>(null);
@@ -420,6 +464,7 @@ export function useChatComposerState({
           setCommandModalPayload({
             kind: 'help',
             data: (data || {}) as HelpCommandData,
+            pending: false,
           });
           break;
 
@@ -427,6 +472,7 @@ export function useChatComposerState({
           setCommandModalPayload({
             kind: 'models',
             data: (data || {}) as ModelCommandData,
+            pending: false,
           });
           break;
 
@@ -435,6 +481,7 @@ export function useChatComposerState({
           setCommandModalPayload({
             kind: 'cost',
             data: costData,
+            pending: false,
           });
           if (costData.tokenUsage && setTokenBudget) {
             setTokenBudget({
@@ -452,6 +499,7 @@ export function useChatComposerState({
           setCommandModalPayload({
             kind: 'status',
             data: (data || {}) as StatusCommandData,
+            pending: false,
           });
           break;
         }
@@ -487,6 +535,7 @@ export function useChatComposerState({
   );
 
   const closeCommandModal = useCallback(() => {
+    commandModalRequestRef.current += 1;
     setCommandModalPayload(null);
   }, []);
 
@@ -523,6 +572,19 @@ export function useChatComposerState({
     async (command: SlashCommand, rawInput?: string, options?: { preserveInput?: boolean }) => {
       if (!command || !selectedProject) {
         return;
+      }
+
+      // A built-in modal command opens its modal now, not after the round trip:
+      // on a slow link that wait was seconds with nothing on screen.
+      const modalKind = command.namespace === 'builtin' ? BUILTIN_MODAL_COMMAND_KINDS[command.name] : undefined;
+      const modalRequestId = modalKind ? ++commandModalRequestRef.current : null;
+      const ownsModal = () => modalRequestId === commandModalRequestRef.current;
+      if (modalKind) {
+        setCommandModalPayload({
+          kind: modalKind,
+          data: modalKind === 'cost' ? buildLocalCostData(provider, currentProviderModel, tokenBudget) : {},
+          pending: true,
+        });
       }
 
       try {
@@ -579,7 +641,9 @@ export function useChatComposerState({
 
         const result = (await response.json()) as CommandExecutionResult;
         if (result.type === 'builtin') {
-          handleBuiltInCommand(result);
+          if (!modalKind || ownsModal()) {
+            handleBuiltInCommand(result);
+          }
           if (!options?.preserveInput) {
             updateInput('');
           }
@@ -587,6 +651,18 @@ export function useChatComposerState({
           await handleCustomCommand(result);
         }
       } catch (error) {
+        if (modalKind) {
+          if (!ownsModal()) {
+            return;
+          }
+          // The cost modal already shows the composer's own numbers; a failed
+          // refresh only ends its loading state. The others have nothing to show.
+          if (modalKind === 'cost') {
+            setCommandModalPayload((current) => current && { ...current, pending: false });
+            return;
+          }
+          setCommandModalPayload(null);
+        }
         const message = error instanceof Error ? error.message : 'Unknown error';
         console.error('Error executing command:', error);
         addMessage({
