@@ -124,7 +124,7 @@ export class RequestRouter {
    * @param method - Protocol method name
    * @param params - Method parameters
    * @param timeout - Request timeout in milliseconds (0 for no timeout: use
-   *   for `session/send`, whose result arrives on the event stream)
+   *   for the `sendText` command, whose turn completes on the event stream)
    * @returns Promise that resolves with the result or rejects with error
    */
   async request<T = unknown>(

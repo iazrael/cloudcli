@@ -119,8 +119,15 @@ export type RunHandle = {
   readonly sessionId: string;
   readonly appSessionId: string | null;
   readonly writer: ProviderRuntimeWriter;
-  /** Set when a delivered session/stop confirmed the user's abort. */
+  /** Set when a delivered v4 stop confirmed the user's abort. */
   abortRequested: boolean;
+  /**
+   * Set when `abort` sends its stop, before the engine answers. The engine
+   * stops the turn synchronously, so the run's cancelled `turn.completed`
+   * can arrive ahead of the acknowledgement; while this is set, that
+   * cancellation is the user's abort, not the turn completing.
+   */
+  stopSent: boolean;
   /**
    * Set right before the run's prompt goes to the engine. A run listens to
    * the engine session from the moment it starts, but a turn-ending event
@@ -128,6 +135,28 @@ export type RunHandle = {
    * not end this one.
    */
   promptDispatched: boolean;
+  /**
+   * The input id this run's prompt was sent with (the `sendText` command id,
+   * or the legacy send's `inputId`). The engine tags the turn it starts for
+   * that input with the same id (`turn.started` payload `inputId`), which is
+   * how the run finds its turn.
+   */
+  promptInputId: string | null;
+  /** The pending send of this run's prompt, so an abort can wait for it. */
+  promptSend: Promise<void> | null;
+  /**
+   * Set once the engine acknowledged the prompt. A preempted turn winds down
+   * before the acknowledgement, so until then a turn-tagged event that names
+   * no input of this run belongs to that turn.
+   */
+  promptAcknowledged: boolean;
+  /**
+   * The engine turn started for this run's prompt, once `turn.started` named
+   * it. The engine also runs turns of its own on the session (queued
+   * background-task notifications), and the prompt preempts such a turn:
+   * only terminal events of this turn may end the run.
+   */
+  ownTurnId: string | null;
   /**
    * Who performs terminal handling and cleanup: the run coroutine until the
    * silence watchdog hands off, the detached watcher afterwards. A handle
@@ -255,7 +284,12 @@ export class ZCodeRunLifecycle {
       appSessionId: start.appSessionId,
       writer: start.writer,
       abortRequested: false,
+      stopSent: false,
       promptDispatched: false,
+      promptInputId: null,
+      promptSend: null,
+      promptAcknowledged: false,
+      ownTurnId: null,
       owner: 'run',
       state: { completed: false, lastActivityAt: Date.now() },
     };
@@ -357,8 +391,9 @@ export class ZCodeRunLifecycle {
   }
 
   /**
-   * Records a user abort that the engine confirmed (a `session/stop` that was
-   * actually delivered). The settle wait returns `aborted` promptly, and the
+   * Records a user abort that the engine confirmed: a v4 stop that was
+   * actually delivered, or the run's turn ending as cancelled while that stop
+   * was in flight. The settle wait returns `aborted` promptly, and the
    * terminal notification reports the run as aborted. A stop that failed must
    * NOT be recorded here: the engine keeps working, so the run has to settle
    * on its real terminal event instead.

@@ -46,6 +46,13 @@ const logFile = process.env.ZCODE_STUB_LOG;
 // and every emitted event carries this id — so it must follow the id the
 // client resumed with or the runtime filters the turn events out.
 let sessionId = 'sess_stub_1';
+// Mirrors engine 0.17.1: a created session's row is written only when its
+// first input arrives through the legacy session/send; a sendText command on
+// a session never written fails its foreign key. A resumed session comes
+// from the database — unless this engine created it and it was never
+// written, in which case resume just reattaches the in-memory session.
+const createdSessions = new Set();
+const writtenSessions = new Set();
 
 const send = (obj) => process.stdout.write(JSON.stringify(obj) + '\\n');
 const log = (name, value) => {
@@ -73,6 +80,9 @@ const finishCreate = () => {
 // mode "abort-ok": streams until a session/stop arrives, which both answers
 // and ends the turn — mirroring an engine that honors a delivered stop.
 let abortTicker = null;
+// The input id of the turn abort-ok is streaming, so its cancellation can be
+// reported under the same id, as the real engine does.
+let abortInputId = null;
 
 // mode "cancel-echo": like abort-ok, but after confirming the stop the engine
 // echoes the cancelled model request as a turn.failed — what real engines do.
@@ -136,6 +146,22 @@ rl.on('line', (line) => {
   let msg;
   try { msg = JSON.parse(line); } catch { return; }
 
+  // The runtime drives turns through v4 commands. Translate the two it uses
+  // into the legacy handlers below so every mode serves both shapes; the
+  // command envelope rides along for the acknowledgement. A raw legacy
+  // send or stop is logged so tests can prove the runtime no longer uses it.
+  if (msg.method === 'v4/command') {
+    const envelope = msg.params ?? {};
+    log('v4_command', { ...envelope, payload: redactSendParams(envelope.payload) });
+    if (envelope.type === 'sendText') {
+      msg = { id: msg.id, method: 'session/send', v4: envelope, params: { sessionId: envelope.sessionId, ...(envelope.payload ?? {}) } };
+    } else if (envelope.type === 'stop') {
+      msg = { id: msg.id, method: 'session/stop', v4: envelope, params: { sessionId: envelope.sessionId } };
+    }
+  } else if (msg.method === 'session/send' || msg.method === 'session/stop') {
+    log('legacy_' + msg.method.slice('session/'.length), msg.params);
+  }
+
   // Responses to our server-initiated requests carry no method.
   if (msg.method === undefined) {
     if (msg.id === 'server-1') {
@@ -185,6 +211,12 @@ rl.on('line', (line) => {
   // text delta and the stop of the background agent an earlier turn left
   // running, so both land while the runtime is still setting a new run up —
   // between its start and the moment it sends the prompt.
+  // mode "slow-subscribe": the run is still setting up when the user stops.
+  if (msg.method === 'session/subscribe' && readMode() === 'slow-subscribe') {
+    setTimeout(() => send({ id: msg.id, result: {} }), 300);
+    return;
+  }
+
   if (msg.method === 'session/subscribe' && readMode() === 'handover-window') {
     const ev = (type, payload) => send({ method: 'session/event', params: { sessionId, type, payload } });
     ev('model_streaming', { kind: 'text_delta', delta: 'window text' });
@@ -199,6 +231,8 @@ rl.on('line', (line) => {
     // A create always starts a fresh engine session: reset the event session
     // id a previous resume-driven test may have changed.
     sessionId = 'sess_stub_1';
+    createdSessions.add(sessionId);
+    writtenSessions.delete(sessionId);
     // ZCode 0.16.9 validates create params strictly and no longer accepts the
     // runtimeModel catalog here. Keep this boundary aligned with the real
     // engine so a provider upgrade cannot silently reintroduce the breakage.
@@ -222,21 +256,77 @@ rl.on('line', (line) => {
 
   if (msg.method === 'session/send') {
     log('session_send_attempt', redactSendParams(msg.params));
-    // Mirror the engine's strict schema: unknown keys are rejected.
+    // Mirror the engine's strict schemas: unknown keys are rejected. The
+    // legacy send carries content, the sendText payload carries text.
+    const allowedKeys = msg.v4
+      ? ['sessionId', 'text', 'attachments', 'modelSelection', 'modelExecution', 'requestedDelivery', 'heldQueueDisposition']
+      : ['sessionId', 'content', 'inputId', 'attachments', 'modelSelection', 'modelExecution'];
     for (const key of Object.keys(msg.params ?? {})) {
-      if (
-        key !== 'sessionId'
-        && key !== 'content'
-        && key !== 'attachments'
-        && key !== 'modelSelection'
-        && key !== 'modelExecution'
-      ) {
+      if (!allowedKeys.includes(key)) {
         send({ id: msg.id, error: { code: -32602, message: 'Invalid params — (root): Unrecognized key: "' + key + '"' } });
         return;
       }
     }
+    const commandId = msg.v4 ? msg.v4.commandId : undefined;
+    if (!msg.v4 && readMode() === 'legacy-send-fail') {
+      send({ id: msg.id, error: { code: -32010, message: 'legacy send refused' } });
+      return;
+    }
+    if (msg.v4 && !writtenSessions.has(sessionId)) {
+      send({ id: msg.id, result: { commandId, status: 'failed', message: 'FOREIGN KEY constraint failed', revisionAtDecision: 0 } });
+      return;
+    }
+    writtenSessions.add(sessionId);
     log('session_send', redactSendParams(msg.params));
-    send({ id: msg.id, result: {} });
+    // The id the engine copies onto the turn it starts for this input.
+    const inputId = msg.v4 ? commandId : msg.params.inputId;
+    const acceptSend = () => send({ id: msg.id, result: msg.v4
+      ? { commandId, status: 'accepted', revisionAtDecision: 1, result: { type: 'inputAccepted', delivery: 'startNow', inputId: commandId } }
+      : {} });
+    if (readMode() === 'send-rejected') {
+      // The engine refuses the input outright; no turn starts.
+      send({ id: msg.id, result: { commandId, status: 'rejected', reasonCode: 'fault.command.inputRejected', message: 'input rejected by engine', revisionAtDecision: 1 } });
+      return;
+    }
+    if (readMode() === 'slow-ack') {
+      // The engine is still winding a preempted turn down: the send is only
+      // acknowledged a moment later, and the prompt's turn starts after that.
+      setTimeout(() => {
+        log('send_acked', inputId);
+        acceptSend();
+        abortInputId = inputId;
+        send({ method: 'session/event', params: { sessionId, turnId: 'turn_abort', type: 'turn.started', payload: { inputId } } });
+        abortTicker = setInterval(() => {
+          send({ method: 'session/event', params: { sessionId, turnId: 'turn_abort', type: 'model.streaming', payload: { kind: 'text_delta', delta: 'streaming' } } });
+        }, 100);
+      }, 300);
+      return;
+    }
+    if (readMode() === 'early-fail') {
+      // The turn fails before announcing itself: its failure names the turn
+      // but carries no input id.
+      acceptSend();
+      send({ method: 'session/event', params: { sessionId, turnId: 'turn_early', type: 'turn.failed', payload: { error: { message: 'model config missing' } } } });
+      return;
+    }
+    if (readMode() === 'preempt') {
+      // The engine is running a turn it started itself from a queued
+      // background notification. startNow cancels it first — its terminal
+      // events reach the stream before the send is even acknowledged — and
+      // only then starts the user's turn, tagged with the command id.
+      const ev = (type, turnId, payload) => send({ method: 'session/event', params: { sessionId, turnId, type, payload } });
+      ev('model.streaming', 'turn_bg', { kind: 'text_delta', delta: 'notification work' });
+      ev('turn.failed', 'turn_bg', { error: { name: 'AiSdkModelAdapterError', data: { message: 'Model request was cancelled.', code: 'model_request_cancelled', turnResult: 'cancelled' } } });
+      ev('turn.completed', 'turn_bg', { resultType: 'cancelled', inputId: 'bg_input_1' });
+      ev('turn.started', 'turn_user', { inputId });
+      acceptSend();
+      setTimeout(() => {
+        ev('model.streaming', 'turn_user', { kind: 'text_delta', delta: 'user reply' });
+        ev('turn.completed', 'turn_user', { resultType: 'success', inputId, usage: { inputTokens: 3, outputTokens: 4 } });
+      }, 150);
+      return;
+    }
+    acceptSend();
     if (readMode() === 'tool-results') {
       const notify = (payload) => send({ method: 'session/event', params: { sessionId, type: 'tool.updated', payload } });
       notify({ kind: 'scheduled', toolCallId: 'call_live_bash', toolName: 'Bash', input: { command: 'ls' } });
@@ -358,6 +448,8 @@ rl.on('line', (line) => {
     if (readMode() === 'abort-ok') {
       // Streams until a session/stop arrives (see the stop handler above),
       // mirroring an engine that honors a delivered stop.
+      abortInputId = inputId;
+      send({ method: 'session/event', params: { sessionId, turnId: 'turn_abort', type: 'turn.started', payload: { inputId } } });
       abortTicker = setInterval(() => {
         send({ method: 'session/event', params: { sessionId, type: 'model_streaming', payload: { kind: 'text_delta', delta: 'streaming' } } });
       }, 200);
@@ -386,7 +478,9 @@ rl.on('line', (line) => {
         send({ method: 'session/event', params: { sessionId, type: 'model_streaming', payload: { kind: 'text_delta', delta: 'tick ' + ticks } } });
         if (ticks >= 12) {
           clearInterval(ticker);
-          send({ method: 'session/event', params: { sessionId, type: 'turn_complete', payload: { usage: { inputTokens: 3, outputTokens: 4 } } } });
+          // Something other than the refused stop cancels the turn in the
+          // end (another client, the engine itself).
+          send({ method: 'session/event', params: { sessionId, type: 'turn_complete', payload: { resultType: 'cancelled', usage: { inputTokens: 3, outputTokens: 4 } } } });
         }
       }, 300);
       return;
@@ -415,6 +509,7 @@ rl.on('line', (line) => {
     // selection was silently dropped (cross-registry resume).
     const noSelection = readMode() === 'resume-no-selection' || readMode() === 'resume-no-selection-setmodel-fail';
     sessionId = (msg.params && msg.params.sessionId) || sessionId;
+    if (!createdSessions.has(sessionId)) writtenSessions.add(sessionId);
     send({
       id: msg.id,
       result: {
@@ -434,11 +529,18 @@ rl.on('line', (line) => {
     log('stop', msg.params);
     if (abortTicker) { clearInterval(abortTicker); abortTicker = null; }
     if (cancelEchoTicker) { clearInterval(cancelEchoTicker); cancelEchoTicker = null; }
+    const stopCommandId = msg.v4 ? msg.v4.commandId : undefined;
     if (readMode() === 'stop-fail') {
-      send({ id: msg.id, error: { code: -32000, message: 'stop refused' } });
+      send({ id: msg.id, result: { commandId: stopCommandId, status: 'rejected', reasonCode: 'guard.stopTargetChanged', message: 'stop refused', revisionAtDecision: 1 } });
       return;
     }
-    send({ id: msg.id, result: {} });
+    if ((readMode() === 'abort-ok' || readMode() === 'slow-ack') && abortInputId) {
+      // The real engine stops the turn synchronously: the cancelled turn's
+      // completion reaches the stream before the stop is acknowledged.
+      send({ method: 'session/event', params: { sessionId, turnId: 'turn_abort', type: 'turn.completed', payload: { resultType: 'cancelled', inputId: abortInputId } } });
+      abortInputId = null;
+    }
+    send({ id: msg.id, result: msg.v4 ? { commandId: stopCommandId, status: 'accepted', revisionAtDecision: 1 } : {} });
     if (readMode() === 'cancel-echo') {
       // Delayed so the runtime records the delivered stop before the failure
       // echo arrives, the way separate engine messages do in production.
@@ -511,6 +613,13 @@ const context: ProviderRuntimeContext = {
   getProviderModels: async () => ({ OPTIONS: [], DEFAULT: 'GLM-5.3' }),
   normalizeMessage: (raw, sessionId) => sessionsProvider.normalizeMessage(raw, sessionId),
   isProviderInstalled: async () => true,
+};
+
+// A session the app already maps to an engine session: the run resumes it,
+// so its prompt goes out as a sendText command.
+const resumedContext: ProviderRuntimeContext = {
+  ...context,
+  resolveProviderSessionId: () => 'sess_stub_1',
 };
 
 const createWriter = (): { messages: NormalizedMessage[]; writer: ProviderRuntimeWriter } => {
@@ -636,6 +745,171 @@ test('runtime configures model and reasoning effort variant', async () => {
   const acceptedSendPayload = acceptedSend?.value as { modelSelection?: unknown } | undefined;
   assert.ok(acceptedSendPayload, 'strict-schema session/send must be accepted');
   assert.deepEqual(acceptedSendPayload.modelSelection, latestSendAttempt.modelSelection);
+});
+
+test('a new session\'s first prompt goes out through session/send, tagged with an input id', async () => {
+  fsSync.writeFileSync(modeFilePath, 'preempt\n');
+  fsSync.writeFileSync(logFilePath, '');
+  const runtime = new ZCodeRuntimeProvider();
+  const { messages, writer } = createWriter();
+
+  // The engine writes a created session's row only on its first legacy send;
+  // a sendText there would fail its foreign key.
+  const result = await runtime.run('hello', { sessionId: 'app-sess-first', cwd: stubDir }, writer, context);
+  assert.deepEqual(result, { sessionId: 'sess_stub_1', success: true });
+
+  const legacySend = readStubLog().find((entry) => entry.name === 'legacy_send')?.value as
+    { content?: unknown; inputId?: unknown } | undefined;
+  assert.equal(legacySend?.content, 'hello');
+  assert.equal(typeof legacySend?.inputId, 'string', 'the input id lets the run claim its turn');
+  assert.equal(readStubLog().filter((entry) => entry.name === 'v4_command').length, 0);
+  // The input id ties the turn to the run on this channel too.
+  assert.ok(messages.some((msg) => msg.kind === 'stream_delta' && msg.content === 'user reply'));
+  assert.equal(messages.find((msg) => msg.kind === 'complete')?.tokens, 7);
+});
+
+test('the prompt on an existing session goes out as a v4 sendText that takes over from engine-started turns', async () => {
+  fsSync.writeFileSync(modeFilePath, 'ok\n');
+  fsSync.writeFileSync(logFilePath, '');
+  const runtime = new ZCodeRuntimeProvider();
+  const { writer } = createWriter();
+
+  await runtime.run('hello', { sessionId: 'app-sess-v4send', cwd: stubDir }, writer, resumedContext);
+
+  const command = readStubLog().filter((entry) => entry.name === 'v4_command').at(-1)?.value as {
+    type?: string;
+    commandId?: unknown;
+    clientId?: unknown;
+    sessionId?: unknown;
+    issuedAt?: unknown;
+    payload?: Record<string, unknown>;
+  } | undefined;
+  assert.equal(command?.type, 'sendText');
+  assert.equal(typeof command?.commandId, 'string');
+  assert.equal(command?.clientId, 'cloudcli');
+  assert.equal(command?.sessionId, 'sess_stub_1');
+  assert.equal(typeof command?.issuedAt, 'number');
+  assert.equal(command?.payload?.text, 'hello');
+  // startNow cancels a turn the engine started from a queued background
+  // notification instead of folding the prompt into it (where the legacy
+  // send lost it); the notifications stay queued for later.
+  assert.equal(command?.payload?.requestedDelivery, 'startNow');
+  assert.equal(command?.payload?.heldQueueDisposition, 'keepQueueAndSend');
+  assert.equal(readStubLog().filter((entry) => entry.name === 'legacy_send').length, 0, 'the legacy session/send must not be used');
+});
+
+test('a created session whose first prompt never went out keeps using session/send on the next run', async () => {
+  fsSync.writeFileSync(modeFilePath, 'legacy-send-fail\n');
+  const runtime = new ZCodeRuntimeProvider();
+
+  await assert.rejects(
+    runtime.run('hello', { sessionId: 'app-sess-unwritten', cwd: stubDir }, createWriter().writer, context),
+    /legacy send refused/,
+  );
+
+  // The app now maps to the engine session, so the next run resumes it — but
+  // the engine never wrote it, and a sendText there would fail its foreign key.
+  fsSync.writeFileSync(modeFilePath, 'ok\n');
+  fsSync.writeFileSync(logFilePath, '');
+  const result = await runtime.run('hello again', { sessionId: 'app-sess-unwritten', cwd: stubDir }, createWriter().writer, resumedContext);
+  assert.deepEqual(result, { sessionId: 'sess_stub_1', success: true });
+  assert.equal(readStubLog().filter((entry) => entry.name === 'legacy_send').length, 1);
+  assert.equal(readStubLog().filter((entry) => entry.name === 'v4_command').length, 0);
+
+  // Once written, the session's prompts take the sendText channel.
+  fsSync.writeFileSync(logFilePath, '');
+  await runtime.run('third', { sessionId: 'app-sess-unwritten', cwd: stubDir }, createWriter().writer, resumedContext);
+  assert.equal(readStubLog().filter((entry) => entry.name === 'legacy_send').length, 0);
+});
+
+test('a turn that fails before announcing itself still ends the run with its error', async () => {
+  fsSync.writeFileSync(modeFilePath, 'early-fail\n');
+  process.env.CLOUDCLI_ZCODE_SILENCE_TIMEOUT_MS = '1500';
+  try {
+    const runtime = new ZCodeRuntimeProvider();
+    const { messages, writer } = createWriter();
+    await runtime.run('hello', { sessionId: 'app-sess-earlyfail', cwd: stubDir }, writer, resumedContext);
+
+    const error = messages.find((msg) => msg.kind === 'error');
+    assert.equal(error?.text, 'model config missing', 'the failure must not be dropped as another turn\'s');
+    assert.equal(messages.find((msg) => msg.kind === 'complete')?.exitCode, 1);
+  } finally {
+    delete process.env.CLOUDCLI_ZCODE_SILENCE_TIMEOUT_MS;
+  }
+});
+
+test('a stop pressed while the prompt is still being admitted stops the prompt\'s own turn', async () => {
+  fsSync.writeFileSync(modeFilePath, 'slow-ack\n');
+  fsSync.writeFileSync(logFilePath, '');
+  const runtime = new ZCodeRuntimeProvider();
+  const { messages, writer } = createWriter();
+
+  const runPromise = runtime.run('hello', { sessionId: 'app-sess-slowack', cwd: stubDir }, writer, resumedContext);
+  // Abort lands while the engine is still preempting and has not acknowledged.
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(await runtime.abort('app-sess-slowack'), true);
+
+  const result = await runPromise;
+  assert.deepEqual(result, { sessionId: 'sess_stub_1', success: false });
+  const names = readStubLog().map((entry) => entry.name);
+  assert.ok(names.indexOf('send_acked') >= 0 && names.indexOf('send_acked') < names.lastIndexOf('stop'),
+    'the stop must go out after the prompt was admitted, so it hits the prompt\'s turn');
+  assert.equal(messages.find((msg) => msg.kind === 'complete')?.exitCode, 0);
+});
+
+test('a stop pressed while the run is still setting up keeps its prompt from ever being sent', async () => {
+  fsSync.writeFileSync(modeFilePath, 'slow-subscribe\n');
+  fsSync.writeFileSync(logFilePath, '');
+  const runtime = new ZCodeRuntimeProvider();
+  const { messages, writer } = createWriter();
+
+  const runPromise = runtime.run('hello', { sessionId: 'app-sess-setupstop', cwd: stubDir }, writer, resumedContext);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(await runtime.abort('app-sess-setupstop'), true);
+
+  const result = await runPromise;
+  assert.deepEqual(result, { sessionId: 'sess_stub_1', success: false });
+  assert.equal(readStubLog().filter((entry) => entry.name === 'session_send_attempt').length, 0,
+    'a prompt sent after the stop would start a turn nothing stops');
+  assert.equal(messages.find((msg) => msg.kind === 'complete')?.exitCode, 0);
+});
+
+test('an engine-rejected prompt fails the run visibly instead of vanishing', async () => {
+  fsSync.writeFileSync(modeFilePath, 'send-rejected\n');
+  const runtime = new ZCodeRuntimeProvider();
+  const { messages, writer } = createWriter();
+
+  await assert.rejects(
+    runtime.run('hello', { sessionId: 'app-sess-rejected', cwd: stubDir }, writer, resumedContext),
+    /input rejected by engine/,
+  );
+
+  const error = messages.find((msg) => msg.kind === 'error');
+  assert.ok(error, 'the rejection must reach the chat stream');
+  assert.match(error.text ?? '', /input rejected by engine/);
+});
+
+test('the terminal events of a preempted engine-started turn do not end the user run', async () => {
+  fsSync.writeFileSync(modeFilePath, 'preempt\n');
+  const runtime = new ZCodeRuntimeProvider();
+  const { messages, writer } = createWriter();
+
+  const result = await runtime.run('hello', { sessionId: 'app-sess-preempt', cwd: stubDir }, writer, resumedContext);
+  assert.deepEqual(result, { sessionId: 'sess_stub_1', success: true });
+
+  assert.ok(
+    messages.some((msg) => msg.kind === 'stream_delta' && msg.content === 'user reply'),
+    'the run must stay open until its own turn finished',
+  );
+  const complete = messages.find((msg) => msg.kind === 'complete');
+  assert.equal(complete?.tokens, 7, 'the run must settle on its own turn, not the cancelled one');
+  assert.equal(complete?.exitCode, 0);
+  assert.equal(messages.filter((msg) => msg.kind === 'error').length, 0, 'the other turn\'s cancellation is not this run\'s error');
+  assert.equal(
+    messages.filter((msg) => msg.kind === 'task_notification').length,
+    0,
+    'the other turn\'s cancellation is not this run\'s interruption',
+  );
 });
 
 test('runtime repairs a missing engine-side model selection after resume so subagent spawns can resolve a model', async () => {
@@ -957,7 +1231,18 @@ test('a delivered session/stop settles the run as aborted with a complete frame'
   }
   assert.ok(streaming, 'the stub must be streaming before the abort');
 
+  const legacyStopsBefore = readStubLog().filter((entry) => entry.name === 'legacy_stop').length;
   assert.equal(await runtime.abort('app-sess-abort'), true, 'a delivered stop must report success');
+
+  // The legacy session/stop only cancels turns that session/send started; a
+  // turn the engine started from its own queue (a background notification)
+  // survives it. The v4 stop command stops whatever turn is in the foreground.
+  const stopCommand = readStubLog().filter((entry) => entry.name === 'v4_command').at(-1)?.value as
+    { type?: string; sessionId?: string; payload?: unknown } | undefined;
+  assert.equal(stopCommand?.type, 'stop');
+  assert.equal(stopCommand?.sessionId, 'sess_stub_1');
+  assert.deepEqual(stopCommand?.payload, {});
+  assert.equal(readStubLog().filter((entry) => entry.name === 'legacy_stop').length, legacyStopsBefore, 'abort must not use the legacy stop');
 
   const result = await runPromise;
   assert.deepEqual(result, { sessionId: 'sess_stub_1', success: false });
@@ -1038,39 +1323,50 @@ test('an engine-side cancellation degrades to a quiet notification instead of an
 // Last: the crash mode kills the shared stub subprocess; the supervisor's
 // restart circuit breaker brings it back, but later tests should not have to
 // race the restart.
-test('attachments reach the engine in its native item shape, not as app descriptors', async () => {
+test('attachments reach the engine in the shape of the channel carrying the prompt, not as app descriptors', async () => {
   fsSync.writeFileSync(modeFilePath, 'ok\n');
   const runtime = new ZCodeRuntimeProvider();
-  const { writer } = createWriter();
-
-  await runtime.run('summarize the files', {
-    sessionId: 'app-sess-attach',
-    cwd: stubDir,
-    attachments: [
-      { path: '/tmp/assets/1-abc/photo.png', name: 'photo.png', mimeType: 'image/png', size: 1024 },
-      { path: '/tmp/assets/1-def/report.pdf', name: 'report.pdf', mimeType: 'application/pdf', size: 20480 },
-      { path: '/tmp/assets/1-ghi/notes.txt', name: 'notes.txt', mimeType: 'text/plain', size: 33 },
-      { path: '/tmp/assets/1-jkl/blob.bin', mimeType: 'application/octet-stream', size: 8 },
-      { path: 'assets/relative/evil.txt', name: 'evil.txt', mimeType: 'text/plain', size: 3 },
-    ],
-  }, writer, context);
-
-  const sendEntry = readStubLog()
+  const attachments = [
+    { path: '/tmp/assets/1-abc/photo.png', name: 'photo.png', mimeType: 'image/png', size: 1024 },
+    { path: '/tmp/assets/1-def/report.pdf', name: 'report.pdf', mimeType: 'application/pdf', size: 20480 },
+    { path: '/tmp/assets/1-ghi/notes.txt', name: 'notes.txt', mimeType: 'text/plain', size: 33 },
+    { path: '/tmp/assets/1-jkl/blob.bin', mimeType: 'application/octet-stream', size: 8 },
+    { path: 'assets/relative/evil.txt', name: 'evil.txt', mimeType: 'text/plain', size: 3 },
+    { path: '/tmp/assets/1-mno/unknown' },
+  ];
+  const lastAttachments = () => readStubLog()
     .filter((entry) => entry.name === 'session_send')
     .map((entry) => entry.value as { attachments?: unknown[] })
-    .find((params) => Array.isArray(params.attachments));
-  assert.ok(sendEntry, 'session/send must carry the attachments param');
+    .filter((params) => Array.isArray(params.attachments))
+    .at(-1)?.attachments;
 
-  // The engine mapper (0.16.5) reads kind/filename/mimeType/sizeBytes/localPath
-  // and silently DROPS any item it cannot map — the app descriptor shape
-  // {path,name,mimeType,size} never reaches the model. Relative paths are
-  // refused too: the engine would resolve them against the session workspace.
+  // A new session's first prompt rides the legacy session/send, whose mapper
+  // (0.16.5) reads kind/filename/mimeType/sizeBytes/localPath and silently
+  // DROPS any item it cannot map.
+  await runtime.run('summarize the files', { sessionId: 'app-sess-attach-new', cwd: stubDir, attachments }, createWriter().writer, context);
+  assert.deepEqual(lastAttachments(), [
+    { kind: 'image', filename: 'photo.png', localPath: '/tmp/assets/1-abc/photo.png', mimeType: 'image/png', sizeBytes: 1024 },
+    { kind: 'pdf', filename: 'report.pdf', localPath: '/tmp/assets/1-def/report.pdf', mimeType: 'application/pdf', sizeBytes: 20480 },
+    { kind: 'file', filename: 'notes.txt', localPath: '/tmp/assets/1-ghi/notes.txt', mimeType: 'text/plain', sizeBytes: 33 },
+    { kind: 'file', filename: 'blob.bin', localPath: '/tmp/assets/1-jkl/blob.bin', mimeType: 'application/octet-stream', sizeBytes: 8 },
+    { kind: 'file', filename: 'unknown', localPath: '/tmp/assets/1-mno/unknown' },
+  ], 'descriptors must be mapped to the legacy item shape; relative paths must be dropped');
+
+  await runtime.run('summarize the files', { sessionId: 'app-sess-attach', cwd: stubDir, attachments }, createWriter().writer, resumedContext);
+  const sendEntry = { attachments: lastAttachments() };
+
+  // The v4 sendText schema is strict ({ref, fileName, mime, bytes}); the
+  // engine maps a non-URI ref to a local file of the type the MIME names, so
+  // the app descriptor shape {path,name,mimeType,size} never reaches it.
+  // Relative paths are refused: the engine would resolve them against the
+  // session workspace. Unknown MIME and size fall back to a generic file.
   assert.deepEqual(sendEntry.attachments, [
-    { kind: 'image', filename: 'photo.png', mimeType: 'image/png', sizeBytes: 1024, localPath: '/tmp/assets/1-abc/photo.png' },
-    { kind: 'pdf', filename: 'report.pdf', mimeType: 'application/pdf', sizeBytes: 20480, localPath: '/tmp/assets/1-def/report.pdf' },
-    { kind: 'file', filename: 'notes.txt', mimeType: 'text/plain', sizeBytes: 33, localPath: '/tmp/assets/1-ghi/notes.txt' },
-    { kind: 'file', filename: 'blob.bin', mimeType: 'application/octet-stream', sizeBytes: 8, localPath: '/tmp/assets/1-jkl/blob.bin' },
-  ], 'descriptors must be mapped to the engine item shape; relative paths must be dropped');
+    { ref: '/tmp/assets/1-abc/photo.png', fileName: 'photo.png', mime: 'image/png', bytes: 1024 },
+    { ref: '/tmp/assets/1-def/report.pdf', fileName: 'report.pdf', mime: 'application/pdf', bytes: 20480 },
+    { ref: '/tmp/assets/1-ghi/notes.txt', fileName: 'notes.txt', mime: 'text/plain', bytes: 33 },
+    { ref: '/tmp/assets/1-jkl/blob.bin', fileName: 'blob.bin', mime: 'application/octet-stream', bytes: 8 },
+    { ref: '/tmp/assets/1-mno/unknown', fileName: 'unknown', mime: 'application/octet-stream', bytes: 0 },
+  ], 'descriptors must be mapped to the v4 attachment shape; relative paths must be dropped');
 });
 
 test('a failed session/stop keeps the run running to its true completion instead of reporting aborted', async () => {
@@ -1092,7 +1388,8 @@ test('a failed session/stop keeps the run running to its true completion instead
 
   // The engine never stopped, so the run continues to its real completion —
   // the old code marked the run completed at abort time and ended it while
-  // the turn was in fact still running.
+  // the turn was in fact still running. The turn ends cancelled, but not by
+  // the refused stop: it is a completion, not this run's abort.
   const result = await runPromise;
   assert.deepEqual(result, { sessionId: 'sess_stub_1', success: true });
   const complete = messages.find((msg) => msg.kind === 'complete');

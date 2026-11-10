@@ -389,12 +389,11 @@ export function resolveZCodeModelRef(
 }
 
 /**
- * Builds the per-turn model fields accepted by ZCode app-server 0.16.9's
- * `session/send`.
+ * Builds the per-turn model fields of ZCode's v4 `sendText` command payload.
  *
  * The provider identity and request authentication are resolved from the same
  * `cli/config.json` record so they cannot drift apart. The runtime consumes
- * this result directly as `session/send` params; credentials only travel to
+ * this result directly as `sendText` payload fields; credentials only travel to
  * the local engine subprocess over stdio.
  *
  * Returns null when the local config cannot produce a complete, executable

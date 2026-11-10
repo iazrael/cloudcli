@@ -169,6 +169,8 @@ type ZCodeSessionEvent = {
   timestamp: string;
   /** The engine's own id for the event, or a fresh one when it sent none. */
   id: string;
+  /** The engine turn the event belongs to; absent on session-level events. */
+  turnId?: string;
 };
 
 /**
@@ -176,7 +178,9 @@ type ZCodeSessionEvent = {
  * when nothing typed is inside. `fallbackSessionId` stands in when the event
  * names no session.
  *
- * Consumers: this normalizer's `normalize`, and the runtime's subagent
+ * Consumers: this normalizer's `normalize`; the runtime's run listener,
+ * which reads the turn id and `inputId` to tell its own turn's terminal events
+ * from those of turns the engine started itself; and the runtime's subagent
  * lifecycle watcher, which reads the same envelope outside a run.
  */
 export function readZCodeSessionEvent(rawMessage: unknown, fallbackSessionId: string | null): ZCodeSessionEvent | null {
@@ -211,6 +215,7 @@ export function readZCodeSessionEvent(rawMessage: unknown, fallbackSessionId: st
       ?? readOptionalString(event.messageID)
       ?? readOptionalString(payload.messageId)
       ?? generateMessageId('zcode'),
+    turnId: readOptionalString(event.turnId),
   };
 }
 
