@@ -5,10 +5,6 @@ import type { BackgroundSendChoice, BackgroundSendPrompt } from '@/shared/types'
 
 type BackgroundSendDialogProps = {
   prompt: BackgroundSendPrompt | null;
-  /** False until the capability matrix has loaded, or for a provider it does not list; the side-question button is left out rather than offered and then refused. */
-  supportsSideQuestions?: boolean;
-  /** False only for an attachment-only composer: a side question cannot carry attachments, so an empty question would be refused silently. Defaults to true so existing callers, which only ever opened this dialog with typed text, keep working. */
-  hasText?: boolean;
   onResolve: (choice: BackgroundSendChoice) => void;
 };
 
@@ -23,7 +19,7 @@ type BackgroundSendDialogProps = {
  * repeat) cancels instead of stopping the work. Esc and a click outside also
  * cancel. Sending anyway takes a deliberate click or Tab.
  */
-export default function BackgroundSendDialog({ prompt, supportsSideQuestions = false, hasText = true, onResolve }: BackgroundSendDialogProps) {
+export default function BackgroundSendDialog({ prompt, onResolve }: BackgroundSendDialogProps) {
   const { t } = useTranslation('chat');
 
   return (
@@ -63,11 +59,6 @@ export default function BackgroundSendDialog({ prompt, supportsSideQuestions = f
           <Button type="button" variant="default" onClick={() => onResolve('queue')}>
             {t('claudeStatus.backgroundTask.prompt.queue', { defaultValue: 'Queue' })}
           </Button>
-          {supportsSideQuestions && hasText && (
-            <Button type="button" variant="outline" onClick={() => onResolve('sideQuestion')}>
-              {t('claudeStatus.backgroundTask.prompt.sideQuestion', { defaultValue: 'Side question' })}
-            </Button>
-          )}
           <Button type="button" variant="destructive" onClick={() => onResolve('send')}>
             {t('claudeStatus.backgroundTask.prompt.sendAnyway', { defaultValue: 'Send anyway' })}
           </Button>

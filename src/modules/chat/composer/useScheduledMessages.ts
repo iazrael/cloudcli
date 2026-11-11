@@ -1,34 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { api } from '@/shared/api';
-import type { ScheduledMessage, ServerEvent } from '@/shared/types';
+import type { ScheduledMessage } from '@/shared/types';
 
 /**
  * The messages queued to be sent to one session later.
  *
- * Fetched when the session is opened and read again whenever the server
- * announces a change to that session's list (`scheduled_messages_changed`).
- * The list changes without this client doing anything: the server's timer
- * sends a message, or records why it could not, and another tab or device
- * can schedule or cancel one. A reconnect reads it again too, because an
- * announcement sent while the socket was down is lost.
- *
- * `subscribe` is the websocket context's. A caller that leaves it out still
- * gets the list, read on open and after its own schedule or cancel, but not
- * the live updates.
+ * Scheduling is a server-side timer, so this is a plain fetch rather than
+ * anything realtime: the list changes only when this client schedules or
+ * cancels something, and it is refetched when the session is reopened.
  */
-export function useScheduledMessages(
-  sessionId: string | null,
-  subscribe?: (listener: (event: ServerEvent) => void) => () => void,
-) {
+export function useScheduledMessages(sessionId: string | null) {
   const [scheduledMessages, setScheduledMessages] = useState<ScheduledMessage[]>([]);
   // Which session the list on screen belongs to. A fetch that resolves after
   // the user has moved on must not put the old session's banner on the new one.
   const activeSessionRef = useRef(sessionId);
-  // Numbers each list request so only the newest answer is shown. A message
-  // that fails right after it is claimed announces two changes back to back,
-  // and the older answer arriving last would put the earlier state back.
-  const latestRequestRef = useRef(0);
 
   const refresh = useCallback(async () => {
     // No session means nothing to fetch; the render-time reset below already
@@ -37,11 +23,10 @@ export function useScheduledMessages(
       return;
     }
 
-    const request = ++latestRequestRef.current;
     try {
       const response = await api.scheduledMessages.list(sessionId);
       const payload = await response.json();
-      if (activeSessionRef.current !== sessionId || request !== latestRequestRef.current) {
+      if (activeSessionRef.current !== sessionId) {
         return;
       }
       setScheduledMessages(Array.isArray(payload?.data) ? payload.data : []);
@@ -63,23 +48,6 @@ export function useScheduledMessages(
     activeSessionRef.current = sessionId;
     void refresh();
   }, [refresh, sessionId]);
-
-  useEffect(() => {
-    // No socket to listen on: the list stays as last read, as it did before
-    // the server announced changes.
-    if (!subscribe) {
-      return;
-    }
-
-    return subscribe((event) => {
-      if (
-        event.kind === 'websocket_reconnected'
-        || (event.kind === 'scheduled_messages_changed' && event.sessionId === sessionId)
-      ) {
-        void refresh();
-      }
-    });
-  }, [refresh, sessionId, subscribe]);
 
   const schedule = useCallback(async (input: {
     content: string;
