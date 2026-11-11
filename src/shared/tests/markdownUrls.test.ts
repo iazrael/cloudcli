@@ -96,3 +96,25 @@ test('fileReferenceFromMarkdownHref leaves web URLs and empty hrefs alone', () =
   assert.equal(fileReferenceFromMarkdownHref(undefined), undefined);
   assert.equal(fileReferenceFromMarkdownHref(''), undefined);
 });
+
+// 上游 #1711：Markdown 会把本地路径里的 Unicode 与空格百分号编码后才交给链接
+// 渲染；解码必须在边界处一次完成，且单个坏转义不能挡住其余合法转义的解码。
+test.each([
+  ['/workspace/자료/경력-원장.md', '/workspace/자료/경력-원장.md'],
+  ['/workspace/%EC%9E%90%EB%A3%8C/%EA%B2%BD%EB%A0%A5-%EC%9B%90%EC%9E%A5.md', '/workspace/자료/경력-원장.md'],
+  ['/workspace/资料/完成记录.md', '/workspace/资料/完成记录.md'],
+  ['/workspace/caf%C3%A9/r%C3%A9sum%C3%A9.md', '/workspace/café/résumé.md'],
+  ['/workspace/My Report/진행 100%.md', '/workspace/My Report/진행 100%.md'],
+  ['/workspace/100%-complete%20draft.md', '/workspace/100%-complete draft.md'],
+  ['/workspace/literal%2520.md', '/workspace/literal%20.md'],
+  ['/workspace/name%23part%3F%2B.md', '/workspace/name#part?+.md'],
+  ['/workspace/notes.md%3A12', '/workspace/notes.md:12'],
+  ['./notes.md%3A12:9', './notes.md:12:9'],
+  ['notes%2Emd', 'notes.md'],
+  ['/workspace/자료/100%complete.md', '/workspace/자료/100%complete.md'],
+  ['/workspace/자료/%draft%2520.md', '/workspace/자료/%draft%20.md'],
+  ['/workspace/자료/bad%E0%A4%20draft.md', '/workspace/자료/bad%E0%A4 draft.md'],
+  ['/workspace/%FF%EC%9E%90%EB%A3%8C.md', '/workspace/%FF자료.md'],
+])('decodes %s to %s', (href, expected) => {
+  assert.equal(fileReferenceFromMarkdownHref(href), expected);
+});

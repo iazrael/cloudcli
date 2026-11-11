@@ -634,6 +634,22 @@ export const filePathFromFileUrl = (href?: string): string | undefined => {
  * before handing an href to a custom renderer, so those are decoded back; web
  * and other non-file schemes are left alone instead of being decoded.
  */
+// Markdown hrefs are URLs, while the editor needs a filesystem path. Decode
+// once at this boundary; repeated decoding would rename literal `%20` files.
+// Match one UTF-8 character at a time so a literal percent or an invalid byte
+// sequence cannot prevent valid escapes elsewhere from decoding.
+const decodeFileHref = (value: string): string => value.replace(
+  /%(?:[0-7][\da-f]|[cd][\da-f]%[89ab][\da-f]|e[\da-f](?:%[89ab][\da-f]){2}|f[0-4](?:%[89ab][\da-f]){3})/gi,
+  (encodedCharacter) => {
+    try {
+      return decodeURIComponent(encodedCharacter);
+    } catch {
+      // Preserve invalid UTF-8 (including overlong or surrogate encodings).
+      return encodedCharacter;
+    }
+  },
+);
+
 export const fileReferenceFromMarkdownHref = (href?: string): string | undefined => {
   if (!href) {
     return undefined;
@@ -647,10 +663,5 @@ export const fileReferenceFromMarkdownHref = (href?: string): string | undefined
     return href;
   }
 
-  try {
-    return decodeURIComponent(href);
-  } catch {
-    // A literal or incomplete percent escape may be part of a valid filename.
-    return href;
-  }
+  return decodeFileHref(href);
 };
