@@ -691,11 +691,14 @@ function QuotaGroupCard({
 }
 
 /** Stable display order: the full reset first, then the narrow windows. */
-const RESET_CARD_TYPE_ORDER = ['all', '5h', 'weekly'];
+const RESET_CARD_TYPE_ORDER = ['all', 'fable', '5h', 'weekly'];
 
 function resolveResetCardTypeLabel(resetType: string, t: TFunction): string {
   if (resetType === 'all') {
     return t('cost.resetCardTypeAll', { defaultValue: '全部额度（5 小时 + 每周）' });
+  }
+  if (resetType === 'fable') {
+    return t('cost.resetCardTypeFable', { defaultValue: 'Fable 重置' });
   }
   if (resetType === '5h') {
     return t('cost.resetCardType5h', { defaultValue: '5 小时额度' });
@@ -757,26 +760,31 @@ function resolveSpendFailure(
 }
 
 /**
- * Lists the account's spendable quota-reset cards ("banked resets") and lets
- * the user spend one through POST /providers/quota/reset. Only available
- * cards render as actionable rows; used-up and expired ones show as a counter
- * alongside them (and once nothing is available the whole block, counter
- * included, disappears — the account then has no card story to tell). The
- * confirm dialog exists because the spend is irreversible on the provider
- * side, and failure copy renders inside it — a masked error would read as
- * "nothing happened". `isRefreshing` comes from the parent's quota refresh so
- * buttons stay disabled until the post-spend refresh lands.
+ * Lists the account's quota-reset cards ("banked resets"). When the provider
+ * exposes a spend action, an available card can be spent through
+ * POST /providers/quota/reset; otherwise the block stays read-only (Claude's
+ * resets can only be claimed on the provider's website). Only available cards
+ * render as rows; used-up and expired ones show as a counter alongside them
+ * (and once nothing is available the whole block, counter included, disappears
+ * — the account then has no card story to tell). The confirm dialog exists
+ * because the spend is irreversible on the provider side, and failure copy
+ * renders inside it — a masked error would read as "nothing happened".
+ * `isRefreshing` comes from the parent's quota refresh so buttons stay
+ * disabled until the post-spend refresh lands.
  */
 function ResetCreditsCard({
   provider,
   credits,
   isRefreshing,
+  canSpend,
   onSpent,
   t,
 }: {
   provider: string;
   credits: ProviderQuotaResetCredit[];
   isRefreshing: boolean;
+  /** False for read-only providers: show the cards, never offer the spend. */
+  canSpend: boolean;
   onSpent: () => void;
   t: TFunction;
 }) {
@@ -860,13 +868,19 @@ function ResetCreditsCard({
             {t('cost.resetCardTitle', { defaultValue: '用量重置卡' })}
           </p>
           <p className="text-[11px] text-muted-foreground">
-            {t('cost.resetCardHint', { defaultValue: '使用后立即补满对应额度，无需等待刷新窗口' })}
+            {canSpend
+              ? t('cost.resetCardHint', { defaultValue: '使用后立即补满对应额度，无需等待刷新窗口' })
+              : t('cost.resetCardHintReadOnly', { defaultValue: '请到提供方网页端使用该重置卡' })}
           </p>
         </div>
       </div>
 
       {availableGroups.map((group) => {
         const soonestExpiry = group.cards[0]?.expireTime;
+        const availableCount = group.cards.reduce(
+          (total, card) => total + (card.remaining ?? 1),
+          0,
+        );
         return (
           <div
             key={group.resetType}
@@ -878,8 +892,8 @@ function ResetCreditsCard({
               </p>
               <p className="truncate text-[11px] text-muted-foreground">
                 {t('cost.resetCardAvailable', {
-                  count: group.cards.length,
-                  defaultValue: `${group.cards.length} 张可用`,
+                  count: availableCount,
+                  defaultValue: `${availableCount} 张可用`,
                 })}
                 {soonestExpiry && (
                   <>
@@ -897,20 +911,22 @@ function ResetCreditsCard({
                 )}
               </p>
             </div>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              disabled={isSpending || isRefreshing}
-              onClick={() => {
-                setSpendFailure(null);
-                setSpendSuccess(null);
-                setConfirmingResetType(group.resetType);
-              }}
-              className="h-7 shrink-0 rounded-lg px-3 text-xs"
-            >
-              {t('cost.resetCardUse', { defaultValue: '使用' })}
-            </Button>
+            {canSpend && (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={isSpending || isRefreshing}
+                onClick={() => {
+                  setSpendFailure(null);
+                  setSpendSuccess(null);
+                  setConfirmingResetType(group.resetType);
+                }}
+                className="h-7 shrink-0 rounded-lg px-3 text-xs"
+              >
+                {t('cost.resetCardUse', { defaultValue: '使用' })}
+              </Button>
+            )}
           </div>
         );
       })}
@@ -937,7 +953,7 @@ function ResetCreditsCard({
       )}
 
       <Dialog
-        open={confirmingResetType !== null}
+        open={canSpend && confirmingResetType !== null}
         onOpenChange={(open) => {
           if (!open && !isSpending) setConfirmingResetType(null);
         }}
@@ -1243,11 +1259,12 @@ function CostContent({ data, pending }: { data: CostCommandData; pending: boolea
             </div>
           )}
 
-          {!loadingQuota && supportsQuotaReset && quotaProvider && quotaData?.resetCredits && (
+          {!loadingQuota && quotaProvider && quotaData?.resetCredits && (
             <ResetCreditsCard
               provider={quotaProvider}
               credits={quotaData.resetCredits.credits}
               isRefreshing={isRefreshing}
+              canSpend={supportsQuotaReset}
               onSpent={() => void fetchQuota(true)}
               t={t}
             />

@@ -333,8 +333,9 @@ opencode 的自动命名由引擎自己做，CloudCLI 只负责不挡路。引�
 
 **配额的数据源各家不同，但都收在 auth 切面背后**：codex 起一次 `app-server` 走
 `account/rateLimits/read`，zcode 直接打 BigModel / Z.AI 的 HTTP 端点，
-claude 则借 Agent SDK 的 control request（`/usage` 背后那个实验接口）——
-因为 OAuth 令牌与静默续期都归 SDK 管，绕过它就得自己碰凭据。
+claude 直连 `/api/oauth/usage?cedar_ember=1`（本地 OAuth token + CLI User-Agent + 代理），
+一次取回窗口和 reset 卡；直连失败时退回 Agent SDK 的 control request，由它刷新 token
+并照常返回窗口。
 opencode 打 Go 套餐的内部端点 `/zen/go/v1/usage`（官方文档未列，随 CLI 版本可能变动），
 凭证读 CLI 共享库 credential 表的令牌与工作区 id，令牌续期归 CLI 管，403/401/超时一律降级为"无配额"。
 各家都要拉起进程或走网络，因此统一用 `createProviderQuotaCache`（TTL 两分钟）挡在前面，
@@ -348,7 +349,11 @@ CLI 只是挂着等输入，既不会落 transcript，也不会消耗它正在�
 成功后作废配额缓存让下次读反映新窗口。codex 走 `account/rateLimitResetCredit/consume`
 （与 read 同一条 app-server 连接，`creditId` + `idempotencyKey`）；zcode 打 BigModel
 `/biz/customer-package-reset/list|use`（第一版只接个人号，团队号要组织/项目 ID；
-claude 的 `/limit-reset` 端点存在但无可验证的卡，暂未接入）。
+claude 的窗口与 reset 列表由 `/api/oauth/usage?cedar_ember=1` 直连一次取回
+（本地 OAuth token + CLI User-Agent + `HTTPS_PROXY`），SDK `get_usage` 只在直连失败时
+兜底并刷新 token；`cedar_ember.grants` 归一化为 `resetCredits`（含 `fable` / `all` /
+`5h` / `weekly` 与 `remaining`），**不接花卡**——`supportsQuotaReset` 保持 false，
+界面只展示，官方网页或 App 才能使用，服务端从不调用 `reset_rate_limits`）。
 
 **MCP 配置格式的能力同样由切面声明**：`IProviderMcp.capabilities` 给出可用 scope、transport、
 是否支持工作目录、是否支持环境变量间接（`env_vars` / `bearer_token_env_var` / `env_http_headers`，

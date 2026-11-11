@@ -61,9 +61,11 @@ export type ProviderQuotaResetCredit = {
   /**
    * Which allowance the card restores: `5h`, `weekly`, or `all`. `all` means
    * both windows at once (Codex's full reset, bigmodel's week reset which
-   * also refills the 5-hour pool without spending a 5-hour card).
+   * also refills the 5-hour pool without spending a 5-hour card). Claude's
+   * model-scoped launch grant is `fable`: it gives back the scoped weekly
+   * allowance and refills the 5-hour window, but is not a full weekly reset.
    */
-  resetType: '5h' | 'weekly' | 'all' | string;
+  resetType: '5h' | 'weekly' | 'all' | 'fable' | string;
   /** Provider's own display text for the grant, when it has one. */
   title?: string;
   /** How the card was granted (bigmodel: `DIRECT`, promotions, …). */
@@ -72,6 +74,12 @@ export type ProviderQuotaResetCredit = {
   available: boolean;
   /** ISO timestamp after which the card can no longer be used. */
   expireTime?: string;
+  /**
+   * Uses this grant still holds. Absent means one; a provider that grants a
+   * multi-use card reports its remaining uses here instead of duplicating the
+   * credit.
+   */
+  remaining?: number;
 };
 
 /** The account's quota-reset card inventory, embedded in `ProviderQuotaData`. */
