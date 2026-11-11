@@ -4,9 +4,16 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, test } from 'vitest';
 
-import { i18n } from '@/modules/i18n';
+import { i18n, initI18n, switchLanguage } from '@/modules/i18n';
 import zhCNGit from '@/modules/i18n/locales/zh-CN/git.json';
 import zhTWGit from '@/modules/i18n/locales/zh-TW/git.json';
+
+// 本文件过去靠同 worker 里其他测试加载好的语言包"侥幸"通过；vitest 分桶变化
+// 一动就翻车。这里自行加载三份语言包，保证断言不依赖执行顺序。
+await initI18n();
+await switchLanguage('zh-CN');
+await switchLanguage('zh-TW');
+await switchLanguage('en');
 
 /**
  * Guards the class of bug behind the "Git panel is still English in Chinese"
