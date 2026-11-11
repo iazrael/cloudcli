@@ -1259,6 +1259,13 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
       this.recordSubagentLifecycle(handle.abortKey, message, writer, true);
     }
 
+    // A finished tool call retracts its own zombie card: the engine's
+    // AskUserQuestion times out and completes itself without telling the
+    // server, so the tool result is the only signal the question is over.
+    if (message.kind === 'tool_result' && message.toolId) {
+      runLifecycle.retractPermissionByToolId(handle.sessionId, message.toolId);
+    }
+
     writer.send(message);
   }
 

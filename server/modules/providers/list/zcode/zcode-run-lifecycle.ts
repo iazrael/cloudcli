@@ -235,6 +235,13 @@ const PLAN_APPROVAL_ANSWER = 'approve';
 const DEFAULT_DENY_REASON = 'Denied by user';
 
 /**
+ * The reason stamped on the denial that retracts a card whose tool call
+ * already finished: the engine gave up on the answer (its AskUserQuestion
+ * timeout) and resolved the call itself.
+ */
+const TOOL_RESULT_RETRACT_REASON = 'The engine resolved this call without waiting for an answer.';
+
+/**
  * Lifecycle tunables, injectable for tests.
  */
 export type ZCodeRunLifecycleOptions = {
@@ -755,6 +762,27 @@ export class ZCodeRunLifecycle {
   }
 
   /**
+   * Takes down the pending cards of a tool call that has already finished.
+   * The engine's AskUserQuestion carries its own timeout: when nobody answers,
+   * it resolves the call itself (the transcript shows the skipped card) and
+   * stops re-announcing — without ever telling the server. The card would
+   * otherwise sit pending until the TTL sweep, resurrecting on every
+   * subscribe. The tool result is the engine's silent "this call is over", so
+   * any card still pending under that toolCallId is a zombie. A card the user
+   * actually answered was already deleted by `resolvePermission`, which makes
+   * this a no-op for the normal path.
+   */
+  retractPermissionByToolId(engineSessionId: string, toolId: string): void {
+    for (const [requestId, details] of [...this.pendingPermissionDetails]) {
+      if (details.sessionId !== engineSessionId || details.toolId !== toolId) {
+        continue;
+      }
+      this.answerPendingPermission(requestId, { result: { decision: 'deny', reason: TOOL_RESULT_RETRACT_REASON } });
+      this.retractPendingPermission(requestId, details);
+    }
+  }
+
+  /**
    * Tells the live chat stream a pending card is gone; without this the card
    * only disappears on a `complete` replay, so a client that (re)subscribes
    * after the decision sees a zombie permission request forever.
@@ -809,6 +837,10 @@ export class ZCodeRunLifecycle {
           // A resolver that throws on settle must not block its siblings.
         }
       }
+      // The entry is gone from every future replay; tell the clients that
+      // still show the card, so a connected page drops it instead of waiting
+      // for a replay that will never carry the retraction.
+      this.retractPendingPermission(key, details);
     }
   }
 }
