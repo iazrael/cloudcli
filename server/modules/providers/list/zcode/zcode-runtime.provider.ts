@@ -666,7 +666,7 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
       }
       // Its unanswered approval cards have nobody left to answer them.
       if (message.sessionId) {
-        runLifecycle.retractSubagentPermissions(message.sessionId, message.toolUseId);
+        runLifecycle.retractSubagentPermissions(message.sessionId, message.taskId);
       }
     }
   }

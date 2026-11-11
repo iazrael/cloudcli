@@ -110,7 +110,7 @@ export const SubagentPanel = memo(({
   // A launch the engine refused (unknown agent type, say) comes back as an
   // error result and starts nothing, so no backend or live word ever arrives:
   // the error flag is the whole verdict.
-  const status = resolveBackgroundTaskStatus(subagent?.status, taskStatus?.status)
+  const status = resolveBackgroundTaskStatus(subagent?.status, taskStatus?.status, taskStatus?.resumed)
     ?? (toolResult?.isError ? 'failed' : toolResult && !isAsyncAgentLaunch ? 'completed' : 'running');
   const toolCount = entries.filter((entry) => entry.kind === 'tool').length;
   // Claude names its agent presets (Explore, Plan); Codex has none, so the

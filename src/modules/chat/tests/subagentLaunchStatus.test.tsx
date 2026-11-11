@@ -131,3 +131,15 @@ describe('a launch the engine refused', () => {
     expect(render(refused, { id: 'a1', status: 'stopped' })).toContain('no result');
   });
 });
+
+describe('a settled agent card that a resume woke again', () => {
+  it('shows the resumed run as running despite the completed history record', () => {
+    const markup = render(
+      { content: 'Review report', isError: false },
+      { id: 'a1', status: 'completed' },
+      { status: 'running', taskId: 'a1', resumed: true },
+    );
+    expect(markup).toContain('running');
+    expect(markup).not.toContain('done');
+  });
+});

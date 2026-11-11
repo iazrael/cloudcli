@@ -732,18 +732,21 @@ export class ZCodeRunLifecycle {
 
   /**
    * Takes down the pending cards of a subagent that has stopped (or, with no
-   * `agentToolUseId`, of every agent on the session, for an engine that died):
+   * `agentId`, of every agent on the session, for an engine that died):
    * nobody is waiting for the answer any more. The parked engine request is
    * denied, and the card is retracted through the writer that showed it, so
    * this must run before that writer stops being the session's target.
+   *
+   * Matched by agent rather than by call: a resumed agent's requests name the
+   * SendMessage call that woke it, while its stop is reported on its card.
    */
-  retractSubagentPermissions(engineSessionId: string, agentToolUseId?: string): void {
+  retractSubagentPermissions(engineSessionId: string, agentId?: string): void {
     for (const [requestId, details] of [...this.pendingPermissionDetails]) {
       if (details.sessionId !== engineSessionId) {
         continue;
       }
-      const origin = (details.context as { subagent?: { toolUseId?: string } } | undefined)?.subagent;
-      if (!origin || (agentToolUseId !== undefined && origin.toolUseId !== agentToolUseId)) {
+      const origin = (details.context as { subagent?: { agentId?: string } } | undefined)?.subagent;
+      if (!origin || (agentId !== undefined && origin.agentId !== agentId)) {
         continue;
       }
       this.answerPendingPermission(requestId, { result: { decision: 'deny', reason: 'The agent that asked has stopped.' } });
@@ -813,17 +816,22 @@ export class ZCodeRunLifecycle {
 /**
  * `{ subagent }` for a request the engine filed on behalf of a subagent. The
  * engine rewrites such a request to the parent session and tags it with
- * `origin.kind: "subagent"`, whose `parentToolCallId` is the `Agent` call and
- * `description` the agent's task line; anything else carries no subagent.
+ * `origin.kind: "subagent"`, whose `parentToolCallId` is the call that started
+ * the run (the `Agent` call, or the SendMessage that resumed it), `agentId`
+ * the agent (what a stop retracts by) and `description` the agent's task
+ * line; anything else carries no subagent.
  */
-function readSubagentOrigin(params: Record<string, unknown>): { subagent?: { toolUseId: string; description?: string } } {
+function readSubagentOrigin(
+  params: Record<string, unknown>,
+): { subagent?: { toolUseId: string; agentId?: string; description?: string } } {
   const origin = readObjectRecord(params.origin);
   const toolUseId = readOptionalString(origin?.parentToolCallId);
   if (readOptionalString(origin?.kind) !== 'subagent' || !toolUseId) {
     return {};
   }
+  const agentId = readOptionalString(origin?.agentId);
   const description = readOptionalString(origin?.description);
-  return { subagent: { toolUseId, ...(description ? { description } : {}) } };
+  return { subagent: { toolUseId, ...(agentId ? { agentId } : {}), ...(description ? { description } : {}) } };
 }
 
 /**

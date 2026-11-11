@@ -127,6 +127,24 @@ function buildLiveActivity(rows: NormalizedMessage[], toolResultMap: Map<string,
 }
 
 /**
+ * A card's timeline: the history record when the row carries one, else the
+ * live rows. A resumed agent ran again after that record was written, so its
+ * live rows follow the record instead of being hidden behind it.
+ */
+function buildSubagentActivity(
+  msg: NormalizedMessage,
+  taskStatus: LiveTaskStatus | undefined,
+  foldedChildRows: NormalizedMessage[],
+  toolResultMap: Map<string, NormalizedMessage>,
+): SubagentActivity[] | undefined {
+  const live = foldedChildRows.length > 0 ? buildLiveActivity(foldedChildRows, toolResultMap) : undefined;
+  if (!msg.subagentTools?.length) {
+    return live;
+  }
+  return taskStatus?.resumed && live ? [...msg.subagentTools, ...live] : msg.subagentTools;
+}
+
+/**
  * Per-row conversion cache. Conversion output for one NormalizedMessage is a
  * pure function of the row itself plus, for tool_use rows, the attached
  * tool_result row object. Caching by row identity means a store update that
@@ -192,6 +210,9 @@ function foldTaskStatus(
     summary: msg.summary ?? previous?.summary,
     usage: msg.usage ?? previous?.usage,
     ...(agents ? { agents } : {}),
+    // A resume's `started` marks the run as newer than any settled history
+    // record; a fresh `started` clears that, the run's later events keep it.
+    ...((msg.event === 'started' ? msg.resumed : previous?.resumed) ? { resumed: true } : {}),
   });
   lastTaskSourceByToolUseId.set(toolUseId, msg);
 }
@@ -452,6 +473,7 @@ function convertRow(
 
       case 'tool_use': {
         const tr = msg.toolResult || (msg.toolId ? toolResultMap.get(msg.toolId) : null);
+        const taskStatus = msg.toolId ? liveTasksByToolUseId.get(msg.toolId) : undefined;
         const isSubagentContainer = isSubagentToolName(msg.toolName);
 
         const toolResult = tr
@@ -473,15 +495,15 @@ function convertRow(
           toolResult,
           isSubagentContainer,
           // The agent's outcome and work: the history reader's record when the
-          // row carries one, else the child rows the live stream delivered.
+          // row carries one, else the child rows the live stream delivered. A
+          // resumed agent's live rows are a run newer than that record, so
+          // they follow it.
           subagent: msg.subagent,
-          subagentActivity: msg.subagentTools?.length
-            ? msg.subagentTools
-            : foldedChildRows.length > 0 ? buildLiveActivity(foldedChildRows, toolResultMap) : undefined,
+          subagentActivity: buildSubagentActivity(msg, taskStatus, foldedChildRows, toolResultMap),
           // The latest live word on this call's background work, folded from
           // the session's task_status events. Undefined once the transcript's
           // own settled record (subagent / workflow) takes over.
-          taskStatus: msg.toolId ? liveTasksByToolUseId.get(msg.toolId) : undefined,
+          taskStatus,
           ...sharedMetadata,
         });
         break;

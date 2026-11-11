@@ -69,6 +69,7 @@ const NORMALIZED_MESSAGE_KEYS = [
   'providerRowKey',
   'reason',
   'requestId',
+  'resumed',
   'role',
   'rowid',
   'seq',

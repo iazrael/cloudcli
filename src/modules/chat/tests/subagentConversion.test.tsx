@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import { normalizedToChatMessages } from '@/modules/chat/hooks/useChatMessages';
 import { SubagentPanel } from '@/modules/chat/tools/SubagentPanel';
+import { readBackgroundTaskStatus } from '@/modules/chat/utils/backgroundTasks';
 import { createCachedDiffCalculator } from '@/modules/chat/utils/messageTransforms';
 import type { NormalizedMessage } from '@/shared/types';
 
@@ -155,5 +156,39 @@ describe('the subagent panel with a timeline', () => {
     fireEvent.click(screen.getByRole('button'));
     expect(screen.getByText('Reading the file.')).toBeTruthy();
     expect(document.body.textContent).toContain('Read');
+  });
+});
+
+describe('an agent resumed after it had stopped', () => {
+  // ZCode's SendMessage wakes a finished agent in the background. The server
+  // reports the run on the original Agent call, and the history the page
+  // loaded before the resume already calls that agent completed.
+  const settledCard = () => agentCall({
+    subagent: { id: 'a1', status: 'completed', type: 'Explore' },
+    subagentTools: [{ kind: 'text', content: 'from history' }],
+  });
+  const resumedStart = () => row({
+    kind: 'task_status', event: 'started', taskId: 'a1', toolUseId: 'call_agent', taskType: 'local_agent', resumed: true,
+  });
+
+  it('runs again, outranking the settled history, with the new run appended to its timeline', () => {
+    const [card] = normalizedToChatMessages([settledCard(), resumedStart(), childText()]);
+    expect(card.taskStatus).toMatchObject({ status: 'running', resumed: true });
+    expect(readBackgroundTaskStatus(card)).toBe('running');
+    expect(card.subagentActivity?.map((entry) => entry.content)).toEqual(['from history', 'Reading the file.']);
+  });
+
+  it('settles on what the resumed run reported', () => {
+    const stopped = row({ kind: 'task_status', event: 'notification', taskId: 'a1', toolUseId: 'call_agent', status: 'failed' });
+    const [card] = normalizedToChatMessages([settledCard(), resumedStart(), stopped]);
+    expect(card.taskStatus).toMatchObject({ status: 'failed', resumed: true });
+    expect(readBackgroundTaskStatus(card)).toBe('failed');
+  });
+
+  it('keeps the history verdict over a live start that is not a resume', () => {
+    const start = row({ kind: 'task_status', event: 'started', taskId: 'a1', toolUseId: 'call_agent', taskType: 'local_agent' });
+    const [card] = normalizedToChatMessages([settledCard(), start, childText()]);
+    expect(readBackgroundTaskStatus(card)).toBe('completed');
+    expect(card.subagentActivity?.map((entry) => entry.content)).toEqual(['from history']);
   });
 });

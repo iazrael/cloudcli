@@ -384,3 +384,106 @@ test('a session that never spawned an agent has no sidecar directory and logs no
     assert.deepEqual(logged, []);
   });
 });
+
+// ---------------------------------------------------------------------------
+// SendMessage resuming a stopped agent: the engine rewrites the sidecar's
+// `parentToolUseId` to the SendMessage call and reports the resumed run on it.
+// The card is still the original Agent call's, as in the engine's own UI.
+// ---------------------------------------------------------------------------
+
+test('history pairs the Agent row with its agent even after a resume rewrote the sidecar', async () => {
+  await withZCodeStorage(async (storageDir) => {
+    await createParentWithAgent(storageDir, 'sess_parent', { output: backgroundLaunchOutput, childModelId: 'GLM-5.3-Flash' });
+    await writeAgentMetadata(storageDir, 'sess_parent', 'agent_a', { status: 'completed', parentToolUseId: 'call_send' });
+
+    const { messages } = await new ZCodeSessionsProvider().fetchHistory('sess_parent');
+    const task = messages.find((message) => message.kind === 'tool_use');
+    assert.equal(task?.toolId, 'call_agent');
+    assert.equal(task?.subagent?.id, 'agent_a');
+    assert.equal(task?.subagent?.status, 'completed');
+    assert.equal(task?.subagentTools?.length, 2);
+  });
+});
+
+test('history falls back to the sidecar\'s launching call when the result names no agent', async () => {
+  await withZCodeStorage(async (storageDir) => {
+    await createParentWithAgent(storageDir, 'sess_parent', { output: 'The review found no blockers.' });
+    await writeAgentMetadata(storageDir, 'sess_parent', 'agent_a', { status: 'completed' });
+
+    const { messages } = await new ZCodeSessionsProvider().fetchHistory('sess_parent');
+    assert.equal(messages.find((message) => message.kind === 'tool_use')?.subagent?.id, 'agent_a');
+  });
+});
+
+test('history does not pair an Agent row with another call\'s agent', async () => {
+  await withZCodeStorage(async (storageDir) => {
+    // The result names agent_a, whose sidecar is missing; agent_b's sidecar
+    // was launched by another call and must not be borrowed.
+    await createParentWithAgent(storageDir, 'sess_parent', { output: backgroundLaunchOutput });
+    await writeAgentMetadata(storageDir, 'sess_parent', 'agent_b', { status: 'completed', parentToolUseId: 'call_other' });
+
+    const { messages } = await new ZCodeSessionsProvider().fetchHistory('sess_parent');
+    assert.equal(messages.find((message) => message.kind === 'tool_use')?.subagent, undefined);
+  });
+});
+
+const parentLiveEvent = (type: string, payload: Record<string, unknown>) => ({
+  method: 'session/event',
+  params: { id: `evt_${type}`, sessionId: 'sess_parent', type, timestamp: '2026-11-11T01:56:20.181Z', payload },
+});
+
+const resumedRun = { agentId: 'agent_a', agentType: 'general-purpose', background: true, childSessionId: 'sess_subagent_agent_a', parentToolCallId: 'call_send' };
+
+test('a resumed agent\'s live events land on the Agent call that launched it', async () => {
+  await withZCodeStorage(async (storageDir) => {
+    await createParentWithAgent(storageDir, 'sess_parent', { output: backgroundLaunchOutput });
+    const provider = new ZCodeSessionsProvider();
+
+    const [started] = provider.normalizeMessage(
+      parentLiveEvent('subagent_spawned', { ...resumedRun, resumed: true, description: 'Review the fix', status: 'running' }),
+      'sess_parent',
+    );
+    assert.equal(started.kind, 'task_status');
+    assert.equal(started.event, 'started');
+    assert.equal(started.toolUseId, 'call_agent');
+    assert.equal(started.resumed, true);
+
+    // The turn that resumed it ends; the agent keeps running.
+    provider.normalizeMessage(parentLiveEvent('turn_complete', {}), 'sess_parent');
+
+    const [childCall] = provider.normalizeMessage(
+      parentLiveEvent('tool.updated', { ...childScheduled, parentToolCallId: 'call_send' }),
+      'sess_parent',
+    );
+    assert.equal(childCall.parentToolUseId, 'call_agent', 'the resumed run\'s tool calls fold into the original card');
+
+    const [stopped] = provider.normalizeMessage(
+      parentLiveEvent('subagent_stopped', { ...resumedRun, status: 'completed', totalDurationMs: 10 }),
+      'sess_parent',
+    );
+    assert.equal(stopped.toolUseId, 'call_agent');
+    assert.equal(stopped.status, 'completed');
+    assert.equal(stopped.resumed, undefined);
+  });
+});
+
+test('a resumed agent whose launch cannot be found stays on the call that resumed it', async () => {
+  await withZCodeStorage(async (storageDir) => {
+    await createParentWithAgent(storageDir, 'sess_parent', { output: 'The review found no blockers.' });
+    const provider = new ZCodeSessionsProvider();
+
+    const [started] = provider.normalizeMessage(
+      parentLiveEvent('subagent_spawned', { ...resumedRun, resumed: true, status: 'running' }),
+      'sess_parent',
+    );
+    assert.equal(started.toolUseId, 'call_send');
+    assert.equal(started.resumed, true);
+  });
+});
+
+test('a first spawn is reported on its own call without a database lookup', () => {
+  const provider = new ZCodeSessionsProvider();
+  const [started] = provider.normalizeMessage(liveEvent('subagent_spawned', spawnedPayload), 'sess_1');
+  assert.equal(started.toolUseId, 'call_agent');
+  assert.equal(started.resumed, undefined);
+});

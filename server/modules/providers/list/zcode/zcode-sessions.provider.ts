@@ -367,7 +367,11 @@ function aggregateZCodeSessionTokenUsage(
 type ZCodeAgentSidecar = {
   agentId: string;
   childSessionId?: string;
-  /** The `Agent` call that spawned it: how the sidecar pairs with its card. */
+  /**
+   * The call that last started it: the `Agent` call at spawn, rewritten to
+   * the `SendMessage` call when the engine resumes a stopped agent. Only a
+   * fallback for pairing, for a launch whose result does not name its agent.
+   */
   parentToolUseId: string;
   profileId?: string;
   description?: string;
@@ -376,13 +380,13 @@ type ZCodeAgentSidecar = {
 };
 
 /**
- * Reads every agent sidecar one session wrote, keyed by the launching call.
+ * Reads every agent sidecar one session wrote, keyed by agent id.
  * A session that spawned nothing has no directory; an unreadable or
  * malformed sidecar is skipped rather than failing the whole history, since
  * the card still renders from its own input and result.
  */
 async function readZCodeAgentSidecars(parentSessionId: string): Promise<Map<string, ZCodeAgentSidecar>> {
-  const byToolUseId = new Map<string, ZCodeAgentSidecar>();
+  const byAgentId = new Map<string, ZCodeAgentSidecar>();
   const dir = getZCodeAgentSidecarDir(parentSessionId);
 
   let entries: string[];
@@ -394,7 +398,7 @@ async function readZCodeAgentSidecars(parentSessionId: string): Promise<Map<stri
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
       console.error(`[ZCodeSessions] Could not read the agent sidecar directory ${dir}:`, error);
     }
-    return byToolUseId;
+    return byAgentId;
   }
 
   for (const entry of entries) {
@@ -405,7 +409,7 @@ async function readZCodeAgentSidecars(parentSessionId: string): Promise<Map<stri
       if (!parsed || !agentId || !parentToolUseId) {
         continue;
       }
-      byToolUseId.set(parentToolUseId, {
+      byAgentId.set(agentId, {
         agentId,
         parentToolUseId,
         childSessionId: readOptionalString(parsed.childSessionId),
@@ -423,7 +427,48 @@ async function readZCodeAgentSidecars(parentSessionId: string): Promise<Map<stri
     }
   }
 
-  return byToolUseId;
+  return byAgentId;
+}
+
+/** The engine's own rule (`zcode.cjs`) for the agent id line in an `Agent` result. */
+const ZCODE_LAUNCHED_AGENT_ID_PATTERN = /(?:^|\r?\n)agentId:\s*([^\s(]+)/u;
+
+/**
+ * The agent an `Agent` call launched, read off its result the way the engine
+ * itself rebuilds its history: foreground and background launches alike end
+ * with an `agentId: <id>` line. The sidecar's `parentToolUseId` cannot say
+ * this reliably, because resuming the agent rewrites it to the SendMessage
+ * call.
+ */
+function readZCodeLaunchedAgentId(result: unknown): string | undefined {
+  return typeof result === 'string' ? ZCODE_LAUNCHED_AGENT_ID_PATTERN.exec(result)?.[1] : undefined;
+}
+
+/**
+ * The `Agent` call in a session whose result names the agent, read from the
+ * engine's database. The live normalizer asks for it when the engine resumes
+ * a stopped agent, which is usually turns after the launch — possibly before
+ * a server restart — so no in-memory record could answer.
+ */
+function findZCodeAgentLaunchCallId(engineSessionId: string, agentId: string): string | undefined {
+  const db = openZCodeDatabase();
+  if (!db) {
+    return undefined;
+  }
+  try {
+    const rows = db.prepare(
+      `SELECT json_extract(data, '$.callID') AS call_id, json_extract(data, '$.state.output') AS output
+         FROM part
+        WHERE session_id = ?
+          AND json_extract(data, '$.tool') = ?
+          AND instr(json_extract(data, '$.state.output'), ?) > 0
+        ORDER BY time_created, id`,
+    ).all(engineSessionId, SUBAGENT_TOOL_NAME, agentId) as Array<{ call_id: unknown; output: unknown }>;
+    const launch = rows.find((row) => readZCodeLaunchedAgentId(row.output) === agentId);
+    return readOptionalString(launch?.call_id);
+  } finally {
+    db.close();
+  }
 }
 
 /**
@@ -470,7 +515,7 @@ const ZCODE_SESSION_DATA_TIMEOUT_MS = 5 * 60 * 1000;
  * API routes and realtime streams.
  */
 export class ZCodeSessionsProvider implements IProviderSessions {
-  private readonly liveEventNormalizer = new ZCodeLiveEventNormalizer();
+  private readonly liveEventNormalizer = new ZCodeLiveEventNormalizer({ findAgentLaunchCallId: findZCodeAgentLaunchCallId });
   private readonly isSubagentRunning: (agentId: string) => boolean;
 
   constructor({ isSubagentRunning = (agentId) => zcodeBackgroundWork.has(agentId) }: ZCodeSessionsProviderOptions = {}) {
@@ -859,7 +904,8 @@ export class ZCodeSessionsProvider implements IProviderSessions {
    * successfully…"), and the lifecycle events that reported the stop live
    * were never persisted. The engine's sidecar is the durable record, and
    * the card reads its status off `subagent`, so the row gets one whenever
-   * a sidecar names its call.
+   * its agent has a sidecar. The row finds its agent by the id its result
+   * names, else by the sidecar that names this call.
    */
   private async attachSubagents(
     db: Database.Database,
@@ -873,7 +919,10 @@ export class ZCodeSessionsProvider implements IProviderSessions {
 
     const sidecars = await readZCodeAgentSidecars(providerSessionId);
     for (const launch of launches) {
-      const sidecar = sidecars.get(launch.toolId as string);
+      const agentId = readZCodeLaunchedAgentId(launch.toolResult?.content);
+      const sidecar = agentId
+        ? sidecars.get(agentId)
+        : [...sidecars.values()].find((candidate) => candidate.parentToolUseId === launch.toolId);
       if (!sidecar) {
         continue;
       }

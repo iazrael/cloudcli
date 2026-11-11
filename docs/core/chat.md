@@ -90,7 +90,7 @@ flowchart TD
 
 ### 子 agent 卡片只认 `Agent`
 
-前端把工具名等于 `Agent` 的 `tool_use` 行渲染成子 agent 面板（`useChatMessages` 的 `isSubagentContainer`，常量来自 `shared/protocol/subagent.ts`），不按引擎分支，也不看 `Task`：`Task` 只指任务清单类工具。面板的状态先看历史行上的 `subagent`：它给出 `running` 以外的状态就是定论；否则看 `task_status` 事件（实时，按 `toolUseId` 折回这张卡）；两者都没有时才看工具结果：结果带错误标记（引擎拒绝了这次派发，例如 agent 类型不存在）读作 `failed`，其余有结果读作完成，没有结果读作运行中。状态文案和 `stopped` 的提示语走 `chat` 命名空间的 `subagent.*` 键。面板的 `subagent`、`subagentActivity` 由转换函数从后端行的 `subagent`、`subagentTools` 原样带上；直播送来的、`parentToolUseId` 指向某张 `Agent` 卡的行（工具调用、定稿文本、思考，含对应工具结果）不进主线程，而是折成这张卡的时间线，历史行自带 `subagentTools` 时以历史为准。转换缓存按被折进的子行（含它们的结果）是否变化失效。
+前端把工具名等于 `Agent` 的 `tool_use` 行渲染成子 agent 面板（`useChatMessages` 的 `isSubagentContainer`，常量来自 `shared/protocol/subagent.ts`），不按引擎分支，也不看 `Task`：`Task` 只指任务清单类工具。面板的状态先看历史行上的 `subagent`：它给出 `running` 以外的状态就是定论，唯一例外是带 `resumed` 的实时状态（ZCode 用 `SendMessage` 复活了已结束的 agent，由 `resumed: true` 的 `started` 置上、同一任务后续事件沿用），这次运行比历史记录新，以实时为准；否则看 `task_status` 事件（实时，按 `toolUseId` 折回这张卡）；两者都没有时才看工具结果：结果带错误标记（引擎拒绝了这次派发，例如 agent 类型不存在）读作 `failed`，其余有结果读作完成，没有结果读作运行中。状态文案和 `stopped` 的提示语走 `chat` 命名空间的 `subagent.*` 键。面板的 `subagent`、`subagentActivity` 由转换函数从后端行的 `subagent`、`subagentTools` 原样带上；直播送来的、`parentToolUseId` 指向某张 `Agent` 卡的行（工具调用、定稿文本、思考，含对应工具结果）不进主线程，而是折成这张卡的时间线，历史行自带 `subagentTools` 时以历史为准，复活中的卡则把直播行接在历史时间线后面。转换缓存按被折进的子行（含它们的结果）是否变化失效。
 
 折叠的归属规则：行的 `parentToolUseId` 沿父链找到最外层的 `Agent` 调用，行就折进那张顶层卡；agent 里再派的 agent 只是外层卡时间线里的一步，它名下的行也折进同一张外层卡。父链沿途的非 agent 调用不影响结果（取最外层的 `Agent`），父链成环时在闭合处截断，环里的 agent 仍是卡片。父链走不到任何 agent 且止于本页没有的调用时：会话还在运行（有前台回复或后台工作）且这是直播行（带 `seq`）才先不进主线程、等卡片到了再折入，避免先出现在主线程又跳走；历史行（卡片可能在未加载的页里）和会话已经结算后的行照常显示在主线程，不会永远消失；父调用存在但不是 `Agent`（Bash、workflow）的行照常留在主线程。
 

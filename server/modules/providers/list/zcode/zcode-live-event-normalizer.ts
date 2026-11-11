@@ -219,11 +219,6 @@ export function readZCodeSessionEvent(rawMessage: unknown, fallbackSessionId: st
   };
 }
 
-/** The `Agent` call whose agent made a mirrored tool event, or undefined for a main-thread event. */
-function readSubagentParentToolCallId(payload: AnyRecord): string | undefined {
-  return readOptionalString(payload.source) === 'subagent' ? readOptionalString(payload.parentToolCallId) : undefined;
-}
-
 /**
  * Whether an event type is one of the two subagent lifecycle events this
  * module translates.
@@ -245,8 +240,10 @@ const readReportedTotal = (value: unknown): number | undefined => {
  * Translates the engine's subagent lifecycle events — emitted on the PARENT
  * session when an `Agent` call's child session is ready and when it stops —
  * into the `task_status` events the client folds onto the launching Agent
- * card. Both events name the launching call (`parentToolCallId`); one that
- * does not is dropped, because an unattached status has no card to land on.
+ * card. Both events name the call that started the run (`parentToolCallId`);
+ * one that does not is dropped, because an unattached status has no card to
+ * land on. `cardToolUseId` is that call as the caller resolved it: for a
+ * resumed agent, the original `Agent` call rather than the SendMessage.
  *
  * `subagent_spawned` marks the card running. `subagent_stopped` settles it:
  * the engine reports `completed` or `failed` and, on failure, the error as the
@@ -254,10 +251,13 @@ const readReportedTotal = (value: unknown): number | undefined => {
  * engine sent: a failure stop carries no token or tool-call totals, and a
  * missing figure stays missing instead of reading as a measured zero.
  */
-function normalizeZCodeSubagentLifecycleEvent(event: ZCodeSessionEvent): NormalizedMessage | null {
+function normalizeZCodeSubagentLifecycleEvent(
+  event: ZCodeSessionEvent,
+  cardToolUseId: string | undefined,
+): NormalizedMessage | null {
   const { payload } = event;
   const taskId = readOptionalString(payload.agentId);
-  const toolUseId = readOptionalString(payload.parentToolCallId);
+  const toolUseId = cardToolUseId;
   if (!taskId || !toolUseId) {
     return null;
   }
@@ -276,6 +276,7 @@ function normalizeZCodeSubagentLifecycleEvent(event: ZCodeSessionEvent): Normali
       ...timing,
       event: 'started',
       description: readOptionalString(payload.description) ?? readOptionalString(payload.prompt),
+      ...(payload.resumed === true ? { resumed: true } : {}),
     });
   }
 
@@ -379,7 +380,31 @@ export function createZCodeCompactSummaryMessage(
   });
 }
 
+type ZCodeLiveEventNormalizerOptions = {
+  /**
+   * The `Agent` call in an engine session whose result names this agent, or
+   * undefined when none does. Asked once per resume of a stopped agent.
+   */
+  findAgentLaunchCallId?: (engineSessionId: string, agentId: string) => string | undefined;
+};
+
 export class ZCodeLiveEventNormalizer {
+  private readonly findAgentLaunchCallId: (engineSessionId: string, agentId: string) => string | undefined;
+
+  /**
+   * Per session: the SendMessage call that resumed a stopped agent → the
+   * `Agent` call that launched it. The engine reports the resumed run — its
+   * lifecycle and its mirrored tool calls — on the SendMessage call, while
+   * the card is the original launch's, as in the engine's own UI. Learned
+   * from the resumed spawn, dropped at the run's stop, and deliberately not
+   * cleared at turn end: the agent outlives the turn that resumed it.
+   */
+  private readonly agentCardByResumeCall = new Map<string, Map<string, string>>();
+
+  constructor({ findAgentLaunchCallId = () => undefined }: ZCodeLiveEventNormalizerOptions = {}) {
+    this.findAgentLaunchCallId = findAgentLaunchCallId;
+  }
+
   /**
    * The summary text of the compaction running in each session. The engine
    * streams it before the update that ends the compaction, and only that
@@ -426,7 +451,7 @@ export class ZCodeLiveEventNormalizer {
     }
 
     if (isZCodeSubagentLifecycleEvent(normalizedType)) {
-      const status = normalizeZCodeSubagentLifecycleEvent(event);
+      const status = normalizeZCodeSubagentLifecycleEvent(event, this.resolveAgentCard(event));
       return status ? [status] : [];
     }
 
@@ -526,6 +551,44 @@ export class ZCodeLiveEventNormalizer {
   }
 
   /**
+   * The card a lifecycle event belongs to. A resumed spawn names the
+   * SendMessage call; it is mapped to the agent's `Agent` call when the
+   * engine's history has one, and the mapping holds until the run stops.
+   */
+  private resolveAgentCard(event: ZCodeSessionEvent): string | undefined {
+    const { payload } = event;
+    const callId = readOptionalString(payload.parentToolCallId);
+    const agentId = readOptionalString(payload.agentId);
+    if (!callId || !agentId) {
+      return callId;
+    }
+    const stateKey = event.sessionId ?? '';
+    if (event.type === 'subagent_spawned' && payload.resumed === true && event.sessionId) {
+      const launchCallId = this.findAgentLaunchCallId(event.sessionId, agentId);
+      if (launchCallId && launchCallId !== callId) {
+        const cards = this.agentCardByResumeCall.get(stateKey) ?? new Map<string, string>();
+        cards.set(callId, launchCallId);
+        this.agentCardByResumeCall.set(stateKey, cards);
+      }
+    }
+    const cards = this.agentCardByResumeCall.get(stateKey);
+    const card = cards?.get(callId) ?? callId;
+    if (event.type === 'subagent_stopped' && cards?.delete(callId) && cards.size === 0) {
+      this.agentCardByResumeCall.delete(stateKey);
+    }
+    return card;
+  }
+
+  /** The card a mirrored tool event belongs to, or undefined for a main-thread event. */
+  private readSubagentCard(payload: AnyRecord, sessionId: string | null): string | undefined {
+    if (readOptionalString(payload.source) !== 'subagent') {
+      return undefined;
+    }
+    const callId = readOptionalString(payload.parentToolCallId);
+    return callId && (this.agentCardByResumeCall.get(sessionId ?? '')?.get(callId) ?? callId);
+  }
+
+  /**
    * Drops incomplete state for one terminal ZCode session. It is safe to call
    * after a normal completion because both maps are already empty then.
    */
@@ -576,7 +639,7 @@ export class ZCodeLiveEventNormalizer {
       // While an agent runs the engine mirrors its tool calls onto the parent
       // session's stream, marked `source: "subagent"` with the agent's `Agent`
       // call as `parentToolCallId`; they belong in that card's timeline.
-      parentToolUseId: readSubagentParentToolCallId(payload),
+      parentToolUseId: this.readSubagentCard(payload, sessionId),
     })];
   }
 
