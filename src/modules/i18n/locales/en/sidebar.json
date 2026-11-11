@@ -193,6 +193,8 @@
     "archiveSessions_one": "Archive {{count}} session",
     "archiveSessions_other": "Archive {{count}} sessions",
     "archiveSessionsNotice_one": "Archive keeps the session out of the active list while preserving its history.",
-    "archiveSessionsNotice_other": "Archive keeps the sessions out of the active list while preserving their history."
+    "archiveSessionsNotice_other": "Archive keeps the sessions out of the active list while preserving their history.",
+    "confirmDeleteSession": "Permanently delete",
+    "deleteSessionNotice": "The session and its history will be removed. This cannot be undone."
   }
 }

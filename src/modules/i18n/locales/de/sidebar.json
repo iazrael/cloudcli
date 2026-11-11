@@ -39,23 +39,8 @@
     "clearSelection": "Auswahl aufheben",
     "deleteSelected_one": "{{count}} Sitzung löschen",
     "deleteSelected_other": "{{count}} Sitzungen löschen",
-    "pinSession": "Sitzung anheften",
-    "unpinSession": "Sitzung lösen",
-    "pinned": "Angeheftet",
-    "optionsTitle": "Sitzungsoptionen",
-    "optionsFor": "Sitzungsoptionen für {{name}}",
-    "providerSession": "{{provider}}-Sitzung",
-    "forkSession": "Sitzung verzweigen",
-    "forkSessionDescription": "Von einer Kopie aus weitermachen, diese Sitzung bleibt unverändert.",
-    "archiveOrDelete": "Sitzung archivieren oder löschen",
-    "clickToRetry": "Zum Wiederholen klicken.",
-    "tapToRetry": "Zum Wiederholen tippen.",
-    "sessionName": "Sitzungsname",
-    "copyId": "{{provider}}-Sitzungs-ID kopieren",
-    "copyIdLoading": "{{provider}}-Sitzungs-ID wird geladen…",
-    "copyIdCopied": "{{provider}}-Sitzungs-ID kopiert",
-    "copyIdFailed": "{{provider}}-Sitzungs-ID konnte nicht kopiert werden",
-    "copyIdUnavailable": "{{provider}}-Sitzungs-ID nicht verfügbar"
+    "expandForks": "Abzweigungen von {{session}} aufklappen",
+    "collapseForks": "Abzweigungen von {{session}} zuklappen"
   },
   "tooltips": {
     "viewEnvironments": "Umgebungen anzeigen",
@@ -139,8 +124,7 @@
     "restoreSessionError": "Fehler beim Wiederherstellen der Sitzung. Bitte erneut versuchen.",
     "forkSessionError": "Diese Sitzung konnte nicht verzweigt werden. Bitte erneut versuchen.",
     "deleteSessionsPartialFailure_one": "{{count}} Sitzung von {{total}} konnte nicht gelöscht werden. Bitte erneut versuchen.",
-    "deleteSessionsPartialFailure_other": "{{count}} von {{total}} Sitzungen konnten nicht gelöscht werden. Bitte erneut versuchen.",
-    "pinSessionError": "Diese Sitzung konnte nicht angeheftet werden. Bitte erneut versuchen."
+    "deleteSessionsPartialFailure_other": "{{count}} von {{total}} Sitzungen konnten nicht gelöscht werden. Bitte erneut versuchen."
   },
   "version": {
     "updateAvailable": "Update verfügbar",
@@ -169,9 +153,6 @@
     "sessionCount_other": "Dieses Projekt enthält {{count}} Unterhaltungen.",
     "removeFromSidebar": "Nur aus der Seitenleiste entfernen",
     "archiveProject": "Projekt archivieren",
-    "archiveSession": "Sitzung archivieren",
-    "archiveSessionNotice": "Beim Archivieren verschwindet die Sitzung aus der aktiven Liste, ihr Verlauf bleibt erhalten.",
-    "archivedSessionNotice": "Diese Sitzung ist bereits archiviert. Du kannst sie ausgeblendet lassen oder endgültig löschen.",
     "deleteSessionPermanently": "Endgültig löschen",
     "deleteAllData": "Alle Daten dauerhaft löschen",
     "allConversationsDeleted": "Das Projekt wird aus der Seitenleiste entfernt. Deine Dateien, Erinnerungen und Sitzungsdaten bleiben erhalten.",

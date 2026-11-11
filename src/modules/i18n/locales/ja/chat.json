@@ -17,8 +17,7 @@
     "tool": "ツール",
     "claude": "Claude",
     "cursor": "Cursor",
-    "codex": "Codex",
-    "antigravity": "Antigravity"
+    "codex": "Codex"
   },
   "tools": {
     "settings": "ツール設定",
@@ -75,6 +74,12 @@
   "json": {
     "response": "JSONレスポンス"
   },
+  "agentPrompts": {
+    "needsInput": "{{agent}} が入力を求めています",
+    "dismiss": "却下",
+    "alwaysAllow": "常に許可",
+    "alwaysAllowCovers": "「常に許可」の対象"
+  },
   "permissions": {
     "grant": "{{tool}}に権限を付与",
     "added": "権限を追加しました",
@@ -104,6 +109,7 @@
       "plan": "プランモード"
     },
     "descriptions": {
+      "default": "信頼されたコマンド（ls、cat、grep、git statusなど）のみ自動実行。その他のコマンドはスキップ。ワークスペースへの書き込みは可能。",
       "auto": "モデルの分類器がツール呼び出しごとに承認か拒否かを判断します。手動での承認は不要ですが、「権限をバイパス」より安全です。拒否されることもあります。",
       "acceptEdits": "ワークスペース内ですべてのコマンドを自動実行。サンドボックス環境での完全自動モード。",
       "bypassPermissions": "制限なしの完全なシステムアクセス。すべてのコマンドがディスクとネットワークへの完全なアクセスで自動実行されます。注意して使用してください。",
@@ -118,7 +124,6 @@
     "attachFiles": "ファイルを添付",
     "attachImages": "画像を添付",
     "send": "送信",
-    "sending": "送信中…",
     "stop": "停止",
     "hintText": {
       "ctrlEnter": "Ctrl+Enterで送信 • Shift+Enterで改行 • Tabでモード切替 • / でスラッシュコマンド",
@@ -158,6 +163,12 @@
     "loading": {
       "olderMessages": "過去のメッセージを読み込んでいます...",
       "sessionMessages": "セッションメッセージを読み込んでいます..."
+    },
+    "messages": {
+      "showingOf": "{{total}}件中{{shown}}件を表示",
+      "scrollToLoad": "上にスクロールしてさらに読み込む",
+      "showingLast": "最新{{count}}件を表示（全{{total}}件）",
+      "loadEarlier": "過去のメッセージを読み込む"
     }
   },
   "shell": {
@@ -184,10 +195,10 @@
     },
     "loading": "ターミナルを読み込んでいます...",
     "connecting": "シェルに接続しています...",
-    "startSession": "新しい{{provider}}セッションを開始",
+    "startSession": "新しいClaudeセッションを開始",
     "resumeSession": "セッションを再開: {{displayName}}...",
     "runCommand": "{{projectName}}で{{command}}を実行",
-    "startCli": "{{projectName}}で{{provider}} CLIを起動しています",
+    "startCli": "{{projectName}}でClaude CLIを起動しています",
     "defaultCommand": "コマンド"
   },
   "claudeStatus": {
@@ -223,14 +234,14 @@
     "answeredBy": "{{model}} が回答"
   },
   "composer": {
+    "permissionHeading": "{{provider}} の操作をどのように承認しますか？",
+    "permissionCycleHint": "入力欄でTabを押すとモードを切り替えられます",
+    "permissionTriggerLabel": "{{mode}}：{{heading}}",
     "editing": {
       "title": "以前のメッセージを置き換えています",
       "filesNotReverted": "変更済みのファイルは元に戻りません",
       "cancel": "キャンセル"
-    },
-    "permissionHeading": "{{provider}} の操作をどのように承認しますか？",
-    "permissionCycleHint": "入力欄でTabを押すとモードを切り替えられます",
-    "permissionTriggerLabel": "{{mode}}：{{heading}}"
+    }
   },
   "export": {
     "trigger": "会話をエクスポート",
@@ -255,79 +266,15 @@
     "customLabel": "または時刻を指定",
     "confirm": "予約",
     "in": {
-      "30": "30 分後",
-      "120": "2 時間後",
-      "300": "5 時間後",
+      "15": "15 分後",
+      "60": "1 時間後",
+      "480": "8 時間後",
       "1440": "明日"
     },
     "pending": "{{when}} に送信予定",
     "failed": "未送信 — {{reason}}",
     "cancel": "予約を取り消す",
     "dismiss": "失敗の通知を閉じる"
-  },
-  "cost": {
-    "totalTokensUsed": "使用トークン総数",
-    "inputTokens": "入力トークン",
-    "outputTokens": "出力トークン",
-    "contextWindow": "コンテキストウィンドウ",
-    "quotaTitle": "アカウント使用量とレート制限",
-    "updatedAt": "{{time}} に更新",
-    "refresh": "更新",
-    "refreshTitle": "最新の使用状況を更新",
-    "fetchingQuota": "最新の使用状況を取得中...",
-    "syncingWithProvider": "{{provider}} から 5 時間制限と週間クォータを同期中",
-    "noQuotaData": "このアカウントで表示できるクォータデータはありません",
-    "refreshFailedNotice": "更新に失敗しました。前回取得したデータを表示しています",
-    "fetchFailed": "クォータの取得に失敗しました。後でもう一度お試しください",
-    "currentGroup": "現在のセッションモデル",
-    "otherGroup": "その他のモデル",
-    "collapse": "折りたたむ",
-    "expand": "展開する",
-    "fiveHourWindow": "5時間スライド枠制限",
-    "weeklyWindow": "週間クォータ",
-    "weeklyWindowAllModels": "週間クォータ（全モデル）",
-    "weeklyWindowScoped": "週間クォータ（{{model}}）",
-    "remainingPercent": "残り {{percent}}%",
-    "resetSoon": "まもなくリセット",
-    "resetDaysHours": "{{days}}日{{hours}}時間後にリセット",
-    "resetHoursMinutes": "{{hours}}時間{{minutes}}分後にリセット",
-    "resetMinutes": "{{minutes}}分後にリセット",
-    "emptyQuotaHint": {
-      "claude": "API キー・Bedrock・Vertex でのログインには claude.ai のサブスクリプション制限がありません",
-      "codex": "API キーでのログインでは通常、5時間や週間の制限は提供されません",
-      "opencode": "OpenCode Go プランが未契約か、CLI が Go ワークスペースに未ログインです"
-    },
-    "resetCardTitle": "使用量リセットカード",
-    "resetCardHint": "使用すると対象の枠が即座に回復し、リセット期間を待つ必要がありません。",
-    "resetCardHintReadOnly": "このリセットは提供元のウェブサイトで使用してください。",
-    "resetCardTypeAll": "全枠（5時間 + 週間）",
-    "resetCardType5h": "5時間枠",
-    "resetCardTypeWeekly": "週間枠",
-    "resetCardTypeFable": "Fable リセット",
-    "resetCardAvailable": "{{count}} 枚利用可能",
-    "resetCardExpires": "最短 {{date}} に期限切れ",
-    "resetCardUse": "使用",
-    "resetCardConfirmTitle": "リセットを使用しますか？",
-    "resetCardConfirmBody": "「{{quota}}」が即座に回復します。この操作は取り消せません。",
-    "resetCardConfirm": "使用する",
-    "resetCardCancel": "キャンセル",
-    "resetCardSuccess": "使用量をリセットしました。",
-    "resetCardFailed": "リセットに失敗しました。後でもう一度お試しください。",
-    "resetCardNoCard": "利用できるリセットカードがありません。更新して最新状態を確認してください。",
-    "resetCardReadFailed": "リセットカード情報を読み取れませんでした。後でもう一度お試しください。",
-    "resetCardNotAuthenticated": "アカウントが未ログインです。ログインしてからお試しください。",
-    "resetCardUnknown": "リセット要求は確認されていません。先に「更新」で枠が回復したか確認してください。安易に再試行しないでください。",
-    "resetCardUnavailable": "{{count}} 枚は使用済みまたは期限切れ",
-    "resetCardRefreshing": "使用量を更新中…",
-    "resetCardWeeklyAlso5h": "週間枠のリセットは 5 時間枠も同時に回復し、5 時間カードを消費しません。"
-  },
-  "localProxy": {
-    "linkHint": "このアドレスはサーバー上にのみ存在します。CloudCLI がローカルプロキシ経由で開きます。",
-    "failed": "このサーバーローカルのアドレスを開けませんでした。"
-  },
-  "memory": {
-    "used_one": "{{count}} 件のメモリを参照",
-    "used_other": "{{count}} 件のメモリを参照"
   },
   "modelLibrary": {
     "effortLevels": "推論レベル",

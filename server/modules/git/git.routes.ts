@@ -1201,7 +1201,8 @@ Generate the commit message:`;
       await queryClaudeSDK(prompt, {
         cwd: projectPath,
         permissionMode: 'bypassPermissions',
-        model: 'sonnet'
+        model: 'sonnet',
+        unattended: true, // No person is there to answer an MCP server's request for input
       }, writer);
     } else if (provider === 'cursor') {
       await spawnCursor(prompt, {

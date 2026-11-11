@@ -108,6 +108,12 @@
   "json": {
     "response": "Odpověď JSON"
   },
+  "agentPrompts": {
+    "needsInput": "{{agent}} potřebuje vaši odpověď",
+    "dismiss": "Odmítnout",
+    "alwaysAllow": "Vždy povolit",
+    "alwaysAllowCovers": "Vždy povolit se vztahuje na"
+  },
   "permissions": {
     "grant": "Udělit oprávnění pro nástroj {{tool}}",
     "added": "Oprávnění přidáno",
@@ -165,7 +171,6 @@
       "ctrlEnter": "Ctrl+Enter pro odeslání • Shift+Enter pro nový řádek • Tab pro změnu režimu • / pro příkazy s lomítkem",
       "enter": "Enter pro odeslání • Shift+Enter pro nový řádek • Tab pro změnu režimu • / pro příkazy s lomítkem",
       "queue": "Enter pro zařazení další zprávy do fronty",
-      "updateQueued": "Enter pro aktualizaci zprávy ve frontě",
       "appendQueued": "Enter pro přidání ke zprávě ve frontě"
     },
     "clickToChangeMode": "Kliknutím změníte režim oprávnění (nebo stiskněte Tab ve vstupním poli)",
@@ -174,13 +179,12 @@
     "scrollToBottom": "Posunout na konec",
     "queue": {
       "sendNext": "Zařadit další zprávu do fronty",
-      "update": "Aktualizovat zprávu ve frontě",
+      "append": "Přidat ke zprávě ve frontě",
+      "notCombinable": "Zprávu se nepodařilo zařadit do fronty: Příkaz s lomítkem se spouští samostatně, takže ho nelze spojit se zprávou ve frontě. Odešlete ho, až bude zpráva ve frontě odeslána.",
       "label": "Ve frontě",
       "willSend": "Odešle se po dokončení",
       "edit": "Upravit zprávu ve frontě",
-      "delete": "Smazat zprávu ve frontě",
-      "append": "Přidat ke zprávě ve frontě",
-      "notCombinable": "Zprávu se nepodařilo zařadit do fronty: Příkaz s lomítkem se spouští samostatně, takže ho nelze spojit se zprávou ve frontě. Odešlete ho, až bude zpráva ve frontě odeslána."
+      "delete": "Smazat zprávu ve frontě"
     }
   },
   "composer": {
@@ -190,13 +194,13 @@
     "loadingModels": "Načítání modelů…",
     "modelMenu": "Vyberte model a úroveň uvažování",
     "permissionHeading": "Jak schvalovat akce, které provádí {{provider}}?",
+    "permissionCycleHint": "Režim přepnete klávesou Tab ve vstupním poli",
+    "permissionTriggerLabel": "{{mode}}: {{heading}}",
     "editing": {
       "title": "Nahrazení dřívější zprávy",
       "filesNotReverted": "soubory, které agent už změnil, se nevrátí do původního stavu",
       "cancel": "Zrušit"
-    },
-    "permissionCycleHint": "Režim přepnete klávesou Tab ve vstupním poli",
-    "permissionTriggerLabel": "{{mode}}: {{heading}}"
+    }
   },
   "providerSelection": {
     "title": "Vyberte AI asistenta",
@@ -352,9 +356,9 @@
     "customLabel": "Nebo vyberte čas",
     "confirm": "Naplánovat",
     "in": {
-      "30": "Za 30 minut",
-      "120": "Za 2 hodiny",
-      "300": "Za 5 hodin",
+      "15": "Za 15 minut",
+      "60": "Za hodinu",
+      "480": "Za 8 hodin",
       "1440": "Zítra"
     },
     "pending": "Naplánováno na {{when}}",

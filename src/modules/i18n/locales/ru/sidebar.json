@@ -41,23 +41,8 @@
     "deleteSelected_few": "Удалить {{count}} сеанса",
     "deleteSelected_many": "Удалить {{count}} сеансов",
     "deleteSelected_other": "Удалить {{count}} сеансов",
-    "pinSession": "Закрепить сессию",
-    "unpinSession": "Открепить сессию",
-    "pinned": "Закреплена",
-    "optionsTitle": "Параметры сессии",
-    "optionsFor": "Параметры сессии {{name}}",
-    "providerSession": "Сессия {{provider}}",
-    "forkSession": "Создать ветку сессии",
-    "forkSessionDescription": "Продолжить с копии, не меняя эту сессию.",
-    "archiveOrDelete": "Архивировать или удалить сессию",
-    "clickToRetry": "Нажмите, чтобы повторить.",
-    "tapToRetry": "Коснитесь, чтобы повторить.",
-    "sessionName": "Название сессии",
-    "copyId": "Копировать ID сессии {{provider}}",
-    "copyIdLoading": "Загрузка ID сессии {{provider}}…",
-    "copyIdCopied": "ID сессии {{provider}} скопирован",
-    "copyIdFailed": "Не удалось скопировать ID сессии {{provider}}",
-    "copyIdUnavailable": "ID сессии {{provider}} недоступен"
+    "expandForks": "Развернуть ответвления {{session}}",
+    "collapseForks": "Свернуть ответвления {{session}}"
   },
   "tooltips": {
     "viewEnvironments": "Просмотр окружений",
@@ -143,8 +128,7 @@
     "deleteSessionsPartialFailure_one": "Не удалось удалить {{count}} сеанс из {{total}}. Попробуйте снова.",
     "deleteSessionsPartialFailure_few": "Не удалось удалить {{count}} сеанса из {{total}}. Попробуйте снова.",
     "deleteSessionsPartialFailure_many": "Не удалось удалить {{count}} сеансов из {{total}}. Попробуйте снова.",
-    "deleteSessionsPartialFailure_other": "Не удалось удалить {{count}} сеансов из {{total}}. Попробуйте снова.",
-    "pinSessionError": "Не удалось закрепить сессию. Попробуйте ещё раз."
+    "deleteSessionsPartialFailure_other": "Не удалось удалить {{count}} сеансов из {{total}}. Попробуйте снова."
   },
   "version": {
     "updateAvailable": "Доступно обновление",
@@ -179,9 +163,6 @@
     "sessionCount_other": "Этот проект содержит {{count}} разговоров.",
     "removeFromSidebar": "Убрать только из боковой панели",
     "archiveProject": "Архивировать проект",
-    "archiveSession": "Архивировать сеанс",
-    "archiveSessionNotice": "Архивирование убирает сеанс из активного списка, сохраняя его историю.",
-    "archivedSessionNotice": "Этот сеанс уже архивирован. Вы можете оставить его скрытым или удалить навсегда.",
     "deleteSessionPermanently": "Удалить навсегда",
     "deleteAllData": "Удалить все данные навсегда",
     "allConversationsDeleted": "Проект будет убран из боковой панели. Ваши файлы, воспоминания и данные сеансов сохранятся.",

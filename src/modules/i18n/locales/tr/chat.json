@@ -18,7 +18,7 @@
     "claude": "Claude",
     "cursor": "Cursor",
     "codex": "Codex",
-    "antigravity": "Antigravity"
+    "opencode": "OpenCode"
   },
   "tools": {
     "settings": "Araç Ayarları",
@@ -74,12 +74,48 @@
     "skipped": "(bu git komutu için dosya diff'i atlandı)",
     "shared": "(bu depoda aynı anda başka bir komut çalıştı; ikisinden birinin yaptığı bir değişiklik her iki sonuçta da görünebilir)"
   },
+  "interactive": {
+    "title": "Etkileşimli Soru",
+    "waiting": "Komut satırında yanıtınız bekleniyor",
+    "instruction": "Lütfen Claude'un çalıştığı terminalde bir seçenek seçin.",
+    "selectedOption": "✓ Claude {{number}}. seçeneği seçti",
+    "instructionDetail": "Komut satırında bu seçeneği ok tuşlarıyla ya da numarasını yazarak seçersiniz."
+  },
   "thinking": {
     "title": "Düşünüyor...",
     "emoji": "💭 Düşünüyor..."
   },
   "json": {
     "response": "JSON Yanıtı"
+  },
+  "agentPrompts": {
+    "needsInput": "{{agent}} girdinizi bekliyor",
+    "dismiss": "Reddet",
+    "alwaysAllow": "Her zaman izin ver",
+    "alwaysAllowCovers": "\"Her zaman izin ver\" kapsamı"
+  },
+  "mcpElicitation": {
+    "asks": "{{server}} sizden bilgi istiyor",
+    "submit": "Gönder",
+    "decline": "Reddet",
+    "openLink": "Bağlantıyı aç",
+    "unsafeUrl": "Buradan yalnızca http ve https bağlantıları açılabilir.",
+    "optional": "isteğe bağlı",
+    "choose": "Seçin…",
+    "required": "Zorunlu",
+    "notANumber": "Bir sayı girin",
+    "notAnInteger": "Tam sayı girin",
+    "tooSmall": "En az {{value}}",
+    "tooLarge": "En fazla {{value}}",
+    "tooShort": "En az {{count}} karakter",
+    "tooLong": "En fazla {{count}} karakter",
+    "tooFew": "En az {{count}} tane seçin",
+    "tooMany": "En fazla {{count}} tane seçin",
+    "notAnEmail": "Bir e-posta adresi girin",
+    "notAUri": "Tam bir adres girin, örneğin https://ornek.com",
+    "notADate": "Bir tarih girin",
+    "notADateTime": "Tarih ve saat girin",
+    "notTheFormat": "Geçerli bir {{format}} değil"
   },
   "permissions": {
     "grant": "{{tool}} için izin ver",
@@ -110,12 +146,21 @@
       "plan": "Plan Modu"
     },
     "descriptions": {
+      "default": "Sadece güvenilir komutlar (ls, cat, grep, git status, vb.) otomatik çalışır. Diğer komutlar atlanır. Çalışma alanına yazabilir.",
       "auto": "Bir model sınıflandırıcı her araç çağrısında onaylamaya veya reddetmeye karar verir. Müdahale gerektirmez ama İzinleri Atla'dan daha güvenlidir; reddetmeler yine de olur.",
       "acceptEdits": "Tüm komutlar çalışma alanı içinde otomatik çalışır. Sandbox'lu çalıştırma ile tam otomatik mod.",
       "bypassPermissions": "Kısıtlama olmadan tam sistem erişimi. Tüm komutlar tam disk ve ağ erişimiyle otomatik çalışır. Dikkatli kullan.",
       "plan": "Planlama modu — hiçbir komut çalıştırılmaz"
     },
     "technicalDetails": "Teknik ayrıntılar"
+  },
+  "voice": {
+    "input": "Sesle yazma",
+    "stopRecording": "Kaydı durdur",
+    "transcribing": "Yazıya dökülüyor…",
+    "speak": "Sesli oku",
+    "stopSpeaking": "Durdur",
+    "loading": "Yükleniyor…"
   },
   "input": {
     "placeholder": "Komutlar için /, dosyalar için @ yaz ya da {{provider}}'a her şeyi sor...",
@@ -124,11 +169,11 @@
     "attachFiles": "Dosya ekle",
     "attachImages": "Resim ekle",
     "send": "Gönder",
-    "sending": "Gönderiliyor…",
     "stop": "Durdur",
     "hintText": {
       "ctrlEnter": "Göndermek için Ctrl+Enter • Yeni satır için Shift+Enter • Mod değiştirmek için Tab • Slash komutları için /",
       "enter": "Göndermek için Enter • Yeni satır için Shift+Enter • Mod değiştirmek için Tab • Slash komutları için /",
+      "queue": "Sonraki mesajınızı sıraya almak için Enter",
       "appendQueued": "Sıradaki mesaja eklemek için Enter"
     },
     "clickToChangeMode": "İzin modunu değiştirmek için tıkla (veya girdide Tab tuşuna bas)",
@@ -136,8 +181,35 @@
     "clearInput": "Girdiyi temizle",
     "scrollToBottom": "En alta git",
     "queue": {
+      "sendNext": "Sonraki mesajı sıraya al",
       "append": "Sıradaki mesaja ekle",
-      "notCombinable": "Mesaj sıraya eklenemedi: Slash komutu tek başına çalışır, bu yüzden sıradaki mesajla birleştirilemez. Sıradaki mesaj gönderildikten sonra gönderin."
+      "notCombinable": "Mesaj sıraya eklenemedi: Slash komutu tek başına çalışır, bu yüzden sıradaki mesajla birleştirilemez. Sıradaki mesaj gönderildikten sonra gönderin.",
+      "label": "Sırada",
+      "willSend": "Bu iş bitince gönderilecek",
+      "edit": "Sıradaki mesajı düzenle",
+      "delete": "Sıradaki mesajı sil"
+    },
+    "steer": {
+      "label": "Yönlendirme",
+      "sending": "Gönderiliyor…",
+      "willRead": "{{provider}} bunu bir sonraki araç çağrısında okuyacak",
+      "attachments_one": "{{count}} dosya eklendi",
+      "attachments_other": "{{count}} dosya eklendi"
+    }
+  },
+  "composer": {
+    "reasoning": "Düşünme",
+    "model": "Model",
+    "effortDefault": "Varsayılan",
+    "loadingModels": "Modeller yükleniyor…",
+    "modelMenu": "Model ve düşünme düzeyini seçin",
+    "permissionHeading": "{{provider}} eylemleri nasıl onaylansın?",
+    "permissionCycleHint": "Modu değiştirmek için giriş alanında Tab tuşuna bas",
+    "permissionTriggerLabel": "{{mode}}: {{heading}}",
+    "editing": {
+      "title": "Önceki bir mesaj değiştiriliyor",
+      "filesNotReverted": "zaten değiştirilen dosyalar geri alınmaz",
+      "cancel": "İptal"
     }
   },
   "providerSelection": {
@@ -154,10 +226,19 @@
       "claude": "Claude'u {{model}} ile kullanmaya hazır. Mesajını aşağıya yazmaya başla.",
       "cursor": "Cursor'ı {{model}} ile kullanmaya hazır. Mesajını aşağıya yazmaya başla.",
       "codex": "Codex'i {{model}} ile kullanmaya hazır. Mesajını aşağıya yazmaya başla.",
+      "opencode": "OpenCode {{model}} ile kullanıma hazır. Mesajınızı aşağıya yazmaya başlayın.",
       "default": "Başlamak için yukarıdan bir sağlayıcı seç"
     },
     "pressToSearch": "Oturumlarda, dosyalarda ve commit'lerde arama yapmak için <kbd>{{shortcut}}</kbd> tuşlarına bas",
-    "chooseModelDescriptionCustomOnly": "{{providers, list}} için yalnızca kendi modelleriniz listelenir"
+    "chooseModel": "Bir model seçin",
+    "chooseModelDescription": "Hazır ve özel modeller tek listede",
+    "chooseModelDescriptionCustomOnly": "{{providers, list}} için yalnızca kendi modelleriniz listelenir",
+    "addModel": "Model ekle",
+    "searchModels": "Model ara...",
+    "manageModels": "Modelleri yönet",
+    "noModelsFound": "Model bulunamadı.",
+    "loadingModels": "Modeller yükleniyor…",
+    "clickToChange": "Modeli değiştirmek için tıklayın"
   },
   "session": {
     "continue": {
@@ -169,7 +250,46 @@
       "sessionMessages": "Oturum mesajları yükleniyor..."
     },
     "messages": {
+      "showingOf": "{{total}} mesajdan {{shown}} tanesi gösteriliyor",
+      "scrollToLoad": "Daha fazlasını yüklemek için yukarı kaydır",
+      "showingLast": "Son {{count}} mesaj gösteriliyor ({{total}} toplam)",
+      "loadEarlier": "Önceki mesajları yükle",
+      "loadAll": "Tüm mesajları yükle",
+      "loadingAll": "Tüm mesajlar yükleniyor...",
+      "allLoaded": "Tüm mesajlar yüklendi",
       "perfWarning": "Tüm mesajlar yüklendi — kaydırma yavaşlayabilir. Performansı geri getirmek için \"En alta git\"e tıkla."
+    }
+  },
+  "sideQuestion": {
+    "label": "Ara soru · oturuma dahil değil",
+    "pending": "Ayrıca yanıtlanıyor",
+    "failed": "Ara soru başarısız oldu.",
+    "dismiss": "Kapat",
+    "unsupported": "Bu sağlayıcı ara soruları yanıtlayamaz.",
+    "noSession": "Ara soru için başlamış bir sohbet gerekir; bu sohbet henüz başlamadı."
+  },
+  "sendMenu": {
+    "trigger": "Gönderme seçenekleri",
+    "queue": {
+      "label": "Sıraya al",
+      "descriptionResponding": "Bu yanıt bitince gönder",
+      "descriptionBackground": "Arka plan işi bitince gönder"
+    },
+    "steer": {
+      "label": "Yönlendir",
+      "description": "Şu anki yanıta gönder; bir sonraki araç çağrısında okunur"
+    },
+    "sideQuestion": {
+      "label": "Ara soru",
+      "description": "Şimdi ayrıca sor; oturum bunu görmez"
+    },
+    "stop": {
+      "label": "Durdur",
+      "description": "Yazılmakta olan yanıtı bitir"
+    },
+    "sendAnyway": {
+      "label": "Yine de gönder",
+      "description": "Şimdi gönder; arka plan işini durdurur"
     }
   },
   "shell": {
@@ -196,10 +316,10 @@
     },
     "loading": "Terminal yükleniyor...",
     "connecting": "Shell'e bağlanılıyor...",
-    "startSession": "Yeni bir {{provider}} oturumu başlat",
+    "startSession": "Yeni bir Claude oturumu başlat",
     "resumeSession": "Oturuma devam et: {{displayName}}...",
     "runCommand": "{{projectName}} içinde {{command}} çalıştır",
-    "startCli": "{{projectName}} içinde {{provider}} CLI başlatılıyor",
+    "startCli": "{{projectName}} içinde Claude CLI başlatılıyor",
     "defaultCommand": "komut"
   },
   "claudeStatus": {
@@ -221,6 +341,22 @@
       "label": "{{time}} geçti",
       "startingNow": "Şimdi başlıyor"
     },
+    "stop": "Durdur",
+    "backgroundWork": "Arka plan işi",
+    "backgroundTask": {
+      "workflow": "İş akışı {{name}}",
+      "agent": "Ajan {{description}}",
+      "command": "Komut {{description}}",
+      "count": "{{count}} görev",
+      "prompt": {
+        "title": "Bu oturumda hâlâ arka planda çalışan iş var",
+        "description": "Yeni bir mesaj yeni bir tur başlatır ve o işi durdurur; henüz bildirmediği her şey kaybolur. Mesajı sıraya alırsanız iş bitince gönderilir.",
+        "cancel": "İptal",
+        "queue": "Sıraya al",
+        "sendAnyway": "Yine de gönder",
+        "sideQuestion": "Ara soru"
+      }
+    },
     "controls": {
       "stopGeneration": "Üretmeyi Durdur",
       "pressEscToStop": "Durdurmak için istediğin zaman Esc'ye bas"
@@ -240,16 +376,6 @@
     "forkFromHere": "Buradan çatalla",
     "answeredBy": "{{model}} tarafından yanıtlandı"
   },
-  "composer": {
-    "editing": {
-      "title": "Önceki bir mesaj değiştiriliyor",
-      "filesNotReverted": "zaten değiştirilen dosyalar geri alınmaz",
-      "cancel": "İptal"
-    },
-    "permissionHeading": "{{provider}} eylemleri nasıl onaylansın?",
-    "permissionCycleHint": "Modu değiştirmek için giriş alanında Tab tuşuna bas",
-    "permissionTriggerLabel": "{{mode}}: {{heading}}"
-  },
   "export": {
     "trigger": "Sohbeti dışa aktar",
     "heading": "Şu biçimde dışa aktar",
@@ -265,7 +391,8 @@
     "json": {
       "label": "JSON (.json)",
       "description": "Tüm mesajlar, biçimlendirilmemiş, araçlar için."
-    }
+    },
+    "includeSideQuestions": "Ara soruları dahil et"
   },
   "schedule": {
     "trigger": "Bu mesajı zamanla",
@@ -273,9 +400,9 @@
     "customLabel": "Veya bir saat seç",
     "confirm": "Zamanla",
     "in": {
-      "30": "30 dakika sonra",
-      "120": "2 saat sonra",
-      "300": "5 saat sonra",
+      "15": "15 dakika sonra",
+      "60": "Bir saat sonra",
+      "480": "8 saat sonra",
       "1440": "Yarın"
     },
     "pending": "{{when}} için zamanlandı",
@@ -283,68 +410,63 @@
     "cancel": "Zamanlanmış mesajı iptal et",
     "dismiss": "Hata bildirimini kapat"
   },
-  "cost": {
-    "totalTokensUsed": "Kullanılan toplam token",
-    "inputTokens": "Girdi tokenleri",
-    "outputTokens": "Çıktı tokenleri",
-    "contextWindow": "Bağlam penceresi",
-    "quotaTitle": "Hesap Kotası ve Hız Limitleri",
-    "updatedAt": "{{time}} güncellendi",
-    "refresh": "Yenile",
-    "refreshTitle": "Güncel kotayı yenile",
-    "fetchingQuota": "En güncel kota bilgisi alınıyor...",
-    "syncingWithProvider": "{{provider}} üzerinden 5 saatlik ve haftalık limitler eşitleniyor",
-    "noQuotaData": "Bu hesap için gösterilecek kota verisi yok",
-    "refreshFailedNotice": "Yenileme başarısız; en son başarıyla alınan kota verisi gösteriliyor",
-    "fetchFailed": "Kota bilgisi yüklenemedi, lütfen daha sonra tekrar deneyin",
-    "currentGroup": "Geçerli Oturum Modelleri",
-    "otherGroup": "Diğer Modeller",
-    "collapse": "Daralt",
-    "expand": "Genişlet",
-    "fiveHourWindow": "5 Saatlik Kayan Pencere Limiti",
-    "weeklyWindow": "Haftalık Kota",
-    "weeklyWindowAllModels": "Haftalık Kota (tüm modeller)",
-    "weeklyWindowScoped": "Haftalık Kota ({{model}})",
-    "remainingPercent": "%{{percent}} kaldı",
-    "resetSoon": "Yakında sıfırlanacak",
-    "resetDaysHours": "{{days}}g {{hours}}sa sonra sıfırlanır",
-    "resetHoursMinutes": "{{hours}}sa {{minutes}}dk sonra sıfırlanır",
-    "resetMinutes": "{{minutes}}dk sonra sıfırlanır",
-    "emptyQuotaHint": {
-      "claude": "API anahtarı, Bedrock ve Vertex girişlerinde claude.ai abonelik limitleri bulunmaz",
-      "codex": "API Anahtarı ile girişler genellikle 5 saatlik veya haftalık limitleri bildirmez"
+  "misc": {
+    "copyToClipboard": "Panoya kopyala",
+    "copyCommand": "Komutu kopyala",
+    "runningTask": "Görev çalışıyor",
+    "userAskedRevise": "Kullanıcı planın düzeltilmesini istedi",
+    "typeAnswer": "Yanıtınızı yazın...",
+    "skipOne": "Atla",
+    "skipAll": "Tümünü atla",
+    "exportChat": "Sohbeti dışa aktar",
+    "closeImagePreview": "Görsel önizlemesini kapat",
+    "availableCommands": "Kullanılabilir komutlar",
+    "filterCommands": "Komutları filtrele...",
+    "closeModal": "Komut sonucu penceresini kapat",
+    "noDescription": "Açıklama yok.",
+    "modelChangeFailed": "Model şu anda değiştirilemiyor.",
+    "choiceSavedHint": "Seçiminiz bu oturum için kaydedildi ve yeni sohbetlerde varsayılan olacak.",
+    "docsSearchSubtitle": "Sohbetten çıkmadan hazır komutları, sözdizimini ve kullanım örneklerini arayın.",
+    "enterModelInfo": "Hem model adını hem model kimliğini girin.",
+    "modelSaveFailed": "Bu model kaydedilemedi.",
+    "modelDeleteFailed": "Bu model silinemedi.",
+    "cancelEditing": "Düzenlemeyi iptal et",
+    "userDeniedTool": "Kullanıcı araç kullanımını reddetti",
+    "showTokenUsage": "Token kullanımını göster",
+    "fallbackCommands": {
+      "models": "Etkin sağlayıcının kullanılabilir modellerine göz atın.",
+      "cost": "Etkin oturumun token kullanımını inceleyin.",
+      "status": "Çalışma ortamı, sürüm, sağlayıcı ve ortam durumunu inceleyin.",
+      "memory": "Projenin CLAUDE.md hafıza dosyasını açın.",
+      "config": "Ayarları ve yapılandırmayı açın.",
+      "help": "Komut belgelerini ve sözdizimini gösterin."
     },
-    "resetCardTitle": "Kullanım sıfırlama kartları",
-    "resetCardHint": "Bir kartı kullanmak, ilgili kotu anında doldurur; sıfırlama penceresini beklemeniz gerekmez.",
-    "resetCardHintReadOnly": "Bu sıfırlamayı sağlayıcının web sitesinde kullanın.",
-    "resetCardTypeAll": "Tüm kot (5 saat + haftalık)",
-    "resetCardType5h": "5 saatlik kot",
-    "resetCardTypeWeekly": "Haftalık kot",
-    "resetCardTypeFable": "Fable sıfırlaması",
-    "resetCardAvailable": "{{count}} kullanılabilir",
-    "resetCardExpires": "en yakın son kullanma {{date}}",
-    "resetCardUse": "Kullan",
-    "resetCardConfirmTitle": "Bu sıfırlama kullanılsın mı?",
-    "resetCardConfirmBody": "{{quota}} anında geri yüklenecek. Bu işlem geri alınamaz.",
-    "resetCardConfirm": "Kartı kullan",
-    "resetCardCancel": "İptal",
-    "resetCardSuccess": "Kot sıfırlandı.",
-    "resetCardFailed": "Sıfırlama başarısız oldu. Daha sonra tekrar deneyin.",
-    "resetCardNoCard": "Kullanılabilir sıfırlama kartı yok. En son durumu görmek için yenileyin.",
-    "resetCardReadFailed": "Sıfırlama kartları şu anda okunamadı. Daha sonra tekrar deneyin.",
-    "resetCardNotAuthenticated": "Hesap oturum açmamış. Önce oturum açıp tekrar deneyin.",
-    "resetCardUnknown": "Sıfırlama isteği onaylanmadı. Önce \"Yenile\" ile kotun geri yüklenip yüklenmediğini kontrol edin — körlemesine yeniden denemeyin.",
-    "resetCardUnavailable": "{{count}} kullanılmış veya süresi geçmiş",
-    "resetCardRefreshing": "Kot yenileniyor…",
-    "resetCardWeeklyAlso5h": "Haftalık kotu sıfırlamak 5 saatlik kotu da doldurur ve 5 saatlik kart harcamaz."
-  },
-  "localProxy": {
-    "linkHint": "Bu adres yalnızca sunucuda bulunur; CloudCLI onu yerel proxy üzerinden açar.",
-    "failed": "CloudCLI bu sunucu yerel adresini açamadı."
-  },
-  "memory": {
-    "used_one": "{{count}} bellek kaydı kullanıldı",
-    "used_other": "{{count}} bellek kaydı kullanıldı"
+    "modalMeta": {
+      "helpEyebrow": "Komut merkezi",
+      "helpTitle": "Yardım ve Kısayollar",
+      "helpSubtitle": "Sohbetten çıkmadan hazır komutları, sözdizimini ve kullanım örneklerini arayın.",
+      "modelsEyebrow": "Model seçimi",
+      "modelsTitle": "Model Seçin",
+      "modelsSubtitle": "Bu sağlayıcının kullanacağı modeli seçin.",
+      "costEyebrow": "Oturum istatistikleri",
+      "costTitle": "Token Kullanımı",
+      "costSubtitle": "Bu oturumun girdi, çıktı ve toplam token sayıları.",
+      "statusEyebrow": "Çalışma durumu",
+      "statusTitle": "Sistem Durumu",
+      "statusSubtitle": "Sürüm, sağlayıcı, çalışma ortamı ve ortam bilgileri tek yerde.",
+      "commandResult": "Komut Sonucu"
+    },
+    "choiceSavedSession": "Seçiminiz bu oturum için kaydedildi ve yeni sohbetlerde varsayılan olacak.",
+    "choiceSavedDefault": "Seçiminiz yeni sohbetler için varsayılan model olacak.",
+    "tokensUsed_one": "{{count}} token kullanıldı",
+    "tokensUsed_other": "{{count}} token kullanıldı",
+    "compacted": "Özetlendi",
+    "compactionSummary": "tam özet",
+    "expandImage": "{{name}} görselini büyüt",
+    "tokensLabel_one": "token",
+    "tokensLabel_other": "token",
+    "escClosesModal": "Esc pencereyi kapatır.",
+    "close": "Kapat"
   },
   "modelLibrary": {
     "effortLevels": "Akıl yürütme seviyeleri",

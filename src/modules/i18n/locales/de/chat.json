@@ -17,8 +17,7 @@
     "tool": "Werkzeug",
     "claude": "Claude",
     "cursor": "Cursor",
-    "codex": "Codex",
-    "antigravity": "Antigravity"
+    "codex": "Codex"
   },
   "tools": {
     "settings": "Werkzeugeinstellungen",
@@ -81,6 +80,12 @@
   "json": {
     "response": "JSON-Antwort"
   },
+  "agentPrompts": {
+    "needsInput": "{{agent}} braucht Ihre Eingabe",
+    "dismiss": "Ablehnen",
+    "alwaysAllow": "Immer erlauben",
+    "alwaysAllowCovers": "„Immer erlauben“ gilt für"
+  },
   "permissions": {
     "grant": "Berechtigung für {{tool}} erteilen",
     "added": "Berechtigung hinzugefügt",
@@ -110,6 +115,7 @@
       "plan": "Planungsmodus"
     },
     "descriptions": {
+      "default": "Nur vertrauenswürdige Befehle (ls, cat, grep, git status usw.) werden automatisch ausgeführt. Andere Befehle werden übersprungen. Kann in den Arbeitsbereich schreiben.",
       "auto": "Ein Klassifikator-Modell entscheidet bei jedem Tool-Aufruf, ob er genehmigt oder abgelehnt wird. Ohne Eingreifen, aber sicherer als das Umgehen der Berechtigungen – Ablehnungen kommen weiterhin vor.",
       "acceptEdits": "Alle Befehle werden automatisch innerhalb des Arbeitsbereichs ausgeführt. Vollautomatischer Modus mit isolierter Ausführung.",
       "bypassPermissions": "Vollständiger Systemzugriff ohne Einschränkungen. Alle Befehle werden automatisch mit vollem Festplatten- und Netzwerkzugriff ausgeführt. Mit Vorsicht verwenden.",
@@ -124,7 +130,6 @@
     "attachFiles": "Dateien anhängen",
     "attachImages": "Bilder anhängen",
     "send": "Senden",
-    "sending": "Wird gesendet…",
     "stop": "Stoppen",
     "hintText": {
       "ctrlEnter": "Strg+Enter zum Senden • Shift+Enter für neue Zeile • Tab zum Moduswechsel • / für Slash-Befehle",
@@ -138,6 +143,13 @@
     "queue": {
       "append": "An Nachricht in der Warteschlange anhängen",
       "notCombinable": "Nachricht konnte nicht in die Warteschlange gestellt werden: Ein Slash-Befehl läuft für sich allein und kann daher nicht mit der Nachricht in der Warteschlange kombiniert werden. Sende ihn, nachdem die Nachricht in der Warteschlange gesendet wurde."
+    },
+    "steer": {
+      "label": "Steuern",
+      "sending": "Wird gesendet…",
+      "willRead": "{{provider}} liest es beim nächsten Tool-Aufruf",
+      "attachments_one": "{{count}} Datei angehängt",
+      "attachments_other": "{{count}} Dateien angehängt"
     }
   },
   "providerSelection": {
@@ -169,6 +181,13 @@
       "sessionMessages": "Sitzungsnachrichten werden geladen..."
     },
     "messages": {
+      "showingOf": "{{shown}} von {{total}} Nachrichten werden angezeigt",
+      "scrollToLoad": "Nach oben scrollen, um mehr zu laden",
+      "showingLast": "Letzte {{count}} Nachrichten werden angezeigt ({{total}} gesamt)",
+      "loadEarlier": "Frühere Nachrichten laden",
+      "loadAll": "Alle Nachrichten laden",
+      "loadingAll": "Alle Nachrichten werden geladen...",
+      "allLoaded": "Alle Nachrichten geladen",
       "perfWarning": "Alle Nachrichten geladen – Scrollen kann langsamer sein. Klick auf 'Nach unten scrollen', um die Leistung wiederherzustellen."
     }
   },
@@ -196,10 +215,10 @@
     },
     "loading": "Terminal wird geladen...",
     "connecting": "Verbindung zum Terminal wird hergestellt...",
-    "startSession": "Neue {{provider}}-Sitzung starten",
+    "startSession": "Neue Claude-Sitzung starten",
     "resumeSession": "Sitzung fortsetzen: {{displayName}}...",
     "runCommand": "{{command}} in {{projectName}} ausführen",
-    "startCli": "{{provider}} CLI wird in {{projectName}} gestartet",
+    "startCli": "Claude CLI wird in {{projectName}} gestartet",
     "defaultCommand": "Befehl"
   },
   "claudeStatus": {
@@ -221,6 +240,16 @@
       "label": "{{time}} vergangen",
       "startingNow": "Startet jetzt"
     },
+    "backgroundTask": {
+      "prompt": {
+        "title": "Diese Sitzung hat noch Hintergrundarbeit laufen",
+        "description": "Eine neue Nachricht startet einen neuen Turn, der diese Arbeit stoppt; alles, was sie noch nicht gemeldet hat, geht verloren. Stell die Nachricht in die Warteschlange, um sie zu senden, wenn die Arbeit fertig ist.",
+        "cancel": "Abbrechen",
+        "queue": "Einreihen",
+        "sendAnyway": "Trotzdem senden",
+        "sideQuestion": "Nebenfrage"
+      }
+    },
     "controls": {
       "stopGeneration": "Generierung stoppen",
       "pressEscToStop": "Jederzeit Esc drücken, um zu stoppen"
@@ -241,14 +270,14 @@
     "answeredBy": "Beantwortet von {{model}}"
   },
   "composer": {
+    "permissionHeading": "Wie sollen Aktionen von {{provider}} genehmigt werden?",
+    "permissionCycleHint": "Tab im Eingabefeld drücken, um den Modus zu wechseln",
+    "permissionTriggerLabel": "{{mode}}: {{heading}}",
     "editing": {
       "title": "Ersetzt eine frühere Nachricht",
       "filesNotReverted": "bereits geänderte Dateien werden nicht zurückgesetzt",
       "cancel": "Abbrechen"
-    },
-    "permissionHeading": "Wie sollen Aktionen von {{provider}} genehmigt werden?",
-    "permissionCycleHint": "Tab im Eingabefeld drücken, um den Modus zu wechseln",
-    "permissionTriggerLabel": "{{mode}}: {{heading}}"
+    }
   },
   "export": {
     "trigger": "Unterhaltung exportieren",
@@ -265,7 +294,8 @@
     "json": {
       "label": "JSON (.json)",
       "description": "Alle Nachrichten, unformatiert, für Tools."
-    }
+    },
+    "includeSideQuestions": "Nebenfragen mitexportieren"
   },
   "schedule": {
     "trigger": "Nachricht planen",
@@ -273,9 +303,9 @@
     "customLabel": "Oder Zeit wählen",
     "confirm": "Planen",
     "in": {
-      "30": "In 30 Minuten",
-      "120": "In 2 Stunden",
-      "300": "In 5 Stunden",
+      "15": "In 15 Minuten",
+      "60": "In einer Stunde",
+      "480": "In 8 Stunden",
       "1440": "Morgen"
     },
     "pending": "Geplant für {{when}}",
@@ -283,69 +313,37 @@
     "cancel": "Geplante Nachricht abbrechen",
     "dismiss": "Fehlerhinweis ausblenden"
   },
-  "cost": {
-    "totalTokensUsed": "Verwendete Tokens gesamt",
-    "inputTokens": "Eingabe-Tokens",
-    "outputTokens": "Ausgabe-Tokens",
-    "contextWindow": "Kontextfenster",
-    "quotaTitle": "Kontokontingent & Ratenbegrenzung",
-    "updatedAt": "Aktualisiert um {{time}}",
-    "refresh": "Aktualisieren",
-    "refreshTitle": "Aktuelles Kontingent abrufen",
-    "fetchingQuota": "Aktuelles Kontingent wird abgerufen...",
-    "syncingWithProvider": "5-Stunden- und Wochenlimits von {{provider}} synchronisieren",
-    "noQuotaData": "Keine Kontingentdaten für dieses Konto verfügbar",
-    "refreshFailedNotice": "Aktualisierung fehlgeschlagen; letzte erfolgreiche Daten werden angezeigt",
-    "fetchFailed": "Kontingent konnte nicht geladen werden, bitte später erneut versuchen",
-    "currentGroup": "Aktuelle Sitzungsmodelle",
-    "otherGroup": "Andere Modelle",
-    "collapse": "Einklappen",
-    "expand": "Ausklappen",
-    "fiveHourWindow": "Gleitendes 5-Stunden-Limit",
-    "weeklyWindow": "Wöchentliches Kontingent",
-    "weeklyWindowAllModels": "Wöchentliches Kontingent (alle Modelle)",
-    "weeklyWindowScoped": "Wöchentliches Kontingent ({{model}})",
-    "remainingPercent": "{{percent}}% verbleibend",
-    "resetSoon": "Wird bald zurückgesetzt",
-    "resetDaysHours": "Zurücksetzung in {{days}}T {{hours}}Std",
-    "resetHoursMinutes": "Zurücksetzung in {{hours}}Std {{minutes}}Min",
-    "resetMinutes": "Zurücksetzung in {{minutes}}Min",
-    "emptyQuotaHint": {
-      "claude": "API-Schlüssel-, Bedrock- und Vertex-Anmeldungen haben keine Abo-Limits von Claude.ai",
-      "codex": "API-Schlüssel-Anmeldungen liefern in der Regel keine 5-Stunden- oder Wochenlimits",
-      "opencode": "Kein OpenCode-Go-Abo oder die CLI ist nicht in einem Go-Workspace angemeldet"
+  "sideQuestion": {
+    "label": "Nebenfrage · gehört nicht zur Sitzung",
+    "pending": "Wird nebenbei beantwortet",
+    "failed": "Die Nebenfrage ist fehlgeschlagen.",
+    "dismiss": "Entfernen",
+    "unsupported": "Dieser Anbieter kann keine Nebenfragen beantworten.",
+    "noSession": "Nebenfragen brauchen einen bestehenden Chat; dieser hat noch nicht begonnen."
+  },
+  "sendMenu": {
+    "trigger": "Sendeoptionen",
+    "queue": {
+      "label": "In Warteschlange stellen",
+      "descriptionResponding": "Senden, wenn dieser Durchlauf endet",
+      "descriptionBackground": "Senden, wenn die Hintergrundarbeit endet"
     },
-    "resetCardTitle": "Nutzungs-Reset-Karten",
-    "resetCardHint": "Mit einer Karte wird das abgedeckte Kontingent sofort aufgefüllt — ohne Wartezeit auf das Fenster.",
-    "resetCardHintReadOnly": "Diese Zurücksetzung kann nur auf der Website des Anbieters verwendet werden.",
-    "resetCardTypeAll": "Gesamtkontingent (5-Stunden + wöchentlich)",
-    "resetCardType5h": "5-Stunden-Kontingent",
-    "resetCardTypeWeekly": "Wochenkontingent",
-    "resetCardTypeFable": "Fable-Zurücksetzung",
-    "resetCardAvailable": "{{count}} verfügbar",
-    "resetCardExpires": "läuft frühestens {{date}} ab",
-    "resetCardUse": "Verwenden",
-    "resetCardConfirmTitle": "Diesen Reset verwenden?",
-    "resetCardConfirmBody": "\"{{quota}}\" wird sofort wiederhergestellt. Dies kann nicht rückgängig gemacht werden.",
-    "resetCardConfirm": "Karte verwenden",
-    "resetCardCancel": "Abbrechen",
-    "resetCardSuccess": "Kontingent wurde zurückgesetzt.",
-    "resetCardFailed": "Zurücksetzen fehlgeschlagen. Bitte später erneut versuchen.",
-    "resetCardNoCard": "Keine Reset-Karte verfügbar. Aktualisieren Sie, um den neuesten Status zu sehen.",
-    "resetCardReadFailed": "Reset-Karten konnten gerade nicht gelesen werden. Bitte später erneut versuchen.",
-    "resetCardNotAuthenticated": "Konto nicht angemeldet. Bitte zuerst anmelden.",
-    "resetCardUnknown": "Die Reset-Anfrage wurde nicht bestätigt. Prüfen Sie zuerst per \"Aktualisieren\", ob das Kontingent wiederhergestellt wurde — nicht einfach erneut versuchen.",
-    "resetCardUnavailable": "{{count}} verbraucht oder abgelaufen",
-    "resetCardRefreshing": "Kontingent wird aktualisiert…",
-    "resetCardWeeklyAlso5h": "Das Zurücksetzen des Wochenkontingents füllt auch das 5-Stunden-Kontingent, ohne eine 5-Stunden-Karte zu verbrauchen."
-  },
-  "localProxy": {
-    "linkHint": "Diese Adresse existiert nur auf dem Server; CloudCLI öffnet sie über den lokalen Proxy.",
-    "failed": "CloudCLI konnte diese serverlokale Adresse nicht öffnen."
-  },
-  "memory": {
-    "used_one": "{{count}} Erinnerung verwendet",
-    "used_other": "{{count}} Erinnerungen verwendet"
+    "steer": {
+      "label": "Steuern",
+      "description": "In diesen Durchlauf senden; wird beim nächsten Tool-Aufruf gelesen"
+    },
+    "sideQuestion": {
+      "label": "Nebenfrage",
+      "description": "Jetzt nebenbei fragen; die Sitzung sieht es nicht"
+    },
+    "stop": {
+      "label": "Stoppen",
+      "description": "Die Antwort beenden, die gerade geschrieben wird"
+    },
+    "sendAnyway": {
+      "label": "Trotzdem senden",
+      "description": "Jetzt senden; das beendet die Hintergrundarbeit"
+    }
   },
   "modelLibrary": {
     "effortLevels": "Reasoning-Stufen",

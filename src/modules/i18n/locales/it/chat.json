@@ -17,8 +17,7 @@
     "tool": "Strumento",
     "claude": "Claude",
     "cursor": "Cursor",
-    "codex": "Codex",
-    "antigravity": "Antigravity"
+    "codex": "Codex"
   },
   "tools": {
     "settings": "Impostazioni strumento",
@@ -81,6 +80,12 @@
   "json": {
     "response": "Risposta JSON"
   },
+  "agentPrompts": {
+    "needsInput": "{{agent}} ha bisogno di una tua risposta",
+    "dismiss": "Rifiuta",
+    "alwaysAllow": "Consenti sempre",
+    "alwaysAllowCovers": "\"Consenti sempre\" copre"
+  },
   "permissions": {
     "grant": "Concedi permesso per {{tool}}",
     "added": "Permesso aggiunto",
@@ -110,6 +115,7 @@
       "plan": "Modalità piano"
     },
     "descriptions": {
+      "default": "Solo i comandi attendibili (ls, cat, grep, git status, ecc.) vengono eseguiti automaticamente. Gli altri comandi vengono saltati. Può scrivere nell'area di lavoro.",
       "auto": "Un classificatore basato su un modello decide a ogni chiamata di uno strumento se approvarla o negarla. Senza interventi, ma più sicura di Ignora permessi: i rifiuti possono comunque capitare.",
       "acceptEdits": "Tutti i comandi vengono eseguiti automaticamente nell'area di lavoro. Modalità completamente automatica con esecuzione sandboxed.",
       "bypassPermissions": "Accesso completo al sistema senza restrizioni. Tutti i comandi vengono eseguiti automaticamente con accesso completo a disco e rete. Usa con cautela.",
@@ -124,7 +130,6 @@
     "attachFiles": "Allega file",
     "attachImages": "Allega immagini",
     "send": "Invia",
-    "sending": "Invio…",
     "stop": "Ferma",
     "hintText": {
       "ctrlEnter": "Ctrl+Invio per inviare • Shift+Invio per nuova riga • Tab per cambiare modalità • / per comandi",
@@ -169,6 +174,13 @@
       "sessionMessages": "Caricamento messaggi della sessione..."
     },
     "messages": {
+      "showingOf": "Visualizzati {{shown}} di {{total}} messaggi",
+      "scrollToLoad": "Scorri in alto per caricare altri",
+      "showingLast": "Visualizzati ultimi {{count}} messaggi ({{total}} totali)",
+      "loadEarlier": "Carica messaggi precedenti",
+      "loadAll": "Carica tutti i messaggi",
+      "loadingAll": "Caricamento di tutti i messaggi...",
+      "allLoaded": "Tutti i messaggi caricati",
       "perfWarning": "Tutti i messaggi caricati — lo scorrimento potrebbe essere più lento. Clicca \"Scorri in basso\" per ripristinare le prestazioni."
     }
   },
@@ -196,10 +208,10 @@
     },
     "loading": "Caricamento terminale...",
     "connecting": "Connessione alla shell...",
-    "startSession": "Avvia una nuova sessione {{provider}}",
+    "startSession": "Avvia una nuova sessione Claude",
     "resumeSession": "Riprendi sessione: {{displayName}}...",
     "runCommand": "Esegui {{command}} in {{projectName}}",
-    "startCli": "Avvio {{provider}} CLI in {{projectName}}",
+    "startCli": "Avvio Claude CLI in {{projectName}}",
     "defaultCommand": "comando"
   },
   "claudeStatus": {
@@ -241,14 +253,14 @@
     "answeredBy": "Risposto da {{model}}"
   },
   "composer": {
+    "permissionHeading": "Come approvare le azioni di {{provider}}?",
+    "permissionCycleHint": "Premi Tab nel campo di testo per cambiare modalità",
+    "permissionTriggerLabel": "{{mode}}: {{heading}}",
     "editing": {
       "title": "Sostituzione di un messaggio precedente",
       "filesNotReverted": "i file già modificati non vengono ripristinati",
       "cancel": "Annulla"
-    },
-    "permissionHeading": "Come approvare le azioni di {{provider}}?",
-    "permissionCycleHint": "Premi Tab nel campo di testo per cambiare modalità",
-    "permissionTriggerLabel": "{{mode}}: {{heading}}"
+    }
   },
   "export": {
     "trigger": "Esporta conversazione",
@@ -273,79 +285,15 @@
     "customLabel": "Oppure scegli un orario",
     "confirm": "Programma",
     "in": {
-      "30": "Tra 30 minuti",
-      "120": "Tra 2 ore",
-      "300": "Tra 5 ore",
+      "15": "Tra 15 minuti",
+      "60": "Tra un’ora",
+      "480": "Tra 8 ore",
       "1440": "Domani"
     },
     "pending": "Programmato per {{when}}",
     "failed": "Non inviato — {{reason}}",
     "cancel": "Annulla messaggio programmato",
     "dismiss": "Ignora l'avviso di errore"
-  },
-  "cost": {
-    "totalTokensUsed": "Token totali usati",
-    "inputTokens": "Token di input",
-    "outputTokens": "Token di output",
-    "contextWindow": "Finestra di contesto",
-    "quotaTitle": "Quote account e limiti di frequenza",
-    "updatedAt": "Aggiornato alle {{time}}",
-    "refresh": "Aggiorna",
-    "refreshTitle": "Aggiorna quota più recente",
-    "fetchingQuota": "Recupero quota più recente...",
-    "syncingWithProvider": "Sincronizzazione dei limiti di 5 ore e settimanali da {{provider}}",
-    "noQuotaData": "Nessun dato di quota disponibile per questo account",
-    "refreshFailedNotice": "Aggiornamento non riuscito; visualizzazione degli ultimi dati recuperati",
-    "fetchFailed": "Impossibile caricare la quota, riprova più tardi",
-    "currentGroup": "Modelli della sessione corrente",
-    "otherGroup": "Altri modelli",
-    "collapse": "Comprimi",
-    "expand": "Espandi",
-    "fiveHourWindow": "Finestra mobile di 5 ore",
-    "weeklyWindow": "Quota settimanale",
-    "weeklyWindowAllModels": "Quota settimanale (tutti i modelli)",
-    "weeklyWindowScoped": "Quota settimanale ({{model}})",
-    "remainingPercent": "{{percent}}% rimanente",
-    "resetSoon": "Ripristino a breve",
-    "resetDaysHours": "Si ripristina in {{days}}g {{hours}}h",
-    "resetHoursMinutes": "Si ripristina in {{hours}}h {{minutes}}m",
-    "resetMinutes": "Si ripristina in {{minutes}}m",
-    "emptyQuotaHint": {
-      "claude": "Gli accessi con chiave API, Bedrock o Vertex non hanno limiti di abbonamento claude.ai",
-      "codex": "L'accesso tramite chiave API di solito non riporta limiti di 5 ore o settimanali",
-      "opencode": "Nessun abbonamento OpenCode Go, oppure la CLI non ha effettuato l'accesso a un workspace Go"
-    },
-    "resetCardTitle": "Carte di reset dell'utilizzo",
-    "resetCardHint": "Usare una carta ricarica immediatamente la quota coperta, senza attendere la finestra di reset.",
-    "resetCardHintReadOnly": "Usa questo ripristino sul sito del provider.",
-    "resetCardTypeAll": "Quota completa (5 ore + settimanale)",
-    "resetCardType5h": "Quota di 5 ore",
-    "resetCardTypeWeekly": "Quota settimanale",
-    "resetCardTypeFable": "Ripristino Fable",
-    "resetCardAvailable": "{{count}} disponibili",
-    "resetCardExpires": "la prima scade il {{date}}",
-    "resetCardUse": "Usa",
-    "resetCardConfirmTitle": "Usare questo reset?",
-    "resetCardConfirmBody": "La tua {{quota}} verrà ripristinata immediatamente. L'operazione non può essere annullata.",
-    "resetCardConfirm": "Usa carta",
-    "resetCardCancel": "Annulla",
-    "resetCardSuccess": "La quota è stata reimpostata.",
-    "resetCardFailed": "Reset non riuscito. Riprova più tardi.",
-    "resetCardNoCard": "Nessuna carta di reset disponibile. Aggiorna per vedere lo stato più recente.",
-    "resetCardReadFailed": "Impossibile leggere le carte di reset in questo momento. Riprova più tardi.",
-    "resetCardNotAuthenticated": "Account non collegato. Accedi prima di riprovare.",
-    "resetCardUnknown": "La richiesta di reset non è stata confermata. Aggiorna la quota per verificare se è stata applicata — non riprovare alla cieca.",
-    "resetCardUnavailable": "{{count}} usate o scadute",
-    "resetCardRefreshing": "Aggiornamento quota…",
-    "resetCardWeeklyAlso5h": "Il reset della quota settimanale ricarica anche quella di 5 ore, senza consumare una carta da 5 ore."
-  },
-  "localProxy": {
-    "linkHint": "Questo indirizzo esiste solo sul server; CloudCLI lo apre tramite il proxy locale.",
-    "failed": "CloudCLI non è riuscito ad aprire questo indirizzo locale del server."
-  },
-  "memory": {
-    "used_one": "Usata {{count}} memoria",
-    "used_other": "Usate {{count}} memorie"
   },
   "modelLibrary": {
     "effortLevels": "Livelli di ragionamento",

@@ -369,7 +369,8 @@
     "json": {
       "label": "JSON (.json)",
       "description": "Every message, unformatted, for tooling."
-    }
+    },
+    "includeSideQuestions": "Include side questions"
   },
   "schedule": {
     "trigger": "Schedule this message",
@@ -550,5 +551,66 @@
     "customModelsOnlyHint": "Hide the built-in {{provider}} models from every model picker and make your first model the default. Built-in models stay listed until you add a model.",
     "builtInModelsHidden": "Hidden from model pickers while “Use only my models” is on.",
     "customModelsOnlyFailed": "Unable to change this setting."
+  },
+  "agentPrompts": {
+    "needsInput": "{{agent}} needs your input",
+    "dismiss": "Dismiss",
+    "alwaysAllow": "Always allow",
+    "alwaysAllowCovers": "Always allow covers"
+  },
+  "mcpElicitation": {
+    "asks": "{{server}} asks for your input",
+    "submit": "Submit",
+    "decline": "Decline",
+    "openLink": "Open link",
+    "unsafeUrl": "Only http and https links can be opened from here.",
+    "optional": "optional",
+    "choose": "Choose…",
+    "required": "Required",
+    "notANumber": "Enter a number",
+    "notAnInteger": "Enter a whole number",
+    "tooSmall": "At least {{value}}",
+    "tooLarge": "At most {{value}}",
+    "tooShort": "At least {{count}} characters",
+    "tooLong": "At most {{count}} characters",
+    "tooFew": "Pick at least {{count}}",
+    "tooMany": "Pick at most {{count}}",
+    "notAnEmail": "Enter an email address",
+    "notAUri": "Enter a full address, such as https://example.com",
+    "notADate": "Enter a date",
+    "notADateTime": "Enter a date and time",
+    "notTheFormat": "Not a valid {{format}}"
+  },
+  "sideQuestion": {
+    "label": "Side question · not part of the session",
+    "pending": "Answering on the side",
+    "failed": "The side question failed.",
+    "dismiss": "Dismiss",
+    "unsupported": "This provider cannot answer side questions.",
+    "noSession": "Side questions need an existing chat; this one has not started yet."
+  },
+  "sendMenu": {
+    "trigger": "Send options",
+    "queue": {
+      "label": "Queue",
+      "descriptionResponding": "Send when this turn ends",
+      "descriptionBackground": "Send when the background work ends"
+    },
+    "steer": {
+      "label": "Steer",
+      "description": "Send into this turn; read at the next tool call"
+    },
+    "sideQuestion": {
+      "label": "Side question",
+      "description": "Ask on the side now; the session never sees it"
+    },
+    "stop": {
+      "label": "Stop",
+      "description": "End the response being written"
+    },
+    "sendAnyway": {
+      "label": "Send anyway",
+      "description": "Send now; this stops the background work"
+    }
   }
 }

@@ -39,23 +39,8 @@
     "clearSelection": "선택 해제",
     "deleteSelected_one": "세션 {{count}}개 삭제",
     "deleteSelected_other": "세션 {{count}}개 삭제",
-    "pinSession": "세션 고정",
-    "unpinSession": "고정 해제",
-    "pinned": "고정됨",
-    "optionsTitle": "세션 옵션",
-    "optionsFor": "{{name}} 세션 옵션",
-    "providerSession": "{{provider}} 세션",
-    "forkSession": "세션 분기",
-    "forkSessionDescription": "복사본에서 계속하고 이 세션은 그대로 둡니다.",
-    "archiveOrDelete": "세션 보관 또는 삭제",
-    "clickToRetry": "클릭하여 다시 시도하세요.",
-    "tapToRetry": "탭하여 다시 시도하세요.",
-    "sessionName": "세션 이름",
-    "copyId": "{{provider}} 세션 ID 복사",
-    "copyIdLoading": "{{provider}} 세션 ID 불러오는 중…",
-    "copyIdCopied": "{{provider}} 세션 ID를 복사했습니다",
-    "copyIdFailed": "{{provider}} 세션 ID를 복사하지 못했습니다",
-    "copyIdUnavailable": "{{provider}} 세션 ID를 사용할 수 없습니다"
+    "expandForks": "{{session}}의 포크 펼치기",
+    "collapseForks": "{{session}}의 포크 접기"
   },
   "tooltips": {
     "viewEnvironments": "환경 보기",
@@ -139,8 +124,7 @@
     "restoreSessionError": "세션 복원 오류. 다시 시도해주세요.",
     "forkSessionError": "이 세션을 분기하지 못했습니다. 다시 시도해 주세요.",
     "deleteSessionsPartialFailure_one": "세션 {{total}}개 중 {{count}}개를 삭제하지 못했습니다. 다시 시도해주세요.",
-    "deleteSessionsPartialFailure_other": "세션 {{total}}개 중 {{count}}개를 삭제하지 못했습니다. 다시 시도해주세요.",
-    "pinSessionError": "이 세션을 고정하지 못했습니다. 다시 시도해 주세요."
+    "deleteSessionsPartialFailure_other": "세션 {{total}}개 중 {{count}}개를 삭제하지 못했습니다. 다시 시도해주세요."
   },
   "version": {
     "updateAvailable": "업데이트 가능",
@@ -169,9 +153,6 @@
     "sessionCount_other": "이 프로젝트에는 {{count}}개의 대화가 있습니다.",
     "removeFromSidebar": "사이드바에서만 제거",
     "archiveProject": "프로젝트 보관",
-    "archiveSession": "세션 보관",
-    "archiveSessionNotice": "보관하면 세션이 활성 목록에서 제외되지만 기록은 유지됩니다.",
-    "archivedSessionNotice": "이 세션은 이미 보관되어 있습니다. 숨긴 상태로 두거나 영구 삭제할 수 있습니다.",
     "deleteSessionPermanently": "영구 삭제",
     "deleteAllData": "모든 데이터 영구 삭제",
     "allConversationsDeleted": "프로젝트가 사이드바에서 제거됩니다. 파일, 메모리 및 세션 데이터는 보존됩니다.",

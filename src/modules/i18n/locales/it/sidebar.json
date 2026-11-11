@@ -39,23 +39,8 @@
     "clearSelection": "Deseleziona tutto",
     "deleteSelected_one": "Elimina {{count}} sessione",
     "deleteSelected_other": "Elimina {{count}} sessioni",
-    "pinSession": "Fissa sessione",
-    "unpinSession": "Sblocca sessione",
-    "pinned": "Fissata",
-    "optionsTitle": "Opzioni sessione",
-    "optionsFor": "Opzioni sessione per {{name}}",
-    "providerSession": "Sessione {{provider}}",
-    "forkSession": "Crea ramo della sessione",
-    "forkSessionDescription": "Continua da una copia, lasciando intatta questa.",
-    "archiveOrDelete": "Archivia o elimina sessione",
-    "clickToRetry": "Fai clic per riprovare.",
-    "tapToRetry": "Tocca per riprovare.",
-    "sessionName": "Nome sessione",
-    "copyId": "Copia ID sessione {{provider}}",
-    "copyIdLoading": "Caricamento ID sessione {{provider}}…",
-    "copyIdCopied": "ID sessione {{provider}} copiato",
-    "copyIdFailed": "Impossibile copiare l’ID sessione {{provider}}",
-    "copyIdUnavailable": "ID sessione {{provider}} non disponibile"
+    "expandForks": "Espandi le diramazioni di {{session}}",
+    "collapseForks": "Comprimi le diramazioni di {{session}}"
   },
   "tooltips": {
     "viewEnvironments": "Visualizza ambienti",
@@ -139,8 +124,7 @@
     "restoreSessionError": "Errore durante il ripristino della sessione. Riprova.",
     "forkSessionError": "Impossibile creare un ramo da questa sessione. Riprova.",
     "deleteSessionsPartialFailure_one": "Impossibile eliminare {{count}} sessione su {{total}}. Riprova.",
-    "deleteSessionsPartialFailure_other": "Impossibile eliminare {{count}} sessioni su {{total}}. Riprova.",
-    "pinSessionError": "Impossibile fissare questa sessione. Riprova."
+    "deleteSessionsPartialFailure_other": "Impossibile eliminare {{count}} sessioni su {{total}}. Riprova."
   },
   "version": {
     "updateAvailable": "Aggiornamento disponibile",
@@ -169,9 +153,6 @@
     "sessionCount_other": "Questo progetto contiene {{count}} conversazioni.",
     "removeFromSidebar": "Rimuovi solo dalla barra laterale",
     "archiveProject": "Archivia progetto",
-    "archiveSession": "Archivia sessione",
-    "archiveSessionNotice": "L'archiviazione rimuove la sessione dall'elenco attivo mantenendone la cronologia.",
-    "archivedSessionNotice": "Questa sessione è già archiviata. Puoi mantenerla nascosta o eliminarla definitivamente.",
     "deleteSessionPermanently": "Elimina definitivamente",
     "deleteAllData": "Elimina tutti i dati permanentemente",
     "allConversationsDeleted": "Il progetto verrà rimosso dalla barra laterale. I tuoi file, memorie e dati delle sessioni verranno preservati.",

@@ -469,5 +469,11 @@
     "customModelsOnlyHint": "在所有模型选择器中隐藏 {{provider}} 的内置模型，并将您的第一个模型设为默认模型。在您添加模型之前，内置模型仍会显示。",
     "builtInModelsHidden": "开启“仅使用我的模型”时，这些模型不会出现在模型选择器中。",
     "customModelsOnlyFailed": "无法更改此设置。"
+  },
+  "agentPrompts": {
+    "needsInput": "{{agent}} 需要你的输入",
+    "dismiss": "拒绝",
+    "alwaysAllow": "始终允许",
+    "alwaysAllowCovers": "“始终允许”适用于"
   }
 }

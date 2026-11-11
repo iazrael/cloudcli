@@ -94,6 +94,12 @@
   "json": {
     "response": "Resposta JSON"
   },
+  "agentPrompts": {
+    "needsInput": "{{agent}} precisa da sua resposta",
+    "dismiss": "Recusar",
+    "alwaysAllow": "Sempre permitir",
+    "alwaysAllowCovers": "\"Sempre permitir\" cobre"
+  },
   "permissions": {
     "grant": "Conceder permissão para {{tool}}",
     "added": "Permissão adicionada",
@@ -151,7 +157,6 @@
       "ctrlEnter": "Ctrl+Enter para enviar • Shift+Enter para nova linha • Tab para alternar modos • / para slash commands",
       "enter": "Enter para enviar • Shift+Enter para nova linha • Tab para alternar modos • / para slash commands",
       "queue": "Enter para enfileirar sua próxima mensagem",
-      "updateQueued": "Enter para atualizar mensagem enfileirada",
       "appendQueued": "Enter para adicionar à mensagem enfileirada"
     },
     "clickToChangeMode": "Clique para alterar modo de permissão (ou pressione Tab na entrada)",
@@ -160,13 +165,12 @@
     "scrollToBottom": "Rolar para o final",
     "queue": {
       "sendNext": "Enfileirar próxima mensagem",
-      "update": "Atualizar mensagem enfileirada",
+      "append": "Adicionar à mensagem enfileirada",
+      "notCombinable": "Falha ao enfileirar a mensagem: um slash command é executado sozinho, então não pode ser combinado com a mensagem enfileirada. Envie-o depois que a mensagem enfileirada for enviada.",
       "label": "Enfileirado",
       "willSend": "Enviará quando isto terminar",
       "edit": "Editar mensagem enfileirada",
-      "delete": "Excluir mensagem enfileirada",
-      "append": "Adicionar à mensagem enfileirada",
-      "notCombinable": "Falha ao enfileirar a mensagem: um slash command é executado sozinho, então não pode ser combinado com a mensagem enfileirada. Envie-o depois que a mensagem enfileirada for enviada."
+      "delete": "Excluir mensagem enfileirada"
     }
   },
   "composer": {
@@ -176,13 +180,13 @@
     "loadingModels": "Carregando modelos…",
     "modelMenu": "Selecionar modelo e nível de raciocínio",
     "permissionHeading": "Como as ações do {{provider}} devem ser aprovadas?",
+    "permissionCycleHint": "Pressione Tab no campo de mensagem para alternar o modo",
+    "permissionTriggerLabel": "{{mode}}: {{heading}}",
     "editing": {
       "title": "Substituindo uma mensagem anterior",
       "filesNotReverted": "arquivos que o agente já alterou não são revertidos",
       "cancel": "Cancelar"
-    },
-    "permissionCycleHint": "Pressione Tab no campo de mensagem para alternar o modo",
-    "permissionTriggerLabel": "{{mode}}: {{heading}}"
+    }
   },
   "providerSelection": {
     "title": "Escolha seu assistente de IA",
@@ -331,9 +335,9 @@
     "customLabel": "Ou escolha um horário",
     "confirm": "Agendar",
     "in": {
-      "30": "Em 30 minutos",
-      "120": "Em 2 horas",
-      "300": "Em 5 horas",
+      "15": "Em 15 minutos",
+      "60": "Em uma hora",
+      "480": "Em 8 horas",
       "1440": "Amanhã"
     },
     "pending": "Agendado para {{when}}",

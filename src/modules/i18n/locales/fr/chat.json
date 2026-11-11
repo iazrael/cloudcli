@@ -82,6 +82,12 @@
   "json": {
     "response": "Réponse JSON"
   },
+  "agentPrompts": {
+    "needsInput": "{{agent}} a besoin de votre réponse",
+    "dismiss": "Refuser",
+    "alwaysAllow": "Toujours autoriser",
+    "alwaysAllowCovers": "« Toujours autoriser » couvre"
+  },
   "permissions": {
     "grant": "Autoriser {{tool}}",
     "added": "Permission ajoutée",
@@ -243,6 +249,9 @@
     "answeredBy": "Répondu par {{model}}"
   },
   "composer": {
+    "permissionHeading": "Comment approuver les actions de {{provider}} ?",
+    "permissionCycleHint": "Appuyez sur Tab dans la zone de saisie pour changer de mode",
+    "permissionTriggerLabel": "{{mode}} : {{heading}}",
     "editing": {
       "title": "Remplacement d’un message précédent",
       "filesNotReverted": "les fichiers déjà modifiés ne sont pas restaurés",

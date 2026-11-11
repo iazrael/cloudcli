@@ -37,6 +37,7 @@ type ProviderAuthStatusPayload = {
   error?: string | null;
   loginCommand?: string | null;
   subscriptionOverride?: ProviderAuthSubscriptionOverride | null;
+  installedVersion?: string | null;
 };
 
 type ProviderAuthStatusApiResponse = {
@@ -66,6 +67,9 @@ const toProviderAuthStatus = (
   // a valid subscription login; keep the key absent otherwise so the shape
   // matches the initial/error statuses above.
   ...(payload.subscriptionOverride ? { subscriptionOverride: payload.subscriptionOverride } : {}),
+  // Servers older than this field leave it out; keep it absent rather than
+  // claiming the version is unknown.
+  ...(payload.installedVersion !== undefined ? { installedVersion: payload.installedVersion } : {}),
 });
 
 type UseProviderAuthStatusOptions = {

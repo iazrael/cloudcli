@@ -20,8 +20,7 @@
     "claude": "Claude",
     "cursor": "Cursor",
     "codex": "Codex",
-    "opencode": "OpenCode",
-    "antigravity": "Antigravity"
+    "opencode": "OpenCode"
   },
   "tools": {
     "settings": "Ajustes de herramientas",
@@ -53,10 +52,10 @@
     "newFile": "Archivo nuevo",
     "viewContent": "Ver contenido del archivo",
     "viewFullOutput": "Ver salida completa ({{count}} caracteres)",
-    "contentDisplayed": "El contenido del archivo se muestra en la vista de diff de arriba",
     "viewFullOutput_one": "Ver salida completa ({{count}} carácter)",
     "viewFullOutput_other": "Ver salida completa ({{count}} caracteres)",
-    "viewFullOutput_many": "Ver salida completa ({{count}} caracteres)"
+    "viewFullOutput_many": "Ver salida completa ({{count}} caracteres)",
+    "contentDisplayed": "El contenido del archivo se muestra en la vista de diff de arriba"
   },
   "bashEditDiff": {
     "created": "Creado",
@@ -65,26 +64,33 @@
     "emptyFile": "Archivo vacío",
     "moreLines_one": "… {{count}} línea más",
     "moreLines_other": "… {{count}} líneas más",
+    "moreLines_many": "… {{count}} líneas más",
     "moreFiles_one": "… {{count}} archivo más modificado",
     "moreFiles_other": "… {{count}} archivos más modificados",
+    "moreFiles_many": "… {{count}} archivos más modificados",
     "filesNotShown_one": "{{count}} archivo modificado (binario, solo de modo o demasiado grande para mostrar)",
     "filesNotShown_other": "{{count}} archivos modificados (binarios, solo de modo o demasiado grandes para mostrar)",
+    "filesNotShown_many": "{{count}} archivos modificados (binarios, solo de modo o demasiado grandes para mostrar)",
     "filesUnavailable_one": "{{count}} archivo modificado (diff no disponible)",
     "filesUnavailable_other": "{{count}} archivos modificados (diff no disponible)",
+    "filesUnavailable_many": "{{count}} archivos modificados (diff no disponible)",
     "filesChanged_one": "{{count}} archivo modificado",
     "filesChanged_other": "{{count}} archivos modificados",
+    "filesChanged_many": "{{count}} archivos modificados",
     "morePaths_one": "+{{count}} más",
     "morePaths_other": "+{{count}} más",
+    "morePaths_many": "+{{count}} más",
     "diffUnavailable": "(diff de archivos no disponible para este comando)",
     "partUnavailable": "(parte del diff no está disponible)",
     "skipped": "(diff de archivos omitido para este comando de git)",
-    "shared": "(otro comando se ejecutó en este repositorio al mismo tiempo; un cambio hecho por cualquiera de los dos puede aparecer en cualquiera de los resultados)",
-    "moreLines_many": "… {{count}} líneas más",
-    "moreFiles_many": "… {{count}} archivos más modificados",
-    "filesNotShown_many": "{{count}} archivos modificados (binarios, solo de modo o demasiado grandes para mostrar)",
-    "filesUnavailable_many": "{{count}} archivos modificados (diff no disponible)",
-    "filesChanged_many": "{{count}} archivos modificados",
-    "morePaths_many": "+{{count}} más"
+    "shared": "(otro comando se ejecutó en este repositorio al mismo tiempo; un cambio hecho por cualquiera de los dos puede aparecer en cualquiera de los resultados)"
+  },
+  "interactive": {
+    "title": "Prompt interactivo",
+    "waiting": "Esperando tu respuesta en la CLI",
+    "instruction": "Elige una opción en la terminal donde se está ejecutando Claude.",
+    "selectedOption": "✓ Claude eligió la opción {{number}}",
+    "instructionDetail": "En la CLI, elegirías esta opción de forma interactiva con las flechas o escribiendo el número."
   },
   "thinking": {
     "title": "Pensando...",
@@ -92,6 +98,12 @@
   },
   "json": {
     "response": "Respuesta JSON"
+  },
+  "agentPrompts": {
+    "needsInput": "{{agent}} necesita tu respuesta",
+    "dismiss": "Descartar",
+    "alwaysAllow": "Permitir siempre",
+    "alwaysAllowCovers": "«Permitir siempre» cubre"
   },
   "permissions": {
     "grant": "Conceder permiso para {{tool}}",
@@ -122,11 +134,11 @@
       "plan": "Modo de planificación"
     },
     "descriptions": {
+      "default": "Solo los comandos de confianza (ls, cat, grep, git status, etc.) se ejecutan automáticamente. Los demás comandos se omiten. Puede escribir en el espacio de trabajo.",
       "auto": "Un clasificador del modelo decide en cada llamada si aprobar o denegar. Sin intervención, pero más seguro que Omitir — las denegaciones siguen ocurriendo.",
       "acceptEdits": "Todos los comandos se ejecutan automáticamente dentro del espacio de trabajo. Modo automático completo con ejecución en sandbox.",
       "bypassPermissions": "Acceso completo al sistema sin restricciones. Todos los comandos se ejecutan automáticamente con acceso total a disco y red. Úsalo con precaución.",
-      "plan": "Modo de planificación: no se ejecutan comandos",
-      "default": "Solo los comandos de confianza (ls, cat, grep, git status, etc.) se ejecutan automáticamente. Los demás comandos se omiten. Puede escribir en el espacio de trabajo."
+      "plan": "Modo de planificación: no se ejecutan comandos"
     },
     "technicalDetails": "Detalles técnicos"
   },
@@ -145,13 +157,11 @@
     "attachFiles": "Adjuntar archivos",
     "attachImages": "Adjuntar imágenes",
     "send": "Enviar",
-    "sending": "Enviando…",
     "stop": "Detener",
     "hintText": {
       "ctrlEnter": "Ctrl+Enter para enviar • Shift+Enter para nueva línea • Tab para cambiar de modo • / para comandos",
       "enter": "Enter para enviar • Shift+Enter para nueva línea • Tab para cambiar de modo • / para comandos",
       "queue": "Enter para poner en cola tu siguiente mensaje",
-      "updateQueued": "Enter para actualizar el mensaje en cola",
       "appendQueued": "Enter para añadir al mensaje en cola"
     },
     "clickToChangeMode": "Haz clic para cambiar el modo de permisos (o pulsa Tab en el campo de texto)",
@@ -160,13 +170,12 @@
     "scrollToBottom": "Ir al final",
     "queue": {
       "sendNext": "Poner en cola el siguiente mensaje",
-      "update": "Actualizar mensaje en cola",
+      "append": "Añadir al mensaje en cola",
+      "notCombinable": "No se pudo poner el mensaje en cola: un comando con / se ejecuta por separado, así que no se puede combinar con el mensaje en cola. Envíalo cuando se haya enviado el mensaje en cola.",
       "label": "En cola",
       "willSend": "Se enviará cuando esto termine",
       "edit": "Editar mensaje en cola",
-      "delete": "Eliminar mensaje en cola",
-      "append": "Añadir al mensaje en cola",
-      "notCombinable": "No se pudo poner el mensaje en cola: un comando con / se ejecuta por separado, así que no se puede combinar con el mensaje en cola. Envíalo cuando se haya enviado el mensaje en cola."
+      "delete": "Eliminar mensaje en cola"
     }
   },
   "composer": {
@@ -176,13 +185,13 @@
     "loadingModels": "Cargando modelos…",
     "modelMenu": "Seleccionar modelo y esfuerzo de razonamiento",
     "permissionHeading": "¿Cómo se deben aprobar las acciones de {{provider}}?",
+    "permissionCycleHint": "Pulsa Tab en el campo de texto para cambiar de modo",
+    "permissionTriggerLabel": "{{mode}}: {{heading}}",
     "editing": {
       "title": "Reemplazando un mensaje anterior",
       "filesNotReverted": "los archivos ya modificados no se revierten",
       "cancel": "Cancelar"
-    },
-    "permissionCycleHint": "Pulsa Tab en el campo de texto para cambiar de modo",
-    "permissionTriggerLabel": "{{mode}}: {{heading}}"
+    }
   },
   "providerSelection": {
     "title": "Elige tu asistente de IA",
@@ -202,9 +211,9 @@
       "default": "Selecciona un proveedor arriba para empezar"
     },
     "pressToSearch": "Pulsa <kbd>{{shortcut}}</kbd> para buscar sesiones, archivos y commits",
-    "chooseModelDescriptionCustomOnly": "Para {{providers, list}} solo se muestran tus modelos",
     "chooseModel": "Elige un modelo",
     "chooseModelDescription": "Modelos integrados y personalizados en una sola lista",
+    "chooseModelDescriptionCustomOnly": "Para {{providers, list}} solo se muestran tus modelos",
     "addModel": "Añadir modelo",
     "searchModels": "Buscar modelos...",
     "manageModels": "Gestionar modelos",
@@ -222,7 +231,6 @@
       "sessionMessages": "Cargando mensajes de la sesión..."
     },
     "messages": {
-      "perfWarning": "Todos los mensajes cargados — el desplazamiento puede ser más lento. Haz clic en \"Ir al final\" para recuperar el rendimiento.",
       "showingOf": "Mostrando {{shown}} de {{total}} mensajes",
       "scrollToLoad": "Desplázate hacia arriba para cargar más",
       "showingLast": "Mostrando los últimos {{count}} mensajes ({{total}} en total)",
@@ -232,7 +240,8 @@
       "loadEarlier": "Cargar mensajes anteriores",
       "loadAll": "Cargar todos los mensajes",
       "loadingAll": "Cargando todos los mensajes...",
-      "allLoaded": "Todos los mensajes cargados"
+      "allLoaded": "Todos los mensajes cargados",
+      "perfWarning": "Todos los mensajes cargados — el desplazamiento puede ser más lento. Haz clic en \"Ir al final\" para recuperar el rendimiento."
     }
   },
   "shell": {
@@ -259,10 +268,10 @@
     },
     "loading": "Cargando terminal...",
     "connecting": "Conectando a la shell...",
-    "startSession": "Iniciar una sesión nueva de {{provider}}",
+    "startSession": "Iniciar una sesión nueva de Claude",
     "resumeSession": "Reanudar sesión: {{displayName}}...",
     "runCommand": "Ejecutar {{command}} en {{projectName}}",
-    "startCli": "Iniciando {{provider}} CLI en {{projectName}}",
+    "startCli": "Iniciando Claude CLI en {{projectName}}",
     "defaultCommand": "comando"
   },
   "claudeStatus": {
@@ -285,13 +294,6 @@
       "startingNow": "Empezando ahora"
     },
     "stop": "Detener",
-    "controls": {
-      "stopGeneration": "Detener generación",
-      "pressEscToStop": "Pulsa Esc en cualquier momento para detener"
-    },
-    "providers": {
-      "assistant": "Asistente"
-    },
     "backgroundWork": "Trabajo en segundo plano",
     "backgroundTask": {
       "workflow": "Flujo {{name}}",
@@ -308,6 +310,13 @@
         "queue": "Encolar",
         "sendAnyway": "Enviar igualmente"
       }
+    },
+    "controls": {
+      "stopGeneration": "Detener generación",
+      "pressEscToStop": "Pulsa Esc en cualquier momento para detener"
+    },
+    "providers": {
+      "assistant": "Asistente"
     }
   },
   "projectSelection": {
@@ -344,95 +353,15 @@
     "customLabel": "O elige una hora",
     "confirm": "Programar",
     "in": {
-      "30": "En 30 minutos",
-      "120": "En 2 horas",
-      "300": "En 5 horas",
+      "15": "En 15 minutos",
+      "60": "En una hora",
+      "480": "En 8 horas",
       "1440": "Mañana"
     },
     "pending": "Programado para {{when}}",
     "failed": "No enviado — {{reason}}",
     "cancel": "Cancelar mensaje programado",
     "dismiss": "Descartar el aviso de fallo"
-  },
-  "cost": {
-    "totalTokensUsed": "Tokens totales usados",
-    "inputTokens": "Tokens de entrada",
-    "outputTokens": "Tokens de salida",
-    "contextWindow": "Ventana de contexto",
-    "quotaTitle": "Cuota de cuenta y límites de frecuencia",
-    "updatedAt": "Actualizado a las {{time}}",
-    "refresh": "Actualizar",
-    "refreshTitle": "Actualizar cuota más reciente",
-    "fetchingQuota": "Obteniendo cuota más reciente...",
-    "syncingWithProvider": "Sincronizando límites de 5 horas y semanales desde {{provider}}",
-    "noQuotaData": "No hay datos de cuota disponibles para esta cuenta",
-    "refreshFailedNotice": "Fallo al actualizar; mostrando los últimos datos obtenidos con éxito",
-    "fetchFailed": "Error al cargar la cuota, inténtalo de nuevo más tarde",
-    "currentGroup": "Modelos de la sesión actual",
-    "otherGroup": "Otros modelos",
-    "collapse": "Contraer",
-    "expand": "Expandir",
-    "fiveHourWindow": "Ventana deslizante de 5 horas",
-    "weeklyWindow": "Cuota semanal",
-    "weeklyWindowAllModels": "Cuota semanal (todos los modelos)",
-    "weeklyWindowScoped": "Cuota semanal ({{model}})",
-    "remainingPercent": "{{percent}}% restante",
-    "resetSoon": "Reinicio inminente",
-    "resetDaysHours": "Se reinicia en {{days}}d {{hours}}h",
-    "resetHoursMinutes": "Se reinicia en {{hours}}h {{minutes}}m",
-    "resetMinutes": "Se reinicia en {{minutes}}m",
-    "emptyQuotaHint": {
-      "claude": "Los inicios de sesión con API key, Bedrock o Vertex no tienen límites de suscripción de claude.ai",
-      "codex": "Los inicios de sesión con API Key no suelen indicar límites de 5 horas o semanales",
-      "opencode": "Sin suscripción a OpenCode Go, o la CLI no ha iniciado sesión en un espacio de trabajo Go"
-    },
-    "resetCardTitle": "Tarjetas de reinicio de uso",
-    "resetCardHint": "Usar una tarjeta rellena de inmediato la cuota cubierta, sin esperar la ventana de reinicio.",
-    "resetCardHintReadOnly": "Usa este restablecimiento en el sitio web del proveedor.",
-    "resetCardTypeAll": "Cuota completa (5 h + semanal)",
-    "resetCardType5h": "Cuota de 5 horas",
-    "resetCardTypeWeekly": "Cuota semanal",
-    "resetCardTypeFable": "Restablecimiento de Fable",
-    "resetCardAvailable": "{{count}} disponibles",
-    "resetCardExpires": "la más próxima vence {{date}}",
-    "resetCardUse": "Usar",
-    "resetCardConfirmTitle": "¿Usar este reinicio?",
-    "resetCardConfirmBody": "Tu {{quota}} se restaurará de inmediato. Esta acción no se puede deshacer.",
-    "resetCardConfirm": "Usar tarjeta",
-    "resetCardCancel": "Cancelar",
-    "resetCardSuccess": "La cuota fue reiniciada.",
-    "resetCardFailed": "El reinicio falló. Inténtalo de nuevo más tarde.",
-    "resetCardNoCard": "No hay tarjetas de reinicio disponibles. Actualiza para ver el estado más reciente.",
-    "resetCardReadFailed": "No se pudieron leer las tarjetas de reinicio. Inténtalo de nuevo más tarde.",
-    "resetCardNotAuthenticated": "Sesión no iniciada. Inicia sesión primero e inténtalo de nuevo.",
-    "resetCardUnknown": "La solicitud de reinicio no se confirmó. Actualiza la cuota para comprobar si se aplicó; no la repitas a ciegas.",
-    "resetCardUnavailable": "{{count}} usadas o caducadas",
-    "resetCardRefreshing": "Actualizando cuota…",
-    "resetCardWeeklyAlso5h": "Reiniciar la cuota semanal también rellena la de 5 horas, sin gastar una tarjeta de 5 horas."
-  },
-  "localProxy": {
-    "linkHint": "Esta dirección solo existe en el servidor; CloudCLI la abre mediante su proxy local.",
-    "failed": "CloudCLI no pudo abrir esta dirección local del servidor."
-  },
-  "memory": {
-    "used_one": "Se usó {{count}} memoria",
-    "used_other": "Se usaron {{count}} memorias"
-  },
-  "modelLibrary": {
-    "effortLevels": "Niveles de razonamiento",
-    "effortLevelsHint": "Selecciona los niveles de esfuerzo de razonamiento que acepta este modelo. Si no seleccionas ninguno, no se podrá elegir un nivel para este modelo en el compositor.",
-    "effortSummary": "Razonamiento: {{levels}}",
-    "customModelsOnly": "Usar solo mis modelos",
-    "customModelsOnlyHint": "Oculta los modelos integrados de {{provider}} en todos los selectores de modelos y convierte tu primer modelo en el predeterminado. Los integrados siguen visibles hasta que añadas un modelo.",
-    "builtInModelsHidden": "Ocultos en los selectores de modelos mientras «Usar solo mis modelos» esté activado.",
-    "customModelsOnlyFailed": "No se pudo cambiar este ajuste."
-  },
-  "interactive": {
-    "title": "Prompt interactivo",
-    "waiting": "Esperando tu respuesta en la CLI",
-    "instruction": "Elige una opción en la terminal donde se está ejecutando Claude.",
-    "selectedOption": "✓ Claude eligió la opción {{number}}",
-    "instructionDetail": "En la CLI, elegirías esta opción de forma interactiva con las flechas o escribiendo el número."
   },
   "misc": {
     "copyToClipboard": "Copiar al portapapeles",
@@ -493,5 +422,14 @@
     "tokensLabel_many": "tokens",
     "escClosesModal": "Esc cierra el modal.",
     "close": "Cerrar"
+  },
+  "modelLibrary": {
+    "effortLevels": "Niveles de razonamiento",
+    "effortLevelsHint": "Selecciona los niveles de esfuerzo de razonamiento que acepta este modelo. Si no seleccionas ninguno, no se podrá elegir un nivel para este modelo en el compositor.",
+    "effortSummary": "Razonamiento: {{levels}}",
+    "customModelsOnly": "Usar solo mis modelos",
+    "customModelsOnlyHint": "Oculta los modelos integrados de {{provider}} en todos los selectores de modelos y convierte tu primer modelo en el predeterminado. Los integrados siguen visibles hasta que añadas un modelo.",
+    "builtInModelsHidden": "Ocultos en los selectores de modelos mientras «Usar solo mis modelos» esté activado.",
+    "customModelsOnlyFailed": "No se pudo cambiar este ajuste."
   }
 }
