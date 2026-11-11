@@ -269,18 +269,5 @@
   },
   "overrides": {
     "mdast-util-gfm-autolink-literal": "2.0.0"
-  },
-  "pnpm": {
-    "overrides": {
-      "mdast-util-gfm-autolink-literal": "2.0.0"
-    },
-    "onlyBuiltDependencies": [
-      "bcrypt",
-      "better-sqlite3",
-      "electron-winstaller",
-      "esbuild",
-      "node-pty",
-      "unrs-resolver"
-    ]
   }
 }

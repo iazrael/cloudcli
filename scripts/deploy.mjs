@@ -215,8 +215,11 @@ run('pnpm', ['build']);
 const deployDir = path.join(CLOUDCLI_HOME, 'deploy');
 fs.mkdirSync(deployDir, { recursive: true });
 
-// pnpm v10 默认拦截依赖的安装脚本。白名单写进这个独立运行目录的 package.json，
-// 不再修改共享的全局 pnpm 配置，也不会影响机器上的其他全局工具。
+// pnpm v11 起 onlyBuiltDependencies 被移除，改为 pnpm-workspace.yaml 的
+// allowBuilds 白名单，且 strictDepBuilds 默认 true 会把未申报的构建脚本
+// 直接判成安装失败。这里沿用 v10 语义：白名单只放行本包和 better-sqlite3，
+// 其余构建脚本静默跳过（better-sqlite3 与 node-pty 另有兜底检查）。
+// 白名单写进 staging 自己的 pnpm-workspace.yaml，不碰共享的全局 pnpm 配置。
 const BUILD_ALLOWLIST = [APP_NAME, 'better-sqlite3'];
 
 const packOut = capture('pnpm', ['pack', '--pack-destination', deployDir]);
@@ -235,8 +238,13 @@ fs.mkdirSync(NEXT_RUNTIME_DIR, { recursive: true });
 fs.writeFileSync(path.join(NEXT_RUNTIME_DIR, 'package.json'), JSON.stringify({
   private: true,
   dependencies: { [APP_NAME]: `file:${tarball}` },
-  pnpm: { onlyBuiltDependencies: BUILD_ALLOWLIST },
 }, null, 2) + '\n');
+// pnpm 12 起只读 pnpm-workspace.yaml 里的构建脚本白名单，写进 package.json
+// 的 `pnpm` 字段会被静默忽略，better-sqlite3 等原生依赖就永远走不上兜底路径。
+fs.writeFileSync(
+  path.join(NEXT_RUNTIME_DIR, 'pnpm-workspace.yaml'),
+  `allowBuilds:\n${BUILD_ALLOWLIST.map((name) => `  ${name}: true`).join('\n')}\nstrictDepBuilds: false\n`,
+);
 // staging 安装按档回退：
 // ① 默认源直连——剥掉全部代理环境变量走直连。默认源来自 ~/.npmrc（2026-11-09
 //    起是官方源，官方源经本机 TUN 直连实测可达；若换回 npmmirror 镜像，直连
