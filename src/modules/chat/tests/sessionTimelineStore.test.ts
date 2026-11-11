@@ -72,6 +72,7 @@ const tickThrottle = () => new Promise((resolve) => setTimeout(resolve, 130));
 
 afterEach(() => {
   vi.restoreAllMocks();
+  sessionStorage.clear();
 });
 
 // ─── Latest refresh: bail-out and prune ordering ─────────────────────────────
@@ -1003,6 +1004,66 @@ test('the resume seq keeps the maximum observed value per session', () => {
   assert.equal(store.getResumeSeq(SESSION_ID), 7);
   assert.equal(store.getResumeSeq('sess-other'), 99);
   assert.equal(store.getResumeSeq('sess-unknown'), 0);
+});
+
+test('a persisted cursor lets a reloaded store resume after the last applied frame', async () => {
+  const sessionId = 'sess-persist-reload';
+  const store = new SessionTimelineStore();
+  for (let seq = 1; seq <= 30; seq += 1) {
+    emit(store, { kind: 'status', sessionId, seq, streamEpoch: 'epoch-a' });
+  }
+  // The interval write already persisted seq 25; pagehide flushes the exact tail.
+  window.dispatchEvent(new Event('pagehide'));
+
+  vi.resetModules();
+  const { SessionTimelineStore: ReloadedStore } = await import('@/modules/chat/utils/sessionTimelineStore');
+  const reloaded = new ReloadedStore();
+  assert.equal(reloaded.getResumeSeq(sessionId), 30);
+  assert.equal(reloaded.getResumeEpoch(sessionId), 'epoch-a');
+});
+
+test('the subscription watermark never becomes the persisted cursor', async () => {
+  const sessionId = 'sess-persist-watermark';
+  const store = new SessionTimelineStore();
+  emit(store, { kind: 'status', sessionId, seq: 8, streamEpoch: 'epoch-a' });
+  // The ack's watermark can lead the replay still in flight; persisting it
+  // would let a reload skip events this tab never applied.
+  emit(store, {
+    kind: 'chat_subscribed',
+    sessionId,
+    lastSeq: 99,
+    streamEpoch: 'epoch-a',
+    isProcessing: true,
+    timestamp: new Date().toISOString(),
+  } as ServerEvent);
+  window.dispatchEvent(new Event('pagehide'));
+
+  vi.resetModules();
+  const { SessionTimelineStore: ReloadedStore } = await import('@/modules/chat/utils/sessionTimelineStore');
+  assert.equal(new ReloadedStore().getResumeSeq(sessionId), 8);
+});
+
+test('a new gateway epoch resets the persisted cursor', async () => {
+  const sessionId = 'sess-persist-epoch';
+  const store = new SessionTimelineStore();
+  emit(store, { kind: 'status', sessionId, seq: 40, streamEpoch: 'epoch-a' });
+  window.dispatchEvent(new Event('pagehide'));
+  emit(store, { kind: 'status', sessionId, seq: 3, streamEpoch: 'epoch-b' });
+  window.dispatchEvent(new Event('pagehide'));
+
+  vi.resetModules();
+  const { SessionTimelineStore: ReloadedStore } = await import('@/modules/chat/utils/sessionTimelineStore');
+  const reloaded = new ReloadedStore();
+  assert.equal(reloaded.getResumeSeq(sessionId), 3);
+  assert.equal(reloaded.getResumeEpoch(sessionId), 'epoch-b');
+});
+
+test('a corrupt persisted cursor falls back to a full replay', async () => {
+  sessionStorage.setItem('cloudcli:chat-resume-cursors:v1', '{not-json');
+
+  vi.resetModules();
+  const { SessionTimelineStore: ReloadedStore } = await import('@/modules/chat/utils/sessionTimelineStore');
+  assert.equal(new ReloadedStore().getResumeSeq('sess-persist-corrupt'), 0);
 });
 
 // ─── Notify scoping (the React seam) ─────────────────────────────────────────

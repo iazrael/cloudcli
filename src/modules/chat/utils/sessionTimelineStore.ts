@@ -886,6 +886,146 @@ export type SessionTimelineStoreOptions = {
   notify?: (sessionId: string) => void;
 };
 
+// ─── Persisted replay cursor ────────────────────────────────────────────────
+
+/**
+ * Where the last applied replay cursor is kept between page loads.
+ *
+ * The cursor is transport state, not transcript state. On a reload the client
+ * starts with an empty store, but it must not tell the gateway it missed the
+ * whole active run: a long single-turn agent run can hold thousands of events,
+ * and replaying them from the first one re-renders the entire conversation.
+ * `sessionStorage` scopes the cursor to one tab, because another tab's applied
+ * progress cannot prove what this tab has seen.
+ */
+const RESUME_CURSOR_STORAGE_KEY = 'cloudcli:chat-resume-cursors:v1';
+
+/** Sessions retained in the cursor map; the transport subscribes to a handful at a time. */
+const RESUME_CURSOR_SESSION_LIMIT = 50;
+
+/** Applied frames between cursor writes; a stream must not hit storage per delta. */
+const RESUME_CURSOR_WRITE_INTERVAL = 25;
+
+/** One session's last applied transport cursor. */
+type PersistedResumeCursor = {
+  /** Highest gateway sequence number this tab applied for the session. */
+  seq: number;
+  /** Gateway process identity the sequence belongs to, when the server sends one. */
+  epoch?: string;
+  /** Write time, used to keep the map bounded to the most recent sessions. */
+  updatedAt: number;
+};
+
+const persistedResumeCursors = new Map<string, PersistedResumeCursor>();
+const lastWrittenResumeSeq = new Map<string, number>();
+
+/** The gateway epoch a frame belongs to, or undefined on a legacy server. */
+function readFrameEpoch(event: ServerEvent): string | undefined {
+  return 'streamEpoch' in event && typeof event.streamEpoch === 'string' && event.streamEpoch
+    ? event.streamEpoch
+    : undefined;
+}
+
+/** Restores the cursor map saved by the previous document in this tab. */
+function parseStoredResumeCursors(): Map<string, PersistedResumeCursor> {
+  const cursors = new Map<string, PersistedResumeCursor>();
+  try {
+    if (typeof sessionStorage === 'undefined') return cursors;
+    const raw = sessionStorage.getItem(RESUME_CURSOR_STORAGE_KEY);
+    if (!raw) return cursors;
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return cursors;
+    for (const [sessionId, value] of Object.entries(parsed as Record<string, unknown>)) {
+      const record = value as Record<string, unknown> | null;
+      const seq = record?.seq;
+      if (typeof seq !== 'number' || !Number.isSafeInteger(seq) || seq < 0) continue;
+      const epoch = typeof record?.epoch === 'string' && record.epoch ? record.epoch : undefined;
+      const updatedAt = typeof record?.updatedAt === 'number' && Number.isFinite(record.updatedAt)
+        ? record.updatedAt
+        : 0;
+      cursors.set(sessionId, { seq, ...(epoch ? { epoch } : {}), updatedAt });
+    }
+  } catch {
+    // Storage is an optimization; a corrupt or unavailable entry means a full replay.
+  }
+  return cursors;
+}
+
+function loadPersistedResumeCursors(): void {
+  for (const [sessionId, cursor] of parseStoredResumeCursors()) {
+    persistedResumeCursors.set(sessionId, cursor);
+  }
+}
+
+/** Writes the bounded cursor map; failures fall back to the in-memory behavior. */
+function writePersistedResumeCursors(): void {
+  try {
+    if (typeof sessionStorage === 'undefined') return;
+    // Another store instance in this tab may already have advanced a cursor
+    // (HMR, tests): never let a stale in-memory map roll it back.
+    for (const [sessionId, cursor] of parseStoredResumeCursors()) {
+      const existing = persistedResumeCursors.get(sessionId);
+      if (!existing || cursor.updatedAt > existing.updatedAt) {
+        persistedResumeCursors.set(sessionId, cursor);
+      }
+    }
+    const retained = [...persistedResumeCursors.entries()]
+      .sort((a, b) => b[1].updatedAt - a[1].updatedAt)
+      .slice(0, RESUME_CURSOR_SESSION_LIMIT);
+    const retainedIds = new Set(retained.map(([sessionId]) => sessionId));
+    for (const sessionId of persistedResumeCursors.keys()) {
+      if (!retainedIds.has(sessionId)) {
+        persistedResumeCursors.delete(sessionId);
+      }
+    }
+    sessionStorage.setItem(RESUME_CURSOR_STORAGE_KEY, JSON.stringify(Object.fromEntries(retained)));
+  } catch {
+    // Same fallback as the read side.
+  }
+}
+
+/**
+ * Records one applied sequenced frame in the persisted cursor.
+ *
+ * The subscription ack's watermark deliberately never reaches this function:
+ * it may be ahead of a replay still in flight, and persisting it would let a
+ * reload skip events this tab never applied. A changed gateway epoch resets
+ * the cursor, because the new process numbers a new sequence space from
+ * scratch; frames in the new epoch are written immediately so a reload cannot
+ * reuse the old one.
+ */
+function persistAppliedResumeCursor(sessionId: string, seq: number, epoch: string | undefined): void {
+  const previous = persistedResumeCursors.get(sessionId);
+  const epochChanged = Boolean(previous && epoch && previous.epoch !== epoch);
+  if (epochChanged) {
+    lastWrittenResumeSeq.delete(sessionId);
+  }
+  persistedResumeCursors.set(sessionId, {
+    seq: Math.max(epochChanged ? 0 : previous?.seq ?? 0, seq),
+    ...(epoch ? { epoch } : previous?.epoch ? { epoch: previous.epoch } : {}),
+    updatedAt: Date.now(),
+  });
+
+  const written = lastWrittenResumeSeq.get(sessionId) ?? 0;
+  if (!epochChanged && seq - written < RESUME_CURSOR_WRITE_INTERVAL) {
+    return;
+  }
+  lastWrittenResumeSeq.set(sessionId, seq);
+  writePersistedResumeCursors();
+}
+
+/** Flushes the exact cursor (including a sub-interval tail) before the document goes away. */
+function flushPersistedResumeCursors(): void {
+  lastWrittenResumeSeq.clear();
+  writePersistedResumeCursors();
+}
+
+loadPersistedResumeCursors();
+if (typeof window !== 'undefined') {
+  // `pagehide` fires for reloads and bfcache navigation; the write is synchronous.
+  window.addEventListener('pagehide', flushPersistedResumeCursors);
+}
+
 export class SessionTimelineStore {
   /** Live slots by session id. Session switch = pointer change, no clearing. */
   private readonly slots = new Map<string, SessionSlot>();
@@ -945,6 +1085,9 @@ export class SessionTimelineStore {
     const frameSeq = readFrameSeq(msg);
     if (sid && frameSeq !== null) {
       this.noteSeq(sid, frameSeq);
+      // Only applied frames enter the persisted cursor; the ack's watermark is
+      // noted in `noteSeq` but must never survive a reload (see the helper).
+      persistAppliedResumeCursor(sid, frameSeq, readFrameEpoch(msg));
     }
 
     const route = SERVER_EVENT_ROUTES[msg.kind] ?? UNKNOWN_EVENT_ROUTE;
@@ -1830,7 +1973,20 @@ export class SessionTimelineStore {
 
   /** The `lastSeq` a `chat.subscribe` for this session should resume from. */
   getResumeSeq(sessionId: string): number {
-    return this.resumeSeqs.get(sessionId) ?? 0;
+    const observed = this.resumeSeqs.get(sessionId);
+    if (observed !== undefined && observed > 0) {
+      return observed;
+    }
+    return persistedResumeCursors.get(sessionId)?.seq ?? 0;
+  }
+
+  /**
+   * The gateway epoch the persisted cursor belongs to, or undefined for a
+   * session this tab has not seen on the current server. Sent alongside
+   * `lastSeq` so a restarted gateway can reject the old sequence space.
+   */
+  getResumeEpoch(sessionId: string): string | undefined {
+    return persistedResumeCursors.get(sessionId)?.epoch;
   }
 
   /**

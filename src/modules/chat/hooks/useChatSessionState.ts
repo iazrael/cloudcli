@@ -430,11 +430,15 @@ export function useChatSessionState({
     if (!selectedSession || !selectedProject || !ws) return;
 
     statusCheckSentAtRef.current.set(selectedSession.id, Date.now());
+    const resumeEpoch = sessionStore.getResumeEpoch(selectedSession.id);
     sendMessage({
       type: 'chat.subscribe',
       sessions: [{
         sessionId: selectedSession.id,
         lastSeq: sessionStore.getResumeSeq(selectedSession.id),
+        // A persisted cursor from the previous document is only meaningful in
+        // the epoch it was recorded in; a restarted gateway rejects it.
+        ...(resumeEpoch ? { streamEpoch: resumeEpoch } : {}),
       }],
     });
   }, [selectedProject, selectedSession, sendMessage, sessionStore, statusCheckSentAtRef, ws]);

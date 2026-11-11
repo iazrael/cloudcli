@@ -97,7 +97,7 @@ flowchart TD
 
 ## 断线恢复
 
-- `seq` 由 run registry 按 session 维护单调水位：跨 run 续数、不随缓冲驱逐失效，服务端单方定义，客户端只透传（取 max 对账）。重连后发 `chat.subscribe`（带 `lastSeq`）→ 活跃 run 从缓冲精确补发；ack 带权威 `lastSeq` 与 `stale` 标志——`stale: true` 表示 `lastSeq` 已落在缓冲窗之前（5000 条上限 / 5 分钟保留），客户端补一次 REST 刷新。完成态 run 不 replay，走 REST。
+- `seq` 由 run registry 按 session 维护单调水位：跨 run 续数、不随缓冲驱逐失效，服务端单方定义，客户端只透传（取 max 对账）。重连后发 `chat.subscribe`（带 `lastSeq`）→ 活跃 run 从缓冲精确补发；ack 带权威 `lastSeq` 与 `stale` 标志——`stale: true` 表示 `lastSeq` 已落在缓冲窗之前（5000 条上限 / 5 分钟保留），客户端补一次 REST 刷新。完成态 run 不 replay，走 REST。**已应用游标跨页面刷新持久化**：`SessionTimelineStore` 只把实际经过 `applyServerEvent` 的帧写进 `sessionStorage`（每 25 个序号或 `pagehide` 落盘，最多 50 个会话，按标签页隔离），ack 的权威水位不写入；刷新后 `chat.subscribe` 带恢复的 `lastSeq` 与 `streamEpoch`，同一网关代次只补发刷新期间错过的事件，代次变化则退回完整重放 + REST 对账。否则长回合（一个 run 跑上小时、缓冲覆盖整段对话）刷新时会把整个 run 从第一条重放一遍。
 - WS 鉴权用 query token 或 Authorization 头（`websocket-auth.service.ts`）；30s 心跳在 `websocket-server.service.ts`。
 - `websocket_reconnected` 帧是前端 `src/shared/context/WebSocketContext.tsx` 本地合成的，用于各订阅方追赶。
 
