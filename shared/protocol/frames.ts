@@ -89,6 +89,16 @@ export type QueuedMessageDispatchedEvent = {
 };
 
 /**
+ * 会话的定时消息列表发生了变化（新建、取消、被调度器领取、发送失败）。
+ * 页面收到后重读该会话的列表；广播中不包含消息正文。
+ */
+export type ScheduledMessagesChangedEvent = {
+  kind: 'scheduled_messages_changed';
+  sessionId: string;
+  timestamp: string;
+};
+
+/**
  * Synthesized by the client when the socket re-opens after a drop; no server
  * sends it. It is in this union because every subscriber sees it on the same
  * channel and has to account for it.
@@ -107,6 +117,7 @@ export type ServerEvent =
   | LoadingProgressEvent
   | ProtocolErrorEvent
   | QueuedMessageDispatchedEvent
+  | ScheduledMessagesChangedEvent
   | WebsocketReconnectedEvent;
 
 /** Shared transport budgets used by the gateway replay log and client gap buffer. */

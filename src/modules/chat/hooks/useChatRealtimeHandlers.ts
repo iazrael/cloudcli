@@ -130,12 +130,14 @@ export function useChatRealtimeHandlers({
       }
 
       // Sidebar/global events — owned by useProjectsState; queued-message
-      // starts — owned by useQueuedMessageSync.
+      // starts — owned by useQueuedMessageSync; scheduled-list changes —
+      // owned by useScheduledMessages.
       if (
         msg.kind === 'session_upserted'
         || msg.kind === 'session_removed'
         || msg.kind === 'loading_progress'
         || msg.kind === 'queued_message_dispatched'
+        || msg.kind === 'scheduled_messages_changed'
       ) {
         return;
       }

@@ -14,6 +14,7 @@ export {
   broadcastSessionRemoved,
   broadcastSessionUpserted,
   broadcastSessionUpsertedBatch,
+  broadcastScheduledMessagesChanged,
 } from './services/session-upsert-broadcast.service.js';
 // runDetachedChatTurn: used by the scheduled-messages module to run a
 // scheduled or queued message with no socket to stream to or report errors on.

@@ -1,6 +1,7 @@
 import { scheduledMessagesDb, sessionsDb } from '@/modules/database/index.js';
 import type { ScheduledMessageRow } from '@/modules/database/index.js';
 import { AppError } from '@/shared/utils.js';
+import { broadcastScheduledMessagesChanged } from '@/modules/websocket/index.js';
 
 /** How far ahead a message may be scheduled. Beyond this it is almost certainly a mistake. */
 const MAX_SCHEDULE_AHEAD_MS = 365 * 24 * 60 * 60 * 1000;
@@ -92,13 +93,15 @@ export const scheduledMessagesService = {
       });
     }
 
-    return toScheduledMessage(scheduledMessagesDb.create({
+    const scheduled = toScheduledMessage(scheduledMessagesDb.create({
       userId: input.userId,
       sessionId: input.sessionId,
       content,
       options: input.options ?? {},
       scheduledFor,
     }));
+    broadcastScheduledMessagesChanged(scheduled.sessionId);
+    return scheduled;
   },
 
   listForSession(userId: number, sessionId: string): ScheduledMessage[] {
@@ -111,11 +114,15 @@ export const scheduledMessagesService = {
 
   /** Cancels a pending message, or dismisses a failed one. */
   cancel(userId: number, id: string): void {
+    const target = scheduledMessagesDb.listPendingForUser(userId).find((row) => row.id === id);
     if (!scheduledMessagesDb.cancel(userId, id)) {
       throw new AppError('That message has already been sent or cancelled.', {
         code: 'SCHEDULED_MESSAGE_NOT_PENDING',
         statusCode: 409,
       });
+    }
+    if (target) {
+      broadcastScheduledMessagesChanged(target.session_id);
     }
   },
 };

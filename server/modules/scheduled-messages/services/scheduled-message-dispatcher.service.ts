@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 import { scheduledMessagesDb, sessionDraftsDb, sessionsDb } from '@/modules/database/index.js';
 import type { QueuedSessionMessageRecord, ScheduledMessageRow } from '@/modules/database/index.js';
-import { broadcastQueuedMessageDispatched, chatRunRegistry, runDetachedChatTurn } from '@/modules/websocket/index.js';
+import { broadcastQueuedMessageDispatched, broadcastScheduledMessagesChanged, chatRunRegistry, runDetachedChatTurn } from '@/modules/websocket/index.js';
 import type { ProviderRuntimeGateway } from '@/modules/websocket/index.js';
 import { readQueuedChatMessage } from '@/shared/utils.js';
 import type { LLMProvider } from '@/shared/types.js';
@@ -181,6 +181,11 @@ export async function dispatchQueuedMessages(runtime: ProviderRuntimeGateway): P
     if (queuedSessionsInFlight.has(candidate.sessionId) || (queuedRetryAt.get(candidate.sessionId) ?? 0) > now) {
       return;
     }
+    // 定时发送的回合在 run registry 里结束后、其链式补发收尾前有一个窗口；
+    // 此时插入排队回合会被该会话的下一条到期定时消息打断。
+    if (scheduledSessionsInFlight.has(candidate.sessionId)) {
+      return;
+    }
     if (isSessionBusy(candidate.sessionId, runtime)) {
       return;
     }
@@ -259,6 +264,7 @@ function startClaimedMessage(
       if (result.busy && !result.started) {
         deferred = true;
         scheduledMessagesDb.releaseClaimed(row.id);
+        broadcastScheduledMessagesChanged(row.session_id);
         return;
       }
       // Recorded rather than retried, and recorded whether the run never started
@@ -267,6 +273,7 @@ function startClaimedMessage(
       // them it did not go.
       if (!result.started || result.error) {
         scheduledMessagesDb.markFailed(row.id, result.error ?? 'The session was unavailable when this was due.');
+        broadcastScheduledMessagesChanged(row.session_id);
       }
     })
     .catch((error: unknown) => {
@@ -300,6 +307,11 @@ export async function dispatchDueScheduledMessages(
   const due = scheduledMessagesDb.claimDue(effectiveNow(), scheduledSessionsInFlight);
   if (due.length === 0) {
     return 0;
+  }
+
+  // 每个有到期行的会话广播一次：页面的横幅立即撤下该行，不等回合结束。
+  for (const sessionId of new Set(due.map((row) => row.session_id))) {
+    broadcastScheduledMessagesChanged(sessionId);
   }
 
   let dispatchedCount = due.length;

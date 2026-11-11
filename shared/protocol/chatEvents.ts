@@ -63,6 +63,7 @@ export type GatewayEventKind =
   | 'session_removed'
   | 'loading_progress'
   | 'queued_message_dispatched'
+  | 'scheduled_messages_changed'
   | 'protocol_error';
 
 /**

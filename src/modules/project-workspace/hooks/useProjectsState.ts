@@ -716,6 +716,8 @@ export function useProjectsState({
         && event.kind !== 'stream_end'
         && event.kind !== 'permission_resolved'
         && event.kind !== 'permission_cancelled'
+        // A change to the session's scheduled messages is not new activity in it.
+        && event.kind !== 'scheduled_messages_changed'
       ) {
         markSessionAttention(eventSessionId);
       }

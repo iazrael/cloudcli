@@ -359,7 +359,7 @@ function ChatInterface({
   const hasActivityIndicator = Boolean(sessionActivity && pendingPermissionRequests.length === 0);
 
   const { scheduledMessages, schedule: scheduleMessage, cancel: cancelScheduledMessage } =
-    useScheduledMessages(currentSessionId || selectedSession?.id || null);
+    useScheduledMessages(currentSessionId || selectedSession?.id || null, subscribe);
 
   const handleScheduleMessage = useCallback(async (scheduledFor: Date) => {
     const content = input.trim();

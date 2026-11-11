@@ -786,6 +786,8 @@ const SERVER_EVENT_ROUTES: Record<string, { flushesStream: boolean; action: Serv
   loading_progress: { flushesStream: false, action: 'none' },
   // Owned by useQueuedMessageSync.
   queued_message_dispatched: { flushesStream: false, action: 'none' },
+  // Owned by useScheduledMessages.
+  scheduled_messages_changed: { flushesStream: false, action: 'none' },
 };
 
 /**
