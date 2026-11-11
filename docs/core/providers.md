@@ -343,17 +343,20 @@ opencode 打 Go 套餐的内部端点 `/zen/go/v1/usage`（官方文档未列，
 CLI 只是挂着等输入，既不会落 transcript，也不会消耗它正在汇报的额度。
 
 **重置卡（banked reset）随配额载荷搭车**：`ProviderQuotaData.resetCredits` 由各配额适配器
-在读取时顺带解析（`POST /providers/quota/reset` 花卡）。挑卡规则收在共享的
-`pickAvailableResetCredit`——`all` 卡覆盖一切请求，窄卡只精确匹配，多张可用时花最早到期的；
-卡 id 不出适配器边界。调用方传的只是 `resetType`，花卡前各家都重读一次卡列表（缓存可能是旧的），
-成功后作废配额缓存让下次读反映新窗口。codex 走 `account/rateLimitResetCredit/consume`
+在读取时顺带解析（`POST /providers/quota/reset` 花卡）。调用方传的只是 `resetType`，
+花卡前各家都重读一次卡列表（缓存可能是旧的），成功后作废配额缓存让下次读反映新窗口。
+codex/zcode 的挑卡规则收在共享的 `pickAvailableResetCredit`——`all` 卡覆盖一切请求，
+窄卡只精确匹配，多张可用时花最早到期的；codex 走 `account/rateLimitResetCredit/consume`
 （与 read 同一条 app-server 连接，`creditId` + `idempotencyKey`）；zcode 打 BigModel
-`/biz/customer-package-reset/list|use`（第一版只接个人号，团队号要组织/项目 ID；
+`/biz/customer-package-reset/list|use`（第一版只接个人号，团队号要组织/项目 ID）。
+
 claude 的窗口与 reset 列表由 `/api/oauth/usage?cedar_ember=1` 直连一次取回
 （本地 OAuth token + CLI User-Agent + `HTTPS_PROXY`），SDK `get_usage` 只在直连失败时
 兜底并刷新 token；`cedar_ember.grants` 归一化为 `resetCredits`（含 `fable` / `all` /
-`5h` / `weekly` 与 `remaining`），**不接花卡**——`supportsQuotaReset` 保持 false，
-界面只展示，官方网页或 App 才能使用，服务端从不调用 `reset_rate_limits`）。
+`5h` / `weekly` 与 `remaining`）。花卡只在用户确认后 POST
+`/api/organizations/{org}/reset_rate_limits`，body 为
+`{ program: 'cedar_ember', grant_id, request_id }`；按 `resetType` 精确匹配最早到期的
+可用 grant（点 Fable 不会花掉完整重置），成功才作废配额缓存。读取配额本身从不花卡。
 
 **MCP 配置格式的能力同样由切面声明**：`IProviderMcp.capabilities` 给出可用 scope、transport、
 是否支持工作目录、是否支持环境变量间接（`env_vars` / `bearer_token_env_var` / `env_http_headers`，

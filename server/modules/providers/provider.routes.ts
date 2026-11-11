@@ -1067,7 +1067,7 @@ router.get(
   }),
 );
 
-const QUOTA_RESET_TYPES = new Set(['5h', 'weekly', 'all']);
+const QUOTA_RESET_TYPES = new Set(['5h', 'weekly', 'all', 'fable']);
 
 router.post(
   '/quota/reset',
@@ -1080,7 +1080,7 @@ router.post(
 
     const resetType = typeof body.resetType === 'string' ? body.resetType.trim() : '';
     if (!QUOTA_RESET_TYPES.has(resetType)) {
-      throw new AppError('resetType must be "5h", "weekly" or "all".', {
+      throw new AppError('resetType must be "5h", "weekly", "all" or "fable".', {
         code: 'INVALID_RESET_TYPE',
         statusCode: 400,
       });

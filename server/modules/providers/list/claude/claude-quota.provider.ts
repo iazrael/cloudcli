@@ -10,7 +10,9 @@
  * windows. The Agent SDK control protocol is the fallback: it owns the OAuth
  * token's silent refresh, so asking it is how an expired token is renewed
  * before the next direct attempt. Both reads are cached in front of the panel
- * (two minutes), and the reset side is strictly read-only — it never claims.
+ * (two minutes). Spending a reset is a separate, explicit path: it re-reads
+ * the grants, claims one only after the user confirms, and never runs during a
+ * quota read.
  *
  * Consumers:
  * - `ClaudeProviderAuth.getQuota` in `claude-auth.provider.ts`
@@ -19,6 +21,7 @@
  * @module claude-quota.provider
  */
 
+import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import https from 'node:https';
 import os from 'node:os';
@@ -33,6 +36,8 @@ import { resolveClaudeCodeExecutablePath } from '@/shared/claude-cli-path.js';
 import type {
   ProviderQuotaBucket,
   ProviderQuotaData,
+  ProviderQuotaResetConsumeInput,
+  ProviderQuotaResetConsumeResult,
   ProviderQuotaResetCredit,
 } from '@/shared/types.js';
 import {
@@ -62,6 +67,25 @@ export type ClaudeQuotaDependencies = {
   now: () => number;
 };
 
+/** The provider-native identity a single Claude reset claim needs. */
+export type ClaudeResetClaimInput = {
+  organizationUuid: string;
+  grantId: string;
+  requestId: string;
+};
+
+/**
+ * Collaborators for spending a Claude reset. Tests inject a fake claim so the
+ * irreversible POST is never sent; production uses the real HTTP path.
+ */
+export type ClaudeResetConsumeDependencies = {
+  /** Cached quota first, so a spend does not add a second back-to-back read. */
+  readQuota: () => Promise<ProviderQuotaData | null>;
+  readOrganizationUuid: () => Promise<string | null>;
+  claimReset: (input: ClaudeResetClaimInput) => Promise<unknown>;
+  now: () => number;
+};
+
 /**
  * The SDK still ships this reader under an explicitly unstable name. It is
  * called by lookup rather than as a method so that a rename in a future SDK
@@ -80,6 +104,12 @@ const USAGE_ENDPOINT = 'https://api.anthropic.com/api/oauth/usage';
 const RESET_GRANTS_QUERY = '?cedar_ember=1&skip_spend=1';
 const API_VERSION = '2023-06-01';
 const CLI_VERSION_TIMEOUT_MS = 5_000;
+
+const RESET_PROGRAM = 'cedar_ember';
+const RESET_CLAIM_TIMEOUT_MS = 25_000;
+// The claim endpoint rejects a grant id outside this shape; check locally so a
+// malformed grant never reaches the irreversible POST.
+const RESET_GRANT_ID_PATTERN = /^[a-z0-9_-]{1,40}$/;
 
 // The usage endpoint gates reset grants on a recent `claude-cli` surface; ask
 // the installed binary once and keep its version for the process lifetime.
@@ -170,6 +200,22 @@ async function readClaudeCredentials(): Promise<ClaudeLocalCredentials | null> {
 }
 
 /**
+ * Reads the signed-in organization UUID from Claude Code's account metadata.
+ * The reset-claim endpoint is organization-scoped; a missing organization
+ * means the claim cannot be addressed and is refused before any POST.
+ */
+async function readClaudeOrganizationUuid(): Promise<string | null> {
+  try {
+    const content = await readFile(path.join(os.homedir(), '.claude.json'), 'utf8');
+    const config = readObjectRecord(JSON.parse(content));
+    const account = readObjectRecord(config?.oauthAccount);
+    return readOptionalString(account?.organizationUuid) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Reads the installed Claude Code version for the `User-Agent` that tells the
  * usage endpoint this is a CLI surface. Without it the endpoint answers
  * `eligible: false` with `reason: "surface"`, and an old version is rejected
@@ -216,16 +262,20 @@ function readClaudeCliVersion(): Promise<string | null> {
 }
 
 type HttpsRequestOptions = {
+  method?: 'GET' | 'POST';
   headers: Record<string, string>;
+  body?: string;
   timeoutMs: number;
 };
 
+type HttpsResponseError = Error & { statusCode?: number };
+
 /**
- * GETs JSON over HTTPS through the same proxy environment Claude Code uses.
- * The usage endpoint rejected Node's direct client in a proxied network while
- * the CLI's client succeeded, so the proxy is part of the request contract.
+ * Exchanges JSON over HTTPS through the same proxy environment Claude Code
+ * uses. The usage endpoint rejected Node's direct client in a proxied network
+ * while the CLI's client succeeded, so the proxy is part of the contract.
  */
-function readJsonOverHttps(url: string, options: HttpsRequestOptions): Promise<unknown> {
+function requestJsonOverHttps(url: string, options: HttpsRequestOptions): Promise<unknown> {
   const proxyUrl = process.env.HTTPS_PROXY
     ?? process.env.https_proxy
     ?? process.env.HTTP_PROXY
@@ -234,13 +284,17 @@ function readJsonOverHttps(url: string, options: HttpsRequestOptions): Promise<u
 
   return new Promise((resolve, reject) => {
     const request = https.request(url, {
-      method: 'GET',
+      method: options.method ?? 'GET',
       headers: options.headers,
       agent,
     }, (response) => {
       if (!response.statusCode || response.statusCode < 200 || response.statusCode >= 300) {
         response.resume();
-        reject(new Error(`Usage endpoint returned HTTP ${response.statusCode ?? 'unknown'}`));
+        const error = new Error(
+          `Usage endpoint returned HTTP ${response.statusCode ?? 'unknown'}`,
+        ) as HttpsResponseError;
+        error.statusCode = response.statusCode ?? undefined;
+        reject(error);
         return;
       }
 
@@ -261,6 +315,9 @@ function readJsonOverHttps(url: string, options: HttpsRequestOptions): Promise<u
       request.destroy(new Error('Usage endpoint timed out'));
     });
     request.on('error', reject);
+    if (options.body) {
+      request.write(options.body);
+    }
     request.end();
   });
 }
@@ -280,7 +337,7 @@ async function readDirectUsageThroughHttp(): Promise<ClaudeDirectUsage | null> {
     return null;
   }
 
-  const payload = await readJsonOverHttps(`${USAGE_ENDPOINT}${RESET_GRANTS_QUERY}`, {
+  const payload = await requestJsonOverHttps(`${USAGE_ENDPOINT}${RESET_GRANTS_QUERY}`, {
     headers: {
       Authorization: `Bearer ${credentials.accessToken}`,
       'anthropic-version': API_VERSION,
@@ -496,7 +553,7 @@ function normalizeResetCredits(payload: unknown, nowTimestamp: number): Provider
   for (const entry of cedarEmber.grants) {
     const grant = readObjectRecord(entry);
     const id = readOptionalString(grant?.id);
-    if (!grant || !id) continue;
+    if (!grant || !id || !RESET_GRANT_ID_PATTERN.test(id)) continue;
 
     const resetsLeft = typeof grant.resets_left === 'number' && Number.isFinite(grant.resets_left)
       ? Math.max(0, Math.floor(grant.resets_left))
@@ -524,6 +581,187 @@ function normalizeResetCredits(payload: unknown, nowTimestamp: number): Provider
     });
   }
   return credits;
+}
+
+/**
+ * Picks the card the user clicked: exact reset type, available, with uses
+ * left, soonest expiry first. A full reset deliberately does not satisfy a
+ * Fable request — the click names the card.
+ */
+function selectResetCredit(
+  credits: readonly ProviderQuotaResetCredit[],
+  resetType: string,
+): ProviderQuotaResetCredit | null {
+  const candidates = credits.filter((credit) => (
+    credit.resetType === resetType
+    && credit.available
+    && (credit.remaining ?? 1) > 0
+  ));
+  if (candidates.length === 0) {
+    return null;
+  }
+  return candidates.sort((left, right) => {
+    const leftExpiry = left.expireTime ? Date.parse(left.expireTime) : Number.POSITIVE_INFINITY;
+    const rightExpiry = right.expireTime ? Date.parse(right.expireTime) : Number.POSITIVE_INFINITY;
+    return leftExpiry - rightExpiry;
+  })[0];
+}
+
+/**
+ * POSTs one grant to the organization-scoped reset endpoint. This is the only
+ * irreversible request in the module; it is reached only from an explicit
+ * consume call, never from a quota read.
+ */
+async function claimClaudeResetThroughHttp(input: ClaudeResetClaimInput): Promise<unknown> {
+  const [credentials, cliVersion] = await Promise.all([
+    readClaudeCredentials(),
+    readClaudeCliVersion(),
+  ]);
+  if (!credentials || !cliVersion) {
+    const error = new Error('Claude credentials are unavailable') as HttpsResponseError;
+    error.statusCode = 401;
+    throw error;
+  }
+
+  const body = JSON.stringify({
+    program: RESET_PROGRAM,
+    grant_id: input.grantId,
+    request_id: input.requestId,
+  });
+  return requestJsonOverHttps(
+    `https://api.anthropic.com/api/organizations/${encodeURIComponent(input.organizationUuid)}/reset_rate_limits`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${credentials.accessToken}`,
+        'anthropic-version': API_VERSION,
+        'User-Agent': `claude-cli/${cliVersion} (external, cli)`,
+        'Content-Type': 'application/json',
+        'Content-Length': String(Buffer.byteLength(body)),
+      },
+      body,
+      timeoutMs: RESET_CLAIM_TIMEOUT_MS,
+    },
+  );
+}
+
+const defaultResetConsumeDependencies: ClaudeResetConsumeDependencies = {
+  readQuota: () => fetchClaudeQuota(),
+  readOrganizationUuid: readClaudeOrganizationUuid,
+  claimReset: claimClaudeResetThroughHttp,
+  now: () => Date.now(),
+};
+
+function resetOutcomeMessage(response: unknown): string {
+  const record = readObjectRecord(response);
+  const result = readOptionalString(record?.result);
+  const reason = readOptionalString(record?.reason);
+  switch (result) {
+    case 'reset':
+      return 'Claude reset was applied.';
+    case 'already_used':
+      return 'That reset card has already been used.';
+    case 'not_limited':
+      return 'This reset only applies after reaching its limit; your usage is still below it.';
+    case 'cooldown':
+      return 'Reset cards are cooling down; try again later.';
+    case 'ineligible':
+      return 'This account is not eligible for that reset.';
+    case 'unavailable':
+      return 'That reset is not available right now.';
+    default:
+      return reason ? `Claude reset was not applied: ${reason}` : 'Claude reset was not applied.';
+  }
+}
+
+/**
+ * Spends one Claude reset card after an explicit user confirmation.
+ *
+ * A fresh grant read runs first so a stale card is never claimed; the POST is
+ * sent only when a matching available grant exists. The irreversible step is
+ * never retried here: a lost response is reported as unconfirmed.
+ *
+ * Consumers: `ClaudeProviderAuth.consumeQuotaReset` behind
+ * `POST /providers/quota/reset`.
+ */
+export async function consumeClaudeQuotaReset(
+  input: ProviderQuotaResetConsumeInput,
+  dependencyOverrides: Partial<ClaudeResetConsumeDependencies> = {},
+): Promise<ProviderQuotaResetConsumeResult> {
+  const dependencies = { ...defaultResetConsumeDependencies, ...dependencyOverrides };
+  const quota = await dependencies.readQuota().catch(() => null);
+  if (!quota) {
+    return {
+      ok: false,
+      code: 'readFailed',
+      message: 'Could not read the current Claude reset cards.',
+    };
+  }
+
+  const credit = selectResetCredit(quota.resetCredits?.credits ?? [], input.resetType);
+  if (!credit) {
+    return {
+      ok: false,
+      code: 'noCard',
+      message: 'No matching Claude reset card is available.',
+    };
+  }
+
+  const organizationUuid = await dependencies.readOrganizationUuid();
+  if (!organizationUuid) {
+    return {
+      ok: false,
+      code: 'notAuthenticated',
+      message: 'No signed-in Claude organization was found.',
+    };
+  }
+
+  let response: unknown;
+  try {
+    response = await dependencies.claimReset({
+      organizationUuid,
+      grantId: credit.id,
+      requestId: randomUUID(),
+    });
+  } catch (error) {
+    const statusCode = readObjectRecord(error)?.statusCode;
+    // A response means the server rejected the claim; a transport failure may
+    // have happened after it was applied, so it must not invite a blind retry.
+    if (typeof statusCode === 'number') {
+      if (statusCode === 401 || statusCode === 403) {
+        return {
+          ok: false,
+          code: 'notAuthenticated',
+          message: 'Claude sign-in is no longer valid.',
+        };
+      }
+      return {
+        ok: false,
+        code: 'spendFailed',
+        message: 'Claude rejected the reset request.',
+      };
+    }
+    return {
+      ok: false,
+      code: 'unknown',
+      message: 'The reset response was lost. Refresh the quota to confirm before retrying.',
+    };
+  }
+
+  const result = readOptionalString(readObjectRecord(response)?.result);
+  if (result === 'reset') {
+    quotaCache.reset();
+    return { ok: true, code: 'reset', message: resetOutcomeMessage(response) };
+  }
+  if (result === 'already_used' || result === 'not_limited' || result === 'cooldown'
+    || result === 'ineligible' || result === 'unavailable') {
+    return { ok: false, code: 'spendFailed', message: resetOutcomeMessage(response) };
+  }
+  return {
+    ok: false,
+    code: 'unknown',
+    message: 'The reset response was unreadable. Refresh the quota to confirm before retrying.',
+  };
 }
 
 /**

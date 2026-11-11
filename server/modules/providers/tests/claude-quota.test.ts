@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   clearClaudeQuotaCache,
+  consumeClaudeQuotaReset,
   fetchClaudeQuota,
 } from '../list/claude/claude-quota.provider.js';
 
@@ -25,6 +26,30 @@ const directUsageWithGrants = (cedarEmber: unknown) => ({
   payload: { ...usageResponse.rate_limits, cedar_ember: cedarEmber },
   subscriptionType: 'pro',
 });
+
+const fableGrant = {
+  id: 'launch-2610-fable-week',
+  label: 'New model launch: one Fable reset for Pro and Team Standard',
+  resets_left: 1,
+  ends_at: '2026-11-17T07:59:00+00:00',
+  clears: ['five_hour', 'seven_day_overage_included'],
+  paused: false,
+  usable_now: true,
+  type: 'full',
+};
+
+const fullGrant = {
+  id: 'full-reset-2611',
+  label: 'One full limit reset (November 2026)',
+  resets_left: 1,
+  ends_at: '2026-12-10T22:00:00+00:00',
+  clears: ['five_hour', 'seven_day', 'seven_day_overage_included'],
+  paused: false,
+  usable_now: true,
+  type: 'full',
+};
+
+const eligibleGrants = { eligible: true, grants: [fableGrant, fullGrant] };
 
 test('fetchClaudeQuota maps the subscription windows onto quota buckets', async () => {
   clearClaudeQuotaCache();
@@ -362,6 +387,160 @@ test('fetchClaudeQuota ignores a malformed reset-grant payload', async () => {
     assert.ok(quota);
     assert.equal(quota.resetCredits, undefined);
   }
+});
+
+type ClaimInput = {
+  organizationUuid: string;
+  grantId: string;
+  requestId: string;
+};
+
+const quotaWithGrants = async (cedarEmber: unknown) => {
+  clearClaudeQuotaCache();
+  const quota = await fetchClaudeQuota({ forceRefresh: true }, {
+    readUsage: async () => usageResponse,
+    readDirectUsage: async () => directUsageWithGrants(cedarEmber),
+    now: () => Date.parse('2026-11-11T00:00:00Z'),
+  });
+  assert.ok(quota);
+  return quota;
+};
+
+const resetConsumeDeps = (overrides: Record<string, unknown> = {}) => ({
+  readQuota: async () => quotaWithGrants(eligibleGrants),
+  readOrganizationUuid: async () => 'org-123',
+  claimReset: async () => ({ result: 'reset', resets_left: 0 }),
+  now: () => Date.parse('2026-11-11T00:00:00Z'),
+  ...overrides,
+});
+
+test('consumeClaudeQuotaReset claims the grant matching the clicked reset type', async () => {
+  clearClaudeQuotaCache();
+  const captured: { claim?: ClaimInput } = {};
+  const result = await consumeClaudeQuotaReset({ resetType: 'fable' }, resetConsumeDeps({
+    claimReset: async (input: ClaimInput) => {
+      captured.claim = input;
+      return { result: 'reset', resets_left: 0 };
+    },
+  }));
+
+  assert.equal(result.ok, true);
+  assert.equal(result.code, 'reset');
+  assert.ok(captured.claim);
+  assert.equal(captured.claim.organizationUuid, 'org-123');
+  assert.equal(captured.claim.grantId, 'launch-2610-fable-week');
+  assert.match(
+    captured.claim.requestId,
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+  );
+});
+
+test('consumeClaudeQuotaReset claims the full grant for resetType all', async () => {
+  clearClaudeQuotaCache();
+  const captured: { claim?: ClaimInput } = {};
+  const result = await consumeClaudeQuotaReset({ resetType: 'all' }, resetConsumeDeps({
+    claimReset: async (input: ClaimInput) => {
+      captured.claim = input;
+      return { result: 'reset' };
+    },
+  }));
+
+  assert.equal(result.ok, true);
+  assert.equal(captured.claim?.grantId, 'full-reset-2611');
+});
+
+test('consumeClaudeQuotaReset refuses a reset type the account does not hold', async () => {
+  clearClaudeQuotaCache();
+  let claimed = false;
+  const result = await consumeClaudeQuotaReset({ resetType: 'weekly' }, resetConsumeDeps({
+    readQuota: async () => quotaWithGrants({ eligible: true, grants: [fableGrant] }),
+    claimReset: async () => {
+      claimed = true;
+      return { result: 'reset' };
+    },
+  }));
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'noCard');
+  assert.equal(claimed, false);
+});
+
+test('consumeClaudeQuotaReset picks the earliest-expiring grant of a type', async () => {
+  clearClaudeQuotaCache();
+  const captured: { claim?: ClaimInput } = {};
+  const result = await consumeClaudeQuotaReset({ resetType: 'fable' }, resetConsumeDeps({
+    readQuota: async () => quotaWithGrants({
+      eligible: true,
+      grants: [
+        { ...fableGrant, id: 'fable-later', ends_at: '2026-11-20T00:00:00+00:00' },
+        { ...fableGrant, id: 'fable-earlier', ends_at: '2026-11-15T00:00:00+00:00' },
+      ],
+    }),
+    claimReset: async (input: ClaimInput) => {
+      captured.claim = input;
+      return { result: 'reset' };
+    },
+  }));
+
+  assert.equal(result.ok, true);
+  assert.equal(captured.claim?.grantId, 'fable-earlier');
+});
+
+test('consumeClaudeQuotaReset never claims after a failed fresh card read', async () => {
+  clearClaudeQuotaCache();
+  let claimed = false;
+  const result = await consumeClaudeQuotaReset({ resetType: 'all' }, resetConsumeDeps({
+    readQuota: async () => {
+      throw new Error('network unavailable');
+    },
+    claimReset: async () => {
+      claimed = true;
+      return { result: 'reset' };
+    },
+  }));
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'readFailed');
+  assert.equal(claimed, false);
+});
+
+test('consumeClaudeQuotaReset needs a signed-in organization', async () => {
+  clearClaudeQuotaCache();
+  let claimed = false;
+  const result = await consumeClaudeQuotaReset({ resetType: 'fable' }, resetConsumeDeps({
+    readOrganizationUuid: async () => null,
+    claimReset: async () => {
+      claimed = true;
+      return { result: 'reset' };
+    },
+  }));
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'notAuthenticated');
+  assert.equal(claimed, false);
+});
+
+test('consumeClaudeQuotaReset relays a server refusal without claiming twice', async () => {
+  clearClaudeQuotaCache();
+  const result = await consumeClaudeQuotaReset({ resetType: 'fable' }, resetConsumeDeps({
+    claimReset: async () => ({ result: 'not_limited', reason: 'needs_limit' }),
+  }));
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'spendFailed');
+  assert.match(result.message ?? '', /limit/i);
+});
+
+test('consumeClaudeQuotaReset treats a lost claim response as unconfirmed', async () => {
+  clearClaudeQuotaCache();
+  const result = await consumeClaudeQuotaReset({ resetType: 'fable' }, resetConsumeDeps({
+    claimReset: async () => {
+      throw new Error('socket hang up');
+    },
+  }));
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'unknown');
 });
 
 test('fetchClaudeQuota propagates SDK failures so the route can show an error', async () => {

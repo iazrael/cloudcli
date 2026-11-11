@@ -1,17 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
 import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { I18nextProvider } from 'react-i18next';
 
 import { i18n, initI18n } from '@/modules/i18n';
 import CommandResultModal from '@/modules/chat/modals/CommandResultModal';
+import { authenticatedFetch } from '@/shared/api';
 import type { ProviderModelActions, ProviderQuotaData } from '@/shared/types';
 
 /**
  * Pins the Claude reset-card presentation: the grant list is data, while the
- * "Use" action is capability-driven. Claude has no spend endpoint wired, so its
- * cards must render read-only — the app must never offer an irreversible reset
- * it cannot perform, and these tests never click or call one.
+ * "Use" action is capability-driven. The spend path is irreversible, so these
+ * tests only open the local confirmation dialog; they never click the final
+ * "Use card" button and never call the reset API.
  */
 
 await initI18n();
@@ -127,11 +128,17 @@ describe('CommandResultModal → Claude reset cards', () => {
     expect(screen.queryByRole('button', { name: 'Use' })).toBeNull();
   });
 
-  it('keeps the spend action for providers whose quota capability supports it', () => {
+  it('opens the confirmation dialog without calling the reset API', () => {
     capabilityState.supportsQuotaReset = true;
     renderCostModal();
 
     expect(screen.getByText('Fable Reset')).toBeTruthy();
-    expect(screen.getAllByRole('button', { name: 'Use' })).toHaveLength(2);
+    const useButtons = screen.getAllByRole('button', { name: 'Use' });
+    expect(useButtons).toHaveLength(2);
+
+    fireEvent.click(useButtons[0]);
+
+    expect(screen.getByRole('button', { name: 'Use card' })).toBeTruthy();
+    expect(vi.mocked(authenticatedFetch)).not.toHaveBeenCalled();
   });
 });

@@ -41,7 +41,7 @@ const BASELINE: Record<string, Omit<ProviderCapabilities, 'provider'>> = {
     supportsPermissionRequests: true,
     supportsTokenUsage: true,
     supportsQuota: true,
-    supportsQuotaReset: false,
+    supportsQuotaReset: true,
     supportsEffort: true,
     // Runtime levels; a custom model may only declare from this list.
     effortLevels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
