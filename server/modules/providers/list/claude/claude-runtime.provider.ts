@@ -50,7 +50,7 @@ import {
 import type { ClaudeContextWindowSources } from '@/modules/providers/services/claude-usage.js';
 
 export { createContextWindowCapture } from '@/modules/providers/services/claude-context-window.js';
-import { AppError, canonicalClaudeSubagentToolName, createCompleteMessage, createNormalizedMessage, resolveModelEffort } from '@/shared/utils.js';
+import { AppError, canonicalClaudeSubagentToolName, createCompleteMessage, createNormalizedMessage, readObjectRecord, resolveModelEffort } from '@/shared/utils.js';
 import type {
   ActiveBackgroundTask,
   AnyRecord,
@@ -1031,6 +1031,60 @@ export function extractCumulativeTokenBudget(
     breakdown: {
       input: inputTokens,
       output: outputTokens,
+    },
+  };
+}
+
+/**
+ * The occupancy a finished compaction reports, as a budget frame.
+ *
+ * The boundary is the only record a compaction turn leaves behind when the SDK
+ * hides the summarization request's assistant messages: the transcript has the
+ * summary row and the boundary, nothing with usage. Its `postTokens` is the
+ * engine's own measurement of what the next request will carry, so publishing
+ * it is both honest and immediate. Consumer: the stream loop (one
+ * `token_budget` frame as soon as the boundary arrives) and the token-budget
+ * tests. Returns null for anything that is not a boundary, or a boundary from
+ * an older CLI that records no post-compaction number.
+ */
+export function extractCompactionTokenBudget(
+  sdkMessage: unknown,
+  model: string | null = null,
+  windowSources?: ClaudeContextWindowSources,
+): TokenBudget | null {
+  if (!sdkMessage || typeof sdkMessage !== 'object') {
+    return null;
+  }
+  const streamMessage = sdkMessage as {
+    type?: string;
+    subtype?: string;
+    compact_metadata?: unknown;
+    compactMetadata?: unknown;
+  };
+  if (streamMessage.type !== 'system' || streamMessage.subtype !== 'compact_boundary') {
+    return null;
+  }
+
+  // `compact_metadata` live, `compactMetadata` on disk.
+  const metadata = readObjectRecord(streamMessage.compact_metadata ?? streamMessage.compactMetadata);
+  const postTokens = readNumber(metadata?.post_tokens ?? metadata?.postTokens);
+  if (postTokens <= 0) {
+    return null;
+  }
+
+  const contextWindow = resolveClaudeContextWindow(
+    { ...(windowSources ?? { recorded: null, selectedModel: null }), configured: process.env.CONTEXT_WINDOW },
+    model,
+  );
+
+  return {
+    used: postTokens,
+    total: contextWindow,
+    inputTokens: postTokens,
+    outputTokens: 0,
+    breakdown: {
+      input: postTokens,
+      output: 0,
     },
   };
 }
@@ -2120,6 +2174,21 @@ async function runClaudeProcess(
         const reportedBudget = measuredContextWindow
           ? { ...tokenBudgetData, total: measuredContextWindow }
           : tokenBudgetData;
+        lastSentTokenBudget = reportedBudget;
+        ws.send(createNormalizedMessage({ kind: 'status', text: 'token_budget', tokenBudget: reportedBudget, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
+      }
+
+      // A finished compaction is a fresh occupancy reading even though it is
+      // not an assistant message: the boundary's `postTokens` is what the next
+      // request will carry. Marking the turn's budget as sent keeps the
+      // `result` fallback — the summarization request's bill, still the old
+      // context — from putting the pre-compaction number back.
+      const compactionBudget = extractCompactionTokenBudget(message, mainThreadModel, readWindowSources());
+      if (compactionBudget) {
+        assistantBudgetSent = true;
+        const reportedBudget = measuredContextWindow
+          ? { ...compactionBudget, total: measuredContextWindow }
+          : compactionBudget;
         lastSentTokenBudget = reportedBudget;
         ws.send(createNormalizedMessage({ kind: 'status', text: 'token_budget', tokenBudget: reportedBudget, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
       }

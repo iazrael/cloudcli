@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   createContextWindowCapture,
+  extractCompactionTokenBudget,
   extractCumulativeTokenBudget,
   extractTokenBudget,
 } from '@/modules/providers/list/claude/claude-runtime.provider.js';
@@ -104,6 +105,53 @@ test('the cumulative reader ignores anything that is not a result', () => {
       type: 'assistant',
       message: { usage: { input_tokens: 10, output_tokens: 2 } },
     }),
+    null,
+  );
+});
+
+test('a compaction boundary publishes its post-compaction occupancy', () => {
+  // The compact turn has no assistant usage of its own; the boundary is the
+  // engine's measurement of what the next request will carry.
+  const budget = extractCompactionTokenBudget(
+    {
+      type: 'system',
+      subtype: 'compact_boundary',
+      compact_metadata: { trigger: 'manual', pre_tokens: 388_065, post_tokens: 14_247 },
+    },
+    'claude-fable-5-2',
+    { recorded: 1_000_000 },
+  );
+
+  assert.deepEqual(budget, {
+    used: 14_247,
+    total: 1_000_000,
+    inputTokens: 14_247,
+    outputTokens: 0,
+    breakdown: { input: 14_247, output: 0 },
+  });
+
+  // The on-disk spelling is the same record.
+  assert.equal(
+    extractCompactionTokenBudget(
+      {
+        type: 'system',
+        subtype: 'compact_boundary',
+        compactMetadata: { preTokens: 388_065, postTokens: 14_247 },
+      },
+      null,
+      { configured: '200000' },
+    )?.used,
+    14_247,
+  );
+});
+
+test('a boundary without post numbers publishes nothing', () => {
+  assert.equal(
+    extractCompactionTokenBudget({ type: 'system', subtype: 'compact_boundary' }, null),
+    null,
+  );
+  assert.equal(
+    extractCompactionTokenBudget({ type: 'assistant', message: { usage: { output_tokens: 1 } } }, null),
     null,
   );
 });

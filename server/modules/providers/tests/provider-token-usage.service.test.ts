@@ -295,6 +295,81 @@ test('the Claude summarizer skips a subagent sidechain turn', () => {
   assert.equal(summarizeClaudeTokenUsage(entries, { configured: '200000' }).used, 4083);
 });
 
+test('the Claude summarizer reports the post-compaction occupancy when the boundary is the tip', () => {
+  // A manual /compact leaves no assistant row of its own: the newest usage is
+  // the pre-compaction turn, whose numbers describe the context that was just
+  // replaced. The boundary records what the next request actually carries.
+  const entries = [
+    {
+      type: 'assistant',
+      message: {
+        model: 'claude-fable-5-2',
+        usage: { input_tokens: 2, cache_read_input_tokens: 387_124, output_tokens: 941 },
+      },
+    },
+    {
+      type: 'system',
+      subtype: 'compact_boundary',
+      compactMetadata: { trigger: 'manual', preTokens: 388_065, postTokens: 14_247 },
+    },
+    { type: 'user', isCompactSummary: true, message: { role: 'user', content: 'summary' } },
+  ];
+
+  assert.deepEqual(summarizeClaudeTokenUsage(entries, { recorded: 1_000_000 }), {
+    used: 14_247,
+    total: 1_000_000,
+    inputTokens: 14_247,
+    outputTokens: 0,
+    breakdown: { input: 14_247, output: 0 },
+  });
+});
+
+test('the Claude summarizer reads a live boundary spelled compact_metadata', () => {
+  const entries = [
+    { type: 'assistant', message: { usage: { input_tokens: 10, output_tokens: 5 } } },
+    {
+      type: 'system',
+      subtype: 'compact_boundary',
+      compact_metadata: { trigger: 'auto', pre_tokens: 180_000, post_tokens: 9_500 },
+    },
+  ];
+
+  assert.equal(summarizeClaudeTokenUsage(entries, { configured: '200000' }).used, 9_500);
+});
+
+test('an assistant turn after a compaction is newer than the boundary and wins', () => {
+  const entries = [
+    { type: 'assistant', message: { usage: { input_tokens: 2, cache_read_input_tokens: 387_124, output_tokens: 941 } } },
+    {
+      type: 'system',
+      subtype: 'compact_boundary',
+      compactMetadata: { preTokens: 388_065, postTokens: 14_247 },
+    },
+    { type: 'user', isCompactSummary: true, message: { role: 'user', content: 'summary' } },
+    {
+      type: 'assistant',
+      message: {
+        model: 'claude-fable-5-2',
+        usage: { input_tokens: 2, cache_read_input_tokens: 14_000, output_tokens: 300 },
+      },
+    },
+  ];
+
+  assert.equal(summarizeClaudeTokenUsage(entries, { recorded: 1_000_000 }).used, 14_302);
+});
+
+test('a boundary without a post number reports the compaction as unresolved, never the old reading', () => {
+  const entries = [
+    { type: 'assistant', message: { usage: { input_tokens: 2, cache_read_input_tokens: 387_124, output_tokens: 941 } } },
+    { type: 'system', subtype: 'compact_boundary', compact_metadata: { pre_tokens: 180_000 } },
+  ];
+
+  const usage = summarizeClaudeTokenUsage(entries, { recorded: 1_000_000 });
+  assert.equal(usage.used, 0);
+  assert.equal(usage.compacted, true);
+  assert.equal(usage.total, 1_000_000);
+});
+
 test('the Claude summarizer reports zero for a transcript with no assistant turn yet', () => {
   const usage = summarizeClaudeTokenUsage([{ type: 'user', message: { role: 'user', content: 'hi' } }], { configured: '200000' });
 

@@ -174,6 +174,28 @@ test('CONTEXT_WINDOW stays the fallback when the SDK reports no window', async (
   });
 });
 
+test('a compact turn publishes the boundary reading, not the summarization bill', async () => {
+  await withContextWindowEnv(undefined, async () => {
+    const nativeId = 'native-compact';
+    const sent = await runScripted('app-compact', [
+      { type: 'system', subtype: 'init', session_id: nativeId },
+      { type: 'system', subtype: 'status', status: 'compacting', session_id: nativeId },
+      {
+        type: 'system',
+        subtype: 'compact_boundary',
+        session_id: nativeId,
+        compact_metadata: { trigger: 'manual', pre_tokens: 388_065, post_tokens: 14_247 },
+      },
+      // The turn bill still describes the summarization request: its prompt is
+      // the pre-compaction conversation, so it must not overwrite the boundary.
+      result(nativeId, undefined),
+    ]);
+
+    const budgets = tokenBudgets(sent);
+    assert.equal(budgets.at(-1)!.used, 14_247);
+  });
+});
+
 test('the history-derived usage keeps the window the run reported', async () => {
   await withContextWindowEnv(undefined, async () => {
     const nativeId = 'native-history';

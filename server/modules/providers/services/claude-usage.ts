@@ -1,5 +1,5 @@
 import type { AnyRecord, ProviderTokenUsageResult } from '@/shared/types.js';
-import { readUsageNumber } from '@/shared/utils.js';
+import { readObjectRecord, readUsageNumber } from '@/shared/utils.js';
 
 /**
  * Context windows the Claude SDK reported per provider session id.
@@ -62,6 +62,12 @@ export function getReportedClaudeContextWindow(
  * cache_creation` is that one request's whole prompt, i.e. what the context
  * window currently holds. Summing turns would count the same cached prefix
  * once per turn.
+ *
+ * A compaction boundary newer than every assistant turn replaces that reading
+ * with its own `postTokens`: the assistant rows before it describe the context
+ * the compaction just discarded, while `postTokens` is exactly what the next
+ * request will carry. Newer SDKs report it, so a just-compacted session keeps a
+ * real percentage instead of showing the pre-compaction one (or nothing).
  */
 export function summarizeClaudeTokenUsage(
   entries: AnyRecord[],
@@ -72,6 +78,9 @@ export function summarizeClaudeTokenUsage(
   let cacheReadTokens = 0;
   let cacheCreationTokens = 0;
   let observedModel: string | null = null;
+  /** Set once the newest compaction boundary is passed: older turns are history. */
+  let compacted = false;
+  let postCompactionTokens: number | null = null;
 
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index];
@@ -79,6 +88,12 @@ export function summarizeClaudeTokenUsage(
     // conversation's; reading one makes the counter drop to the subagent's
     // number and bounce back on the next main-thread turn.
     if (entry?.isSidechain === true) {
+      continue;
+    }
+
+    if (entry?.type === 'system' && entry?.subtype === 'compact_boundary') {
+      compacted = true;
+      postCompactionTokens ??= readCompactionPostTokens(entry);
       continue;
     }
 
@@ -109,6 +124,12 @@ export function summarizeClaudeTokenUsage(
 
     const model = entry.message?.model;
     observedModel = typeof model === 'string' ? model : null;
+    // An assistant turn older than the boundary still names the model that
+    // served the conversation, which is what the window is resolved from. Its
+    // numbers, however, belong to the context that was just replaced.
+    if (compacted) {
+      break;
+    }
     cacheReadTokens = rowCacheReadTokens;
     cacheCreationTokens = rowCacheCreationTokens;
     inputTokens = rowInputTokens;
@@ -116,9 +137,31 @@ export function summarizeClaudeTokenUsage(
     break;
   }
 
+  const total = resolveClaudeContextWindow(contextWindowSources, observedModel);
+
+  if (compacted) {
+    if (postCompactionTokens !== null) {
+      return {
+        used: postCompactionTokens,
+        total,
+        inputTokens: postCompactionTokens,
+        outputTokens: 0,
+        breakdown: { input: postCompactionTokens, output: 0 },
+      };
+    }
+    return {
+      used: 0,
+      total,
+      inputTokens: 0,
+      outputTokens: 0,
+      breakdown: { input: 0, output: 0 },
+      compacted: true,
+    };
+  }
+
   return {
     used: inputTokens + outputTokens,
-    total: resolveClaudeContextWindow(contextWindowSources, observedModel),
+    total,
     inputTokens,
     outputTokens,
     cacheReadTokens,
@@ -126,6 +169,20 @@ export function summarizeClaudeTokenUsage(
     cacheTokens: cacheReadTokens + cacheCreationTokens,
     breakdown: { input: inputTokens, output: outputTokens },
   };
+}
+
+/**
+ * Occupancy recorded by one compaction boundary.
+ *
+ * The transcript writes `compactMetadata.postTokens`; the live stream's
+ * boundary carries the same numbers snake-cased. Returns null for a boundary
+ * that records no post-compaction reading (older CLIs), which the summarizer
+ * reports as `compacted` instead of guessing.
+ */
+function readCompactionPostTokens(entry: AnyRecord): number | null {
+  const metadata = readObjectRecord(entry.compact_metadata ?? entry.compactMetadata);
+  const postTokens = readUsageNumber(metadata?.post_tokens ?? metadata?.postTokens);
+  return postTokens > 0 ? postTokens : null;
 }
 
 /**
