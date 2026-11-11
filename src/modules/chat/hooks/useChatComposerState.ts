@@ -33,6 +33,8 @@ import {
 } from '@/shared/chatDrafts';
 import type {
   ActiveBackgroundTask,
+  BackgroundSendChoice,
+  BackgroundSendPrompt,
   ChatAttachment,
   ChatMessage,
   ComposerAttachmentBlock,
@@ -45,6 +47,7 @@ import type {
   UploadedComposerAttachment,
 } from '@/shared/types';
 import type { Project, ProjectSession, LLMProvider, ProviderModelOption, ProviderQuotaData } from '@/shared/types';
+import { describeBackgroundTask, ownBackgroundTasks } from '@/modules/chat/utils/backgroundTasks';
 import { escapeRegExp } from '@/modules/chat/utils/chatFormatting';
 
 import { useFileMentions } from '@/modules/chat/hooks/useFileMentions';
@@ -841,6 +844,34 @@ export function useChatComposerState({
     updateInput([content, inputValueRef.current].filter((part) => part.trim()).join('\n\n'));
   }, [attachmentQueue, updateInput]);
 
+  // Sending over background work asks first. The dialog is rendered by the
+  // composer; the submit awaits the user's choice through this resolver.
+  const [backgroundSendPrompt, setBackgroundSendPrompt] = useState<BackgroundSendPrompt | null>(null);
+  const backgroundSendResolverRef = useRef<((choice: BackgroundSendChoice) => void) | null>(null);
+
+  const askBeforeSendingOverBackgroundWork = useCallback(
+    (work: string[]) => new Promise<BackgroundSendChoice>((resolve) => {
+      // Only one prompt at a time: a stale one is answered "cancel".
+      backgroundSendResolverRef.current?.('cancel');
+      backgroundSendResolverRef.current = resolve;
+      setBackgroundSendPrompt({ work });
+    }),
+    [],
+  );
+
+  const resolveBackgroundSendPrompt = useCallback((choice: BackgroundSendChoice) => {
+    const resolve = backgroundSendResolverRef.current;
+    backgroundSendResolverRef.current = null;
+    setBackgroundSendPrompt(null);
+    resolve?.(choice);
+  }, []);
+
+  // An unmounted composer cannot answer; let the pending submit finish.
+  useEffect(() => () => {
+    backgroundSendResolverRef.current?.('cancel');
+    backgroundSendResolverRef.current = null;
+  }, []);
+
   // Snapshot of everything `chat.send` needs beyond the text itself. Built at
   // send time for immediate sends and at queue time for queued ones, so a
   // queued message keeps the provider settings it was composed under even if
@@ -985,6 +1016,10 @@ export function useChatComposerState({
         // A turn or background work is already in flight: stash this message
         // instead of sending it. It carries stored descriptors, so it can be
         // sent even if another session is open later.
+        // Set when the user picked "send anyway" over running background work:
+        // the direct send below then carries forceInterrupt, matching the
+        // queued card's force-send button.
+        let sendAnyway = false;
         const isBusy = isInputBlocked ?? (isLoading || Boolean(hasActiveBackgroundTasks));
         if (isBusy && !isForced) {
           // A run can restart in the tiny gap between scheduling and flushing a
@@ -995,44 +1030,67 @@ export function useChatComposerState({
             return true;
           }
 
-          const queuedOptions = buildSendOptions(currentInput);
-          const queuedSessionKey = sessionKey;
-          if (!queuedSessionKey) {
-            throw new ComposerSubmitError('No session is available to queue this message.');
+          // Sending over background work asks first: a new turn stops that
+          // work. A reply still producing output keeps queueing silently —
+          // the prompt is only for the turn-ended, work-still-running window —
+          // and once something is queued, further inputs append unasked.
+          const targetActivity = sessionKey ? processingSessions?.get(sessionKey) : undefined;
+          const replyInFlight = Boolean(targetActivity && !targetActivity.background);
+          if (!replyInFlight && hasActiveBackgroundTasks && !queuedDraft) {
+            const work = targetActivity?.tasks
+              ? ownBackgroundTasks(targetActivity.tasks).map((task) => describeBackgroundTask(task, t))
+              : backgroundTasks.map((task) => task.command || task.description || task.toolName);
+            const choice = await askBeforeSendingOverBackgroundWork(work);
+            if (choice === 'cancel') {
+              restoreComposerAfterFailedSubmit(currentInput, takenAttachments, submitScope);
+              return true;
+            }
+            sendAnyway = choice === 'send';
           }
-          const response = await appendQueuedMessage(queuedSessionKey, {
-            content: currentInput,
-            options: queuedOptions,
-            attachments: uploadedAttachments,
-          });
-          const durableDraft: QueuedDraft = {
-            content: response.queuedMessage.content,
-            options: response.queuedMessage.options,
-            uploadedAttachments: response.queuedMessage.attachments,
-            attachments: currentAttachments,
-          };
 
-          // Recorded under the session the message was queued FOR, and before
-          // the session-switch return below — the queued text must be
-          // recallable even when it dispatches without this composer.
-          recordSentMessage(currentInput, queuedSessionKey);
+          if (!sendAnyway) {
+            const queuedOptions = buildSendOptions(currentInput);
+            const queuedSessionKey = sessionKey;
+            if (!queuedSessionKey) {
+              throw new ComposerSubmitError('No session is available to queue this message.');
+            }
+            const response = await appendQueuedMessage(queuedSessionKey, {
+              content: currentInput,
+              options: queuedOptions,
+              attachments: uploadedAttachments,
+            });
+            const durableDraft: QueuedDraft = {
+              content: response.queuedMessage.content,
+              options: response.queuedMessage.options,
+              uploadedAttachments: response.queuedMessage.attachments,
+              attachments: currentAttachments,
+            };
 
-          // The append is asynchronous. If the user changed sessions while it
-          // was running, the message is already queued on the server for the
-          // session where Queue was pressed; the newly opened chat must not
-          // take it into its own queue.
-          if (queuedSessionKey && sessionKeyRef.current !== queuedSessionKey) {
+            // Recorded under the session the message was queued FOR, and before
+            // the session-switch return below — the queued text must be
+            // recallable even when it dispatches without this composer.
+            recordSentMessage(currentInput, queuedSessionKey);
+
+            // The append is asynchronous. If the user changed sessions while it
+            // was running, the message is already queued on the server for the
+            // session where Queue was pressed; the newly opened chat must not
+            // take it into its own queue.
+            if (queuedSessionKey && sessionKeyRef.current !== queuedSessionKey) {
+              return true;
+            }
+
+            queuedDraftSessionRef.current = queuedSessionKey;
+            setQueuedDraft((previous) => ({
+              ...durableDraft,
+              attachments: response.appended && previous
+                ? [...previous.attachments, ...currentAttachments]
+                : currentAttachments,
+            }));
             return true;
           }
-
-          queuedDraftSessionRef.current = queuedSessionKey;
-          setQueuedDraft((previous) => ({
-            ...durableDraft,
-            attachments: response.appended && previous
-              ? [...previous.attachments, ...currentAttachments]
-              : currentAttachments,
-          }));
-          return true;
+          // Chosen "send anyway": fall through to the direct send. Its frame
+          // carries forceInterrupt below, so runtimes that hold the input
+          // actually start the new turn instead of waiting on the work.
         }
 
         // A closed socket drops the frame without a word, after the echo and
@@ -1134,7 +1192,7 @@ export function useChatComposerState({
           content: messageContent,
           options: {
             ...(queuedSubmission?.options ?? buildSendOptions(messageContent)),
-            ...(isForced ? { forceInterrupt: true } : {}),
+            ...(isForced || sendAnyway ? { forceInterrupt: true } : {}),
             attachments: uploadedAttachments,
           },
         });
@@ -1187,6 +1245,10 @@ export function useChatComposerState({
       isInputBlocked,
       isConnected,
       hasActiveBackgroundTasks,
+      backgroundTasks,
+      processingSessions,
+      queuedDraft,
+      askBeforeSendingOverBackgroundWork,
       onSessionProcessing,
       onSessionEstablished,
       provider,
@@ -1624,6 +1686,8 @@ export function useChatComposerState({
     deleteQueuedDraft,
     forceSendQueuedDraft,
     canForceSendQueuedDraft,
+    backgroundSendPrompt,
+    resolveBackgroundSendPrompt,
     backgroundTasks,
     hasActiveBackgroundTasks,
     handleVoiceTranscript,

@@ -66,7 +66,24 @@ const selectedSession = {
 
 const submitEvent = { preventDefault: () => undefined } as never;
 
-test('queues message when hasActiveBackgroundTasks is true even if isLoading is false', async () => {
+/**
+ * Drives one submit that is expected to stop at the send-over-background-work
+ * prompt. Returns the pending submit promise, with the prompt now open.
+ */
+async function submitUpToPrompt(
+  result: { current: { handleSubmit: (event: typeof submitEvent) => Promise<boolean>; backgroundSendPrompt: { work: string[] } | null } },
+) {
+  let submitPromise: Promise<boolean> | undefined;
+  await act(async () => {
+    submitPromise = result.current.handleSubmit(submitEvent);
+    // Let the submit run to the prompt's await; act flushes the state update.
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  return { submitPromise: submitPromise as Promise<boolean>, prompt: result.current.backgroundSendPrompt };
+}
+
+test('sending over background work asks first; Queue puts the message on the server queue', async () => {
   const { useChatComposerState } = await import('@/modules/chat/hooks/useChatComposerState');
   const { useSessionStore } = await import('@/modules/chat/hooks/useSessionStore');
 
@@ -109,14 +126,20 @@ test('queues message when hasActiveBackgroundTasks is true even if isLoading is 
     result.current.handleInputChange({ target: { value: 'next command' } } as never);
   });
 
+  const { submitPromise, prompt } = await submitUpToPrompt(result);
+  assert.ok(prompt, 'the send-over-background-work prompt opened');
+  assert.deepEqual((prompt as { work: string[] }).work, ['Bash']);
+
   await act(async () => {
-    await result.current.handleSubmit(submitEvent);
+    result.current.resolveBackgroundSendPrompt('queue');
+    await submitPromise;
   });
 
   // Message should be queued, not sent
   assert.equal(sent.length, 0, 'no message sent over websocket');
   assert.ok(result.current.queuedDraft, 'message entered queued draft');
   assert.equal(result.current.queuedDraft?.content, 'next command');
+  assert.equal(result.current.backgroundSendPrompt, null, 'the prompt closed once answered');
 
   // Execution has finished, but its follow-up reply must finish before sending.
   act(() => result.current.sessionStore.applyServerEvent({
@@ -138,6 +161,102 @@ test('queues message when hasActiveBackgroundTasks is true even if isLoading is 
   assert.equal(sent.length, 0, 'the page leaves the queued message to the server');
   const { readQueuedMessage } = await import('@/shared/chatDrafts');
   assert.equal(readQueuedMessage('session-1')?.content, 'next command');
+});
+
+test('cancelling returns the message to the composer without queueing', async () => {
+  const { useChatComposerState } = await import('@/modules/chat/hooks/useChatComposerState');
+
+  const sent: Array<Record<string, unknown>> = [];
+
+  const { result } = renderHook(() =>
+    useChatComposerState({
+      selectedProject,
+      selectedSession,
+      currentSessionId: 'session-1',
+      provider: 'codex',
+      permissionMode: 'bypassPermissions',
+      cyclePermissionMode: () => undefined,
+      resolvePermissionModeForProvider: () => 'bypassPermissions',
+      currentProviderModel: 'gpt-5',
+      currentProviderEffort: 'default',
+      isLoading: false,
+      hasActiveBackgroundTasks: true,
+      backgroundTasks: [{ id: 't1', toolName: 'Bash', command: 'npm test', startedAt: Date.now() }],
+      canAbortSession: false,
+      tokenBudget: null,
+      sendMessage: (payload) => sent.push(payload as Record<string, unknown>),
+      stickToBottomAfterSend: () => undefined,
+      addMessage: () => undefined,
+      setPendingPermissionRequests: () => undefined,
+    }),
+  );
+
+  act(() => {
+    result.current.handleInputChange({ target: { value: 'not yet' } } as never);
+  });
+
+  const { submitPromise, prompt } = await submitUpToPrompt(result);
+  assert.ok(prompt, 'the send-over-background-work prompt opened');
+  assert.deepEqual((prompt as { work: string[] }).work, ['npm test']);
+
+  await act(async () => {
+    result.current.resolveBackgroundSendPrompt('cancel');
+    await submitPromise;
+  });
+
+  assert.equal(result.current.input, 'not yet', 'the draft went back into the composer');
+  assert.equal(result.current.queuedDraft, null, 'nothing was queued');
+  assert.equal(result.current.backgroundSendPrompt, null);
+  assert.equal(sent.length, 0, 'no message sent over websocket');
+  assert.deepEqual(serverDrafts, [], 'nothing reached the server queue');
+});
+
+test('"Send anyway" sends now with forceInterrupt instead of queueing', async () => {
+  const { useChatComposerState } = await import('@/modules/chat/hooks/useChatComposerState');
+
+  const sent: Array<Record<string, unknown>> = [];
+
+  const { result } = renderHook(() =>
+    useChatComposerState({
+      selectedProject,
+      selectedSession,
+      currentSessionId: 'session-1',
+      provider: 'codex',
+      permissionMode: 'bypassPermissions',
+      cyclePermissionMode: () => undefined,
+      resolvePermissionModeForProvider: () => 'bypassPermissions',
+      currentProviderModel: 'gpt-5',
+      currentProviderEffort: 'default',
+      isLoading: false,
+      hasActiveBackgroundTasks: true,
+      backgroundTasks: [{ id: 't1', toolName: 'Bash', command: 'npm test', startedAt: Date.now() }],
+      canAbortSession: true,
+      tokenBudget: null,
+      sendMessage: (payload) => sent.push(payload as Record<string, unknown>),
+      stickToBottomAfterSend: () => undefined,
+      addMessage: () => undefined,
+      setPendingPermissionRequests: () => undefined,
+    }),
+  );
+
+  act(() => {
+    result.current.handleInputChange({ target: { value: 'stop waiting, go' } } as never);
+  });
+
+  const { submitPromise, prompt } = await submitUpToPrompt(result);
+  assert.ok(prompt, 'the send-over-background-work prompt opened');
+
+  await act(async () => {
+    result.current.resolveBackgroundSendPrompt('send');
+    await submitPromise;
+  });
+
+  await waitFor(() => assert.equal(sent.length, 1, 'the message went out over websocket'));
+  assert.equal(sent[0]?.content, 'stop waiting, go');
+  assert.equal((sent[0]?.options as Record<string, unknown> | undefined)?.forceInterrupt, true);
+  assert.equal(result.current.queuedDraft, null);
+  assert.equal(result.current.backgroundSendPrompt, null);
+  assert.deepEqual(serverDrafts, [], 'the server queue stayed empty');
 });
 
 test.each(['claude', 'zcode'] as const)('%s only offers force send when it can preserve background work', async (provider) => {
@@ -174,8 +293,11 @@ test.each(['claude', 'zcode'] as const)('%s only offers force send when it can p
     result.current.handleInputChange({ target: { value: 'force stop and run' } } as never);
   });
 
+  // Queueing over running background work goes through the prompt first.
+  const { submitPromise } = await submitUpToPrompt(result);
   await act(async () => {
-    await result.current.handleSubmit(submitEvent);
+    result.current.resolveBackgroundSendPrompt('queue');
+    await submitPromise;
   });
 
   assert.equal(sent.length, 0);
@@ -200,7 +322,7 @@ test.each(['claude', 'zcode'] as const)('%s only offers force send when it can p
   assert.equal((sent[0]?.options as any)?.forceInterrupt, true);
 });
 
-test('appends subsequent inputs into existing queued draft without overwriting', async () => {
+test('appends subsequent inputs into existing queued draft without overwriting, without asking again', async () => {
   const { useChatComposerState } = await import('@/modules/chat/hooks/useChatComposerState');
   const sent: Array<{ content?: string; options?: Record<string, unknown> }> = [];
 
@@ -236,10 +358,17 @@ test('appends subsequent inputs into existing queued draft without overwriting',
   act(() => {
     result.current.handleInputChange({ target: { value: 'first part' } } as never);
   });
+  let submitPromise: Promise<boolean> | undefined;
   await act(async () => {
-    await result.current.handleSubmit(submitEvent);
+    submitPromise = result.current.handleSubmit(submitEvent);
+    await Promise.resolve();
+    await Promise.resolve();
   });
-
+  assert.ok(result.current.backgroundSendPrompt, 'the first send asked');
+  await act(async () => {
+    result.current.resolveBackgroundSendPrompt('queue');
+    await submitPromise;
+  });
   assert.equal(result.current.queuedDraft?.content, 'first part');
 
   act(() => {
@@ -249,6 +378,8 @@ test('appends subsequent inputs into existing queued draft without overwriting',
     await result.current.handleSubmit(submitEvent);
   });
 
+  // Once something is queued, follow-ups append unasked.
+  assert.equal(result.current.backgroundSendPrompt, null);
   assert.equal(result.current.queuedDraft?.content, 'first part\n\nsecond part');
 });
 
@@ -282,6 +413,46 @@ test('a queued draft offers no force send while a reply is still in flight', asy
   );
 
   assert.equal(result.current.canForceSendQueuedDraft, false);
+});
+
+test('a reply still producing output queues silently without asking', async () => {
+  const { useChatComposerState } = await import('@/modules/chat/hooks/useChatComposerState');
+  const sent: Array<Record<string, unknown>> = [];
+  const responding = new Map([['session-1', { statusText: 'Thinking', canInterrupt: true, startedAt: 1 }]]);
+  const { result } = renderHook(() =>
+    useChatComposerState({
+      selectedProject,
+      selectedSession,
+      currentSessionId: 'session-1',
+      provider: 'codex',
+      permissionMode: 'bypassPermissions',
+      cyclePermissionMode: () => undefined,
+      resolvePermissionModeForProvider: () => 'bypassPermissions',
+      currentProviderModel: 'gpt-5',
+      currentProviderEffort: 'default',
+      isLoading: true,
+      hasActiveBackgroundTasks: true,
+      backgroundTasks: [{ id: 'call_agent', toolName: 'Agent', command: 'Review', startedAt: 1 }],
+      canAbortSession: true,
+      processingSessions: responding,
+      tokenBudget: null,
+      sendMessage: (payload) => sent.push(payload as Record<string, unknown>),
+      stickToBottomAfterSend: () => undefined,
+      addMessage: () => undefined,
+      setPendingPermissionRequests: () => undefined,
+    }),
+  );
+
+  act(() => {
+    result.current.handleInputChange({ target: { value: 'after this turn' } } as never);
+  });
+  await act(async () => {
+    await result.current.handleSubmit(submitEvent);
+  });
+
+  assert.equal(result.current.backgroundSendPrompt, null, 'no prompt while the reply runs');
+  assert.ok(result.current.queuedDraft);
+  assert.equal(sent.length, 0);
 });
 
 test('a message sent during background work that does not hold the input goes out at once', async () => {
@@ -320,6 +491,7 @@ test('a message sent during background work that does not hold the input goes ou
     await result.current.handleSubmit(submitEvent);
   });
 
+  assert.equal(result.current.backgroundSendPrompt, null, 'no prompt when the input is not held');
   assert.equal(result.current.queuedDraft, null);
   await waitFor(() => assert.equal(sent.length, 1));
   assert.equal(sent[0]?.content, 'change direction');

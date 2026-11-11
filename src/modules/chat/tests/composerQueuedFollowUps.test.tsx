@@ -63,6 +63,32 @@ async function setup(options: { isConnected?: boolean; isLoading?: boolean; prov
   return { ...hook, type, added };
 }
 
+/**
+ * Runs one submit that stops at the send-over-background-work prompt and
+ * answers "queue", leaving the submit parked inside the append call — the
+ * state the tests below were written against. `captureInto` receives the
+ * submit promise for tests that resolve the append later.
+ */
+async function submitThroughPrompt(
+  result: { current: { handleSubmit: (e: typeof event) => Promise<boolean>; resolveBackgroundSendPrompt: (choice: 'queue') => void } },
+  captureInto?: (submitting: Promise<boolean>) => void,
+) {
+  let submitting!: Promise<boolean>;
+  await act(async () => {
+    submitting = result.current.handleSubmit(event);
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  await act(async () => {
+    result.current.resolveBackgroundSendPrompt('queue');
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  // The submit promise is handed back through `captureInto`, not returned:
+  // an async function that returned it would await the parked append.
+  captureInto?.(submitting);
+}
+
 beforeEach(async () => {
   localStorage.clear();
   remoteDrafts = [];
@@ -77,7 +103,7 @@ beforeEach(async () => {
 test('only the new follow-up goes to the server and its merged response owns the card', async () => {
   const { result, type } = await setup();
   await type('A');
-  await act(async () => { await result.current.handleSubmit(event); });
+  await submitThroughPrompt(result);
   queueRequest.mockImplementationOnce(async (_scope, queuedMessage) => new Response(JSON.stringify({
     queuedMessage: { ...queuedMessage, content: 'A\n\nfrom another tab\n\nB' }, appended: true,
   })));
@@ -93,7 +119,7 @@ test('a refused append restores before text typed while waiting and does not sub
   const { result, type, added } = await setup();
   await type('/compact');
   let submitting!: Promise<boolean>;
-  await act(async () => { submitting = result.current.handleSubmit(event); });
+  await submitThroughPrompt(result, (promise) => { submitting = promise; });
   await type('later');
   await act(async () => {
     assert.equal(await result.current.handleSubmit(event), false);
@@ -112,7 +138,7 @@ test('an append failure after switching sessions restores only the original sess
   const { result, rerender, type } = await setup();
   await type('for first session');
   let submitting!: Promise<boolean>;
-  await act(async () => { submitting = result.current.handleSubmit(event); });
+  await submitThroughPrompt(result, (promise) => { submitting = promise; });
   rerender({ sessionId: 'session-2' });
   await type('second session draft');
   await act(async () => {
@@ -130,7 +156,7 @@ test('a failed append keeps text typed after it before switching away and back',
   const { result, rerender, type } = await setup();
   await type('first');
   let submitting!: Promise<boolean>;
-  await act(async () => { submitting = result.current.handleSubmit(event); });
+  await submitThroughPrompt(result, (promise) => { submitting = promise; });
   await type('typed while waiting');
   rerender({ sessionId: 'session-2' });
   await act(async () => {
@@ -148,7 +174,7 @@ test('a failed append completed after logout and unmount cannot restore private 
   const { result, rerender, unmount, type } = await setup();
   await type('private first session');
   let submitting!: Promise<boolean>;
-  await act(async () => { submitting = result.current.handleSubmit(event); });
+  await submitThroughPrompt(result, (promise) => { submitting = promise; });
   rerender({ sessionId: 'session-2' });
   drafts.resetChatDrafts();
   unmount();
@@ -184,7 +210,7 @@ test('returning to a failed submission keeps a newer draft received from another
   const { result, rerender, type } = await setup();
   await type('first');
   let submitting!: Promise<boolean>;
-  await act(async () => { submitting = result.current.handleSubmit(event); });
+  await submitThroughPrompt(result, (promise) => { submitting = promise; });
   rerender({ sessionId: 'session-2' });
   await act(async () => {
     answer(new Response('{"error":{"message":"refused"}}', { status: 503 }));
@@ -218,7 +244,7 @@ test('functional input updates used by completions persist in their original sco
 test('a failed clear leaves the queued card and never edits a message that may still be sent', async () => {
   const { result, type } = await setup();
   await type('queued');
-  await act(async () => { await result.current.handleSubmit(event); });
+  await submitThroughPrompt(result);
   clearRequest.mockResolvedValueOnce(new Response('{}', { status: 503 }));
   await act(async () => { await result.current.editQueuedDraft(); });
   assert.equal(result.current.queuedDraft?.content, 'queued');
@@ -229,7 +255,7 @@ test('a transport failure is reported without silently retrying an append', asyn
   queueRequest.mockRejectedValueOnce(new Error('connection lost'));
   const { result, type, added } = await setup();
   await type('might be stored');
-  await act(async () => { await result.current.handleSubmit(event); });
+  await submitThroughPrompt(result);
   assert.equal(queueRequest.mock.calls.length, 1);
   assert.equal(result.current.input, 'might be stored');
   assert.match(added[0].content ?? '', /confirm|确认|connection lost/);
@@ -261,7 +287,7 @@ test('an attachment download failure keeps the queue on the server', async () =>
 test('a force-send failure followed by a queue failure restores editable input instead of a phantom card', async () => {
   const { result, type } = await setup({ isConnected: false, isLoading: false, provider: 'zcode' });
   await type('must survive');
-  await act(async () => { await result.current.handleSubmit(event); });
+  await submitThroughPrompt(result);
   queueRequest.mockResolvedValueOnce(new Response('{"error":{"message":"unavailable"}}', { status: 503 }));
   assert.equal(result.current.canForceSendQueuedDraft, true);
   await act(async () => { await result.current.forceSendQueuedDraft(); });

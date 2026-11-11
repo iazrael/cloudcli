@@ -16,7 +16,7 @@ import { useVoiceInput } from '@/modules/chat/hooks/useVoiceInput';
 import { useVoiceAvailable } from '@/modules/chat/hooks/useVoiceAvailable';
 import type { QueuedDraft } from '@/modules/chat/hooks/useChatComposerState';
 import type { LLMProvider, SessionActivity, ScheduledMessage } from '@/shared/types';
-import type { PendingPermissionRequest, PermissionMode } from '@/shared/types';
+import type { BackgroundSendChoice, BackgroundSendPrompt, PendingPermissionRequest, PermissionMode } from '@/shared/types';
 import type { ComposerAttachmentBlock, ComposerAttachmentItem, ComposerAttachmentQueue } from '@/shared/types';
 import type { ProviderModelOption } from '@/shared/types';
 import {
@@ -40,6 +40,7 @@ import QueuedMessageCard from '@/modules/chat/composer/QueuedMessageCard';
 import { ScheduleMessagePopover } from '@/modules/chat/composer/ScheduleMessagePopover';
 import { ScheduledMessageList } from '@/modules/chat/composer/ScheduledMessageList';
 import BackgroundTaskIndicator from '@/modules/chat/composer/BackgroundTaskIndicator';
+import BackgroundSendDialog from '@/modules/chat/composer/BackgroundSendDialog';
 import type { ActiveBackgroundTask } from '@/shared/types';
 import ComposerModelMenu from '@/modules/chat/composer/ComposerModelMenu';
 import ComposerPermissionMenu from '@/modules/chat/composer/ComposerPermissionMenu';
@@ -152,6 +153,10 @@ type ChatComposerProps = {
   isReplyInFlight?: boolean;
   /** Present only while a force send can be taken: the turn is over and only background work is waited on. */
   onForceSendQueuedDraft?: () => void;
+  /** Open send-over-background-work prompt; rendered by BackgroundSendDialog. */
+  backgroundSendPrompt: BackgroundSendPrompt | null;
+  /** Answers the open prompt: send now (stopping the work), queue, or cancel. */
+  onResolveBackgroundSendPrompt: (choice: BackgroundSendChoice) => void;
 }
 
 /**
@@ -240,6 +245,8 @@ function ChatComposer({
   isInputBlocked,
   isReplyInFlight = false,
   onForceSendQueuedDraft,
+  backgroundSendPrompt,
+  onResolveBackgroundSendPrompt,
 }: ChatComposerProps) {
   const { t } = useTranslation('chat');
   const fileDropdownRef = useRef<HTMLDivElement | null>(null);
@@ -632,6 +639,10 @@ function ChatComposer({
         </PromptInputFooter>
       </PromptInput>
       </div>}
+      <BackgroundSendDialog
+        prompt={backgroundSendPrompt}
+        onResolve={onResolveBackgroundSendPrompt}
+      />
     </div>
   );
 }

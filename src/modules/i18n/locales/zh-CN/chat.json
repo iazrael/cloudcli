@@ -292,7 +292,14 @@
       "workflow": "工作流 {{name}}",
       "agent": "子代理 {{description}}",
       "command": "命令 {{description}}",
-      "count": "{{count}} 个任务"
+      "count": "{{count}} 个任务",
+      "prompt": {
+        "title": "会话还有后台任务在运行",
+        "description": "发送新消息会开启新回合并停掉这些任务；它们尚未汇报的产出会丢失。选择排队则等任务结束后自动发送。",
+        "cancel": "取消",
+        "queue": "排队",
+        "sendAnyway": "仍要发送"
+      }
     }
   },
   "projectSelection": {

@@ -311,7 +311,14 @@
       "workflow": "工作流程 {{name}}",
       "agent": "子代理 {{description}}",
       "command": "命令 {{description}}",
-      "count": "{{count}} 個任務"
+      "count": "{{count}} 個任務",
+      "prompt": {
+        "title": "會話還有背景任務在執行",
+        "description": "送出新訊息會開啟新回合并停掉這些任務；它們尚未回報的產出會遺失。選擇排隊則等任務結束後自動送出。",
+        "cancel": "取消",
+        "queue": "排隊",
+        "sendAnyway": "仍要送出"
+      }
     }
   },
   "projectSelection": {

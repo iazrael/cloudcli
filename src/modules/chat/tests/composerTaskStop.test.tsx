@@ -157,7 +157,17 @@ test('work without a task stop handle is cancelled through the held session', as
 test('queued input stays queued for the server and a pending reply can still be stopped after cards disappear', async () => {
   const { result, sendMessage } = await mountComposer([task]);
   act(() => result.current.handleInputChange({ target: { value: 'next prompt' } } as never));
-  await act(async () => { await result.current.handleSubmit({ preventDefault: () => {} } as never); });
+  // Queueing over the running task goes through the background-work prompt.
+  let submitting!: Promise<boolean>;
+  await act(async () => {
+    submitting = result.current.handleSubmit({ preventDefault: () => {} } as never);
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  await act(async () => {
+    result.current.resolveBackgroundSendPrompt('queue');
+    await submitting;
+  });
   expect(result.current.queuedDraft?.content).toBe('next prompt');
   act(() => result.current.handleAbortSession());
   expect(result.current.queuedDraft?.content).toBe('next prompt');

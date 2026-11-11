@@ -222,6 +222,8 @@ function ChatInterface({
     showCostModal,
     forceSendQueuedDraft,
     canForceSendQueuedDraft,
+    backgroundSendPrompt,
+    resolveBackgroundSendPrompt,
   } = useChatComposerState({
     selectedProject,
     selectedSession,
@@ -558,6 +560,8 @@ function ChatInterface({
           isInputBlocked={isInputBlocked}
           isReplyInFlight={isReplyInFlight}
           onForceSendQueuedDraft={canForceSendQueuedDraft ? forceSendQueuedDraft : undefined}
+          backgroundSendPrompt={backgroundSendPrompt}
+          onResolveBackgroundSendPrompt={resolveBackgroundSendPrompt}
         />
         </div>
       </div>

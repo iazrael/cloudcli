@@ -83,7 +83,23 @@ async function setup(options: { isLoading?: boolean; isConnected?: boolean } = {
     uploads[index].resolve([descriptor]);
     await tick();
   });
-  return { ...hook, added, sent, type, attach, finish };
+  /**
+   * Runs one submit that stops at the send-over-background-work prompt and
+   * answers "queue" — how a busy send reaches the server queue.
+   */
+  const submitQueued = async () => {
+    let submitting!: Promise<boolean>;
+    await act(async () => {
+      submitting = hook.result.current.handleSubmit(event);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      hook.result.current.resolveBackgroundSendPrompt('queue');
+      await submitting;
+    });
+  };
+  return { ...hook, added, sent, type, attach, finish, submitQueued };
 }
 
 beforeEach(async () => {
@@ -201,22 +217,22 @@ test('a session switch does not interrupt an upload', async () => {
 });
 
 test('queueing while busy stores the descriptor without uploading again', async () => {
-  const { attach, finish, type, result } = await setup({ isLoading: true });
+  const { attach, finish, type, result, submitQueued } = await setup({ isLoading: true });
   await type('next');
   await attach(image('a.png'));
   await finish(0, { path: '/a.png' });
-  await act(async () => { await result.current.handleSubmit(event); });
+  await submitQueued();
   assert.deepEqual(queueRequest.mock.calls[0][1].attachments, [{ path: '/a.png' }]);
   assert.equal(upload.mock.calls.length, 1);
   assert.equal(result.current.queuedDraft?.attachments[0].name, 'a.png');
 });
 
 test('editing a queued message restores its attachments finished', async () => {
-  const { attach, finish, type, result } = await setup({ isLoading: true });
+  const { attach, finish, type, result, submitQueued } = await setup({ isLoading: true });
   await type('next');
   await attach(image('a.png'));
   await finish(0, { path: '/a.png' });
-  await act(async () => { await result.current.handleSubmit(event); });
+  await submitQueued();
   await act(async () => { await result.current.editQueuedDraft(); });
   assert.equal(result.current.attachments[0].status, 'done');
   assert.deepEqual(result.current.attachments[0].uploaded, { path: '/a.png' });
