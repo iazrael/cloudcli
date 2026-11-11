@@ -285,6 +285,8 @@
     "expand": "展開する",
     "fiveHourWindow": "5時間スライド枠制限",
     "weeklyWindow": "週間クォータ",
+    "weeklyWindowAllModels": "週間クォータ（全モデル）",
+    "weeklyWindowScoped": "週間クォータ（{{model}}）",
     "remainingPercent": "残り {{percent}}%",
     "resetSoon": "まもなくリセット",
     "resetDaysHours": "{{days}}日{{hours}}時間後にリセット",

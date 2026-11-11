@@ -316,6 +316,8 @@
     "expand": "펼쳐보기",
     "fiveHourWindow": "5시간 롤링 윈도우 한도",
     "weeklyWindow": "주간 한도",
+    "weeklyWindowAllModels": "주간 한도 (모든 모델)",
+    "weeklyWindowScoped": "주간 한도 ({{model}})",
     "remainingPercent": "{{percent}}% 남음",
     "resetSoon": "곧 리셋됨",
     "resetDaysHours": "{{days}}일 {{hours}}시간 후 리셋",

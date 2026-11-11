@@ -303,6 +303,8 @@
     "expand": "Genişlet",
     "fiveHourWindow": "5 Saatlik Kayan Pencere Limiti",
     "weeklyWindow": "Haftalık Kota",
+    "weeklyWindowAllModels": "Haftalık Kota (tüm modeller)",
+    "weeklyWindowScoped": "Haftalık Kota ({{model}})",
     "remainingPercent": "%{{percent}} kaldı",
     "resetSoon": "Yakında sıfırlanacak",
     "resetDaysHours": "{{days}}g {{hours}}sa sonra sıfırlanır",

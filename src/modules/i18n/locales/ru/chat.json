@@ -315,6 +315,8 @@
     "expand": "Развернуть",
     "fiveHourWindow": "Скользящее 5-часовое окно",
     "weeklyWindow": "Недельная квота",
+    "weeklyWindowAllModels": "Недельная квота (все модели)",
+    "weeklyWindowScoped": "Недельная квота ({{model}})",
     "remainingPercent": "Осталось {{percent}}%",
     "resetSoon": "Сброс скоро",
     "resetDaysHours": "Сброс через {{days}}д {{hours}}ч",

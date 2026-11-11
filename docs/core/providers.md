@@ -327,6 +327,10 @@ opencode 的自动命名由引擎自己做，CloudCLI 只负责不挡路。引�
 由各家配额适配器声明，前端不再记忆哪家是哪样。新增一家配额引擎只需给它的 auth 切面加 `getQuota`
 并声明 `partitioning`，前端一行都不用改。
 
+周窗口按模型族细分时，适配器在桶上标可选 `modelScope`（Claude 的 Opus / Sonnet / Fable），
+全模型窗口不带。前端据此显示“周配额（Fable）”；同一组里存在单模型窗口时，全模型窗口显示
+“周配额（所有模型）”，与 Claude 官方 `/usage` 的 `Current week (all models)` / `Current week (Fable)` 对齐。
+
 **配额的数据源各家不同，但都收在 auth 切面背后**：codex 起一次 `app-server` 走
 `account/rateLimits/read`，zcode 直接打 BigModel / Z.AI 的 HTTP 端点，
 claude 则借 Agent SDK 的 control request（`/usage` 背后那个实验接口）——

@@ -114,7 +114,12 @@ type RawUsageWindow = {
  * Windows the account does not have come back as null and are skipped, as are
  * windows whose utilization the server left unset.
  */
-function createQuotaBucket(id: string, name: string, value: unknown): ProviderQuotaBucket | null {
+function createQuotaBucket(
+  id: string,
+  name: string,
+  value: unknown,
+  modelScope?: string,
+): ProviderQuotaBucket | null {
   const window = readObjectRecord(value) as RawUsageWindow | null;
   if (!window) {
     return null;
@@ -134,6 +139,7 @@ function createQuotaBucket(id: string, name: string, value: unknown): ProviderQu
   return {
     id,
     name,
+    ...(modelScope ? { modelScope } : {}),
     description: `${usedPercent}% used`,
     window: id === 'claude-5h' ? '5h' : 'weekly',
     remainingFraction: (100 - usedPercent) / 100,
@@ -172,8 +178,8 @@ function normalizeUsagePayload(payload: unknown, nowTimestamp: number): Provider
   const buckets = [
     createQuotaBucket('claude-5h', 'Five Hour Limit Remaining', rateLimits.five_hour),
     createQuotaBucket('claude-7d', 'Weekly Limit Remaining', rateLimits.seven_day),
-    createQuotaBucket('claude-7d-opus', 'Weekly Opus Limit Remaining', rateLimits.seven_day_opus),
-    createQuotaBucket('claude-7d-sonnet', 'Weekly Sonnet Limit Remaining', rateLimits.seven_day_sonnet),
+    createQuotaBucket('claude-7d-opus', 'Weekly Opus Limit Remaining', rateLimits.seven_day_opus, 'Opus'),
+    createQuotaBucket('claude-7d-sonnet', 'Weekly Sonnet Limit Remaining', rateLimits.seven_day_sonnet, 'Sonnet'),
   ];
 
   // Per-model weekly windows are additive: the server sends them only for the
@@ -187,6 +193,7 @@ function normalizeUsagePayload(payload: unknown, nowTimestamp: number): Provider
         toModelBucketId(displayName),
         `Weekly ${displayName} Limit Remaining`,
         record,
+        displayName,
       ));
     }
   }

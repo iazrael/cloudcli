@@ -303,6 +303,8 @@
     "expand": "Espandi",
     "fiveHourWindow": "Finestra mobile di 5 ore",
     "weeklyWindow": "Quota settimanale",
+    "weeklyWindowAllModels": "Quota settimanale (tutti i modelli)",
+    "weeklyWindowScoped": "Quota settimanale ({{model}})",
     "remainingPercent": "{{percent}}% rimanente",
     "resetSoon": "Ripristino a breve",
     "resetDaysHours": "Si ripristina in {{days}}g {{hours}}h",

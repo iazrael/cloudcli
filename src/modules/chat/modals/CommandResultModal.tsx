@@ -490,7 +490,11 @@ function getQuotaTone(remainingFraction: number) {
   };
 }
 
-function resolveBucketTitle(bucket: QuotaBucket, t: TFunction): string {
+function resolveBucketTitle(
+  bucket: QuotaBucket,
+  t: TFunction,
+  hasScopedWeekly: boolean,
+): string {
   const isFiveHour = bucket.window === '5h' || bucket.id.includes('5h');
   if (isFiveHour) {
     return t('cost.fiveHourWindow', { defaultValue: '5 小时滑动窗口限额' });
@@ -498,6 +502,17 @@ function resolveBucketTitle(bucket: QuotaBucket, t: TFunction): string {
 
   const isWeekly = bucket.window === 'weekly' || bucket.id.includes('weekly');
   if (isWeekly) {
+    // A plan can meter an all-models weekly window beside a per-model one.
+    // Name the scope so two "Weekly Quota" rows never look like duplicates.
+    if (bucket.modelScope) {
+      return t('cost.weeklyWindowScoped', {
+        model: bucket.modelScope,
+        defaultValue: '周配额（{{model}}）',
+      });
+    }
+    if (hasScopedWeekly) {
+      return t('cost.weeklyWindowAllModels', { defaultValue: '周配额（所有模型）' });
+    }
     return t('cost.weeklyWindow', { defaultValue: '周配额' });
   }
 
@@ -577,6 +592,13 @@ function QuotaGroupCard({
 
   const groupDescription = resolveGroupDescription(group.description, t);
 
+  // The all-models weekly row only needs the "(all models)" qualifier when a
+  // model-scoped weekly row sits beside it, matching Claude's own /usage copy.
+  const hasScopedWeekly = group.buckets.some(
+    (bucket) => (bucket.window === 'weekly' || bucket.id.includes('weekly'))
+      && Boolean(bucket.modelScope),
+  );
+
   return (
     <div className="overflow-hidden rounded-2xl border border-border/70 bg-background/75 transition-all duration-200">
       <button
@@ -625,7 +647,7 @@ function QuotaGroupCard({
             const isWeekly = bucket.window === 'weekly' || bucket.id.includes('weekly');
             const countdown = formatRemainingCountdown(t, bucket.resetTime);
             const Icon = isFiveHour ? Clock : isWeekly ? Calendar : Timer;
-            const limitTitle = resolveBucketTitle(bucket, t);
+            const limitTitle = resolveBucketTitle(bucket, t, hasScopedWeekly);
             const limitDesc = resolveBucketDescription(bucket, t);
 
             return (

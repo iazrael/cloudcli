@@ -77,8 +77,45 @@ test('fetchClaudeQuota adds the per-model weekly windows the account actually ha
     quota.groups[0].buckets.map((bucket) => bucket.id),
     ['claude-5h', 'claude-7d', 'claude-7d-opus', 'claude-7d-fable'],
   );
+  // Only the narrower windows name a model family; the all-models window does not.
+  assert.equal(quota.groups[0].buckets[1].modelScope, undefined);
+  assert.equal(quota.groups[0].buckets[2].modelScope, 'Opus');
+  assert.equal(quota.groups[0].buckets[3].modelScope, 'Fable');
   // A window the server left open-ended still renders, just without a reset.
   assert.equal(quota.groups[0].buckets[2].resetTime, undefined);
+});
+
+test('fetchClaudeQuota labels a Pro account\'s model-scoped weekly window', async () => {
+  clearClaudeQuotaCache();
+  // 2026-11-11 observed Pro payload: the Sonnet/Opus legacy windows are null,
+  // but a Fable model-scoped window still ships and the official /usage renders it.
+  const quota = await fetchClaudeQuota({}, {
+    readUsage: async () => ({
+      subscription_type: 'pro',
+      rate_limits_available: true,
+      rate_limits: {
+        five_hour: { utilization: 10, resets_at: '2026-11-11T04:39:59+00:00' },
+        seven_day: { utilization: 8, resets_at: '2026-11-15T10:59:59+00:00' },
+        seven_day_opus: null,
+        seven_day_sonnet: null,
+        model_scoped: [
+          { display_name: 'Fable', utilization: 0, resets_at: '2026-11-15T11:00:00+00:00' },
+        ],
+      },
+    }),
+    now: () => 1_000,
+  });
+
+  assert.ok(quota);
+  assert.equal(quota.groups[0].name, 'Claude (PRO)');
+  assert.deepEqual(
+    quota.groups[0].buckets.map((bucket) => [bucket.id, bucket.modelScope]),
+    [
+      ['claude-5h', undefined],
+      ['claude-7d', undefined],
+      ['claude-7d-fable', 'Fable'],
+    ],
+  );
 });
 
 test('fetchClaudeQuota reports no quota when plan limits do not apply to the login', async () => {

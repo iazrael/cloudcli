@@ -305,6 +305,8 @@
     "expand": "Développer",
     "fiveHourWindow": "Fenêtre glissante de 5 heures",
     "weeklyWindow": "Quota hebdomadaire",
+    "weeklyWindowAllModels": "Quota hebdomadaire (tous les modèles)",
+    "weeklyWindowScoped": "Quota hebdomadaire ({{model}})",
     "remainingPercent": "{{percent}}% restant",
     "resetSoon": "Réinitialisation imminente",
     "resetDaysHours": "Réinitialisation dans {{days}}j {{hours}}h",

@@ -15,6 +15,12 @@ export type ProviderQuotaBucket = {
   window: '5h' | 'weekly' | string;
   remainingFraction: number;
   resetTime?: string;
+  /**
+   * The model family this window meters when it is narrower than the whole
+   * account (e.g. Claude's per-model weekly cap). Absent on all-models windows
+   * and on providers that do not split an allowance by model.
+   */
+  modelScope?: string;
 };
 
 /** One group of buckets, as the provider chooses to group them. */

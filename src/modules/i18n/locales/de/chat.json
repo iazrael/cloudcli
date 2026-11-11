@@ -303,6 +303,8 @@
     "expand": "Ausklappen",
     "fiveHourWindow": "Gleitendes 5-Stunden-Limit",
     "weeklyWindow": "Wöchentliches Kontingent",
+    "weeklyWindowAllModels": "Wöchentliches Kontingent (alle Modelle)",
+    "weeklyWindowScoped": "Wöchentliches Kontingent ({{model}})",
     "remainingPercent": "{{percent}}% verbleibend",
     "resetSoon": "Wird bald zurückgesetzt",
     "resetDaysHours": "Zurücksetzung in {{days}}T {{hours}}Std",

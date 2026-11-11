@@ -374,6 +374,8 @@
     "expand": "Expandir",
     "fiveHourWindow": "Ventana deslizante de 5 horas",
     "weeklyWindow": "Cuota semanal",
+    "weeklyWindowAllModels": "Cuota semanal (todos los modelos)",
+    "weeklyWindowScoped": "Cuota semanal ({{model}})",
     "remainingPercent": "{{percent}}% restante",
     "resetSoon": "Reinicio inminente",
     "resetDaysHours": "Se reinicia en {{days}}d {{hours}}h",
