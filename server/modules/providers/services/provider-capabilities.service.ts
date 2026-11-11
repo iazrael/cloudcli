@@ -33,7 +33,7 @@ export type { ProviderCapabilities } from '@/shared/types.js';
  */
 function deriveCapabilities(providerId: LLMProvider, provider: {
   fork?: unknown;
-  runtime?: { permissions?: unknown };
+  runtime?: { permissions?: unknown; steer?: unknown };
   auth?: { getQuota?: unknown; consumeQuotaReset?: unknown };
   sessions?: { resolveEditAnchor?: unknown; getTokenUsage?: unknown };
   mcp: { capabilities: ProviderMcpCapabilities };
@@ -52,6 +52,7 @@ function deriveCapabilities(providerId: LLMProvider, provider: {
     supportsQuotaReset: typeof provider.auth?.consumeQuotaReset === 'function',
     supportsEffort: catalog.supportsEffort,
     effortLevels: [...catalog.effortLevels],
+    supportsSteering: typeof provider.runtime?.steer === 'function',
     supportsMessageEditing: typeof provider.sessions?.resolveEditAnchor === 'function',
     supportsSessionForking: provider.fork !== undefined,
     supportsCompaction: catalog.supportsCompaction,

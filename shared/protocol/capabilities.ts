@@ -81,6 +81,12 @@ export type ProviderCapabilities = {
   /** Whether a session's transcript can be branched into an independent one. */
   supportsSessionForking: boolean;
   /**
+   * Whether a message can be sent into a running turn (`chat.steer`), which the
+   * model reads at its next tool-call boundary without the turn stopping.
+   * Requires a runtime that keeps its CLI's input open during a turn.
+   */
+  supportsSteering: boolean;
+  /**
    * Whether the `/compact` chat command summarizes the conversation and frees
    * up the engine's context window. The composer offers the command only when
    * this is true.

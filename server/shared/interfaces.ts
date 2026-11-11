@@ -125,6 +125,13 @@ export interface IProviderRuntime {
    * settled, or the id was never one of its own.
    */
   stopBackgroundTask?(sessionId: string, taskId: string): Promise<boolean>;
+  /**
+   * Delivers a message into a session's running turn ("steering", upstream
+   * #1760): the model reads it at its next tool-call boundary without the
+   * turn stopping. Resolves false when there is no live run that can take
+   * it — the caller sends the message the ordinary way instead.
+   */
+  steer?(sessionId: string, command: string, options: { messageId: string; images?: unknown; files?: unknown }): Promise<boolean>;
 }
 
 /**

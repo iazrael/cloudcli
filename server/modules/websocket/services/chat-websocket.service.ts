@@ -82,6 +82,8 @@ export type ProviderRuntimeGateway = {
   ): Promise<unknown>;
   abort(provider: LLMProvider, sessionId: string): Promise<boolean>;
   stopBackgroundTask(provider: LLMProvider, sessionId: string, taskId: string): Promise<boolean>;
+  /** 把消息送进在途回合（steering）；false 表示没有能接它的回合。 */
+  steer(provider: LLMProvider, sessionId: string, command: string, options: { messageId: string; images?: unknown; files?: unknown }): Promise<boolean>;
   /** Whether a provider runtime still holds background work for the session after its turn ended. */
   hasBackgroundWork(sessionId: string): boolean;
   /** Full provider activity, including resident initialization, reports and approvals. */
@@ -156,6 +158,89 @@ function readRequestUserId(
 function readTaskOwnerId(userId: string | number | null): number | null {
   const parsed = typeof userId === 'number' ? userId : Number(userId);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+// The id a steered message is tracked by becomes its transcript uuid, so it has
+// to be one.
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The attachments a steer names, from any of the option keys clients use,
+ * narrowed to files in the upload store and with duplicates dropped.
+ */
+function readVerifiedAttachments(clientOptions: AnyRecord): ChatAttachmentDescriptor[] {
+  const candidates = [
+    ...normalizeAttachmentDescriptors(clientOptions.images),
+    ...normalizeAttachmentDescriptors(clientOptions.files),
+    ...normalizeAttachmentDescriptors(clientOptions.attachments),
+  ];
+  const verified = filterAttachmentsToUploadStore(candidates);
+  return verified.filter(
+    (descriptor, index, all) => all.findIndex((candidate) => candidate.path === descriptor.path) === index,
+  );
+}
+
+/**
+ * Handles `chat.steer`: delivers a message into the session's running turn
+ * instead of starting a new one. The model reads it at its next tool-call
+ * boundary and carries on; the provider echoes it on the run's stream at that
+ * moment, which is how every attached tab learns it was read. The sender gets
+ * `chat_steer_accepted` once the provider has taken it.
+ *
+ * Refused with `STEER_UNAVAILABLE` (naming the `messageId`) when no turn can
+ * take it: the run has ended, its turn has already been reported complete, or
+ * the provider cannot write into a running turn. The client then sends the
+ * message the ordinary way, so nothing typed is lost to the race.
+ */
+async function handleChatSteer(
+  ws: WebSocket,
+  data: AnyRecord,
+  dependencies: ChatWebSocketDependencies
+): Promise<void> {
+  const resolved = resolveSendTarget(ws, data, dependencies, 'chat.steer');
+  if (!resolved) {
+    return;
+  }
+
+  const { sessionId, provider } = resolved;
+  const requestedId = typeof data.messageId === 'string' ? data.messageId.trim() : '';
+  const messageId = UUID_PATTERN.test(requestedId) ? requestedId : randomUUID();
+  const content = typeof data.content === 'string' ? data.content : '';
+  const clientOptions = (data.options ?? {}) as AnyRecord;
+  const attachments = readVerifiedAttachments(clientOptions);
+
+  if (!content.trim() && attachments.length === 0) {
+    sendProtocolError(ws, 'MESSAGE_REQUIRED', 'chat.steer requires a message.', sessionId);
+    return;
+  }
+
+  const run = chatRunRegistry.getRun(sessionId);
+  const steered = run?.status === 'running'
+    ? await dependencies.runtime.steer(provider, sessionId, content, {
+      images: attachments.filter(isImageAttachmentDescriptor),
+      files: attachments.filter((descriptor) => !isImageAttachmentDescriptor(descriptor)),
+      messageId,
+    })
+    : false;
+
+  if (!steered) {
+    sendProtocolError(
+      ws,
+      'STEER_UNAVAILABLE',
+      `Session "${sessionId}" has no running turn to send the message into.`,
+      sessionId,
+    );
+    return;
+  }
+
+  // Tells the sender the message is on its way into the turn. From here it is
+  // the run's: the echo when Claude reads it, or the run ending without it.
+  sendJson(ws, {
+    kind: 'chat_steer_accepted',
+    sessionId,
+    messageId,
+    timestamp: new Date().toISOString(),
+  });
 }
 
 function sendJson(ws: WebSocket, payload: unknown): void {
@@ -946,6 +1031,9 @@ export function handleChatConnection(
       switch (messageType) {
         case 'chat.edit-send':
           await handleChatEditSend(ws, userId, data, dependencies);
+          return;
+        case 'chat.steer':
+          await handleChatSteer(ws, data, dependencies);
           return;
         case 'chat.send':
           await handleChatSend(ws, userId, data, dependencies);

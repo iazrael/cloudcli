@@ -85,6 +85,8 @@ type ClaudeSdkOptions = Options & {
  * types only on some members.
  */
 type ClaudeStreamMessage = SDKMessage & {
+  /** `--replay-user-messages` 打在 CLI 读到的 stdin 回显上的标记（upstream #1760）。 */
+  isReplay?: boolean;
   parent_tool_use_id?: string | null;
   parentToolUseId?: string | null;
   uuid?: string;
@@ -209,8 +211,12 @@ type PendingHeldTurn = HeldTurnRequest & {
 };
 
 /** The hooks a run installs on its session entry for the rest of the host. */
+type SteerInput = (request: { command: string; images?: unknown; files?: unknown; messageId: string }) => Promise<boolean>;
+
 type ClaudeTurnHooks = {
   isTurnInFlight: (() => boolean) | null;
+  /** 把一条用户消息写进在途回合的 stdin（steering）；回合已上报完成时返回 false。 */
+  steerInput: SteerInput | null;
   continueTurn: ((next: HeldTurnRequest) => Promise<void> | null) | null;
   withdrawPendingTurn: (() => boolean) | null;
   isResidentIdle: (() => boolean) | null;
@@ -274,7 +280,12 @@ type ClaudeRunOptions = {
 type HeldPromptStream = {
   stream: AsyncGenerator<SDKUserMessage, void>;
   release: () => void;
-  push: (messages: SDKUserMessage[], onConsumed?: () => void) => void;
+  /**
+   * Writes messages into the same stdin. A single message may carry steering
+   * fields (`priority: 'next'` + a `uuid`, upstream #1760); resolves to
+   * whether it was queued — false once the stream has been released.
+   */
+  push: (messages: SDKUserMessage | (SDKUserMessage & { priority?: string }) | Array<SDKUserMessage>, onConsumed?: () => void) => boolean;
 };
 
 //----------------- PROCESS REGISTRY ------------
@@ -491,6 +502,11 @@ async function transcriptWrittenByAnother(transcriptPath: string, offset: number
 }
 
 const TOOLS_REQUIRING_INTERACTION = new Set<string>(['AskUserQuestion', 'ExitPlanMode']);
+
+// How long a turn that ended with steered messages still unread waits for the
+// follow-up turn the CLI starts for them (upstream #1760). It starts at once;
+// the grace only covers a CLI that drops them instead.
+const STEER_FOLLOW_UP_GRACE_MS = 30 * 1000;
 
 // Ultracode is a session-scoped setting rather than an SDK effort level: it pairs xhigh
 // effort with standing dynamic-workflow orchestration, and the CLI only honours it when
@@ -862,6 +878,7 @@ function addSession(
     // Re-registered mid-run once the provider session id lands; keep the closer.
     releaseInput: releaseInput || carried?.releaseInput || null,
     isTurnInFlight: turnHooks.isTurnInFlight || carried?.isTurnInFlight || null,
+    steerInput: turnHooks.steerInput || carried?.steerInput || null,
     continueTurn: turnHooks.continueTurn || carried?.continueTurn || null,
     withdrawPendingTurn: turnHooks.withdrawPendingTurn || carried?.withdrawPendingTurn || null,
     isResidentIdle: turnHooks.isResidentIdle || carried?.isResidentIdle || null,
@@ -1238,7 +1255,7 @@ function sessionTitleSource(command: unknown, slashCommands: Set<string>): strin
  * outlives the turn that started it.
  */
 function createHeldPromptStream(messages: SDKUserMessage[], onConsumed?: () => void): HeldPromptStream {
-  const entries = (more: SDKUserMessage[], consumed?: () => void) => more.map((message, index) => ({
+  const entries = (more: Array<SDKUserMessage | (SDKUserMessage & { priority?: string })>, consumed?: () => void) => more.map((message, index) => ({
     message, consumed: index === more.length - 1 ? consumed : undefined,
   }));
   const queue = entries(messages, onConsumed);
@@ -1264,7 +1281,13 @@ function createHeldPromptStream(messages: SDKUserMessage[], onConsumed?: () => v
   return {
     stream,
     release: () => { released = true; wake?.(); },
-    push: (more, consumed) => { queue.push(...entries(more, consumed)); wake?.(); },
+    push: (more: SDKUserMessage | (SDKUserMessage & { priority?: string }) | Array<SDKUserMessage | (SDKUserMessage & { priority?: string })>, consumed) => {
+      if (released) return false;
+      const list = Array.isArray(more) ? more : [more];
+      queue.push(...entries(list, consumed));
+      wake?.();
+      return true;
+    },
   };
 }
 
@@ -1805,8 +1828,65 @@ async function runClaudeProcess(
     if (options.onBeforeInputAccepted?.() === false) {
       throw new AppError('Queued input changed before submission.', { code: 'PROVIDER_INPUT_DEFERRED', statusCode: 409 });
     }
+    // Writes one more message to the held stdin stream (steering). Replaced
+    // once the stream exists; refuses until then and after the release.
+    let pushPromptMessage: (message: SDKUserMessage | (SDKUserMessage & { priority?: string })) => boolean = () => false;
+    // Every message steered into this run, by the uuid it was sent with. The CLI
+    // echoes a message written to its stdin when it reads it, and only these
+    // echoes are shown — the turn's own prompt is already on screen.
+    const steeredMessageIds = new Set<string>();
+    // The steered messages the CLI has not read yet. While any remain, the
+    // turn's `result` does not end the run: the CLI reads them in a follow-up
+    // turn of its own.
+    const pendingSteerIds = new Set<string>();
+    let steerFollowUpTimer: ReturnType<typeof setTimeout> | null = null;
+    // Runs the current turn's completion (complete frame, notifications). Set
+    // by the `result` branch, so the steer grace timer can end the run with
+    // exactly what that result would have done.
+    let settleTurnResult: () => void = () => {};
+
+    // Delivers a user message into this run while its turn is going. Priority
+    // `next` makes the CLI read it at the next tool-call boundary, without
+    // stopping the turn; a turn that ends before one runs it as a follow-up
+    // turn instead.
+    const steerIntoTurn: SteerInput = async ({ command: steerCommand, images, files, messageId }) => {
+      if (turnCompleteSent) {
+        return false;
+      }
+      const [steerMessage] = await buildPromptMessages(steerCommand, images, files, options.cwd);
+      // Reading attachments takes a moment; the turn may have ended meanwhile.
+      if (turnCompleteSent || !steerMessage) {
+        return false;
+      }
+      pendingSteerIds.add(messageId);
+      steeredMessageIds.add(messageId);
+      const pushed = pushPromptMessage({ ...steerMessage, priority: 'next', uuid: messageId } as SDKUserMessage);
+      if (!pushed) {
+        pendingSteerIds.delete(messageId);
+        steeredMessageIds.delete(messageId);
+      }
+      return pushed;
+    };
+
+    // Makes the CLI echo each message it reads from stdin, at the moment it
+    // reads it. For a steered message that echo is the only word on when — and
+    // whether — Claude actually took it in; the run loop below drops every
+    // other echo, so nothing else changes on screen.
+    sdkOptions.extraArgs = { ...(sdkOptions.extraArgs || {}), 'replay-user-messages': null };
+
     let heldPrompt = createHeldPromptStream(promptMessages, options.onInputAccepted);
-    releasePromptStream = () => { leaveResidentIdle(); inputReleased = true; heldPrompt.release(); };
+    pushPromptMessage = heldPrompt.push;
+    releasePromptStream = () => {
+      leaveResidentIdle();
+      inputReleased = true;
+      // Any release ends the run; a pending steer grace timer has nothing left
+      // to wait for and must not fire `settleTurnResult` after the run is gone.
+      if (steerFollowUpTimer) {
+        clearTimeout(steerFollowUpTimer);
+        steerFollowUpTimer = null;
+      }
+      heldPrompt.release();
+    };
     try {
       queryInstance = createQuery({
         prompt: heldPrompt.stream,
@@ -1820,6 +1900,7 @@ async function runClaudeProcess(
       // Discard the abandoned stream and build a fresh one for the retry.
       heldPrompt.release();
       heldPrompt = createHeldPromptStream(promptMessages, options.onInputAccepted);
+      pushPromptMessage = heldPrompt.push;
       queryInstance = createQuery({
         prompt: heldPrompt.stream,
         options: sdkOptions
@@ -2076,7 +2157,7 @@ async function runClaudeProcess(
         || backgroundReplyPending || Boolean(key && backgroundWork.hasPending(key));
     };
     const turnHooks: ClaudeTurnHooks = {
-      isTurnInFlight, continueTurn, withdrawPendingTurn, isResidentIdle, hasWork, writtenByAnotherWhileIdle,
+      isTurnInFlight, steerInput: steerIntoTurn, continueTurn, withdrawPendingTurn, isResidentIdle, hasWork, writtenByAnotherWhileIdle,
     };
     // Track the query instance for abort capability
     const mapKey = sessionKey();
@@ -2126,6 +2207,37 @@ async function runClaudeProcess(
         }
       } else {
         // session_id already captured
+      }
+
+      // The follow-up turn for unread steered messages has started; its own
+      // `result` ends the run.
+      if (steerFollowUpTimer && message.type === 'system' && message.subtype === 'init') {
+        clearTimeout(steerFollowUpTimer);
+        steerFollowUpTimer = null;
+      }
+
+      // The CLI's echo of a message it read from stdin (see `extraArgs`). A
+      // steered message's echo is the only word on when Claude took it in —
+      // show it like any user row, under the id it was sent with. Every other
+      // echo (the turn's own prompt) is already on screen and must not come
+      // twice, so it stops here.
+      if (message.type === 'user' && (message as ClaudeStreamMessage).isReplay === true) {
+        const echoedId = typeof message.uuid === 'string' ? message.uuid : '';
+        pendingSteerIds.delete(echoedId);
+        if (steeredMessageIds.has(echoedId)) {
+          if (steerFollowUpTimer && pendingSteerIds.size === 0) {
+            clearTimeout(steerFollowUpTimer);
+            steerFollowUpTimer = null;
+          }
+          // Shown now, where Claude read it, on every tab watching the run.
+          for (const steered of context.normalizeMessage(transformMessage(message), capturedSessionId || sessionId || null)) {
+            // A message read mid-turn is stored as an attachment of the turn,
+            // not a user row of its own, so it is no anchor for editing.
+            delete steered.transcriptAnchorId;
+            ws.send(steered);
+          }
+        }
+        continue;
       }
 
       // Transform and normalize message via adapter
@@ -2266,7 +2378,9 @@ async function runClaudeProcess(
         // The turn is done as far as the client is concerned.
         const abortPending = loopKey ? abortedInstances.has(queryInstance) : false;
         const stillOutstanding = backgroundWork.hasPending(loopKey);
-        if (!turnCompleteSent && !abortPending) {
+        // Runs the current turn's completion. Extracted so the steer grace
+        // timer can end the run with exactly what this result would have done.
+        const settleTurnResult = () => {
           pendingIdleResend = shouldResendPromptForIdleTurn({
             hasPrompt: typeof command === 'string' && command.trim().length > 0,
             sawTaskNotification: turnSawTaskNotification,
@@ -2284,6 +2398,26 @@ async function runClaudeProcess(
               sessionName: sessionSummary,
               stopReason: 'completed'
             });
+          }
+        };
+        if (!turnCompleteSent && !abortPending) {
+          if (pendingSteerIds.size > 0) {
+            // The turn ended before Claude reached a tool-call boundary, so the
+            // steered messages it never read are still queued in the CLI, which
+            // runs them as a follow-up turn on this same process. The run is not
+            // over for the client yet, and stdin must stay open for that turn.
+            if (steerFollowUpTimer) {
+              clearTimeout(steerFollowUpTimer);
+            }
+            steerFollowUpTimer = setTimeout(() => {
+              steerFollowUpTimer = null;
+              console.warn(`[Claude SDK] Steered message(s) never started a follow-up turn for session ${loopKey}; ending the run.`);
+              pendingSteerIds.clear();
+              settleTurnResult();
+            }, STEER_FOLLOW_UP_GRACE_MS);
+            steerFollowUpTimer.unref?.();
+          } else {
+            settleTurnResult();
           }
         } else if (heldForBackgroundWork && !abortPending && !stillOutstanding) {
           // A result after the turn already reported complete means the work we
@@ -2722,10 +2856,30 @@ export function getBackgroundTasksForSession(sessionId: string): ActiveBackgroun
  * The Claude runtime the provider registry drives: one turn runner, abort,
  * permissions, background work, admission and release.
  */
+/**
+ * Delivers a user message into a session's running turn ("steering"): Claude
+ * reads it at its next tool-call boundary and carries on with it in mind, with
+ * nothing stopped. Resolves false when the session has no live run or its turn
+ * has already been reported complete — the message could only start a new turn
+ * then, which is the caller's to send.
+ */
+export async function steerClaudeSDKSession(
+  sessionId: string,
+  command: string,
+  options: { messageId: string; images?: unknown; files?: unknown },
+): Promise<boolean> {
+  const session = getSession(sessionId);
+  if (!session?.steerInput) {
+    return false;
+  }
+  return session.steerInput({ command, images: options.images, files: options.files, messageId: options.messageId });
+}
+
 export const claudeRuntime = {
   supportsInputAcceptance: true,
   run: queryClaudeSDK,
   abort: abortClaudeSDKSession,
+  steer: steerClaudeSDKSession,
   permissions: {
     resolve: resolveToolApproval,
     listPending: getPendingApprovalsForSession,
