@@ -14,31 +14,30 @@ const loadMermaid = () => {
   return mermaidPromise;
 };
 
-// Data URL for the fullscreen viewer. Mermaid emits a relative width plus a
-// max-width style, which leaves an <img> without an intrinsic size; rewriting
-// both from the viewBox makes the viewer's 100% zoom the diagram's native pixel
-// size and lets object-fit letterbox it into the screen. A malformed diagram
-// still encodes from the raw string — it displays fine, just without exact
-// intrinsic dimensions.
+// Data URL for the fullscreen viewer. mermaid returns DOMPurify's HTML
+// serialization (unclosed <br>, &nbsp;), but <img> parses image/svg+xml as
+// strict XML and rejects the whole image on either; reading it with the HTML
+// parser and writing it back with XMLSerializer yields well-formed XML.
+// Mermaid also emits a relative width plus a max-width style, which leaves an
+// <img> without an intrinsic size; rewriting both from the viewBox makes the
+// viewer's 100% zoom the diagram's native pixel size and lets object-fit
+// letterbox it into the screen.
 const toViewerDataUrl = (svg: string): string => {
-  let normalized = svg;
-  try {
-    // DOMParser never throws on malformed XML; it reports through <parsererror>.
-    const doc = new DOMParser().parseFromString(svg, 'image/svg+xml');
-    if (!doc.querySelector('parsererror')) {
-      const root = doc.documentElement;
-      const viewBox = (root.getAttribute('viewBox') ?? '').trim().split(/[\s,]+/).map(Number);
-      if (viewBox.length === 4 && viewBox.every(Number.isFinite) && viewBox[2] > 0 && viewBox[3] > 0) {
-        root.setAttribute('width', String(Math.round(viewBox[2])));
-        root.setAttribute('height', String(Math.round(viewBox[3])));
-        root.style.removeProperty('max-width');
-      }
-      normalized = new XMLSerializer().serializeToString(root);
-    }
-  } catch {
-    // Keep the raw SVG string for the data URL.
+  const root = new DOMParser().parseFromString(svg, 'text/html').querySelector('svg');
+  if (!root) {
+    return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
   }
-  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(normalized)}`;
+  const viewBox = (root.getAttribute('viewBox') ?? '').trim().split(/[\s,]+/).map(Number);
+  if (viewBox.length === 4 && viewBox.every(Number.isFinite) && viewBox[2] > 0 && viewBox[3] > 0) {
+    root.setAttribute('width', String(Math.round(viewBox[2])));
+    root.setAttribute('height', String(Math.round(viewBox[3])));
+    root.style.removeProperty('max-width');
+  }
+  // The HTML parser keeps mermaid's xmlns on foreignObject's HTML children as a
+  // plain attribute; XMLSerializer declares the namespace itself, so leaving it
+  // would emit a duplicate xmlns, which is again malformed XML.
+  root.querySelectorAll('foreignObject *').forEach((element) => element.removeAttribute('xmlns'));
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(new XMLSerializer().serializeToString(root))}`;
 };
 
 type MermaidDiagramProps = {

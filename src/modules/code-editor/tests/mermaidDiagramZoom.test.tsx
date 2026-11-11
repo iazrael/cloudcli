@@ -47,4 +47,20 @@ describe('MermaidDiagram tap-to-zoom', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(screen.getByRole('button', { name: 'common:imageViewer.expandDiagram' })).toBeTruthy();
   });
+
+  it('turns HTML-serialized label markup into well-formed XML for the viewer', async () => {
+    // mermaid hands back DOMPurify's HTML serialization: <br> is unclosed and
+    // &nbsp; is not an XML entity, so <img> rejects the raw string outright.
+    mermaidMock.render.mockResolvedValue({
+      svg: '<svg xmlns="http://www.w3.org/2000/svg" width="100%" viewBox="0 0 800 400" style="max-width: 800px;"><g><foreignObject width="100" height="50"><div xmlns="http://www.w3.org/1999/xhtml"><span class="nodeLabel"><p>滤波<br>去掉&nbsp;嘶声</p></span></div></foreignObject></g></svg>',
+    });
+    renderDiagram();
+    fireEvent.click(await screen.findByRole('button', { name: 'common:imageViewer.expandDiagram' }));
+    const img = screen.getByRole('dialog').querySelector('img') as HTMLImageElement;
+    const decoded = decodeURIComponent(img.src.split(',')[1]);
+    const parsed = new DOMParser().parseFromString(decoded, 'image/svg+xml');
+    expect(parsed.querySelector('parsererror')).toBeNull();
+    expect(parsed.documentElement.getAttribute('width')).toBe('800');
+    expect(parsed.documentElement.textContent).toBe('滤波去掉\u00a0嘶声');
+  });
 });
