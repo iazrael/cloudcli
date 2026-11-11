@@ -247,3 +247,10 @@ export const AUTH_ACCOUNT_CHANGED_EVENT = 'auth-account-changed';
 //----------------- MARKDOWN REFERENCE PLUGINS ------------
 /** remark 引用插件（remarkFileReferences / remarkImageReferences）遇到这些节点类型时跳过整棵子树：链接、代码块、公式和 HTML 内部不做转换。 */
 export const REMARK_SKIP_CONTAINER_RE = /^(?:link|linkReference|image|imageReference|code|math|inlineMath|html)$/;
+
+/**
+ * Tool name the backend gives an MCP server's request for input ("elicitation") when it
+ * forwards it as a permission request. The permission banner draws it with the elicitation
+ * panel, and the composer steps aside while one is open, as it does for a question.
+ */
+export const MCP_ELICITATION_TOOL_NAME = 'McpElicitation';

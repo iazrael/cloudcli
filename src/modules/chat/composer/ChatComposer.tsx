@@ -16,6 +16,7 @@ import { useVoiceInput } from '@/modules/chat/hooks/useVoiceInput';
 import { useVoiceAvailable } from '@/modules/chat/hooks/useVoiceAvailable';
 import type { QueuedDraft } from '@/modules/chat/hooks/useChatComposerState';
 import type { LLMProvider, SessionActivity, ScheduledMessage } from '@/shared/types';
+import { MCP_ELICITATION_TOOL_NAME } from '@/shared/constants';
 import type { BackgroundSendChoice, BackgroundSendPrompt, PendingPermissionRequest, PermissionMode } from '@/shared/types';
 import type { ComposerAttachmentBlock, ComposerAttachmentItem, ComposerAttachmentQueue } from '@/shared/types';
 import type { ProviderModelOption } from '@/shared/types';
@@ -303,9 +304,10 @@ function ChatComposer({
   const isRecording = voiceState === 'recording';
   const isTranscribing = voiceState === 'transcribing';
 
-  // Detect if the AskUserQuestion interactive panel is active
+  // Detect if an interactive panel that takes the person's answer is active:
+  // a question from the agent, or an MCP server's request for input.
   const hasQuestionPanel = pendingPermissionRequests.some(
-    (r) => r.toolName === 'AskUserQuestion'
+    (r) => r.toolName === 'AskUserQuestion' || r.toolName === MCP_ELICITATION_TOOL_NAME
   );
 
   // Hide the thinking/status bar while any permission request is pending
