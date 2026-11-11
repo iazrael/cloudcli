@@ -22,7 +22,12 @@ export default function FolderBrowserModal({
   onFolderSelected,
 }: FolderBrowserModalProps) {
   const { t } = useTranslation();
-  const [currentPath, setCurrentPath] = useState('~');
+  // The folder being listed. Null until the first listing answers, so the
+  // dialog never shows or selects a placeholder path.
+  const [currentPath, setCurrentPath] = useState<string | null>(null);
+  // The server's workspace root, learned from the pathless root listing. It is
+  // both the ceiling for `..` and the one folder that cannot become a project.
+  const [rootPath, setRootPath] = useState<string | null>(null);
   const [folders, setFolders] = useState<FolderSuggestion[]>([]);
   const [loadingFolders, setLoadingFolders] = useState(false);
   const [showHiddenFolders, setShowHiddenFolders] = useState(false);
@@ -32,11 +37,11 @@ export default function FolderBrowserModal({
   const [error, setError] = useState<string | null>(null);
 
   // Keep the loader stable across locale changes: t lands in a ref so an
-  // open browser does not reload and snap back to the home folder when the
+  // open browser does not reload and snap back to the workspace root when the
   // user switches language.
-  const loadFoldersRef = useRef<(pathToLoad: string) => Promise<void>>();
+  const loadFoldersRef = useRef<(pathToLoad: string | null) => Promise<void>>();
 
-  const loadFolders = useCallback(async (pathToLoad: string) => {
+  const loadFolders = useCallback(async (pathToLoad: string | null) => {
     setLoadingFolders(true);
     setError(null);
 
@@ -44,6 +49,11 @@ export default function FolderBrowserModal({
       const result = await browseFilesystemFolders(pathToLoad);
       setCurrentPath(result.path);
       setFolders(result.suggestions);
+      // A pathless request lists the workspace root; remembering it bounds
+      // parent navigation without the client guessing the server's configuration.
+      if (pathToLoad === null) {
+        setRootPath(result.path);
+      }
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : t('folderBrowser.loadFailed'));
     } finally {
@@ -59,7 +69,7 @@ export default function FolderBrowserModal({
     if (!isOpen) {
       return;
     }
-    void loadFoldersRef.current?.('~');
+    void loadFoldersRef.current?.(null);
   }, [isOpen]);
 
   const visibleFolders = useMemo(
@@ -77,14 +87,29 @@ export default function FolderBrowserModal({
     setNewFolderName('');
   };
 
+  // Clearing the listing on the way out means the next open starts at the
+  // workspace root without flashing the folder that was picked last time.
+  const resetBrowserState = () => {
+    setCurrentPath(null);
+    setRootPath(null);
+    setFolders([]);
+  };
+
   const handleClose = () => {
     setError(null);
     resetNewFolderState();
+    resetBrowserState();
     onClose();
   };
 
+  const selectFolder = (folderPath: string, advanceToConfirm: boolean) => {
+    resetNewFolderState();
+    resetBrowserState();
+    onFolderSelected(folderPath, advanceToConfirm);
+  };
+
   const handleCreateFolder = useCallback(async () => {
-    if (!newFolderName.trim()) {
+    if (!newFolderName.trim() || currentPath === null) {
       return;
     }
 
@@ -103,7 +128,11 @@ export default function FolderBrowserModal({
     }
   }, [currentPath, loadFolders, newFolderName, t]);
 
-  const parentPath = getParentPath(currentPath);
+  // `..` only exists below the root; the workspace root itself is the ceiling.
+  const parentPath = currentPath !== null && rootPath !== null && currentPath !== rootPath
+    ? getParentPath(currentPath)
+    : null;
+  const canUseCurrentFolder = currentPath !== null && currentPath !== rootPath;
 
   if (!isOpen) {
     return null;
@@ -174,7 +203,7 @@ export default function FolderBrowserModal({
               <Button
                 size="sm"
                 onClick={handleCreateFolder}
-                disabled={!newFolderName.trim() || creatingFolder}
+                disabled={!newFolderName.trim() || creatingFolder || currentPath === null}
               >
                 {creatingFolder ? <Loader2 className="h-4 w-4 animate-spin" /> : t('folderBrowser.create')}
               </Button>
@@ -227,7 +256,7 @@ export default function FolderBrowserModal({
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => onFolderSelected(folder.path, autoAdvanceOnSelect)}
+                      onClick={() => selectFolder(folder.path, autoAdvanceOnSelect)}
                       className="px-3 text-xs"
                     >
                       {t('folderBrowser.select')}
@@ -243,7 +272,7 @@ export default function FolderBrowserModal({
           <div className="flex items-center gap-2 bg-gray-50 px-4 py-3 dark:bg-gray-900/50">
             <span className="text-sm text-gray-600 dark:text-gray-400">{t('folderBrowser.pathLabel')}</span>
             <code className="flex-1 truncate font-mono text-sm text-gray-900 dark:text-white">
-              {currentPath}
+              {currentPath ?? ''}
             </code>
           </div>
           <div className="flex items-center justify-end gap-2 p-4">
@@ -252,7 +281,12 @@ export default function FolderBrowserModal({
             </Button>
             <Button
               variant="outline"
-              onClick={() => onFolderSelected(currentPath, autoAdvanceOnSelect)}
+              disabled={!canUseCurrentFolder}
+              onClick={() => {
+                if (currentPath !== null && canUseCurrentFolder) {
+                  selectFolder(currentPath, autoAdvanceOnSelect);
+                }
+              }}
             >
               {t('folderBrowser.useThisFolder')}
             </Button>
