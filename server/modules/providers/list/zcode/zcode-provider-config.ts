@@ -280,6 +280,14 @@ export function resolveZCodeBuiltinRevision(builtinConfigPath: string): string |
  * provider and an individual-plan API key entitles the individual provider in
  * the engine's executable registry view.
  *
+ * The engine's registry takes an account provider's model list from
+ * `builtinModelIds` in this payload, so the start plan also carries the pair
+ * the ZCode App sends for the same account (captured from its log). The field
+ * overlays — and so replaces — the static builtin list (GLM-5.3-Flash/
+ * GLM-5.2/GLM-5-Turbo only), and without it a GLM-5.3 selection is rerouted
+ * to the engine's default model. The individual plan's static list already
+ * matches the picker, so it stays access-only.
+ *
  * Returns null when neither credential is stored or the built-in config is unavailable.
  */
 export function buildZCodeAccountSyncPayload(builtinConfigPath: string): Record<string, unknown> | null {
@@ -301,6 +309,7 @@ export function buildZCodeAccountSyncPayload(builtinConfigPath: string): Record<
     basedOnZCodeBuiltinRevision,
     providers: Object.fromEntries(entitledProviderIds.map((providerId) => [providerId, {
       access: { type: 'zhipu-account', entitled: true },
+      ...(providerId === 'account:bigmodel-start-plan' ? { builtinModelIds: ['GLM-5.3-Flash', 'GLM-5.3'] } : {}),
     }])),
     states: Object.fromEntries(entitledProviderIds.map((providerId) => [providerId, {
       availability: 'available', entitled: true, current: true,

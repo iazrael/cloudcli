@@ -206,6 +206,10 @@ test('buildZCodeAccountSyncPayload entitles both account plans from their creden
             type: 'zhipu-account',
             entitled: true,
           },
+          // The ZCode App sends this same pair for the trial plan; without it
+          // the engine's registry misses GLM-5.3 (absent from the static
+          // builtin list) and silently falls back to the default model.
+          builtinModelIds: ['GLM-5.3-Flash', 'GLM-5.3'],
         },
         'account:bigmodel-individual-coding-plan': {
           access: {
@@ -254,6 +258,7 @@ test('buildZCodeAccountSyncPayload entitles only the start plan when only the tr
             type: 'zhipu-account',
             entitled: true,
           },
+          builtinModelIds: ['GLM-5.3-Flash', 'GLM-5.3'],
         },
       });
       assert.deepEqual(payload.states, {
