@@ -6,10 +6,16 @@ import { hasKeychainItem } from '@/modules/providers/shared/credentials/macos-ke
 import { createCliInstallationProbe } from '@/modules/providers/shared/installation/cli-installation-probe.js';
 import { resolveClaudeCodeExecutablePath } from '@/shared/claude-cli-path.js';
 import type { IProviderAuth } from '@/shared/interfaces.js';
-import type { ProviderAuthStatus, ProviderAuthSubscriptionOverride, ProviderQuotaData } from '@/shared/types.js';
+import type {
+  ProviderAuthStatus,
+  ProviderAuthSubscriptionOverride,
+  ProviderQuotaData,
+  ProviderQuotaResetConsumeInput,
+  ProviderQuotaResetConsumeResult,
+} from '@/shared/types.js';
 import { readObjectRecord, readOptionalString } from '@/shared/utils.js';
 
-import { fetchClaudeQuota } from './claude-quota.provider.js';
+import { consumeClaudeQuotaReset, fetchClaudeQuota } from './claude-quota.provider.js';
 
 type ClaudeCredentialsStatus = {
   authenticated: boolean;
@@ -101,6 +107,16 @@ export class ClaudeProviderAuth implements IProviderAuth {
    */
   async getQuota(options?: { forceRefresh?: boolean }): Promise<ProviderQuotaData | null> {
     return fetchClaudeQuota(options);
+  }
+
+  /**
+   * Spends one Claude reset card after the user confirms it in the quota
+   * panel. Consumer: providerTokenUsageService.consumeProviderQuotaReset.
+   */
+  async consumeQuotaReset(
+    input: ProviderQuotaResetConsumeInput,
+  ): Promise<ProviderQuotaResetConsumeResult> {
+    return consumeClaudeQuotaReset(input);
   }
 
   /**

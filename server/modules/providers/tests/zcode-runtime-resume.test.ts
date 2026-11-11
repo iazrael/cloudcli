@@ -94,8 +94,10 @@ rl.on('line', (line) => {
     return;
   }
 
-  if (msg.method === 'session/send') {
-    send({ id: msg.id, result: {} });
+  // A created session's first prompt comes as the legacy session/send, later
+  // ones as the v4 sendText command.
+  if (msg.method === 'session/send' || (msg.method === 'v4/command' && msg.params?.type === 'sendText')) {
+    send({ id: msg.id, result: msg.method === 'v4/command' ? { commandId: msg.params.commandId, status: 'accepted', revisionAtDecision: 1 } : {} });
     send({ method: 'session/event', params: { sessionId: activeSession, type: 'model_streaming', payload: { kind: 'text_delta', delta: 'hi there' } } });
     send({ method: 'session/event', params: { sessionId: activeSession, type: 'turn_complete', payload: { usage: { inputTokens: 3, outputTokens: 4 } } } });
     return;

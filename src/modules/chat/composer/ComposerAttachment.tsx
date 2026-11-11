@@ -1,15 +1,17 @@
-import { useEffect, useState } from 'react';
-import { FileIcon, XIcon } from 'lucide-react';
+import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
+import { FileIcon, RotateCwIcon, XIcon } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 import { ImageLightbox } from '@/modules/chat/transcript/ChatMessageImages';
+import { MAX_ATTACHMENT_SIZE_LABEL } from '@/shared/constants';
+import type { ComposerAttachmentItem, ComposerAttachmentQueue } from '@/shared/types';
 
 type ComposerAttachmentProps = {
-  file: File;
-  onRemove: () => void;
-  error?: string;
-  /** 0-100 upload progress from the fork's file-upload flow; rendered when present. */
-  uploadProgress?: number;
+  item: ComposerAttachmentItem;
+  queue: ComposerAttachmentQueue;
 };
+
+const MASK_CLASS_NAME = 'absolute inset-0 flex items-center justify-center rounded-xl';
 
 const formatFileSize = (size: number) => {
   if (size < 1024) return `${size} B`;
@@ -17,11 +19,34 @@ const formatFileSize = (size: number) => {
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 };
 
+/** Subscribes on its own so a percent change repaints this mask, not the whole composer. */
+const UploadProgressMask = ({ item, queue }: ComposerAttachmentProps) => {
+  const { t } = useTranslation('chat');
+  const { id, file } = item;
+  const subscribe = useCallback((listener: () => void) => queue.subscribeProgress(id, listener), [id, queue]);
+  const progress = useSyncExternalStore(subscribe, () => queue.getProgress(id));
+
+  return (
+    <div
+      role="progressbar"
+      aria-label={t('input.attachments.progress', { name: file.name })}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={progress}
+      className={`${MASK_CLASS_NAME} pointer-events-none bg-black/50 text-sm font-semibold tabular-nums text-white`}
+    >
+      {progress}%
+    </div>
+  );
+};
+
 /**
- * Rendered by chat's ChatComposer for each pending attachment, showing its
- * thumbnail or file chip, upload progress and remove control.
+ * Rendered by chat's ChatComposer for each attachment, showing its thumbnail or
+ * file card under a mask that tracks the upload, with retry and remove controls.
  */
-const ComposerAttachment = ({ file, onRemove, error, uploadProgress }: ComposerAttachmentProps) => {
+const ComposerAttachment = ({ item, queue }: ComposerAttachmentProps) => {
+  const { t } = useTranslation('chat');
+  const { file, status, error } = item;
   const [preview, setPreview] = useState<string | undefined>(undefined);
   const [expanded, setExpanded] = useState(false);
   const isImage = file.type.startsWith('image/');
@@ -60,16 +85,26 @@ const ComposerAttachment = ({ file, onRemove, error, uploadProgress }: ComposerA
           </div>
         </div>
       )}
-      {error && (
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-xl bg-red-500/50">
-          <svg className="h-6 w-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-          </svg>
+      {(status === 'queued' || status === 'uploading') && <UploadProgressMask item={item} queue={queue} />}
+      {status === 'failed' && (
+        <button
+          type="button"
+          onClick={() => queue.retry(item.id)}
+          title={error}
+          aria-label={t('input.attachments.retry', { name: file.name })}
+          className={`${MASK_CLASS_NAME} bg-red-500/60 text-white`}
+        >
+          <RotateCwIcon className="h-5 w-5" aria-hidden />
+        </button>
+      )}
+      {status === 'tooLarge' && (
+        <div className={`${MASK_CLASS_NAME} pointer-events-none bg-red-500/60 px-1 text-center text-xs font-medium text-white`}>
+          {t('input.attachments.tooLarge', { size: MAX_ATTACHMENT_SIZE_LABEL })}
         </div>
       )}
       <button
         type="button"
-        onClick={onRemove}
+        onClick={() => queue.remove(item.id)}
         className="absolute -right-1.5 -top-1.5 rounded-full border border-border/40 bg-background/90 p-1 text-foreground shadow-sm backdrop-blur transition-opacity hover:bg-background focus:opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
         aria-label={`Remove ${file.name}`}
       >

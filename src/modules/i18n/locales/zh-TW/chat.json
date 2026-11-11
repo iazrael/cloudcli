@@ -13,6 +13,7 @@
     "recoveryFailed": "聊天同步失敗，正在自動重試，現有內容已保留。也可以重新整理頁面重試。"
   },
   "misc": {
+    "commandModalLoading": "正在載入…",
     "outputAssets": "結果附件（{{count}}）",
     "fullOutput": "完整輸出.txt",
     "compacted": "已壓縮",
@@ -146,6 +147,13 @@
     "send": "傳送",
     "sending": "傳送中…",
     "stop": "停止",
+    "attachments": {
+      "stillUploading": "附件還在上傳",
+      "needsAttention": "請重試或移除上傳失敗的附件後再傳送",
+      "progress": "{{name}} 的上傳進度",
+      "retry": "重新上傳 {{name}}",
+      "tooLarge": "超過 {{size}}"
+    },
     "hintText": {
       "ctrlEnter": "Ctrl+Enter 傳送 • Shift+Enter 換行 • Tab 切換模式 • / 斜線指令",
       "enter": "Enter 傳送 • Shift+Enter 換行 • Tab 切換模式 • / 斜線指令",
@@ -303,7 +311,14 @@
       "workflow": "工作流程 {{name}}",
       "agent": "子代理 {{description}}",
       "command": "命令 {{description}}",
-      "count": "{{count}} 個任務"
+      "count": "{{count}} 個任務",
+      "prompt": {
+        "title": "會話還有背景任務在執行",
+        "description": "送出新訊息會開啟新回合并停掉這些任務；它們尚未回報的產出會遺失。選擇排隊則等任務結束後自動送出。",
+        "cancel": "取消",
+        "queue": "排隊",
+        "sendAnyway": "仍要送出"
+      }
     }
   },
   "projectSelection": {
@@ -370,9 +385,9 @@
     "customLabel": "或選擇時間",
     "confirm": "排程",
     "in": {
-      "15": "15 分鐘後",
-      "60": "1 小時後",
-      "480": "8 小時後",
+      "30": "30 分鐘後",
+      "120": "2 小時後",
+      "300": "5 小時後",
       "1440": "明天"
     },
     "pending": "將於 {{when}} 傳送",
@@ -381,6 +396,7 @@
     "dismiss": "關閉失敗提示"
   },
   "cost": {
+    "readingUsage": "正在讀取會話用量…",
     "totalTokensUsed": "總用量",
     "inputTokens": "輸入用量",
     "outputTokens": "輸出用量",
@@ -404,6 +420,8 @@
     "fiveHourWindow": "5 小時滑動窗口限額",
     "weeklyWindow": "週配額",
     "monthlyWindow": "每月配額",
+    "weeklyWindowAllModels": "週配額（所有模型）",
+    "weeklyWindowScoped": "週配額（{{model}}）",
     "remainingPercent": "剩餘 {{percent}}%",
     "resetSoon": "即將重設",
     "resetDaysHours": "{{days}} 天 {{hours}} 小時後重設",
@@ -411,13 +429,16 @@
     "resetMinutes": "{{minutes}} 分鐘後重設",
     "emptyQuotaHint": {
       "claude": "API Key、Bedrock、Vertex 登入沒有 claude.ai 訂閱限額",
-      "codex": "API Key 登入通常不會提供 5 小時和週限額"
+      "codex": "API Key 登入通常不會提供 5 小時和週限額",
+      "opencode": "未開通 OpenCode Go 套餐，或 CLI 未登入到 Go 工作區"
     },
     "resetCardTitle": "用量重置卡",
     "resetCardHint": "使用後立即補滿對應額度，無需等待刷新視窗",
+    "resetCardHintReadOnly": "請到提供方網頁端使用此重置卡",
     "resetCardTypeAll": "全部額度（5 小時 + 每週）",
     "resetCardType5h": "5 小時額度",
     "resetCardTypeWeekly": "每週額度",
+    "resetCardTypeFable": "Fable 重置",
     "resetCardAvailable": "{{count}} 張可用",
     "resetCardExpires": "最早 {{date}} 到期",
     "resetCardUse": "使用",

@@ -4,10 +4,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { pipeline } from 'node:stream';
 
+import { rgPath } from '@vscode/ripgrep';
 import mime from 'mime-types';
 import multer from 'multer';
 
 import { projectsDb } from '@/modules/database/index.js';
+import { createRipgrepFileIndexer } from '@/modules/file-tree/file-tree-file-index.js';
 import { createFileTreeRouter } from '@/modules/file-tree/file-tree.routes.js';
 import { createFileTreeService } from '@/modules/file-tree/file-tree.service.js';
 import {
@@ -24,9 +26,11 @@ import type {
   FileTreeWorkspaceGateway,
 } from '@/shared/types.js';
 import {
+  FORBIDDEN_WORKSPACE_PATHS,
   WORKSPACES_ROOT,
   createByteLimitTransform,
   getAvailableWindowsDrives,
+  normalizeProjectPath,
   resolveReadOnlyRootPath,
   validateWorkspacePath,
 } from '@/shared/utils.js';
@@ -79,6 +83,36 @@ function getConfiguredExtraReadRoots(): string[] {
 }
 
 /**
+ * The workspace root joins the external read-only allowlist and the viewer's
+ * readable-path policy, so a misconfigured `WORKSPACES_ROOT` (for example
+ * `/`) must not widen either into a whole-filesystem read grant. A root
+ * inside a system-critical directory disables workspace-root reads (both the
+ * external-roots entry and the workspace gateway's `readOnlyRoot`) and is
+ * reported at startup. The /var/tmp and /var/folders exceptions mirror
+ * `validateWorkspacePath` so macOS scratch roots keep working; the surrounding
+ * prefix match is anchored at the separator, so it is stricter than
+ * `validateWorkspacePath`'s unanchored `/var/tmp` comparison — keep it that
+ * way (`/var/tmpfoo` must not qualify).
+ */
+function resolveWorkspaceReadOnlyRoot(): string | null {
+  const normalizedRoot = normalizeProjectPath(WORKSPACES_ROOT);
+  const isSystemCritical = FORBIDDEN_WORKSPACE_PATHS.some((forbiddenPath) => {
+    const normalizedForbidden = normalizeProjectPath(forbiddenPath);
+    if (normalizedForbidden === '/var'
+      && (normalizedRoot === '/var/tmp' || normalizedRoot.startsWith('/var/tmp/')
+        || normalizedRoot === '/var/folders' || normalizedRoot.startsWith('/var/folders/'))) {
+      return false;
+    }
+    return normalizedRoot === normalizedForbidden || normalizedRoot.startsWith(`${normalizedForbidden}${path.sep}`);
+  });
+  if (isSystemCritical) {
+    console.error(`WORKSPACES_ROOT "${WORKSPACES_ROOT}" is a system-critical directory; workspace-root file reads stay disabled until it is reconfigured.`);
+    return null;
+  }
+  return WORKSPACES_ROOT;
+}
+
+/**
  * Production filesystem adapter owned by the File Tree composition root.
  * Application services receive this complete capability explicitly and never
  * import Node's mutable filesystem APIs themselves.
@@ -116,6 +150,8 @@ const fileTreeProjects: FileTreeProjectGateway = {
   getProjectPathById: (projectId) => projectsDb.getProjectPathById(projectId),
 };
 
+const workspaceReadOnlyRoot = resolveWorkspaceReadOnlyRoot();
+
 /**
  * Workspace-policy boundary used only by File Tree production composition.
  * Keeping both the configured root and symlink-aware validator together makes
@@ -123,6 +159,7 @@ const fileTreeProjects: FileTreeProjectGateway = {
  */
 const fileTreeWorkspace: FileTreeWorkspaceGateway = {
   rootPath: WORKSPACES_ROOT,
+  readOnlyRoot: workspaceReadOnlyRoot,
   validatePath: (candidatePath, options) => validateWorkspacePath(candidatePath, options),
   resolveReadOnlyRootPath: (candidatePath) => resolveReadOnlyRootPath(candidatePath),
 };
@@ -138,20 +175,32 @@ const fileTreeServices = createFileTreeService({
   resolveMimeType: (filePath) => mime.lookup(filePath) || 'application/octet-stream',
   fileSystemConcurrency: readFileSystemConcurrency(),
   logger: fileTreeLogger,
+  fileIndexer: createRipgrepFileIndexer(rgPath),
+  now: () => Date.now(),
   getAvailableDrives: getAvailableWindowsDrives,
   // Providers store chat-referenced artifacts outside the active workspace:
   // Antigravity uses brain directories, Claude uses its per-project tree, and
   // ZCode uses narrow memory/skill/instruction paths. Attachments live in
   // ~/.cloudcli/assets, while provider runtimes stage temporary reports under
-  // OS temp directories; operators may add more via CLOUDCLI_EXTRA_READ_ROOTS.
-  // The editor may open these roots read-only without widening project-scoped
-  // write access.
+  // OS temp directories. The editor may open these roots read-only without
+  // widening project-scoped write access.
+  //
+  // The workspace root itself (the default is the user's home directory) and
+  // ~/Downloads join the list so chat links to files an engine drops outside
+  // the project — generated packages in Downloads, reports in a sibling
+  // workspace folder — stay openable. Downloads is listed explicitly so a
+  // narrowed WORKSPACES_ROOT does not silently lose it. Both stay read-only
+  // and realpath-compared like every other external root. A system-critical
+  // WORKSPACES_ROOT misconfiguration drops the workspace entry entirely
+  // (resolveWorkspaceReadOnlyRoot logs it) instead of granting the whole disk.
   externalReadOnlyRoots: [
     ...getAntigravityBrainRoots(),
     ...getClaudeExternalReadOnlyRoots(),
     getGlobalImageAssetsDir(),
     ...getExternalTempRoots(),
     ...getZcodeExternalReadOnlyRoots(),
+    ...(workspaceReadOnlyRoot ? [workspaceReadOnlyRoot] : []),
+    path.join(os.homedir(), 'Downloads'),
     ...getConfiguredExtraReadRoots(),
   ],
   resolveWorktreeRoots: (projectRoot) => getProjectWorktreeRoots(projectRoot),

@@ -9,7 +9,6 @@ import type { FolderSuggestion } from '@/shared/types';
 
 type FolderBrowserModalProps = {
   isOpen: boolean;
-  initialPath?: string;
   autoAdvanceOnSelect: boolean;
   onClose: () => void;
   onFolderSelected: (folderPath: string, advanceToConfirm: boolean) => void;
@@ -18,15 +17,19 @@ type FolderBrowserModalProps = {
 /** Opened by WorkspacePathField so the user can browse the filesystem and pick or create the workspace folder. */
 export default function FolderBrowserModal({
   isOpen,
-  initialPath,
   autoAdvanceOnSelect,
   onClose,
   onFolderSelected,
 }: FolderBrowserModalProps) {
   const { t } = useTranslation();
-  const [currentPath, setCurrentPath] = useState('~');
+  // The folder being listed. Null until the first listing answers, so the
+  // dialog never shows or selects a placeholder path.
+  const [currentPath, setCurrentPath] = useState<string | null>(null);
+  // The server's workspace root, learned from the pathless root listing. It is
+  // both the ceiling for `..` and the one folder that cannot become a project.
+  const [rootPath, setRootPath] = useState<string | null>(null);
   // User-editable path input in the path bar so arbitrary paths can be entered or pasted directly.
-  const [pathInputValue, setPathInputValue] = useState('~');
+  const [pathInputValue, setPathInputValue] = useState('');
   // Discovered filesystem drive roots (e.g. ['C:\\', 'D:\\', 'E:\\']) on Windows for drive-switching buttons.
   const [availableDrives, setAvailableDrives] = useState<string[]>([]);
   const [selectedDrive, setSelectedDrive] = useState<string | null>(null);
@@ -40,7 +43,7 @@ export default function FolderBrowserModal({
   const [error, setError] = useState<string | null>(null);
 
   const activeDrive = useMemo(() => {
-    if (currentPath === 'drives') {
+    if (currentPath === null || currentPath === 'drives') {
       return null;
     }
     const match = currentPath.match(/^([a-zA-Z]:)/);
@@ -48,20 +51,24 @@ export default function FolderBrowserModal({
   }, [currentPath, selectedDrive]);
 
   // Keep the loader stable across locale changes: t lands in a ref so an
-  // open browser does not reload and snap back to the home folder when the
+  // open browser does not reload and snap back to the workspace root when the
   // user switches language.
-  const loadFoldersRef = useRef<(pathToLoad: string) => Promise<void>>();
-  const wasOpenRef = useRef(false);
+  const loadFoldersRef = useRef<(pathToLoad: string | null) => Promise<void>>();
 
-  const loadFolders = useCallback(async (pathToLoad: string) => {
+  const loadFolders = useCallback(async (pathToLoad: string | null) => {
     setLoadingFolders(true);
     setError(null);
 
     try {
       const result = await browseFilesystemFolders(pathToLoad);
       setCurrentPath(result.path);
-      setPathInputValue(result.path);
+      setPathInputValue(result.path === 'drives' ? '' : result.path);
       setFolders(result.suggestions);
+      // A pathless request lists the workspace root; remembering it bounds
+      // parent navigation without the client guessing the server's configuration.
+      if (pathToLoad === null) {
+        setRootPath(result.path);
+      }
       if (result.path === 'drives') {
         setSelectedDrive(null);
       } else {
@@ -85,15 +92,14 @@ export default function FolderBrowserModal({
   }, [loadFolders]);
 
   useEffect(() => {
-    if (isOpen && !wasOpenRef.current) {
-      wasOpenRef.current = true;
-      const startingPath = initialPath && initialPath.trim().length > 0 ? initialPath.trim() : '~';
-      void loadFoldersRef.current?.(startingPath);
-    } else if (!isOpen) {
-      wasOpenRef.current = false;
+    if (!isOpen) {
       setSelectedFolderPath(null);
+      return;
     }
-  }, [initialPath, isOpen]);
+    // Always start at the server's workspace root; the root is the ceiling
+    // for `..` and cannot itself become a project.
+    void loadFoldersRef.current?.(null);
+  }, [isOpen]);
 
   const visibleFolders = useMemo(
     () =>
@@ -110,15 +116,30 @@ export default function FolderBrowserModal({
     setNewFolderName('');
   };
 
+  // Clearing the listing on the way out means the next open starts at the
+  // workspace root without flashing the folder that was picked last time.
+  const resetBrowserState = () => {
+    setCurrentPath(null);
+    setRootPath(null);
+    setFolders([]);
+  };
+
   const handleClose = () => {
     setError(null);
     setSelectedFolderPath(null);
     resetNewFolderState();
+    resetBrowserState();
     onClose();
   };
 
+  const selectFolder = (folderPath: string, advanceToConfirm: boolean) => {
+    resetNewFolderState();
+    resetBrowserState();
+    onFolderSelected(folderPath, advanceToConfirm);
+  };
+
   const handleCreateFolder = useCallback(async () => {
-    if (!newFolderName.trim()) {
+    if (!newFolderName.trim() || currentPath === null) {
       return;
     }
 
@@ -137,7 +158,11 @@ export default function FolderBrowserModal({
     }
   }, [currentPath, loadFolders, newFolderName, t]);
 
-  const parentPath = getParentPath(currentPath);
+  // `..` only exists below the root; the workspace root itself is the ceiling.
+  const parentPath = currentPath !== null && rootPath !== null && currentPath !== rootPath
+    ? getParentPath(currentPath)
+    : null;
+  const canUseCurrentFolder = currentPath !== null && currentPath !== 'drives' && currentPath !== rootPath;
 
   if (!isOpen) {
     return null;
@@ -239,7 +264,7 @@ export default function FolderBrowserModal({
               <Button
                 size="sm"
                 onClick={handleCreateFolder}
-                disabled={!newFolderName.trim() || creatingFolder}
+                disabled={!newFolderName.trim() || creatingFolder || currentPath === null}
               >
                 {creatingFolder ? <Loader2 className="h-4 w-4 animate-spin" /> : t('folderBrowser.create')}
               </Button>
@@ -313,7 +338,7 @@ export default function FolderBrowserModal({
                       <Button
                         variant={isSelected ? 'secondary' : 'ghost'}
                         size="sm"
-                        onClick={() => onFolderSelected(folder.path, autoAdvanceOnSelect)}
+                        onClick={() => selectFolder(folder.path, autoAdvanceOnSelect)}
                         className={`mr-2 px-3 text-xs ${
                           isSelected
                             ? 'bg-white text-blue-600 hover:bg-blue-50 font-semibold shadow-sm'
@@ -364,15 +389,13 @@ export default function FolderBrowserModal({
               {t('common:cancel')}
             </Button>
             <Button
-              variant="default"
-              disabled={currentPath === 'drives' && !selectedFolderPath}
+              variant="outline"
+              disabled={!canUseCurrentFolder}
               onClick={() => {
-                const pathToUse = (currentPath === 'drives' && selectedFolderPath) ? selectedFolderPath : currentPath;
-                if (pathToUse && pathToUse !== 'drives') {
-                  onFolderSelected(pathToUse, autoAdvanceOnSelect);
+                if (currentPath !== null && canUseCurrentFolder) {
+                  selectFolder(currentPath, autoAdvanceOnSelect);
                 }
               }}
-              className="bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
             >
               {t('folderBrowser.useThisFolder')}
             </Button>

@@ -12,11 +12,18 @@ import type { BackgroundTaskStatus, BackgroundTaskSummary, ChatMessage, Workflow
  * backend's `running` is only what stands when no live event has arrived.
  * Reading the live word first instead let a task the backend knew was
  * orphaned keep spinning on a stale `running` from a run that had ended.
+ *
+ * The one exception is a resumed task (`liveResumed`): the agent ran again
+ * after the backend's record was written, so the live word is the newer one.
  */
 export function resolveBackgroundTaskStatus(
   serverStatus: BackgroundTaskStatus | undefined,
   liveStatus: BackgroundTaskStatus | undefined,
+  liveResumed = false,
 ): BackgroundTaskStatus | undefined {
+  if (liveResumed && liveStatus) {
+    return liveStatus;
+  }
   if (serverStatus && serverStatus !== 'running') {
     return serverStatus;
   }
@@ -30,7 +37,11 @@ export function resolveBackgroundTaskStatus(
  * that launched nothing.
  */
 export function readBackgroundTaskStatus(message: ChatMessage): BackgroundTaskStatus | undefined {
-  return resolveBackgroundTaskStatus(message.workflow?.status ?? message.subagent?.status, message.taskStatus?.status);
+  return resolveBackgroundTaskStatus(
+    message.workflow?.status ?? message.subagent?.status,
+    message.taskStatus?.status,
+    message.taskStatus?.resumed,
+  );
 }
 
 /**

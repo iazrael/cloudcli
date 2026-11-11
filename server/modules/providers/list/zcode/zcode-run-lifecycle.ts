@@ -31,8 +31,8 @@ import type { ProviderPermissionDecision, ProviderRuntimeWriter } from '@/shared
 import { createNormalizedMessage, generateMessageId, readJsonRecord, readObjectRecord, readOptionalString } from '@/shared/utils.js';
 
 import type { ProtocolServerRequest } from './zcode-codec.js';
-import { readDecryptedZCodeIndividualPlanApiKey } from './zcode-credentials.js';
-import { ZCODE_INDIVIDUAL_PLAN_PROVIDER_ID } from './zcode-models.provider.js';
+import { readDecryptedZCodeIndividualPlanApiKey, readDecryptedZCodeJwtToken } from './zcode-credentials.js';
+import { ZCODE_INDIVIDUAL_PLAN_PROVIDER_ID, ZCODE_START_PLAN_PROVIDER_ID } from './zcode-models.provider.js';
 import { defaultServerRequestHandler } from './zcode-request-router.js';
 import type { ServerRequestAnswer } from './zcode-request-router.js';
 
@@ -127,8 +127,15 @@ export type RunHandle = {
   readonly sessionId: string;
   readonly appSessionId: string | null;
   readonly writer: ProviderRuntimeWriter;
-  /** Set when a delivered session/stop confirmed the user's abort. */
+  /** Set when a delivered v4 stop confirmed the user's abort. */
   abortRequested: boolean;
+  /**
+   * Set when `abort` sends its stop, before the engine answers. The engine
+   * stops the turn synchronously, so the run's cancelled `turn.completed`
+   * can arrive ahead of the acknowledgement; while this is set, that
+   * cancellation is the user's abort, not the turn completing.
+   */
+  stopSent: boolean;
   /**
    * Set right before the run's prompt goes to the engine. A run listens to
    * the engine session from the moment it starts, but a turn-ending event
@@ -136,6 +143,28 @@ export type RunHandle = {
    * not end this one.
    */
   promptDispatched: boolean;
+  /**
+   * The input id this run's prompt was sent with (the `sendText` command id,
+   * or the legacy send's `inputId`). The engine tags the turn it starts for
+   * that input with the same id (`turn.started` payload `inputId`), which is
+   * how the run finds its turn.
+   */
+  promptInputId: string | null;
+  /** The pending send of this run's prompt, so an abort can wait for it. */
+  promptSend: Promise<void> | null;
+  /**
+   * Set once the engine acknowledged the prompt. A preempted turn winds down
+   * before the acknowledgement, so until then a turn-tagged event that names
+   * no input of this run belongs to that turn.
+   */
+  promptAcknowledged: boolean;
+  /**
+   * The engine turn started for this run's prompt, once `turn.started` named
+   * it. The engine also runs turns of its own on the session (queued
+   * background-task notifications), and the prompt preempts such a turn:
+   * only terminal events of this turn may end the run.
+   */
+  ownTurnId: string | null;
   /**
    * Who performs terminal handling and cleanup: the run coroutine until the
    * silence watchdog hands off, the detached watcher afterwards. A handle
@@ -214,6 +243,13 @@ const PLAN_APPROVAL_ANSWER = 'approve';
 const DEFAULT_DENY_REASON = 'Denied by user';
 
 /**
+ * The reason stamped on the denial that retracts a card whose tool call
+ * already finished: the engine gave up on the answer (its AskUserQuestion
+ * timeout) and resolved the call itself.
+ */
+const TOOL_RESULT_RETRACT_REASON = 'The engine resolved this call without waiting for an answer.';
+
+/**
  * Lifecycle tunables, injectable for tests.
  */
 export type ZCodeRunLifecycleOptions = {
@@ -263,7 +299,12 @@ export class ZCodeRunLifecycle {
       appSessionId: start.appSessionId,
       writer: start.writer,
       abortRequested: false,
+      stopSent: false,
       promptDispatched: false,
+      promptInputId: null,
+      promptSend: null,
+      promptAcknowledged: false,
+      ownTurnId: null,
       owner: 'run',
       state: { completed: false, lastActivityAt: Date.now() },
     };
@@ -365,8 +406,9 @@ export class ZCodeRunLifecycle {
   }
 
   /**
-   * Records a user abort that the engine confirmed (a `session/stop` that was
-   * actually delivered). The settle wait returns `aborted` promptly, and the
+   * Records a user abort that the engine confirmed: a v4 stop that was
+   * actually delivered, or the run's turn ending as cancelled while that stop
+   * was in flight. The settle wait returns `aborted` promptly, and the
    * terminal notification reports the run as aborted. A stop that failed must
    * NOT be recorded here: the engine keeps working, so the run has to settle
    * on its real terminal event instead.
@@ -440,8 +482,9 @@ export class ZCodeRunLifecycle {
     if (request.method === 'interaction/requestProviderRuntimeHeaders') {
       const params = request.params ?? {};
       const providerId = readOptionalString(params.providerId);
-      if (providerId === ZCODE_INDIVIDUAL_PLAN_PROVIDER_ID) {
-        const apiKey = readDecryptedZCodeIndividualPlanApiKey();
+      if (providerId === ZCODE_START_PLAN_PROVIDER_ID || providerId === ZCODE_INDIVIDUAL_PLAN_PROVIDER_ID) {
+        const apiKey = providerId === ZCODE_START_PLAN_PROVIDER_ID
+          ? readDecryptedZCodeJwtToken() : readDecryptedZCodeIndividualPlanApiKey();
         if (apiKey) {
           return {
             result: {
@@ -704,21 +747,45 @@ export class ZCodeRunLifecycle {
 
   /**
    * Takes down the pending cards of a subagent that has stopped (or, with no
-   * `agentToolUseId`, of every agent on the session, for an engine that died):
+   * `agentId`, of every agent on the session, for an engine that died):
    * nobody is waiting for the answer any more. The parked engine request is
    * denied, and the card is retracted through the writer that showed it, so
    * this must run before that writer stops being the session's target.
+   *
+   * Matched by agent rather than by call: a resumed agent's requests name the
+   * SendMessage call that woke it, while its stop is reported on its card.
    */
-  retractSubagentPermissions(engineSessionId: string, agentToolUseId?: string): void {
+  retractSubagentPermissions(engineSessionId: string, agentId?: string): void {
     for (const [requestId, details] of [...this.pendingPermissionDetails]) {
       if (details.sessionId !== engineSessionId) {
         continue;
       }
-      const origin = (details.context as { subagent?: { toolUseId?: string } } | undefined)?.subagent;
-      if (!origin || (agentToolUseId !== undefined && origin.toolUseId !== agentToolUseId)) {
+      const origin = (details.context as { subagent?: { agentId?: string } } | undefined)?.subagent;
+      if (!origin || (agentId !== undefined && origin.agentId !== agentId)) {
         continue;
       }
       this.answerPendingPermission(requestId, { result: { decision: 'deny', reason: 'The agent that asked has stopped.' } });
+      this.retractPendingPermission(requestId, details);
+    }
+  }
+
+  /**
+   * Takes down the pending cards of a tool call that has already finished.
+   * The engine's AskUserQuestion carries its own timeout: when nobody answers,
+   * it resolves the call itself (the transcript shows the skipped card) and
+   * stops re-announcing — without ever telling the server. The card would
+   * otherwise sit pending until the TTL sweep, resurrecting on every
+   * subscribe. The tool result is the engine's silent "this call is over", so
+   * any card still pending under that toolCallId is a zombie. A card the user
+   * actually answered was already deleted by `resolvePermission`, which makes
+   * this a no-op for the normal path.
+   */
+  retractPermissionByToolId(engineSessionId: string, toolId: string): void {
+    for (const [requestId, details] of [...this.pendingPermissionDetails]) {
+      if (details.sessionId !== engineSessionId || details.toolId !== toolId) {
+        continue;
+      }
+      this.answerPendingPermission(requestId, { result: { decision: 'deny', reason: TOOL_RESULT_RETRACT_REASON } });
       this.retractPendingPermission(requestId, details);
     }
   }
@@ -778,6 +845,10 @@ export class ZCodeRunLifecycle {
           // A resolver that throws on settle must not block its siblings.
         }
       }
+      // The entry is gone from every future replay; tell the clients that
+      // still show the card, so a connected page drops it instead of waiting
+      // for a replay that will never carry the retraction.
+      this.retractPendingPermission(key, details);
     }
   }
 }
@@ -785,17 +856,22 @@ export class ZCodeRunLifecycle {
 /**
  * `{ subagent }` for a request the engine filed on behalf of a subagent. The
  * engine rewrites such a request to the parent session and tags it with
- * `origin.kind: "subagent"`, whose `parentToolCallId` is the `Agent` call and
- * `description` the agent's task line; anything else carries no subagent.
+ * `origin.kind: "subagent"`, whose `parentToolCallId` is the call that started
+ * the run (the `Agent` call, or the SendMessage that resumed it), `agentId`
+ * the agent (what a stop retracts by) and `description` the agent's task
+ * line; anything else carries no subagent.
  */
-function readSubagentOrigin(params: Record<string, unknown>): { subagent?: { toolUseId: string; description?: string } } {
+function readSubagentOrigin(
+  params: Record<string, unknown>,
+): { subagent?: { toolUseId: string; agentId?: string; description?: string } } {
   const origin = readObjectRecord(params.origin);
   const toolUseId = readOptionalString(origin?.parentToolCallId);
   if (readOptionalString(origin?.kind) !== 'subagent' || !toolUseId) {
     return {};
   }
+  const agentId = readOptionalString(origin?.agentId);
   const description = readOptionalString(origin?.description);
-  return { subagent: { toolUseId, ...(description ? { description } : {}) } };
+  return { subagent: { toolUseId, ...(agentId ? { agentId } : {}), ...(description ? { description } : {}) } };
 }
 
 /**

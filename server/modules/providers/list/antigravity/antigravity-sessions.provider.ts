@@ -39,6 +39,7 @@ import {
   readObjectRecord,
   readOptionalString,
   readUsageNumber,
+  measurePathBytes,
   removePathIfExists,
   sanitizeLeafDirectoryName,
   SUBAGENT_TOOL_NAME,
@@ -93,6 +94,79 @@ function findTranscriptPath(sessionId: string): string | null {
   }
 
   return null;
+}
+
+/**
+ * Decides which transcript ERROR_MESSAGE rows surface as history error rows,
+ * used only by {@link AntigravitySessionsProvider.fetchHistory}.
+ *
+ * agy writes one ERROR_MESSAGE row per failed API attempt, and most turns
+ * retry past their failures (measured across real transcripts: 37 of 41
+ * turns with errors recovered). The live stream never shows those attempts —
+ * it only reports the turn's final outcome — so history must match:
+ *
+ * - A run of adjacent ERROR_MESSAGE rows is "recovered" when a
+ *   `PLANNER_RESPONSE` or `source: MODEL` row (a reply, tool call/result, or
+ *   agent receipt) appears after the run's last row but before the turn's
+ *   next user prompt. Recovered rows never render.
+ * - A turn that died on errors emits ONE error row for the whole run,
+ *   anchored at the run's last row (its timestamp and step index), so the
+ *   failure the live error frame reported survives a reload.
+ *
+ * Returns the rows to skip (recovered runs plus the interior of emitted
+ * runs) and, for each emitted run, its last index mapped to the attempt
+ * count. Rows are addressed by position in the merged canonical stream.
+ */
+function planAntigravityErrorRows(entries: AnyRecord[]): { skip: Set<number>; emitAt: Map<number, number> } {
+  const skip = new Set<number>();
+  const emitAt = new Map<number, number>();
+
+  const isErrorRow = (entry: AnyRecord | undefined): boolean =>
+    readOptionalString(entry?.type) === 'ERROR_MESSAGE';
+
+  // Position of the next user prompt at or after each index; one turn's
+  // failures end where the next turn begins.
+  const nextUserIndex = new Array<number>(entries.length);
+  let nextUser = entries.length;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    nextUserIndex[i] = nextUser;
+    const entry = entries[i];
+    if (readOptionalString(entry?.type) === 'USER_INPUT' || readOptionalString(entry?.source) === 'USER_EXPLICIT') {
+      nextUser = i;
+    }
+  }
+
+  let start = 0;
+  while (start < entries.length) {
+    if (!isErrorRow(entries[start])) {
+      start += 1;
+      continue;
+    }
+    let end = start;
+    while (end + 1 < entries.length && isErrorRow(entries[end + 1])) {
+      end += 1;
+    }
+
+    // Recovery evidence is only meaningful after the run's last failure:
+    // rows between two attempts (a retried tool call, for instance) do not
+    // clear the run that died later.
+    const turnEnd = nextUserIndex[end];
+    let recovered = false;
+    for (let j = end + 1; j < turnEnd && !recovered; j++) {
+      const entry = entries[j];
+      recovered = readOptionalString(entry?.type) === 'PLANNER_RESPONSE' || readOptionalString(entry?.source) === 'MODEL';
+    }
+
+    if (recovered) {
+      for (let k = start; k <= end; k++) skip.add(k);
+    } else {
+      for (let k = start; k < end; k++) skip.add(k);
+      emitAt.set(end, end - start + 1);
+    }
+    start = end + 1;
+  }
+
+  return { skip, emitAt };
 }
 
 /**
@@ -620,6 +694,7 @@ export class AntigravitySessionsProvider implements IProviderSessions {
 
     try {
       const canonicalRows = await readCanonicalAntigravityTranscript(providerSessionId);
+      const errorRows = planAntigravityErrorRows(canonicalRows.map((row) => row.entry));
       const normalizedMessages: NormalizedMessage[] = [];
       // Agents each `invoke_subagent` call created, by the call's id. The
       // call declares roles and prompts; the conversation ids (which name
@@ -665,6 +740,27 @@ export class AntigravitySessionsProvider implements IProviderSessions {
                 sequence: stepIndex,
               }));
             }
+            continue;
+          }
+
+          // Engine retry failures. agy logs one ERROR_MESSAGE per attempt;
+          // a turn that eventually replied must stay silent (live never
+          // showed those attempts), and a turn that died on errors collapses
+          // into one error row — the failure the live error frame reported
+          // but history previously dropped.
+          if (type === 'ERROR_MESSAGE') {
+            if (errorRows.skip.has(i)) continue;
+            const attempts = errorRows.emitAt.get(i) ?? 1;
+            const errorText = readOptionalString(entry.error) ?? 'Antigravity engine reported an error.';
+            normalizedMessages.push(createNormalizedMessage({
+              id: `${baseId}_error`,
+              sessionId,
+              timestamp: createdAt,
+              provider: PROVIDER,
+              kind: 'error',
+              content: attempts > 1 ? `${errorText} (failed after ${attempts} attempts)` : errorText,
+              sequence: stepIndex,
+            }));
             continue;
           }
 
@@ -979,6 +1075,26 @@ export class AntigravitySessionsProvider implements IProviderSessions {
   /**
    * Cleans up Antigravity native storage (summary DB row, brain directory, and conversations directory).
    */
+  listStorageRoots(): string[] {
+    return [...getAntigravityBrainRoots(), path.join(getAntigravityDataRoot(), 'conversations')];
+  }
+
+  async measureSessionStorage(nativeSessionIds: string[]): Promise<Map<string, number>> {
+    const dataRoot = getAntigravityDataRoot();
+    const sizes = new Map<string, number>();
+    for (const nativeSessionId of nativeSessionIds) {
+      const safeId = sanitizeLeafDirectoryName(nativeSessionId, 'antigravity session id');
+      const paths = [
+        ...getAntigravityBrainRoots().map((brainRoot) => path.join(brainRoot, safeId)),
+        path.join(dataRoot, 'conversations', `${safeId}.db`),
+        path.join(dataRoot, 'conversations', safeId),
+      ];
+      const bytes = await Promise.all(paths.map(measurePathBytes));
+      sizes.set(nativeSessionId, bytes.reduce((total, value) => total + value, 0));
+    }
+    return sizes;
+  }
+
   async cleanupSession(nativeSessionId: string, jsonlPath?: string | null): Promise<boolean> {
     let removed = false;
 

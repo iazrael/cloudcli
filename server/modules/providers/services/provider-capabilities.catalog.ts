@@ -162,8 +162,8 @@ export const PROVIDER_CATALOG = {
     permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
     defaultPermissionMode: 'default',
     defaultModel: 'GLM-5.3',
-    // Confirmed on engine 0.16.5: session/send takes native attachment items
-    // ({kind, filename, mimeType, sizeBytes, localPath}); the runtime maps
+    // Confirmed on engine 0.17.1: the v4 sendText command takes attachment
+    // items ({ref, fileName, mime, bytes}, ref = absolute path); the runtime maps
     // app descriptors onto them. Whether an image reaches the model inline
     // still depends on the model's input modality.
     supportsImages: true,

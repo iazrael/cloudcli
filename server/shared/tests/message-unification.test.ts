@@ -167,6 +167,45 @@ test('a live Claude answer is recovered from the acknowledgement sentence', () =
   assert.deepEqual((unified.toolInput as { answers: unknown }).answers, { 'What next?': 'Branch changes' });
 });
 
+test("ZCode's acknowledgement sentence folds like Claude's", () => {
+  const [unified] = prepareTranscriptMessages([
+    message({
+      provider: 'zcode',
+      kind: 'tool_use',
+      toolName: 'AskUserQuestion',
+      toolId: 'call-1',
+      toolInput: { questions: [{ question: '这次要做的视频和它是什么关系？', header: '视频方向', options: [] }] },
+      toolResult: {
+        content:
+          'User has answered your questions: "这次要做的视频和它是什么关系？"="换例子重讲". You can now continue with the user\'s answers in mind.',
+      },
+    }),
+  ]);
+
+  assert.deepEqual(
+    (unified.toolInput as { answers: unknown }).answers,
+    { '这次要做的视频和它是什么关系？': '换例子重讲' },
+  );
+});
+
+test('a ZCode result that says the user answered nothing folds nothing', () => {
+  const [unified] = prepareTranscriptMessages([
+    message({
+      provider: 'zcode',
+      kind: 'tool_use',
+      toolName: 'AskUserQuestion',
+      toolId: 'call-1',
+      toolInput: { questions: [{ question: 'What next?', options: [] }] },
+      toolResult: {
+        content:
+          'The user did not provide answers to these questions. Continue using your best judgment; do not treat this as a rejection or invent a user preference.',
+      },
+    }),
+  ]);
+
+  assert.equal((unified.toolInput as { answers?: unknown }).answers, undefined);
+});
+
 test('a question that was never answered carries no answers', () => {
   const [unified] = prepareTranscriptMessages([
     message({

@@ -162,6 +162,13 @@
     "send": "Send",
     "sending": "Sending…",
     "stop": "Stop",
+    "attachments": {
+      "stillUploading": "Attachments are still uploading",
+      "needsAttention": "Retry or remove failed attachments before sending",
+      "progress": "Upload progress for {{name}}",
+      "retry": "Retry uploading {{name}}",
+      "tooLarge": "Over {{size}}"
+    },
     "hintText": {
       "ctrlEnter": "Ctrl+Enter to send • Shift+Enter for new line • Tab to change modes • / for slash commands",
       "enter": "Enter to send • Shift+Enter for new line • Tab to change modes • / for slash commands",
@@ -321,7 +328,13 @@
       "agent": "Agent {{description}}",
       "command": "Command {{description}}",
       "count": "{{count}} tasks",
-      "sendAnyway": "This session still has background work running:\n{{work}}\n\nA new message starts a new turn, which stops that work; anything it has not reported yet is lost. Send anyway?"
+      "prompt": {
+        "title": "This session still has background work running",
+        "description": "A new message starts a new turn, which stops that work; anything it has not reported yet is lost. Queue the message to send it when the work finishes.",
+        "cancel": "Cancel",
+        "queue": "Queue",
+        "sendAnyway": "Send anyway"
+      }
     },
     "controls": {
       "stopGeneration": "Stop Generation",
@@ -370,9 +383,9 @@
     "customLabel": "Or pick a time",
     "confirm": "Schedule",
     "in": {
-      "15": "In 15 minutes",
-      "60": "In an hour",
-      "480": "In 8 hours",
+      "30": "In 30 minutes",
+      "120": "In 2 hours",
+      "300": "In 5 hours",
       "1440": "Tomorrow"
     },
     "pending": "Scheduled for {{when}}",
@@ -381,6 +394,7 @@
     "dismiss": "Dismiss failure notice"
   },
   "cost": {
+    "readingUsage": "Reading session usage…",
     "totalTokensUsed": "Total tokens used",
     "inputTokens": "Input tokens",
     "outputTokens": "Output tokens",
@@ -400,6 +414,8 @@
     "expand": "Expand",
     "fiveHourWindow": "5-Hour Sliding Window",
     "weeklyWindow": "Weekly Quota",
+    "weeklyWindowAllModels": "Weekly Quota (All Models)",
+    "weeklyWindowScoped": "Weekly Quota ({{model}})",
     "cycleWindow": "Cycle Request Limit",
     "cycleCallsDesc": "{{remaining}} of {{total}} calls remaining",
     "cycleGeneralDesc": "Cycle model & tool request quota",
@@ -414,13 +430,16 @@
     "resetMinutes": "Resets in {{minutes}}m",
     "emptyQuotaHint": {
       "claude": "API key, Bedrock and Vertex logins have no claude.ai subscription limits",
-      "codex": "API Key logins typically do not report 5-hour or weekly account limits"
+      "codex": "API Key logins typically do not report 5-hour or weekly account limits",
+      "opencode": "No OpenCode Go subscription, or the CLI isn't signed in to a Go workspace"
     },
     "resetCardTitle": "Usage reset cards",
     "resetCardHint": "Spending a card refills the covered allowance immediately — no waiting for the window to roll over.",
+    "resetCardHintReadOnly": "Use this reset on the provider's website.",
     "resetCardTypeAll": "Full allowance (5-hour + weekly)",
     "resetCardType5h": "5-hour allowance",
     "resetCardTypeWeekly": "Weekly allowance",
+    "resetCardTypeFable": "Fable Reset",
     "resetCardAvailable": "{{count}} available",
     "resetCardExpires": "soonest expires {{date}}",
     "resetCardUse": "Use",
@@ -444,6 +463,7 @@
     "monthlyWindow": "Monthly Quota"
   },
   "misc": {
+    "commandModalLoading": "Loading…",
     "outputAssets": "Output attachments ({{count}})",
     "fullOutput": "Full output.txt",
     "copyToClipboard": "Copy to clipboard",

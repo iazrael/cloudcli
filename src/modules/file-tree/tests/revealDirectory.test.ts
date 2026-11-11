@@ -2,89 +2,46 @@ import assert from 'node:assert/strict';
 
 import { test } from 'vitest';
 
-import { directoryRevealPaths } from '@/modules/file-tree/utils/revealDirectory';
-import type { FileTreeNode } from '@/shared/types';
+import { revealRequestPaths } from '@/modules/file-tree/utils/revealDirectory';
 
 /**
  * Regression guard: an in-chat directory reference is written the way the model
- * wrote it — usually relative, sometimes absolute — while the file tree keys
- * every node by the absolute path the server emitted.
+ * wrote it — usually relative, sometimes absolute — while the server lists
+ * directories by paths relative to the project root.
  */
 
 const ROOT = '/home/odoo/workspace/personal';
 
-const files = [
-  {
-    type: 'directory',
-    name: 'decisions',
-    path: `${ROOT}/decisions`,
-    children: [{ type: 'file', name: '0001-first.md', path: `${ROOT}/decisions/0001-first.md` }],
-  },
-  {
-    type: 'directory',
-    name: 'src',
-    path: `${ROOT}/src`,
-    children: [
-      {
-        type: 'directory',
-        name: 'modules',
-        path: `${ROOT}/src/modules`,
-        children: [{ type: 'file', name: 'index.ts', path: `${ROOT}/src/modules/index.ts` }],
-      },
-    ],
-  },
-  { type: 'file', name: 'README.md', path: `${ROOT}/README.md` },
-] as unknown as FileTreeNode[];
-
-test('a relative reference resolves against the project root', () => {
-  assert.deepEqual(directoryRevealPaths(files, ROOT, 'decisions/'), [`${ROOT}/decisions`]);
+test('a relative reference lists every level from the project root down', () => {
+  assert.deepEqual(revealRequestPaths(ROOT, 'decisions/'), ['decisions']);
+  assert.deepEqual(revealRequestPaths(ROOT, 'src/modules/'), ['src', 'src/modules']);
 });
 
-test('every ancestor of a nested reference is expanded, root first', () => {
-  assert.deepEqual(directoryRevealPaths(files, ROOT, 'src/modules/'), [
-    `${ROOT}/src`,
-    `${ROOT}/src/modules`,
-  ]);
+test('an absolute reference inside the project resolves to the same levels', () => {
+  assert.deepEqual(revealRequestPaths(ROOT, `${ROOT}/src/modules`), ['src', 'src/modules']);
 });
 
-test('an absolute reference inside the project resolves to the same paths', () => {
-  assert.deepEqual(directoryRevealPaths(files, ROOT, `${ROOT}/src/modules`), [
-    `${ROOT}/src`,
-    `${ROOT}/src/modules`,
-  ]);
+test('a sibling directory that merely shares the root prefix reveals nothing', () => {
+  assert.deepEqual(revealRequestPaths(ROOT, `${ROOT}-backup/src`), []);
 });
 
-test('a sibling directory that merely shares the root prefix expands nothing', () => {
-  assert.deepEqual(directoryRevealPaths(files, ROOT, `${ROOT}-backup/src`), []);
+test('a path outside the project, the root itself, and parent hops reveal nothing', () => {
+  assert.deepEqual(revealRequestPaths(ROOT, '/etc/ssl'), []);
+  assert.deepEqual(revealRequestPaths(ROOT, ROOT), []);
+  assert.deepEqual(revealRequestPaths(ROOT, `${ROOT}/`), []);
+  assert.deepEqual(revealRequestPaths(ROOT, '../elsewhere'), []);
+  assert.deepEqual(revealRequestPaths(ROOT, 'src/../../elsewhere'), []);
 });
 
-test('a path outside the project, and the root itself, expand nothing', () => {
-  assert.deepEqual(directoryRevealPaths(files, ROOT, '/etc/ssl'), []);
-  assert.deepEqual(directoryRevealPaths(files, ROOT, ROOT), []);
+test('windows separators, ./ prefixes and repeated slashes are levelled', () => {
+  assert.deepEqual(revealRequestPaths(ROOT, './src//modules/./'), ['src', 'src/modules']);
+  assert.deepEqual(
+    revealRequestPaths('C:\\Users\\odoo\\personal', 'C:\\Users\\odoo\\personal\\src\\modules'),
+    ['src', 'src/modules'],
+  );
 });
 
-test('expansion stops at the last level the tree actually holds', () => {
-  // `dist/` is gitignored, so the tree never listed it.
-  assert.deepEqual(directoryRevealPaths(files, ROOT, 'src/dist/assets/'), [`${ROOT}/src`]);
-  assert.deepEqual(directoryRevealPaths(files, ROOT, 'README.md/'), []);
-});
-
-test('windows separators and a ./ prefix are levelled before matching', () => {
-  assert.deepEqual(directoryRevealPaths(files, ROOT, './src/modules'), [
-    `${ROOT}/src`,
-    `${ROOT}/src/modules`,
-  ]);
-
-  const windowsRoot = 'C:\\Users\\odoo\\personal';
-  const windowsFiles = [
-    {
-      type: 'directory',
-      name: 'src',
-      path: 'C:\\Users\\odoo\\personal\\src',
-      children: [],
-    },
-  ] as unknown as FileTreeNode[];
-  assert.deepEqual(directoryRevealPaths(windowsFiles, windowsRoot, 'C:\\Users\\odoo\\personal\\src'), [
-    'C:\\Users\\odoo\\personal\\src',
-  ]);
+test('a project without a known root still reveals relative references', () => {
+  assert.deepEqual(revealRequestPaths('', 'src/'), ['src']);
+  assert.deepEqual(revealRequestPaths('', '/abs/src'), []);
 });

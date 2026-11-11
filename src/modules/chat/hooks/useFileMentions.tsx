@@ -3,18 +3,13 @@ import type { Dispatch, KeyboardEvent, RefObject, SetStateAction } from 'react';
 
 import { api } from '@/shared/api';
 import { escapeRegExp } from '@/modules/chat/utils/chatFormatting';
-import type { Project } from '@/shared/types';
-
-type ProjectFileNode = {
-  name: string;
-  type: 'file' | 'directory';
-  path?: string;
-  children?: ProjectFileNode[];
-};
+import type { FileTreeSearchResponse, Project } from '@/shared/types';
 
 export type MentionableFile = {
   name: string;
+  // Project-relative path, inserted into the message.
   path: string;
+  // Absolute path on the server.
   relativePath?: string;
 };
 
@@ -25,115 +20,79 @@ type UseFileMentionsOptions = {
   textareaRef: RefObject<HTMLTextAreaElement>;
 };
 
-const flattenFileTree = (files: ProjectFileNode[], basePath = ''): MentionableFile[] => {
-  let flattened: MentionableFile[] = [];
-
-  files.forEach((file) => {
-    const fullPath = basePath ? `${basePath}/${file.name}` : file.name;
-    if (file.type === 'directory' && file.children) {
-      flattened = flattened.concat(flattenFileTree(file.children, fullPath));
-      return;
-    }
-
-    if (file.type === 'file') {
-      flattened.push({
-        name: file.name,
-        path: fullPath,
-        relativePath: file.path,
-      });
-    }
-  });
-
-  return flattened;
-};
-
-// True when both flattened lists hold the same files in the same order.
-const haveSameFiles = (left: MentionableFile[], right: MentionableFile[]) =>
-  left.length === right.length &&
-  left.every(
-    (file, index) => file.path === right[index].path && file.relativePath === right[index].relativePath,
-  );
+// The dropdown shows this many files; a few more are requested so ranking on
+// the server, not truncation, decides which ones.
+const MAXIMUM_SUGGESTIONS = 10;
+const SEARCH_LIMIT = 20;
+// Waits for a pause in typing so each keystroke does not cost a request.
+const SEARCH_DEBOUNCE_MS = 100;
 
 export function useFileMentions({ selectedProject, input, setInput, textareaRef }: UseFileMentionsOptions) {
   const projectId = selectedProject?.projectId;
-  const [fileList, setFileList] = useState<MentionableFile[]>([]);
   const [fileMentions, setFileMentions] = useState<string[]>([]);
-  const [filteredFiles, setFilteredFiles] = useState<MentionableFile[]>([]);
+  // The latest suggestions and the project they came from, so a project switch
+  // never shows the previous project's files.
+  const [suggestions, setSuggestions] = useState<{ projectId?: string; files: MentionableFile[] }>({ files: [] });
+  const filteredFiles = useMemo(
+    () => (suggestions.projectId === projectId ? suggestions.files : []),
+    [suggestions, projectId],
+  );
   const [showFileDropdown, setShowFileDropdown] = useState(false);
   const [selectedFileIndex, setSelectedFileIndex] = useState(-1);
   const [cursorPosition, setCursorPosition] = useState(0);
   const [atSymbolPosition, setAtSymbolPosition] = useState(-1);
-  // The file-list request still in flight. Starting a new one aborts it, so an
-  // older response can never overwrite a newer list.
-  const fileListRequestRef = useRef<AbortController | null>(null);
+  // The text typed after the active `@`, which the server searches for.
+  const [mentionQuery, setMentionQuery] = useState('');
+  // The search still in flight. Starting a new one aborts it, so an older
+  // response can never overwrite a newer list.
+  const fileSearchRequestRef = useRef<AbortController | null>(null);
 
-  const loadProjectFiles = useCallback(async (targetProjectId: string) => {
-    fileListRequestRef.current?.abort();
-    const abortController = new AbortController();
-    fileListRequestRef.current = abortController;
-
-    try {
-      // File list is keyed by DB projectId now; the backend resolves it to
-      // the project's path before reading.
-      const response = await api.getFiles(targetProjectId, {
-        signal: abortController.signal,
-      });
-      if (!response.ok) {
-        return;
-      }
-
-      const files = (await response.json()) as ProjectFileNode[];
-      if (abortController.signal.aborted) {
-        return;
-      }
-      const nextFileList = flattenFileTree(files);
-      // Keeping the same array when nothing changed stops the filter effect
-      // below from re-running and resetting the highlighted row.
-      setFileList((previousFileList) =>
-        haveSameFiles(previousFileList, nextFileList) ? previousFileList : nextFileList,
-      );
-    } catch (error) {
-      // Ignore aborts from newer requests and rapid project switches; we only care about the latest request.
-      if ((error as { name?: string })?.name === 'AbortError') {
-        return;
-      }
-      console.error('Error fetching files:', error);
+  // Searching on the server each time the query settles keeps every file of a
+  // large project reachable and picks up files created since the last `@`.
+  useEffect(() => {
+    if (!showFileDropdown || !projectId) {
+      return undefined;
     }
-  }, []);
+    const timer = setTimeout(() => {
+      fileSearchRequestRef.current?.abort();
+      const abortController = new AbortController();
+      fileSearchRequestRef.current = abortController;
+      void (async () => {
+        try {
+          const response = await api.searchFiles(
+            projectId,
+            { query: mentionQuery, limit: SEARCH_LIMIT, type: 'file' },
+            { signal: abortController.signal },
+          );
+          if (!response.ok || abortController.signal.aborted) {
+            return;
+          }
+          const body = (await response.json()) as FileTreeSearchResponse;
+          if (abortController.signal.aborted) {
+            return;
+          }
+          setSuggestions({
+            projectId,
+            files: body.results.slice(0, MAXIMUM_SUGGESTIONS).map((match) => ({
+              name: match.name,
+              path: match.relativePath,
+              relativePath: match.path,
+            })),
+          });
+          setSelectedFileIndex(-1);
+        } catch (error) {
+          // Aborts come from newer searches and project switches.
+          if ((error as { name?: string })?.name === 'AbortError') {
+            return;
+          }
+          console.error('Error searching files:', error);
+        }
+      })();
+    }, SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [showFileDropdown, projectId, mentionQuery]);
 
-  useEffect(() => {
-    const fetchProjectFiles = async () => {
-      setFileList([]);
-      setFilteredFiles([]);
-      if (!projectId) {
-        return;
-      }
-
-      await loadProjectFiles(projectId);
-    };
-
-    fetchProjectFiles();
-    return () => {
-      fileListRequestRef.current?.abort();
-    };
-  }, [projectId, loadProjectFiles]);
-
-  // Files keep appearing after the list above was loaded (uploads, agent edits,
-  // the terminal, git checkouts) and nothing tells the composer about them, so
-  // the list is refetched each time the `@` dropdown opens. The dropdown stays
-  // open while the query is typed, so this is one request per `@`, not one per
-  // keystroke, and the previous list stays visible until the response lands.
-  useEffect(() => {
-    const refreshProjectFiles = async () => {
-      if (!showFileDropdown || !projectId) {
-        return;
-      }
-
-      await loadProjectFiles(projectId);
-    };
-
-    refreshProjectFiles();
-  }, [showFileDropdown, projectId, loadProjectFiles]);
+  useEffect(() => () => fileSearchRequestRef.current?.abort(), []);
 
   useEffect(() => {
     const textBeforeCursor = input.slice(0, cursorPosition);
@@ -156,17 +115,8 @@ export function useFileMentions({ selectedProject, input, setInput, textareaRef 
     setAtSymbolPosition(lastAtIndex);
     setShowFileDropdown(true);
     setSelectedFileIndex(-1);
-
-    const matchingFiles = fileList
-      .filter(
-        (file) =>
-          file.name.toLowerCase().includes(textAfterAt.toLowerCase()) ||
-          file.path.toLowerCase().includes(textAfterAt.toLowerCase()),
-      )
-      .slice(0, 10);
-
-    setFilteredFiles(matchingFiles);
-  }, [input, cursorPosition, fileList]);
+    setMentionQuery(textAfterAt);
+  }, [input, cursorPosition]);
 
   const activeFileMentions = useMemo(() => {
     if (!input || fileMentions.length === 0) {
@@ -267,11 +217,9 @@ export function useFileMentions({ selectedProject, input, setInput, textareaRef 
 
       if (event.key === 'Escape') {
         event.preventDefault();
-        // The caret is still inside the `@` query, so a refetch landing after
-        // this would re-open the dropdown (or first show it, when nothing
-        // matched yet) and take the next Enter. Drop it; re-opening the
-        // dropdown fetches again.
-        fileListRequestRef.current?.abort();
+        // The caret is still inside the `@` query; a search landing after this
+        // would refill the closed list. Drop it; typing again searches again.
+        fileSearchRequestRef.current?.abort();
         setShowFileDropdown(false);
         return true;
       }

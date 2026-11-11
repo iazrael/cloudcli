@@ -10,8 +10,8 @@ import jwt from 'jsonwebtoken';
 import { createImageMediaService } from '@/modules/media/image-media.service.js';
 import { createMediaRouter } from '@/modules/media/media.routes.js';
 
-async function fixture(run: (base: string, state: { now: number; active: boolean; readable: boolean; version: number }) => Promise<void>) {
-  const state = { now: 1_800_000_000, active: true, readable: true, version: 1 };
+async function fixture(run: (base: string, state: { now: number; active: boolean; readable: boolean; version: number; authExpiresAt?: number }) => Promise<void>) {
+  const state = { now: 1_800_000_000, active: true, readable: true, version: 1, authExpiresAt: undefined as number | undefined };
   const service = createImageMediaService({
     secret: 'test-only-media-secret',
     now: () => state.now,
@@ -26,7 +26,7 @@ async function fixture(run: (base: string, state: { now: number; active: boolean
   });
   const routers = createMediaRouter(service, (req, res, next) => {
     if (req.header('authorization') !== 'Bearer test-login') { res.sendStatus(401); return; }
-    Object.assign(req, { user: { id: 'user-1' }, authExpiresAt: state.now + 400 });
+    Object.assign(req, { user: { id: 'user-1' }, authExpiresAt: state.authExpiresAt ?? state.now + 400 });
     next();
   });
   const app = express();
@@ -68,7 +68,30 @@ test('authenticated batch issues direct image URLs; bytes need no login or API k
     assert.equal(bytes.headers.get('content-type'), 'image/png');
     assert.equal(bytes.headers.get('x-content-type-options'), 'nosniff');
     assert.equal(bytes.headers.get('x-refreshed-token'), null);
-    assert.equal(bytes.headers.get('cache-control'), 'private, no-cache');
+    assert.equal(bytes.headers.get('cache-control'), 'private, max-age=600');
+  });
+});
+
+test('same source signs the same URL within a window and the window ticket passes read validation', async () => {
+  await fixture(async (base, state) => {
+    // Infinity 让登录令牌不截短，签发寿命由签发窗口决定（窗口起点 iat，寿命两个窗口）。
+    state.authExpiresAt = Number.POSITIVE_INFINITY;
+    const request = [{ id: 'a', kind: 'asset', filename: 'a.png' }];
+    const { images: [first] } = await readBatch(await issue(base, request));
+    // 1_800_000_000 正好是一个窗口起点：iat = now，exp = now + 两个窗口。
+    assert.equal(first.expiresAt, (1_800_000_000 + 1_200) * 1000);
+    const { images: [again] } = await readBatch(await issue(base, request));
+    assert.equal(again.url, first.url);
+    state.now += 300;
+    const { images: [sameWindow] } = await readBatch(await issue(base, request));
+    assert.equal(sameWindow.url, first.url);
+    // 窗口内签出的 URL 字节可读取，跨窗口后 URL 变化且新票据同样可读。
+    const bytes = await fetch(base + sameWindow.url);
+    assert.equal(bytes.status, 200);
+    state.now += 300;
+    const { images: [nextWindow] } = await readBatch(await issue(base, request));
+    assert.notEqual(nextWindow.url, sameWindow.url);
+    assert.equal((await fetch(base + nextWindow.url)).status, 200);
   });
 });
 

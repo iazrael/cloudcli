@@ -18,13 +18,13 @@ const jsonResponse = (payload: unknown) => ({ ok: true, json: async () => payloa
 
 const listCommands = vi.fn();
 const listSkills = vi.fn();
-const getFiles = vi.fn();
+const searchFiles = vi.fn();
 
 vi.mock('@/shared/api', () => ({
   api: {
     commands: { list: (...args: unknown[]) => listCommands(...args) },
     providers: { skills: (...args: unknown[]) => listSkills(...args) },
-    getFiles: (...args: unknown[]) => getFiles(...args),
+    searchFiles: (...args: unknown[]) => searchFiles(...args),
   },
 }));
 
@@ -38,13 +38,17 @@ beforeEach(() => {
   localStorage.clear();
   listCommands.mockReset();
   listSkills.mockReset();
-  getFiles.mockReset();
+  searchFiles.mockReset();
   listCommands.mockResolvedValue(jsonResponse({
     builtIn: [{ name: '/help', description: 'Show help', namespace: 'builtin' }],
     custom: [{ name: '/echo', description: 'Echo', namespace: 'project', path: '.claude/commands/echo.md' }],
   }));
   listSkills.mockResolvedValue(jsonResponse({ success: true, data: { skills: [] } }));
-  getFiles.mockResolvedValue(jsonResponse([{ type: 'file', name: 'upload.txt', path: `${ROOT}/upload.txt` }]));
+  searchFiles.mockResolvedValue(jsonResponse({
+    results: [{ type: 'file', name: 'upload.txt', path: `${ROOT}/upload.txt`, relativePath: 'upload.txt' }],
+    truncated: false,
+    indexIncomplete: false,
+  }));
 });
 
 test('picking a slash command keeps the lines typed after the partial name', async () => {
@@ -87,7 +91,6 @@ const renderMentions = (input: string, caret: number) => {
     { initialProps: { text: '' } },
   );
   const type = async () => {
-    await waitFor(() => assert.equal(getFiles.mock.calls.length, 1));
     hook.rerender({ text: input });
     act(() => { hook.result.current.setCursorPosition(caret); });
   };

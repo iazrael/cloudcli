@@ -8,6 +8,7 @@ import SettingsCard from '@/modules/settings/SettingsCard';
 import SettingsRow from '@/modules/settings/SettingsRow';
 import SettingsSection from '@/modules/settings/SettingsSection';
 import SettingsToggle from '@/modules/settings/SettingsToggle';
+import SessionsStorageCleanup from '@/modules/settings/tabs/sessions-settings/SessionsStorageCleanup';
 
 type AutoArchiveSettings = {
   enabled: boolean;
@@ -219,6 +220,8 @@ export default function SessionsSettingsTab() {
           )}
         </SettingsCard>
       </SettingsSection>
+
+      <SessionsStorageCleanup />
 
       {/* Info notice */}
       <div className="rounded-xl border border-border/80 bg-muted/30 p-4">

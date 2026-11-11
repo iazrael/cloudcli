@@ -9,7 +9,17 @@ import { TranscriptRenderContext } from '@/modules/chat/context/TranscriptRender
 type ChatMessageImagesProps = {
   images: ChatImage[];
   projectId?: string | null;
+  /** Both are fixed thumbnails. `attachment` fills its square; `assistant` shows the whole image the engine made. */
+  variant?: 'attachment' | 'assistant';
 };
+
+// 缩略图尺寸与图片无关，虚拟列表重新挂载这一行时高度不变。
+const IMAGE_CLASS_NAMES = {
+  attachment: 'h-28 w-28 object-cover',
+  assistant: 'h-28 w-28 object-contain',
+};
+// 导出文件没有查看器，生成的图片无法点开，只能按阅读尺寸放在正文里。
+const EXPORTED_ASSISTANT_IMAGE_CLASS_NAME = 'h-auto max-h-[32rem] w-auto max-w-full object-contain';
 
 // 导出保留嵌入字节；交互式历史签发引用，JS 不读取图片字节。
 function useChatImageSrc(image: ChatImage, projectId?: string | null) {
@@ -33,13 +43,15 @@ export function ImageLightbox({ src, alt, filePath, onClose }: { src: string; al
 }
 
 /** 聊天时间线用此组件显示签名附件预览并打开统一查看器。 */
-export function ChatMessageImage({ image, projectId }: { image: ChatImage; projectId?: string | null }) {
+export function ChatMessageImage({ image, projectId, variant = 'attachment' }: { image: ChatImage; projectId?: string | null; variant?: ChatMessageImagesProps['variant'] }) {
   const { t } = useTranslation();
+  const { isExporting } = useContext(TranscriptRenderContext);
   const { observe, ...signed } = useChatImageSrc(image, projectId);
   const { src, failed } = signed;
   // 展开由用户点击决定，与图片加载状态分开。
   const [expanded, setExpanded] = useState(false);
   const alt = image.name || 'Attached image';
+  const imageClassName = isExporting && variant === 'assistant' ? EXPORTED_ASSISTANT_IMAGE_CLASS_NAME : IMAGE_CLASS_NAMES[variant];
 
   if (failed) {
     return (
@@ -67,7 +79,7 @@ export function ChatMessageImage({ image, projectId }: { image: ChatImage; proje
           loading="lazy" decoding="async" referrerPolicy="no-referrer" onLoad={signed.onLoad} onError={signed.onError}
           src={src}
           alt={alt}
-          className="h-28 w-28 cursor-zoom-in object-cover transition-transform duration-200 hover:scale-105"
+          className={`${imageClassName} cursor-zoom-in transition-transform duration-200 hover:scale-105`}
         />
       </button>
       {expanded && (
@@ -90,17 +102,18 @@ export function ChatMessageImage({ image, projectId }: { image: ChatImage; proje
  * rounded square cards shown above the message bubble. Each thumbnail
  * expands to a fullscreen lightbox on click.
  *
- * Rendered by chat's MessageComponent for the images attached to a user turn.
+ * Rendered by chat's MessageComponent for the images attached to a user turn
+ * and, as the `assistant` variant, as the same card for images an engine generated.
  */
-export default function ChatMessageImages({ images, projectId }: ChatMessageImagesProps) {
+export default function ChatMessageImages({ images, projectId, variant = 'attachment' }: ChatMessageImagesProps) {
   if (!images || images.length === 0) {
     return null;
   }
 
   return (
-    <div className="flex flex-wrap justify-end gap-2">
+    <div className={`flex flex-wrap gap-2 ${variant === 'assistant' ? 'mt-2 justify-start' : 'justify-end'}`}>
       {images.map((image, index) => (
-        <ChatMessageImage key={image.path || image.name || index} image={image} projectId={projectId} />
+        <ChatMessageImage key={image.path || image.name || index} image={image} projectId={projectId} variant={variant} />
       ))}
     </div>
   );

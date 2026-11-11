@@ -21,6 +21,8 @@ type ImageViewerSurfaceProps = {
   alt: string;
   filePath?: string;
   dark?: boolean;
+  /** Solid color painted directly behind the image ('dark' black, 'light' white); omitted keeps transparent page background for inline embeds. */
+  backdrop?: 'dark' | 'light';
   onScaleChange?: (scale: number) => void;
   onError?: () => void;
   onLoad?: () => void;
@@ -38,6 +40,7 @@ export function ImageViewerSurface({
   alt,
   filePath,
   dark = false,
+  backdrop,
   onScaleChange,
   onError,
   onLoad,
@@ -395,6 +398,8 @@ export function ImageViewerSurface({
           style={{
             transform: `translate3d(${position.x}px, ${position.y}px, 0) scale(${scale})`,
             transformOrigin: 'center center',
+            // 背景与图片同尺寸缩放，透明底图在黑白衬底之间切换可见性。
+            backgroundColor: backdrop === 'dark' ? '#000000' : backdrop === 'light' ? '#ffffff' : undefined,
           }}
         >
           <img

@@ -264,9 +264,9 @@
     "customLabel": "または時刻を指定",
     "confirm": "予約",
     "in": {
-      "15": "15 分後",
-      "60": "1 時間後",
-      "480": "8 時間後",
+      "30": "30 分後",
+      "120": "2 時間後",
+      "300": "5 時間後",
       "1440": "明日"
     },
     "pending": "{{when}} に送信予定",
@@ -294,6 +294,8 @@
     "expand": "展開する",
     "fiveHourWindow": "5時間スライド枠制限",
     "weeklyWindow": "週間クォータ",
+    "weeklyWindowAllModels": "週間クォータ（全モデル）",
+    "weeklyWindowScoped": "週間クォータ（{{model}}）",
     "remainingPercent": "残り {{percent}}%",
     "resetSoon": "まもなくリセット",
     "resetDaysHours": "{{days}}日{{hours}}時間後にリセット",
@@ -301,13 +303,16 @@
     "resetMinutes": "{{minutes}}分後にリセット",
     "emptyQuotaHint": {
       "claude": "API キー・Bedrock・Vertex でのログインには claude.ai のサブスクリプション制限がありません",
-      "codex": "API キーでのログインでは通常、5時間や週間の制限は提供されません"
+      "codex": "API キーでのログインでは通常、5時間や週間の制限は提供されません",
+      "opencode": "OpenCode Go プランが未契約か、CLI が Go ワークスペースに未ログインです"
     },
     "resetCardTitle": "使用量リセットカード",
     "resetCardHint": "使用すると対象の枠が即座に回復し、リセット期間を待つ必要がありません。",
+    "resetCardHintReadOnly": "このリセットは提供元のウェブサイトで使用してください。",
     "resetCardTypeAll": "全枠（5時間 + 週間）",
     "resetCardType5h": "5時間枠",
     "resetCardTypeWeekly": "週間枠",
+    "resetCardTypeFable": "Fable リセット",
     "resetCardAvailable": "{{count}} 枚利用可能",
     "resetCardExpires": "最短 {{date}} に期限切れ",
     "resetCardUse": "使用",

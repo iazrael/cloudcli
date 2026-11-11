@@ -15,10 +15,10 @@ import type { Project } from '@/shared/types';
  * from the right one.
  */
 
-const getFiles = vi.fn();
+const searchFiles = vi.fn();
 
 vi.mock('@/shared/api', () => ({
-  api: { getFiles: (...args: unknown[]) => getFiles(...args) },
+  api: { searchFiles: (...args: unknown[]) => searchFiles(...args) },
 }));
 
 const { useFileOpenResolver } = await import('@/modules/project-workspace/hooks/useFileOpenResolver');
@@ -26,19 +26,30 @@ const { useFileOpenResolver } = await import('@/modules/project-workspace/hooks/
 const ROOT = '/home/odoo/workspace/personal';
 const project: Project = { projectId: 'p1', displayName: 'personal', fullPath: ROOT };
 
-const tree = [
-  { type: 'file', name: 'CLAUDE.md', path: `${ROOT}/CLAUDE.md` },
-  {
-    type: 'directory',
-    name: 'src',
-    path: `${ROOT}/src`,
-    children: [{ type: 'file', name: 'foo.ts', path: `${ROOT}/src/foo.ts` }],
-  },
-];
+// The project's files; the fake server matches the query against their paths
+// like the real search, putting the shortest path first.
+let projectFiles = ['CLAUDE.md', 'src/foo.ts'];
+
+const answerSearch = async (_projectId: string, { query }: { query: string }) => ({
+  ok: true,
+  json: async () => ({
+    results: projectFiles
+      .filter((relativePath) => relativePath.toLowerCase().includes(query.toLowerCase()))
+      .sort((left, right) => left.length - right.length)
+      .map((relativePath) => ({
+        type: 'file',
+        name: relativePath.split('/').pop(),
+        path: `${ROOT}/${relativePath}`,
+        relativePath,
+      })),
+    truncated: false,
+    indexIncomplete: false,
+  }),
+});
 
 const setup = () => {
-  getFiles.mockReset();
-  getFiles.mockResolvedValue({ ok: true, json: async () => tree });
+  searchFiles.mockReset();
+  searchFiles.mockImplementation(answerSearch);
   const onFileOpen = vi.fn();
   const { result } = renderHook(() => useFileOpenResolver(project, onFileOpen));
   return { resolve: result.current, onFileOpen };
@@ -49,8 +60,8 @@ test('an absolute path outside the project is passed through untouched', async (
   resolve('/home/odoo/.claude/CLAUDE.md');
   await waitFor(() => assert.equal(onFileOpen.mock.calls.length, 1));
   assert.equal(onFileOpen.mock.calls[0][0], '/home/odoo/.claude/CLAUDE.md');
-  // It does not even need the tree, so no request goes out.
-  assert.equal(getFiles.mock.calls.length, 0);
+  // It does not even need a search, so no request goes out.
+  assert.equal(searchFiles.mock.calls.length, 0);
 });
 
 test('an absolute path inside the project resolves to itself, as before', async () => {
@@ -60,11 +71,13 @@ test('an absolute path inside the project resolves to itself, as before', async 
   assert.equal(onFileOpen.mock.calls[0][0], `${ROOT}/src/foo.ts`);
 });
 
-test('partial references still match against the tree', async () => {
+test('partial references still match against the project files', async () => {
   const { resolve, onFileOpen } = setup();
   resolve('foo.ts');
   await waitFor(() => assert.equal(onFileOpen.mock.calls.length, 1));
   assert.equal(onFileOpen.mock.calls[0][0], `${ROOT}/src/foo.ts`);
+  // Searched by the file name, which every candidate must contain.
+  assert.deepEqual(searchFiles.mock.calls[0].slice(0, 2), ['p1', { query: 'foo.ts', limit: 200, type: 'file' }]);
 
   const second = setup();
   second.resolve('src/foo.ts');
@@ -90,4 +103,21 @@ test('surrounding whitespace never reaches the API as part of the path', async (
   second.resolve('nope.ts ');
   await waitFor(() => assert.equal(second.onFileOpen.mock.calls.length, 1));
   assert.equal(second.onFileOpen.mock.calls[0][0], 'nope.ts');
+});
+
+test('a path suffix beats a shorter same-named file, and the bare name is the fallback', async () => {
+  projectFiles = ['lib/foo.ts', 'src/utils/foo.ts'];
+  try {
+    const { resolve, onFileOpen } = setup();
+    resolve('utils/foo.ts');
+    await waitFor(() => assert.equal(onFileOpen.mock.calls.length, 1));
+    assert.equal(onFileOpen.mock.calls[0][0], `${ROOT}/src/utils/foo.ts`);
+
+    const second = setup();
+    second.resolve('other/foo.ts');
+    await waitFor(() => assert.equal(second.onFileOpen.mock.calls.length, 1));
+    assert.equal(second.onFileOpen.mock.calls[0][0], `${ROOT}/lib/foo.ts`);
+  } finally {
+    projectFiles = ['CLAUDE.md', 'src/foo.ts'];
+  }
 });

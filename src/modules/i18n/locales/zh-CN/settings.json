@@ -172,6 +172,33 @@
       "14days": "14 天前（两周前）",
       "30days": "30 天前（一个月前）"
     },
+    "storageCleanup": {
+      "title": "存储清理",
+      "enableLabel": "清理长期未活动的已归档会话",
+      "enableDescription": "每天运行一次，只删除引擎可以重建的数据。对话仍然可以查看和继续。",
+      "retentionLabel": "保留时长",
+      "retentionDescription": "超过这个时长没有活动的已归档会话会被清理。置顶、运行中或有待发消息的会话不受影响。",
+      "days": "{{count}} 天",
+      "purgeLabel": "同时删除对话和相关资源（不可恢复）",
+      "purgeDescription": "永久删除对话、转录和相关文件，引擎里的记录也会一起删除。默认不选。",
+      "purgeConfirmTitle": "确定永久删除对话吗？",
+      "purgeConfirmBody": "现在会删除 {{count}} 个对话，之后每天还会删除新到期的对话。此操作不可恢复。",
+      "purgeConfirmButton": "确定删除",
+      "runConfirmTitle": "确定现在删除对话吗？",
+      "runConfirmBody": "本次最多永久删除 {{count}} 个对话。此操作不可恢复。",
+      "widenConfirmTitle": "确定要删除更多对话吗？",
+      "widenConfirmBody": "“同时删除对话”已开启，这个改动会永久删除更多对话，不可恢复。",
+      "previewButton": "查看会清理什么",
+      "cancel": "取消",
+      "previewArtifacts": "当前：{{count}} 个会话，约 {{size}} 可重建的数据。",
+      "previewPurge": "如果删除对话：{{count}} 个对话，约 {{size}}。",
+      "previewPartial": "部分大小无法统计，实际可能更多。",
+      "runTitle": "立即清理",
+      "runDescription": "按上面的设置执行一次。",
+      "runButton": "立即清理",
+      "runningHint": "正在后台清理，可能需要几分钟。关掉这个页面不影响。",
+      "lastRun": "上次运行 {{time}}：释放 {{size}}，清理 {{cleaned}}，删除 {{deleted}}，跳过 {{skipped}}，失败 {{failed}}。"
+    },
     "manualSection": {
       "title": "手动清理操作"
     },

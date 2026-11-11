@@ -483,6 +483,44 @@ export type ChatAttachment = {
   size?: number;
 }
 
+/** Where one composer attachment stands: waiting for a slot, uploading, stored, failed and retryable, or rejected before upload for its size. */
+export type ComposerAttachmentStatus = 'queued' | 'uploading' | 'done' | 'failed' | 'tooLarge';
+
+/** One attachment in the composer. `id` doubles as its upload identity, so retries reuse it and same-named files never mix. */
+export type ComposerAttachmentItem = {
+  id: string;
+  file: File;
+  status: ComposerAttachmentStatus;
+  /** The server's descriptor, sent with the message; set once `status` is `done`. */
+  uploaded?: unknown;
+  /** Why the last upload failed; set while `status` is `failed`. */
+  error?: string;
+};
+
+/** Why the composer cannot send yet: an attachment is unfinished, or one needs a retry or removal. `null` means nothing holds it back. */
+export type ComposerAttachmentBlock = 'uploading' | 'failed' | null;
+
+/** A file with its stored descriptor, for putting an already uploaded attachment back in the composer. */
+export type UploadedComposerAttachment = {
+  file: File;
+  uploaded: unknown;
+};
+
+/** Owns every composer attachment and its upload, grouped by draft scope, so uploads outlive session switches. Progress has its own subscription so a percent change repaints one thumbnail, not the composer. */
+export type ComposerAttachmentQueue = {
+  add: (scope: string, files: File[]) => void;
+  restore: (scope: string, entries: UploadedComposerAttachment[]) => void;
+  remove: (id: string) => void;
+  retry: (id: string) => void;
+  take: (scope: string) => readonly ComposerAttachmentItem[];
+  abortAll: () => void;
+  getItems: (scope: string) => readonly ComposerAttachmentItem[];
+  isReady: (scope: string) => boolean;
+  getProgress: (id: string) => number;
+  subscribe: (listener: () => void) => () => void;
+  subscribeProgress: (id: string, listener: () => void) => () => void;
+};
+
 /** A chat attachment that is an image, extending ChatAttachment with the inline base64 data URL that Claude history uses when no stored path is available. */
 export type ChatImage = {
   /** Inline data URL (Claude history stores image attachments as base64). */
@@ -731,6 +769,14 @@ export type QueuedDraft = {
   options?: QueuedSendOptions;
 };
 
+/** The answer to the prompt shown when sending over a session's background work: send now (stopping that work), queue the message until the work finishes, or do nothing. */
+export type BackgroundSendChoice = 'send' | 'queue' | 'cancel';
+
+/** An open background-work send prompt, listing the session's own background tasks as display strings. */
+export type BackgroundSendPrompt = {
+  work: string[];
+};
+
 /** Viewport-relative placement box (right/bottom offsets plus max height and width) computed for a composer popover so the model and permission menus stay inside the window. */
 export type ComposerMenuAnchor = {
   right: number;
@@ -896,7 +942,7 @@ export type DirectoryRevealRequest = {
   path: string;
 };
 
-/** One file or directory entry in a project's file listing, with directories carrying their loaded `children`; used across the file tree for rendering, searching and filtering. */
+/** One file or directory entry in a project's file listing; used across the file tree for rendering. The server lists one directory level at a time, so `children` and the `children*` flags are attached by the file tree itself for expanded folders and search results. */
 export type FileTreeNode = {
   name: string;
   type: FileTreeItemType;
@@ -905,7 +951,22 @@ export type FileTreeNode = {
   modified?: string;
   permissionsRwx?: string;
   children?: FileTreeNode[];
+  // Set on an expanded folder whose entries are still being fetched or failed to load.
+  childrenStatus?: 'loading' | 'error';
+  childrenError?: string;
+  // The server stopped listing this folder at its per-directory entry cap.
+  childrenTruncated?: boolean;
   [key: string]: unknown;
+};
+
+/** One match from the project file search endpoint: a file-tree node plus its `/`-separated path relative to the project root. Used by the file tree search box, chat `@` mentions, the command palette and chat file-reference resolution. */
+export type FileTreeSearchMatch = FileTreeNode & { relativePath: string };
+
+/** Body of the project file search endpoint. `truncated` means more entries matched than the requested limit; `indexIncomplete` means the project was too large to index fully, so some files can never match. */
+export type FileTreeSearchResponse = {
+  results: FileTreeSearchMatch[];
+  truncated: boolean;
+  indexIncomplete: boolean;
 };
 
 /** The image the file tree asked to preview, carrying the path plus the DB `projectId` the image viewer needs to build its raw content URL. */
@@ -1854,4 +1915,29 @@ export type MarkdownNode = {
   value?: string;
   url?: string;
   children?: MarkdownNode[];
+};
+
+//----------------- BROWSER USE ------------
+/** Browser 面板的会话形状（监控列表与遥控视图共用），字段对齐 server/modules/browser-use 的公开会话。 */
+export type BrowserUseSession = {
+  id: string;
+  status: 'ready' | 'stopped' | 'unavailable';
+  url: string | null;
+  title: string | null;
+  screenshotDataUrl: string | null;
+  createdAt: string;
+  updatedAt: string;
+  lastAction: string | null;
+  message: string | null;
+  createdBy: 'agent' | 'manual';
+  profileName: string | null;
+  viewport: {
+    width: number;
+    height: number;
+  } | null;
+  cursor: {
+    x: number;
+    y: number;
+    actor: 'agent' | 'user';
+  } | null;
 };

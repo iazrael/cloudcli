@@ -72,6 +72,14 @@ export const scheduledMessagesDb = {
       .all(userId, sessionId) as ScheduledMessageRow[];
   },
 
+  /** Lists every session with a message still waiting to be sent, for any user. */
+  listSessionIdsWithPending(): string[] {
+    const rows = getConnection()
+      .prepare(`SELECT DISTINCT session_id FROM scheduled_messages WHERE status = 'pending'`)
+      .all() as { session_id: string }[];
+    return rows.map((row) => row.session_id);
+  },
+
   listPendingForUser(userId: number): ScheduledMessageRow[] {
     return getConnection()
       .prepare(

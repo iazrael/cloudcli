@@ -2,6 +2,7 @@ import type { ImageMediaRequest, PathExistenceRequest } from '@/shared/types';
 import {
   expireAuthSession,
   getStoredAuthToken,
+  storeAuthToken,
   storeRefreshedAuthToken,
 } from '@/shared/authToken';
 import { collectStoredOutputAssets, IS_PLATFORM } from '@/shared/utils';
@@ -60,6 +61,61 @@ export const authenticatedFetch = (
     return response;
   });
 };
+
+/**
+ * `authenticatedFetch` for uploads that report progress, which fetch cannot do.
+ * It keeps fetch's contract so callers need no second code path: HTTP failures
+ * resolve as a Response, a network failure rejects with TypeError, and an abort
+ * rejects with AbortError. Progress is a whole percent capped at 99, because
+ * sending the last byte does not mean the server has stored the file.
+ */
+export const authenticatedUpload = (
+  url: string,
+  options: ApiRequestOptions = {},
+  onProgress?: (progress: number) => void,
+): Promise<Response> => new Promise((resolve, reject) => {
+  const { method = 'POST', headers = {}, body, signal } = options;
+  if (signal?.aborted) {
+    reject(new DOMException('Aborted', 'AbortError'));
+    return;
+  }
+
+  const xhr = new XMLHttpRequest();
+  xhr.open(method, url);
+  const token = getStoredAuthToken();
+  if (!IS_PLATFORM && token) {
+    xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+  }
+  Object.entries(headers).forEach(([name, value]) => xhr.setRequestHeader(name, value));
+
+  const abort = () => xhr.abort();
+  signal?.addEventListener('abort', abort, { once: true });
+  const settle = () => signal?.removeEventListener('abort', abort);
+
+  xhr.upload.onprogress = (event) => {
+    if (event.lengthComputable) onProgress?.(Math.min(99, Math.round((event.loaded / event.total) * 100)));
+  };
+  xhr.onload = () => {
+    settle();
+    const refreshedToken = xhr.getResponseHeader('X-Refreshed-Token');
+    if (refreshedToken) {
+      storeAuthToken(refreshedToken);
+    }
+    if (xhr.status === 401 && xhr.getResponseHeader('X-Auth-Error')) {
+      expireAuthSession();
+    }
+    resolve(new Response(xhr.responseText || null, { status: xhr.status, statusText: xhr.statusText }));
+  };
+  xhr.onerror = () => {
+    settle();
+    reject(new TypeError('Failed to fetch'));
+  };
+  xhr.onabort = () => {
+    settle();
+    reject(new DOMException('Aborted', 'AbortError'));
+  };
+  xhr.send(body as XMLHttpRequestBodyInit | null | undefined);
+});
 
 /** Chat uses one upload identity across retries so a lost response cannot duplicate stored files. */
 export const uploadChatAttachments = (
@@ -384,8 +440,18 @@ export const api = {
     get(fileContentPath(projectId, filePath), options),
   saveFile: (projectId: string, filePath: string, content: string) =>
     put(`/api/file-tree/projects/${projectId}/file`, { filePath, content }),
-  getFiles: (projectId: string, options: ApiRequestOptions = {}) =>
-    get(`/api/file-tree/projects/${projectId}/files${query({ respectGitignore: true })}`, options),
+  // Lists project directories one level deep, up to 50 per call; '' is the
+  // project root, other paths are relative to it or absolute inside it.
+  listDirectories: (projectId: string, paths: string[], options: ApiRequestOptions = {}) =>
+    post(`/api/file-tree/projects/${projectId}/directories`, { paths }, options),
+  // Searches the project's files by name and path on the server (best name
+  // matches first); type 'any' also returns matching folders. Answers with a
+  // `FileTreeSearchResponse`.
+  searchFiles: (
+    projectId: string,
+    { query: searchQuery, limit, type }: { query: string; limit: number; type: 'file' | 'any' },
+    options: ApiRequestOptions = {},
+  ) => get(`/api/file-tree/projects/${projectId}/files/search${query({ q: searchQuery, limit, type })}`, options),
 
   // File operations
   createFile: (
@@ -509,6 +575,12 @@ export const api = {
       projectPath: string;
       initialMessage?: unknown;
     }) => post('/api/providers/sessions', payload),
+    storageCleanupSettings: () => get('/api/providers/sessions/storage-cleanup/settings'),
+    updateStorageCleanupSettings: (input: unknown) =>
+      put('/api/providers/sessions/storage-cleanup/settings', input),
+    previewStorageCleanup: () => post('/api/providers/sessions/storage-cleanup/preview'),
+    runStorageCleanup: (input: { confirmPurge: boolean }) =>
+      post('/api/providers/sessions/storage-cleanup/run', input),
     sessionMessages: (
       sessionId: string,
       pagination: { limit?: number | null; offset?: number } = {},
@@ -678,6 +750,22 @@ export const api = {
     settings: () => get('/api/browser-use/settings'),
     saveSettings: (settings: unknown) => put('/api/browser-use/settings', settings),
     sessions: () => get('/api/browser-use/sessions'),
+    createSession: () => post('/api/browser-use/sessions'),
+    screen: (sessionId: string) => get(`/api/browser-use/sessions/${sessionId}/screen`),
+    navigate: (sessionId: string, url: string) =>
+      post(`/api/browser-use/sessions/${sessionId}/navigate`, { url }),
+    nav: (sessionId: string, action: 'back' | 'forward' | 'reload') =>
+      post(`/api/browser-use/sessions/${sessionId}/nav`, { action }),
+    click: (sessionId: string, x: number, y: number) =>
+      post(`/api/browser-use/sessions/${sessionId}/click`, { x, y }),
+    scroll: (sessionId: string, deltaX: number, deltaY: number) =>
+      post(`/api/browser-use/sessions/${sessionId}/scroll`, { deltaX, deltaY }),
+    typeText: (sessionId: string, text: string) =>
+      post(`/api/browser-use/sessions/${sessionId}/type`, { text }),
+    pressKey: (sessionId: string, key: string) =>
+      post(`/api/browser-use/sessions/${sessionId}/key`, { key }),
+    setViewport: (sessionId: string, width: number, height: number) =>
+      post(`/api/browser-use/sessions/${sessionId}/viewport`, { width, height }),
     stopSession: (sessionId: string) => post(`/api/browser-use/sessions/${sessionId}/stop`),
     deleteSession: (sessionId: string) => del(`/api/browser-use/sessions/${sessionId}`),
     installRuntime: () => post('/api/browser-use/runtime/install'),

@@ -80,6 +80,17 @@ export type CodexThreadItem =
     status: CodexItemStatus;
   }
   | { kind: 'web_search'; id: string; query: string }
+  | {
+    kind: 'image_generation';
+    id: string;
+    /** The stored display asset; absent when the engine sent no image bytes. */
+    imageUrl?: string;
+    prompt?: string;
+    savedPath?: string;
+    /** The engine's failure type; set only when the generation failed. */
+    failure?: string;
+  }
+  | { kind: 'image_view'; id: string; path: string }
   | { kind: 'collab_spawn'; id: string; label: string; prompt?: string; status: CodexItemStatus; receiverThreadIds?: string[] }
   | {
     kind: 'subagent_activity';
@@ -331,13 +342,34 @@ function readUserImages(item: AnyRecord): Array<{ path?: string; data?: string }
       attachments.push(...toImageAttachments([localPath]));
       continue;
     }
-    const url = record.type === 'image' ? readNonEmptyString(record.url) : undefined;
+    // The two serializations spell the URL differently: the rollout's
+    // assembled items write `image_url`, the app-server's live items `url`.
+    const url = record.type === 'image'
+      ? readNonEmptyString(record.url) ?? readNonEmptyString(record.image_url)
+      : undefined;
     if (url) {
       attachments.push(url.startsWith('data:') ? { data: url } : { path: url });
     }
   }
 
   return attachments.length > 0 ? attachments : undefined;
+}
+
+/**
+ * Reads a generated image, whose fields both transports spell alike. Compaction
+ * has already replaced `result` with an asset URL when it held an image.
+ */
+function readImageGeneration(item: AnyRecord, id: string): CodexThreadItem {
+  const result = readNonEmptyString(item.result);
+  const failure = readObjectRecord(item.failure);
+  return {
+    kind: 'image_generation',
+    id,
+    imageUrl: result?.startsWith('/api/assets/images/') ? result : undefined,
+    prompt: readNonEmptyString(item.revisedPrompt),
+    savedPath: readNonEmptyString(item.savedPath),
+    failure: failure || item.status === 'failed' ? readNonEmptyString(failure?.type) ?? 'unknown' : undefined,
+  };
 }
 
 /**
@@ -415,10 +447,17 @@ export function readCodexRolloutItem(raw: unknown): CodexThreadItem | null {
       return { kind: 'web_search', id, query: readNonEmptyString(item.query) ?? '' };
 
     case 'Extension':
-      // Web search reaches recent rollouts as a generic extension item.
+      // Web search and image generation reach recent rollouts as generic
+      // extension items.
+      if (item.kind === 'image_gen.generation') {
+        return readImageGeneration(item, id);
+      }
       return item.kind === 'web.search'
         ? { kind: 'web_search', id, query: readNonEmptyString(item.query) ?? '' }
         : null;
+
+    case 'ImageView':
+      return { kind: 'image_view', id, path: readItemPath(item.path) };
 
     case 'CollabAgentToolCall': {
       const tool = readNonEmptyString(item.tool) ?? '';
@@ -543,6 +582,12 @@ export function readCodexAppServerItem(raw: unknown): CodexThreadItem | null {
 
     case 'webSearch':
       return { kind: 'web_search', id, query: readNonEmptyString(item.query) ?? '' };
+
+    case 'imageGeneration':
+      return readImageGeneration(item, id);
+
+    case 'imageView':
+      return { kind: 'image_view', id, path: readItemPath(item.path) };
 
     case 'collabAgentToolCall': {
       const tool = readNonEmptyString(item.tool) ?? '';
@@ -811,6 +856,49 @@ export function codexThreadItemToRows(item: CodexThreadItem, timestamp: string):
         toolName: 'WebSearch',
         toolInput: JSON.stringify({ query: item.query }),
         toolCallId: item.id,
+      }];
+
+    case 'image_generation': {
+      if (item.failure) {
+        const reason = item.failure === 'usageLimitExceeded' ? ': usage limit exceeded' : '';
+        return [{ uuid: item.id, type: 'error', timestamp, content: `Image generation failed${reason}` }];
+      }
+      if (item.imageUrl) {
+        return [{
+          uuid: item.id,
+          type: 'assistant',
+          timestamp,
+          message: { role: 'assistant', content: '' },
+          // The revised prompt runs to thousands of characters; the name is a label.
+          images: [{ path: item.imageUrl, ...(item.prompt ? { name: item.prompt.slice(0, 120) } : {}) }],
+        }];
+      }
+      return item.savedPath
+        ? [{
+          uuid: item.id,
+          type: 'assistant',
+          timestamp,
+          message: { role: 'assistant', content: `Generated image saved to \`${item.savedPath}\`` },
+        }]
+        : [];
+    }
+
+    case 'image_view':
+      // The same row as reading any other file: one line that opens it.
+      return [{
+        uuid: item.id,
+        type: 'tool_use',
+        timestamp,
+        toolName: 'Read',
+        toolInput: JSON.stringify({ file_path: item.path }),
+        toolCallId: item.id,
+      }, {
+        uuid: `${item.id}_result`,
+        type: 'tool_result',
+        timestamp,
+        toolCallId: item.id,
+        output: '',
+        isError: false,
       }];
 
     case 'collab_spawn': {

@@ -20,7 +20,7 @@ export const LOCAL_AGENT_TASK_TYPE = 'local_agent';
 export const LOCAL_BASH_TASK_TYPE = 'local_bash';
 
 /** The `task_status` fields an engine adapter supplies per event. */
-export type TaskStatusFields = Pick<NormalizedMessage, 'event' | 'description' | 'status' | 'summary' | 'usage' | 'outputFile'>
+export type TaskStatusFields = Pick<NormalizedMessage, 'event' | 'description' | 'status' | 'summary' | 'usage' | 'outputFile' | 'resumed'>
   & { id?: string; timestamp?: string };
 
 /** What identifies the task a `task_status` event reports on. */

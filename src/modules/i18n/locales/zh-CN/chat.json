@@ -13,6 +13,7 @@
     "recoveryFailed": "聊天同步失败，正在自动重试，已有内容已保留。也可以刷新页面重试。"
   },
   "misc": {
+    "commandModalLoading": "正在加载…",
     "outputAssets": "结果附件（{{count}}）",
     "fullOutput": "完整输出.txt",
     "needsInput": "{{provider}} 需要你的输入",
@@ -161,6 +162,13 @@
     "send": "发送",
     "sending": "发送中…",
     "stop": "停止",
+    "attachments": {
+      "stillUploading": "附件还在上传",
+      "needsAttention": "请重试或移除上传失败的附件后再发送",
+      "progress": "{{name}} 的上传进度",
+      "retry": "重新上传 {{name}}",
+      "tooLarge": "超过 {{size}}"
+    },
     "hintText": {
       "ctrlEnter": "Ctrl+Enter 发送 • Shift+Enter 换行 • Tab 切换模式 • / 斜杠命令",
       "enter": "Enter 发送 • Shift+Enter 换行 • Tab 切换模式 • / 斜杠命令",
@@ -295,7 +303,14 @@
       "workflow": "工作流 {{name}}",
       "agent": "子代理 {{description}}",
       "command": "命令 {{description}}",
-      "count": "{{count}} 个任务"
+      "count": "{{count}} 个任务",
+      "prompt": {
+        "title": "会话还有后台任务在运行",
+        "description": "发送新消息会开启新回合并停掉这些任务；它们尚未汇报的产出会丢失。选择排队则等任务结束后自动发送。",
+        "cancel": "取消",
+        "queue": "排队",
+        "sendAnyway": "仍要发送"
+      }
     }
   },
   "projectSelection": {
@@ -354,9 +369,9 @@
     "customLabel": "或选择时间",
     "confirm": "定时发送",
     "in": {
-      "15": "15 分钟后",
-      "60": "1 小时后",
-      "480": "8 小时后",
+      "30": "30 分钟后",
+      "120": "2 小时后",
+      "300": "5 小时后",
       "1440": "明天"
     },
     "pending": "将于 {{when}} 发送",
@@ -365,6 +380,7 @@
     "dismiss": "关闭失败提示"
   },
   "cost": {
+    "readingUsage": "正在读取会话用量…",
     "totalTokensUsed": "总用量",
     "inputTokens": "输入用量",
     "outputTokens": "输出用量",
@@ -384,6 +400,8 @@
     "expand": "展开查看",
     "fiveHourWindow": "5 小时滑动窗口限额",
     "weeklyWindow": "周配额",
+    "weeklyWindowAllModels": "周配额（所有模型）",
+    "weeklyWindowScoped": "周配额（{{model}}）",
     "cycleWindow": "周期调用限额",
     "cycleCallsDesc": "总计 {{total}} 次，剩余 {{remaining}} 次",
     "cycleGeneralDesc": "周期内模型与工具调用配额",
@@ -398,13 +416,16 @@
     "resetMinutes": "{{minutes}} 分钟后重置",
     "emptyQuotaHint": {
       "claude": "API Key、Bedrock、Vertex 登录没有 claude.ai 订阅限额",
-      "codex": "API Key 登录通常不会提供 ChatGPT 账号的 5 小时和周限额"
+      "codex": "API Key 登录通常不会提供 ChatGPT 账号的 5 小时和周限额",
+      "opencode": "未开通 OpenCode Go 套餐，或 CLI 未登录到 Go 工作区"
     },
     "resetCardTitle": "用量重置卡",
     "resetCardHint": "使用后立即补满对应额度，无需等待刷新窗口",
+    "resetCardHintReadOnly": "请到提供方网页端使用该重置卡",
     "resetCardTypeAll": "全部额度（5 小时 + 每周）",
     "resetCardType5h": "5 小时额度",
     "resetCardTypeWeekly": "每周额度",
+    "resetCardTypeFable": "Fable 重置",
     "resetCardAvailable": "{{count}} 张可用",
     "resetCardExpires": "最早 {{date}} 到期",
     "resetCardUse": "使用",

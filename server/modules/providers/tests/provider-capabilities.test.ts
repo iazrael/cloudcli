@@ -43,7 +43,7 @@ const BASELINE: Record<string, Omit<ProviderCapabilities, 'provider'>> = {
     supportsPermissionRequests: true,
     supportsTokenUsage: true,
     supportsQuota: true,
-    supportsQuotaReset: false,
+    supportsQuotaReset: true,
     supportsEffort: true,
     effortLevels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
     supportsMessageEditing: true,
@@ -131,8 +131,7 @@ const BASELINE: Record<string, Omit<ProviderCapabilities, 'provider'>> = {
     // forms surface as cards answered through the service API.
     supportsPermissionRequests: true,
     supportsTokenUsage: true,
-    // OpenCode Go exposes the official usage endpoint (5-hour/weekly/monthly
-    // windows), so its auth facet carries getQuota.
+    // The auth facet reads the OpenCode Go plan usage meters (5h/weekly/monthly).
     supportsQuota: true,
     supportsQuotaReset: false,
     supportsEffort: true,

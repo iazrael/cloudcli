@@ -45,6 +45,9 @@ const PLATFORM_CANDIDATES: Partial<Record<NodeJS.Platform, string[]>> = {
   ],
 };
 
+/** Matches the app version in an XML `Info.plist`; a binary plist does not match. */
+const APP_SHORT_VERSION_PATTERN = /<key>CFBundleShortVersionString<\/key>\s*<string>\s*(\d+\.\d+\.\d+[^<\s]*)\s*<\/string>/;
+
 const resolver = createCliEnginePathResolver({
   logTag: '[ZCode]',
   envVars: ['CLOUDCLI_ZCODE_ENGINE'],
@@ -105,3 +108,22 @@ export const getEngineVersion = resolver.getEngineVersion;
  * cache being stable for the process lifetime.
  */
 export const clearEnginePathCache = resolver.clearEnginePathCache;
+
+/**
+ * Reads the version of the ZCode App bundle that ships this engine, from
+ * `Contents/Info.plist` two levels above `Contents/Resources/glm/zcode.cjs`.
+ * The app's version differs from the engine's own (3.17.2 vs 0.17.1). Returns
+ * null when the engine is not inside an app bundle: an override path, or a
+ * non-macOS install, where the engine keeps its own version.
+ *
+ * Consumer: `buildZCodeEngineSpawnEnv` in zcode-engine-supervisor.ts, which
+ * hands the value to the engine as `ZCODE_APP_VERSION`.
+ */
+export function readZCodeAppVersion(enginePath: string): string | null {
+  const infoPlistPath = path.resolve(path.dirname(enginePath), '..', '..', 'Info.plist');
+  try {
+    return fs.readFileSync(infoPlistPath, 'utf8').match(APP_SHORT_VERSION_PATTERN)?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}

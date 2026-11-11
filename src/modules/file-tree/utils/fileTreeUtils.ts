@@ -1,6 +1,6 @@
 import type { TFunction } from 'i18next';
 
-import type { FileTreeNode } from '@/shared/types';
+import type { FileTreeNode, FileTreeSearchMatch } from '@/shared/types';
 
 const IMAGE_FILE_EXTENSIONS = new Set([
   'png',
@@ -13,38 +13,65 @@ const IMAGE_FILE_EXTENSIONS = new Set([
   'bmp',
 ]);
 
-export function filterFileTree(items: FileTreeNode[], query: string): FileTreeNode[] {
-  return items.reduce<FileTreeNode[]>((filteredItems, item) => {
-    const matchesName = item.name.toLowerCase().includes(query);
-    const filteredChildren =
-      item.type === 'directory' && item.children ? filterFileTree(item.children, query) : [];
+type SearchBranch = { node: FileTreeNode; children: Map<string, SearchBranch> };
 
-    if (matchesName || filteredChildren.length > 0) {
-      filteredItems.push({
-        ...item,
-        children: filteredChildren,
-      });
-    }
+/**
+ * Folds flat search matches into a tree so results render with the same rows,
+ * menus and actions as the browsing tree. Ancestors that did not match
+ * themselves become plain folder nodes; every folder in the result is returned
+ * in `directoryPaths` so the caller can show it open.
+ */
+export function buildSearchTree(matches: FileTreeSearchMatch[]): {
+  items: FileTreeNode[];
+  directoryPaths: Set<string>;
+} {
+  const roots = new Map<string, SearchBranch>();
 
-    return filteredItems;
-  }, []);
-}
+  for (const match of matches) {
+    const segments = match.relativePath.split('/');
+    // The absolute path ends with the relative path, so what precedes it is the
+    // project root and the character between them is the server's separator.
+    const projectRoot = match.path.slice(0, match.path.length - match.relativePath.length - 1);
+    const separator = match.path.charAt(projectRoot.length) || '/';
 
-// During search we auto-expand every directory present in the filtered subtree.
-export function collectExpandedDirectoryPaths(items: FileTreeNode[]): string[] {
-  const paths: string[] = [];
-
-  const visit = (nodes: FileTreeNode[]) => {
-    nodes.forEach((node) => {
-      if (node.type === 'directory' && node.children && node.children.length > 0) {
-        paths.push(node.path);
-        visit(node.children);
+    let level = roots;
+    segments.forEach((segment, index) => {
+      const isMatch = index === segments.length - 1;
+      let branch = level.get(segment);
+      if (!branch) {
+        const node: FileTreeNode = isMatch
+          ? { ...match }
+          : {
+              name: segment,
+              type: 'directory',
+              path: `${projectRoot}${separator}${segments.slice(0, index + 1).join(separator)}`,
+            };
+        branch = { node, children: new Map() };
+        level.set(segment, branch);
+      } else if (isMatch) {
+        // A folder first created as an ancestor gets its real metadata.
+        branch.node = { ...match };
       }
+      level = branch.children;
     });
-  };
+  }
 
-  visit(items);
-  return paths;
+  const directoryPaths = new Set<string>();
+  const toNodes = (level: Map<string, SearchBranch>): FileTreeNode[] => [...level.values()]
+    .map(({ node, children }) => {
+      if (node.type !== 'directory') return node;
+      directoryPaths.add(node.path);
+      const childNodes = toNodes(children);
+      // A matched folder whose contents did not match shows no children,
+      // rather than claiming to be empty.
+      return childNodes.length > 0 ? { ...node, children: childNodes } : node;
+    })
+    .sort((left, right) => {
+      if (left.type !== right.type) return left.type === 'directory' ? -1 : 1;
+      return left.name.localeCompare(right.name);
+    });
+
+  return { items: toNodes(roots), directoryPaths };
 }
 
 export function formatFileSize(bytes?: number): string {

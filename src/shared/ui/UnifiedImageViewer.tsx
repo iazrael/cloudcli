@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Download, Minus, Plus, RotateCcw, X } from 'lucide-react';
+import { Contrast, Download, Minus, Plus, RotateCcw, X } from 'lucide-react';
 
 import { saveOrShareBlob } from '@/shared/utils';
 import {
@@ -60,6 +60,9 @@ export function UnifiedImageViewer({
 
   /** Keep download failures visible without interrupting the image preview. */
   const [downloadError, setDownloadError] = useState<string | null>(null);
+
+  /** Solid backing behind the image; light rescues light-stroked diagrams that vanish on the dark viewer. */
+  const [imageBackdrop, setImageBackdrop] = useState<'dark' | 'light'>('dark');
 
   /** Imperative handle to trigger zoomIn, zoomOut, and resetZoom on the inner viewer. */
   const viewerRef = useRef<ImageViewerHandle | null>(null);
@@ -186,6 +189,16 @@ export function UnifiedImageViewer({
             <RotateCcw className="h-3.5 w-3.5" />
           </button>
 
+          <button
+            type="button"
+            onClick={() => setImageBackdrop((current) => (current === 'dark' ? 'light' : 'dark'))}
+            className="flex items-center justify-center rounded-full p-1.5 text-white/80 transition-colors hover:bg-white/15 hover:text-white"
+            title={imageBackdrop === 'dark' ? '切换为白色背景' : '切换为黑色背景'}
+            aria-label="切换图片背景颜色"
+          >
+            <Contrast className="h-4 w-4" aria-hidden="true" />
+          </button>
+
           <div className="mx-1 h-3.5 w-px bg-white/20" />
 
           <button
@@ -224,6 +237,7 @@ export function UnifiedImageViewer({
           src={src}
           filePath={filePath}
           dark
+          backdrop={imageBackdrop}
           onError={onImageError} onLoad={onImageLoad}
           alt={displayName}
           viewerRef={viewerRef}

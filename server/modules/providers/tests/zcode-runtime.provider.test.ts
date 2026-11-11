@@ -17,8 +17,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
 
-import Database from 'better-sqlite3';
-
 import type {
   NormalizedMessage,
   ProviderRuntimeContext,
@@ -44,11 +42,29 @@ const readline = require('readline');
 
 const modeFile = process.env.ZCODE_STUB_MODE_FILE;
 const logFile = process.env.ZCODE_STUB_LOG;
-const sessionId = 'sess_stub_1';
+// Resume-driven runs address a different engine session id than create does,
+// and every emitted event carries this id — so it must follow the id the
+// client resumed with or the runtime filters the turn events out.
+let sessionId = 'sess_stub_1';
+// Mirrors engine 0.17.1: a created session's row is written only when its
+// first input arrives through the legacy session/send; a sendText command on
+// a session never written fails its foreign key. A resumed session comes
+// from the database — unless this engine created it and it was never
+// written, in which case resume just reattaches the in-memory session.
+const createdSessions = new Set();
+const writtenSessions = new Set();
 
 const send = (obj) => process.stdout.write(JSON.stringify(obj) + '\\n');
 const log = (name, value) => {
   try { fs.appendFileSync(logFile, JSON.stringify({ name, value }) + '\\n'); } catch {}
+};
+// The stub log outlives the test run; never write the API key that the send
+// params carry in modelExecution.requestAuth.
+const redactSendParams = (params) => {
+  const { modelExecution, ...rest } = params ?? {};
+  return modelExecution
+    ? { ...rest, modelExecution: { ...modelExecution, requestAuth: '<redacted>' } }
+    : rest;
 };
 const readMode = () => {
   try { return fs.readFileSync(modeFile, 'utf8').trim(); } catch { return 'ok'; }
@@ -64,6 +80,9 @@ const finishCreate = () => {
 // mode "abort-ok": streams until a session/stop arrives, which both answers
 // and ends the turn — mirroring an engine that honors a delivered stop.
 let abortTicker = null;
+// The input id of the turn abort-ok is streaming, so its cancellation can be
+// reported under the same id, as the real engine does.
+let abortInputId = null;
 
 // mode "cancel-echo": like abort-ok, but after confirming the stop the engine
 // echoes the cancelled model request as a turn.failed — what real engines do.
@@ -127,6 +146,22 @@ rl.on('line', (line) => {
   let msg;
   try { msg = JSON.parse(line); } catch { return; }
 
+  // The runtime drives turns through v4 commands. Translate the two it uses
+  // into the legacy handlers below so every mode serves both shapes; the
+  // command envelope rides along for the acknowledgement. A raw legacy
+  // send or stop is logged so tests can prove the runtime no longer uses it.
+  if (msg.method === 'v4/command') {
+    const envelope = msg.params ?? {};
+    log('v4_command', { ...envelope, payload: redactSendParams(envelope.payload) });
+    if (envelope.type === 'sendText') {
+      msg = { id: msg.id, method: 'session/send', v4: envelope, params: { sessionId: envelope.sessionId, ...(envelope.payload ?? {}) } };
+    } else if (envelope.type === 'stop') {
+      msg = { id: msg.id, method: 'session/stop', v4: envelope, params: { sessionId: envelope.sessionId } };
+    }
+  } else if (msg.method === 'session/send' || msg.method === 'session/stop') {
+    log('legacy_' + msg.method.slice('session/'.length), msg.params);
+  }
+
   // Responses to our server-initiated requests carry no method.
   if (msg.method === undefined) {
     if (msg.id === 'server-1') {
@@ -176,6 +211,12 @@ rl.on('line', (line) => {
   // text delta and the stop of the background agent an earlier turn left
   // running, so both land while the runtime is still setting a new run up —
   // between its start and the moment it sends the prompt.
+  // mode "slow-subscribe": the run is still setting up when the user stops.
+  if (msg.method === 'session/subscribe' && readMode() === 'slow-subscribe') {
+    setTimeout(() => send({ id: msg.id, result: {} }), 300);
+    return;
+  }
+
   if (msg.method === 'session/subscribe' && readMode() === 'handover-window') {
     const ev = (type, payload) => send({ method: 'session/event', params: { sessionId, type, payload } });
     ev('model_streaming', { kind: 'text_delta', delta: 'window text' });
@@ -187,6 +228,21 @@ rl.on('line', (line) => {
   }
 
   if (msg.method === 'session/create') {
+    // A create always starts a fresh engine session: reset the event session
+    // id a previous resume-driven test may have changed.
+    sessionId = 'sess_stub_1';
+    createdSessions.add(sessionId);
+    writtenSessions.delete(sessionId);
+    // ZCode 0.16.9 validates create params strictly and no longer accepts the
+    // runtimeModel catalog here. Keep this boundary aligned with the real
+    // engine so a provider upgrade cannot silently reintroduce the breakage.
+    for (const key of Object.keys(msg.params ?? {})) {
+      if (key !== 'workspace') {
+        send({ id: msg.id, error: { code: -32602, message: 'Invalid params — (root): Unrecognized key: "' + key + '"' } });
+        return;
+      }
+    }
+    log('session_create', msg.params);
     if (readMode() === 'create-fail') {
       send({ id: msg.id, error: { code: -32022, message: 'Client request timed out: session/requestRuntimePreferences', data: { timeoutMs: 15000 } } });
       return;
@@ -199,15 +255,90 @@ rl.on('line', (line) => {
   }
 
   if (msg.method === 'session/send') {
-    // Mirror the engine's strict schema: unknown keys are rejected.
+    log('session_send_attempt', redactSendParams(msg.params));
+    // Mirror the engine's strict schemas: unknown keys are rejected. The
+    // legacy send carries content, the sendText payload carries text.
+    const allowedKeys = msg.v4
+      ? ['sessionId', 'text', 'attachments', 'modelSelection', 'modelExecution', 'requestedDelivery', 'heldQueueDisposition']
+      : ['sessionId', 'content', 'inputId', 'attachments', 'modelSelection', 'modelExecution'];
     for (const key of Object.keys(msg.params ?? {})) {
-      if (key !== 'sessionId' && key !== 'content' && key !== 'attachments' && key !== 'runtimeModel') {
-        send({ id: msg.id, error: { code: -32600, message: 'Invalid params — (root): Unrecognized key: "' + key + '"' } });
+      if (!allowedKeys.includes(key)) {
+        send({ id: msg.id, error: { code: -32602, message: 'Invalid params — (root): Unrecognized key: "' + key + '"' } });
         return;
       }
     }
-    log('session_send', msg.params);
-    send({ id: msg.id, result: {} });
+    const commandId = msg.v4 ? msg.v4.commandId : undefined;
+    if (!msg.v4 && readMode() === 'legacy-send-fail') {
+      send({ id: msg.id, error: { code: -32010, message: 'legacy send refused' } });
+      return;
+    }
+    if (msg.v4 && !writtenSessions.has(sessionId)) {
+      send({ id: msg.id, result: { commandId, status: 'failed', message: 'FOREIGN KEY constraint failed', revisionAtDecision: 0 } });
+      return;
+    }
+    writtenSessions.add(sessionId);
+    log('session_send', redactSendParams(msg.params));
+    // The id the engine copies onto the turn it starts for this input.
+    const inputId = msg.v4 ? commandId : msg.params.inputId;
+    const acceptSend = () => send({ id: msg.id, result: msg.v4
+      ? { commandId, status: 'accepted', revisionAtDecision: 1, result: { type: 'inputAccepted', delivery: 'startNow', inputId: commandId } }
+      : {} });
+    if (readMode() === 'send-rejected') {
+      // The engine refuses the input outright; no turn starts.
+      send({ id: msg.id, result: { commandId, status: 'rejected', reasonCode: 'fault.command.inputRejected', message: 'input rejected by engine', revisionAtDecision: 1 } });
+      return;
+    }
+    if (readMode() === 'slow-ack') {
+      // The engine is still winding a preempted turn down: the send is only
+      // acknowledged a moment later, and the prompt's turn starts after that.
+      setTimeout(() => {
+        log('send_acked', inputId);
+        acceptSend();
+        abortInputId = inputId;
+        send({ method: 'session/event', params: { sessionId, turnId: 'turn_abort', type: 'turn.started', payload: { inputId } } });
+        abortTicker = setInterval(() => {
+          send({ method: 'session/event', params: { sessionId, turnId: 'turn_abort', type: 'model.streaming', payload: { kind: 'text_delta', delta: 'streaming' } } });
+        }, 100);
+      }, 300);
+      return;
+    }
+    if (readMode() === 'early-fail') {
+      // The turn fails before announcing itself: its failure names the turn
+      // but carries no input id.
+      acceptSend();
+      send({ method: 'session/event', params: { sessionId, turnId: 'turn_early', type: 'turn.failed', payload: { error: { message: 'model config missing' } } } });
+      return;
+    }
+    if (readMode() === 'preempt') {
+      // The engine is running a turn it started itself from a queued
+      // background notification. startNow cancels it first — its terminal
+      // events reach the stream before the send is even acknowledged — and
+      // only then starts the user's turn, tagged with the command id.
+      const ev = (type, turnId, payload) => send({ method: 'session/event', params: { sessionId, turnId, type, payload } });
+      ev('model.streaming', 'turn_bg', { kind: 'text_delta', delta: 'notification work' });
+      ev('turn.failed', 'turn_bg', { error: { name: 'AiSdkModelAdapterError', data: { message: 'Model request was cancelled.', code: 'model_request_cancelled', turnResult: 'cancelled' } } });
+      ev('turn.completed', 'turn_bg', { resultType: 'cancelled', inputId: 'bg_input_1' });
+      ev('turn.started', 'turn_user', { inputId });
+      acceptSend();
+      setTimeout(() => {
+        ev('model.streaming', 'turn_user', { kind: 'text_delta', delta: 'user reply' });
+        ev('turn.completed', 'turn_user', { resultType: 'success', inputId, usage: { inputTokens: 3, outputTokens: 4 } });
+      }, 150);
+      return;
+    }
+    acceptSend();
+    if (readMode() === 'tool-results') {
+      const notify = (payload) => send({ method: 'session/event', params: { sessionId, type: 'tool.updated', payload } });
+      notify({ kind: 'scheduled', toolCallId: 'call_live_bash', toolName: 'Bash', input: { command: 'ls' } });
+      notify({ kind: 'scheduled', toolCallId: 'call_live_read', toolName: 'Read', input: { path: 'missing.txt' } });
+      // Results can arrive in reverse call order, and after the result event
+      // the next model segment starts before the turn finally completes.
+      notify({ kind: 'error', toolCallId: 'call_live_read', error: 'File not found' });
+      notify({ kind: 'result', toolCallId: 'call_live_bash', result: { success: true, content: 'a.txt' } });
+      send({ method: 'session/event', params: { sessionId, type: 'model.streaming', payload: { kind: 'text_delta', delta: 'done' } } });
+      send({ method: 'session/event', params: { sessionId, type: 'turn.completed', payload: {} } });
+      return;
+    }
     if (readMode() === 'send-fail') {
       send({ method: 'session/event', params: { sessionId, type: 'turn.failed', payload: { error: { message: 'provider auth failed', attribution: { statusCode: 401, reason: 'auth_failed' } } } } });
       return;
@@ -226,7 +357,7 @@ rl.on('line', (line) => {
       send({ method: 'session/event', params: { sessionId, type: 'turn_complete', payload: { usage: { inputTokens: 3, outputTokens: 4 } } } });
       return;
     }
-    if (readMode() === 'subagent-bg' || readMode() === 'subagent-bg-crash' || readMode() === 'subagent-bg-permission' || readMode() === 'subagent-bg-permission-orphan') {
+    if (readMode() === 'subagent-bg' || readMode() === 'subagent-bg-crash' || readMode() === 'subagent-bg-permission' || readMode().startsWith('subagent-bg-permission-orphan')) {
       // A background agent: the engine announces the Agent call, reports the
       // spawn on the parent session once the child is ready, returns the
       // launch acknowledgement as the tool result and ends the turn. The
@@ -234,8 +365,11 @@ rl.on('line', (line) => {
       // — or, in the crash variant, the engine dies with the agent still
       // running and never reports.
       const crash = readMode() === 'subagent-bg-crash';
-      const asksPermission = readMode() === 'subagent-bg-permission' || readMode() === 'subagent-bg-permission-orphan';
-      const orphansPermission = readMode() === 'subagent-bg-permission-orphan';
+      const asksPermission = readMode() === 'subagent-bg-permission' || readMode().startsWith('subagent-bg-permission-orphan');
+      const orphansPermission = readMode().startsWith('subagent-bg-permission-orphan');
+      // A resumed agent's requests name the SendMessage call that woke it,
+      // not the Agent call its stop is reported on.
+      const askingCallId = readMode() === 'subagent-bg-permission-orphan-resumed' ? 'call_send_resume' : 'call_agent_bg';
       const ev = (type, payload) => send({ method: 'session/event', params: { sessionId, type, payload } });
       const agent = { agentId: 'agent_bg_1', agentType: 'general-purpose', background: true, childSessionId: 'sess_subagent_agent_bg_1', parentToolCallId: 'call_agent_bg' };
       ev('model_streaming', { kind: 'tool_call', toolCallId: 'call_agent_bg', toolName: 'Agent', input: { description: 'Review the fix', prompt: 'look', run_in_background: true, subagent_type: 'general-purpose' } });
@@ -251,9 +385,9 @@ rl.on('line', (line) => {
           // and tags it with the subagent as its origin; the parent turn is
           // over by now.
           send({ id: 'server-perm-bg', method: 'interaction/requestPermission', params: {
-            requestId: orphansPermission ? 'perm_bg_orphan' : 'perm_bg_1', sessionId, toolCallId: 'call_child_bash', toolName: 'Bash',
+            requestId: readMode() === 'subagent-bg-permission-orphan-resumed' ? 'perm_bg_resumed' : orphansPermission ? 'perm_bg_orphan' : 'perm_bg_1', sessionId, toolCallId: 'call_child_bash', toolName: 'Bash',
             input: { command: 'touch /tmp/bg' }, reason: 'Tool Bash requires approval', riskLevel: 'medium',
-            origin: { kind: 'subagent', agentId: 'agent_bg_1', agentType: 'general-purpose', description: 'Review the fix', childSessionId: 'sess_subagent_agent_bg_1', parentSessionId: sessionId, parentToolCallId: 'call_agent_bg' },
+            origin: { kind: 'subagent', agentId: 'agent_bg_1', agentType: 'general-purpose', description: 'Review the fix', childSessionId: 'sess_subagent_agent_bg_1', parentSessionId: sessionId, parentToolCallId: askingCallId },
           } });
           if (orphansPermission) {
             // The agent ends while its request is still unanswered.
@@ -317,6 +451,8 @@ rl.on('line', (line) => {
     if (readMode() === 'abort-ok') {
       // Streams until a session/stop arrives (see the stop handler above),
       // mirroring an engine that honors a delivered stop.
+      abortInputId = inputId;
+      send({ method: 'session/event', params: { sessionId, turnId: 'turn_abort', type: 'turn.started', payload: { inputId } } });
       abortTicker = setInterval(() => {
         send({ method: 'session/event', params: { sessionId, type: 'model_streaming', payload: { kind: 'text_delta', delta: 'streaming' } } });
       }, 200);
@@ -345,7 +481,9 @@ rl.on('line', (line) => {
         send({ method: 'session/event', params: { sessionId, type: 'model_streaming', payload: { kind: 'text_delta', delta: 'tick ' + ticks } } });
         if (ticks >= 12) {
           clearInterval(ticker);
-          send({ method: 'session/event', params: { sessionId, type: 'turn_complete', payload: { usage: { inputTokens: 3, outputTokens: 4 } } } });
+          // Something other than the refused stop cancels the turn in the
+          // end (another client, the engine itself).
+          send({ method: 'session/event', params: { sessionId, type: 'turn_complete', payload: { resultType: 'cancelled', usage: { inputTokens: 3, outputTokens: 4 } } } });
         }
       }, 300);
       return;
@@ -358,29 +496,6 @@ rl.on('line', (line) => {
       setTimeout(() => process.exit(1), 100);
       return;
     }
-    if (readMode() === 'tool-result') {
-      // One step finishes while the turn keeps running: the tool result is the
-      // moment the runtime re-reads the (already persisted) context usage.
-      // Real engines carry the output on the event, which is what makes the
-      // normalizer emit the tool_result frame the runtime reacts to.
-      send({ method: 'session/event', params: { sessionId, type: 'tool.updated', payload: { kind: 'result', toolCallId: 'call_live', result: { success: true, content: 'done' } } } });
-      setTimeout(() => {
-        send({ method: 'session/event', params: { sessionId, type: 'turn_complete', payload: { usage: { inputTokens: 3, outputTokens: 4 } } } });
-      }, 200);
-      return;
-    }
-    if (readMode() === 'tool-results') {
-      const notify = (payload) => send({ method: 'session/event', params: { sessionId, type: 'tool.updated', payload } });
-      notify({ kind: 'scheduled', toolCallId: 'call_live_bash', toolName: 'Bash', input: { command: 'ls' } });
-      notify({ kind: 'scheduled', toolCallId: 'call_live_read', toolName: 'Read', input: { path: 'missing.txt' } });
-      // Results can arrive in reverse call order, and after the result event
-      // the next model segment starts before the turn finally completes.
-      notify({ kind: 'error', toolCallId: 'call_live_read', error: 'File not found' });
-      notify({ kind: 'result', toolCallId: 'call_live_bash', result: { success: true, content: 'a.txt' } });
-      send({ method: 'session/event', params: { sessionId, type: 'model.streaming', payload: { kind: 'text_delta', delta: 'done' } } });
-      send({ method: 'session/event', params: { sessionId, type: 'turn.completed', payload: {} } });
-      return;
-    }
     send({ method: 'session/event', params: { sessionId, type: 'model_streaming', payload: { kind: 'text_delta', delta: 'hi there' } } });
     send({ method: 'session/event', params: { sessionId, type: 'turn_complete', payload: { usage: { inputTokens: 3, outputTokens: 4 } } } });
     return;
@@ -391,7 +506,25 @@ rl.on('line', (line) => {
       send({ id: msg.id, error: { code: -32004, message: 'Session is not active: ' + (msg.params?.sessionId ?? '') } });
       return;
     }
-    send({ id: msg.id, result: { messages: [] } });
+    // Real resume responses carry settings.model; "current" is present exactly
+    // when the engine kept a usable session model selection after its restore
+    // validation. The resume-no-selection modes mirror a session whose stored
+    // selection was silently dropped (cross-registry resume).
+    const noSelection = readMode() === 'resume-no-selection' || readMode() === 'resume-no-selection-setmodel-fail';
+    sessionId = (msg.params && msg.params.sessionId) || sessionId;
+    if (!createdSessions.has(sessionId)) writtenSessions.add(sessionId);
+    send({
+      id: msg.id,
+      result: {
+        messages: [],
+        settings: {
+          model: {
+            available: [],
+            ...(noSelection ? {} : { current: { providerId: 'bigmodel-coding-plan', modelId: readMode() === 'resume-matching-selection' ? 'GLM-5.3' : 'GLM-5.3-Flash', options: { reasoningLevel: 'max' } } }),
+          },
+        },
+      },
+    });
     return;
   }
 
@@ -399,11 +532,18 @@ rl.on('line', (line) => {
     log('stop', msg.params);
     if (abortTicker) { clearInterval(abortTicker); abortTicker = null; }
     if (cancelEchoTicker) { clearInterval(cancelEchoTicker); cancelEchoTicker = null; }
+    const stopCommandId = msg.v4 ? msg.v4.commandId : undefined;
     if (readMode() === 'stop-fail') {
-      send({ id: msg.id, error: { code: -32000, message: 'stop refused' } });
+      send({ id: msg.id, result: { commandId: stopCommandId, status: 'rejected', reasonCode: 'guard.stopTargetChanged', message: 'stop refused', revisionAtDecision: 1 } });
       return;
     }
-    send({ id: msg.id, result: {} });
+    if ((readMode() === 'abort-ok' || readMode() === 'slow-ack') && abortInputId) {
+      // The real engine stops the turn synchronously: the cancelled turn's
+      // completion reaches the stream before the stop is acknowledged.
+      send({ method: 'session/event', params: { sessionId, turnId: 'turn_abort', type: 'turn.completed', payload: { resultType: 'cancelled', inputId: abortInputId } } });
+      abortInputId = null;
+    }
+    send({ id: msg.id, result: msg.v4 ? { commandId: stopCommandId, status: 'accepted', revisionAtDecision: 1 } : {} });
     if (readMode() === 'cancel-echo') {
       // Delayed so the runtime records the delivered stop before the failure
       // echo arrives, the way separate engine messages do in production.
@@ -412,26 +552,12 @@ rl.on('line', (line) => {
     return;
   }
 
-  if (msg.method === 'session/compact') {
-    log('compact', msg.params);
-    if (readMode() === 'compact-running') {
-      // The engine already has a compaction in flight: it answers with the
-      // accepted-but-busy state instead of queueing a second turn.
-      send({ id: msg.id, result: { response: '', compact: { state: 'already_running' } } });
-      return;
-    }
-    // Mirror the real engine: accept immediately, then run the summarization
-    // as a background prompt turn whose terminal event ends the run.
-    send({ id: msg.id, result: { response: '', compact: { state: 'accepted' } } });
-    setTimeout(() => {
-      send({ method: 'session/event', params: { sessionId, type: 'compact.completed', payload: { status: 'completed', summaryMessageId: 'msg_summary_stub' } } });
-      send({ method: 'session/event', params: { sessionId, type: 'turn.completed', payload: { usage: { inputTokens: 9, outputTokens: 5 } } } });
-    }, 100);
-    return;
-  }
-
   if (msg.method === 'session/setModel') {
     log('setModel', msg.params);
+    if (readMode() === 'resume-no-selection-setmodel-fail') {
+      send({ id: msg.id, error: { code: -32603, message: 'setModel refused' } });
+      return;
+    }
     send({ id: msg.id, result: {} });
     return;
   }
@@ -445,9 +571,30 @@ fsSync.writeFileSync(stubPath, stubScript);
 fsSync.writeFileSync(modeFilePath, 'ok\n');
 fsSync.writeFileSync(logFilePath, '');
 
+const cliConfigDir = path.join(stubDir, 'cli');
+fsSync.mkdirSync(cliConfigDir, { recursive: true });
+fsSync.writeFileSync(path.join(cliConfigDir, 'config.json'), JSON.stringify({
+  provider: {
+    'bigmodel-coding-plan': {
+      kind: 'anthropic',
+      options: {
+        apiKey: 'test-api-key',
+        baseURL: 'https://example.invalid/api/anthropic',
+      },
+      models: {
+        'GLM-5.3': {
+          reasoning: { enabled: true, levels: ['low', 'high', 'max'], defaultLevel: 'max' },
+        },
+      },
+    },
+  },
+  model: 'bigmodel-coding-plan/GLM-5.3',
+}));
+
 process.env.CLOUDCLI_ZCODE_ENGINE = stubPath;
 process.env.ZCODE_STUB_MODE_FILE = modeFilePath;
 process.env.ZCODE_STUB_LOG = logFilePath;
+process.env.ZCODE_STORAGE_DIR = stubDir;
 
 // The runtime reads the session row (model/effort) via sessionsDb during a
 // run, so the tests need a migrated app database. Without this the lazy
@@ -466,9 +613,16 @@ const sessionsProvider = new ZCodeSessionsProvider();
 const context: ProviderRuntimeContext = {
   resolveProviderSessionId: () => null,
   resolveResumeModel: async () => undefined,
-  getProviderModels: async () => ({ OPTIONS: [], DEFAULT: 'glm-5.3' }),
+  getProviderModels: async () => ({ OPTIONS: [], DEFAULT: 'GLM-5.3' }),
   normalizeMessage: (raw, sessionId) => sessionsProvider.normalizeMessage(raw, sessionId),
   isProviderInstalled: async () => true,
+};
+
+// A session the app already maps to an engine session: the run resumes it,
+// so its prompt goes out as a sendText command.
+const resumedContext: ProviderRuntimeContext = {
+  ...context,
+  resolveProviderSessionId: () => 'sess_stub_1',
 };
 
 const createWriter = (): { messages: NormalizedMessage[]; writer: ProviderRuntimeWriter } => {
@@ -514,127 +668,6 @@ test('runtime completes a run when the engine asks for runtime preferences mid-c
   assert.equal(delta?.content, 'hi there');
   const complete = messages.find((msg) => msg.kind === 'complete');
   assert.equal(complete?.tokens, 7);
-});
-
-test('a running turn publishes the session context usage before it completes', async () => {
-  const previousStorageDir = process.env.ZCODE_STORAGE_DIR;
-  // The runtime reads the engine store, so the fixture lives under the
-  // storage-dir override rather than the real ~/.zcode.
-  process.env.ZCODE_STORAGE_DIR = stubDir;
-
-  try {
-    const dbDir = path.join(stubDir, 'cli', 'db');
-    fsSync.mkdirSync(dbDir, { recursive: true });
-    const db = new Database(path.join(dbDir, 'db.sqlite'));
-    try {
-      db.exec(`
-        CREATE TABLE message (
-          id TEXT PRIMARY KEY,
-          session_id TEXT NOT NULL,
-          time_created INTEGER NOT NULL,
-          time_updated INTEGER NOT NULL,
-          data TEXT NOT NULL,
-          sequence INTEGER
-        );
-      `);
-      // One finished step of the stub session; `total` is its occupancy.
-      db.prepare(
-        'INSERT INTO message (id, session_id, time_created, time_updated, data, sequence) VALUES (?, ?, ?, ?, ?, ?)',
-      ).run('msg_live', 'sess_stub_1', 1000, 1000, JSON.stringify({
-        role: 'assistant',
-        providerId: 'stub-provider',
-        modelId: 'stub-window-model',
-        tokens: { total: 4321, input: 4000, output: 321, reasoning: 0, cache: { read: 0, write: 0 } },
-      }), 0);
-    } finally {
-      db.close();
-    }
-
-    const configDir = path.join(stubDir, 'v2');
-    fsSync.mkdirSync(configDir, { recursive: true });
-    fsSync.writeFileSync(
-      path.join(configDir, 'config.json'),
-      JSON.stringify({
-        provider: {
-          'stub-provider': {
-            models: { 'stub-window-model': { limit: { context: 8000 } } },
-          },
-        },
-      }),
-      'utf8',
-    );
-
-    fsSync.writeFileSync(modeFilePath, 'tool-result\n');
-    const runtime = new ZCodeRuntimeProvider();
-    const { messages, writer } = createWriter();
-
-    await runtime.run('hello', { sessionId: 'app-sess-live-budget', cwd: stubDir }, writer, context);
-
-    const budgetFrame = messages.find((msg) => msg.kind === 'status' && msg.text === 'token_budget');
-    assert.ok(budgetFrame, 'a running turn must publish its context usage');
-    // Same shape the /token-usage endpoint returns: occupancy plus the window
-    // the composer turns into a percentage, with the lifetime totals kept for
-    // the cost breakdown.
-    assert.deepEqual(budgetFrame.tokenBudget, {
-      used: 4321,
-      total: 8000,
-      inputTokens: 4000,
-      outputTokens: 321,
-      breakdown: { input: 4000, output: 321 },
-      cumulative: { used: 4321, inputTokens: 4000, outputTokens: 321 },
-    });
-    assert.ok(
-      messages.indexOf(budgetFrame) < messages.findIndex((msg) => msg.kind === 'complete'),
-      'the context frame must arrive before the terminal complete',
-    );
-  } finally {
-    if (previousStorageDir === undefined) {
-      delete process.env.ZCODE_STORAGE_DIR;
-    } else {
-      process.env.ZCODE_STORAGE_DIR = previousStorageDir;
-    }
-  }
-});
-
-test('compact drives the engine compaction turn and completes once, without touching model or mode', async () => {
-  fsSync.writeFileSync(modeFilePath, 'ok\n');
-  const runtime = new ZCodeRuntimeProvider();
-  const { messages, writer } = createWriter();
-
-  const result = await runtime.compact!({ sessionId: 'app-sess-compact', cwd: stubDir }, writer, context);
-
-  assert.deepEqual(result, { sessionId: 'sess_stub_1', success: true });
-
-  // The request the engine answers as soon as it accepts the work (the log is
-  // shared across tests in this file, so the newest entry is this run's).
-  const compactRequest = readStubLog().filter((entry) => entry.name === 'compact').pop();
-  assert.ok(compactRequest, 'the engine must receive a session/compact request');
-  assert.deepEqual(compactRequest.value, { sessionId: 'sess_stub_1' });
-  assert.equal(
-    readStubLog().some((entry) => entry.name === 'setModel'),
-    false,
-    'a compaction runs with the session\'s own model, so no model configuration is sent',
-  );
-
-  // A compaction is one turn from the client's point of view: the summarization
-  // events stream, then exactly one terminal complete.
-  assert.equal(messages.filter((msg) => msg.kind === 'complete').length, 1);
-  assert.equal(messages.find((msg) => msg.kind === 'complete')?.tokens, 14);
-});
-
-test('compact reports an already-running compaction instead of attaching to it', async () => {
-  fsSync.writeFileSync(modeFilePath, 'compact-running\n');
-  const runtime = new ZCodeRuntimeProvider();
-  const { messages, writer } = createWriter();
-
-  await assert.rejects(
-    runtime.compact!({ sessionId: 'app-sess-compact-busy', cwd: stubDir }, writer, context),
-    /already running/,
-  );
-
-  const error = messages.find((msg) => msg.kind === 'error');
-  assert.ok(error, 'the refusal must reach the chat stream');
-  assert.match(error.text ?? '', /already running/);
 });
 
 test('runtime surfaces session/create failures as error messages', async () => {
@@ -683,12 +716,307 @@ test('runtime configures model and reasoning effort variant', async () => {
   }, writer, context);
 
   const setModelEntry = readStubLog().find((entry) => entry.name === 'setModel');
-  assert.ok(setModelEntry, 'session/setModel must be called when model and effort are specified');
-  const setModelPayload = setModelEntry.value as { model: { modelId: string; options?: { reasoningLevel?: string } } };
-  assert.equal(setModelPayload.model.modelId, 'GLM-5.3');
-  // The engine schema takes the level under `options.reasoningLevel`; a bare
-  // `variant` key is rejected.
-  assert.equal(setModelPayload.model.options?.reasoningLevel, 'high');
+  assert.equal(setModelEntry, undefined, '0.16.9 selects the model on session/send, not session/setModel');
+
+  const createEntry = readStubLog().filter((entry) => entry.name === 'session_create').at(-1);
+  assert.deepEqual(createEntry?.value, {
+    workspace: {
+      workspacePath: stubDir,
+      workspaceKey: stubDir,
+    },
+  });
+
+  const sendAttempts = readStubLog().filter((entry) => entry.name === 'session_send_attempt');
+  const latestSendAttempt = sendAttempts.at(-1)?.value as {
+    runtimeModel?: unknown;
+    modelSelection?: unknown;
+    modelExecution?: unknown;
+  } | undefined;
+  assert.ok(latestSendAttempt, 'session/send must reach the engine');
+  assert.equal(latestSendAttempt.runtimeModel, undefined);
+  assert.deepEqual(latestSendAttempt.modelSelection, {
+    providerId: 'bigmodel-coding-plan',
+    modelId: 'GLM-5.3',
+    options: { reasoningLevel: 'high' },
+  });
+  assert.deepEqual(latestSendAttempt.modelExecution, {
+    selectionScope: 'execution',
+    requestAuth: '<redacted>',
+  });
+
+  const acceptedSend = readStubLog().filter((entry) => entry.name === 'session_send').at(-1);
+  const acceptedSendPayload = acceptedSend?.value as { modelSelection?: unknown } | undefined;
+  assert.ok(acceptedSendPayload, 'strict-schema session/send must be accepted');
+  assert.deepEqual(acceptedSendPayload.modelSelection, latestSendAttempt.modelSelection);
+});
+
+test('a new session\'s first prompt goes out through session/send, tagged with an input id', async () => {
+  fsSync.writeFileSync(modeFilePath, 'preempt\n');
+  fsSync.writeFileSync(logFilePath, '');
+  const runtime = new ZCodeRuntimeProvider();
+  const { messages, writer } = createWriter();
+
+  // The engine writes a created session's row only on its first legacy send;
+  // a sendText there would fail its foreign key.
+  const result = await runtime.run('hello', { sessionId: 'app-sess-first', cwd: stubDir }, writer, context);
+  assert.deepEqual(result, { sessionId: 'sess_stub_1', success: true });
+
+  const legacySend = readStubLog().find((entry) => entry.name === 'legacy_send')?.value as
+    { content?: unknown; inputId?: unknown } | undefined;
+  assert.equal(legacySend?.content, 'hello');
+  assert.equal(typeof legacySend?.inputId, 'string', 'the input id lets the run claim its turn');
+  assert.equal(readStubLog().filter((entry) => entry.name === 'v4_command').length, 0);
+  // The input id ties the turn to the run on this channel too.
+  assert.ok(messages.some((msg) => msg.kind === 'stream_delta' && msg.content === 'user reply'));
+  assert.equal(messages.find((msg) => msg.kind === 'complete')?.tokens, 7);
+});
+
+test('the prompt on an existing session goes out as a v4 sendText that takes over from engine-started turns', async () => {
+  fsSync.writeFileSync(modeFilePath, 'ok\n');
+  fsSync.writeFileSync(logFilePath, '');
+  const runtime = new ZCodeRuntimeProvider();
+  const { writer } = createWriter();
+
+  await runtime.run('hello', { sessionId: 'app-sess-v4send', cwd: stubDir }, writer, resumedContext);
+
+  const command = readStubLog().filter((entry) => entry.name === 'v4_command').at(-1)?.value as {
+    type?: string;
+    commandId?: unknown;
+    clientId?: unknown;
+    sessionId?: unknown;
+    issuedAt?: unknown;
+    payload?: Record<string, unknown>;
+  } | undefined;
+  assert.equal(command?.type, 'sendText');
+  assert.equal(typeof command?.commandId, 'string');
+  assert.equal(command?.clientId, 'cloudcli');
+  assert.equal(command?.sessionId, 'sess_stub_1');
+  assert.equal(typeof command?.issuedAt, 'number');
+  assert.equal(command?.payload?.text, 'hello');
+  // startNow cancels a turn the engine started from a queued background
+  // notification instead of folding the prompt into it (where the legacy
+  // send lost it); the notifications stay queued for later.
+  assert.equal(command?.payload?.requestedDelivery, 'startNow');
+  assert.equal(command?.payload?.heldQueueDisposition, 'keepQueueAndSend');
+  assert.equal(readStubLog().filter((entry) => entry.name === 'legacy_send').length, 0, 'the legacy session/send must not be used');
+});
+
+test('a created session whose first prompt never went out keeps using session/send on the next run', async () => {
+  fsSync.writeFileSync(modeFilePath, 'legacy-send-fail\n');
+  const runtime = new ZCodeRuntimeProvider();
+
+  await assert.rejects(
+    runtime.run('hello', { sessionId: 'app-sess-unwritten', cwd: stubDir }, createWriter().writer, context),
+    /legacy send refused/,
+  );
+
+  // The app now maps to the engine session, so the next run resumes it — but
+  // the engine never wrote it, and a sendText there would fail its foreign key.
+  fsSync.writeFileSync(modeFilePath, 'ok\n');
+  fsSync.writeFileSync(logFilePath, '');
+  const result = await runtime.run('hello again', { sessionId: 'app-sess-unwritten', cwd: stubDir }, createWriter().writer, resumedContext);
+  assert.deepEqual(result, { sessionId: 'sess_stub_1', success: true });
+  assert.equal(readStubLog().filter((entry) => entry.name === 'legacy_send').length, 1);
+  assert.equal(readStubLog().filter((entry) => entry.name === 'v4_command').length, 0);
+
+  // Once written, the session's prompts take the sendText channel.
+  fsSync.writeFileSync(logFilePath, '');
+  await runtime.run('third', { sessionId: 'app-sess-unwritten', cwd: stubDir }, createWriter().writer, resumedContext);
+  assert.equal(readStubLog().filter((entry) => entry.name === 'legacy_send').length, 0);
+});
+
+test('a turn that fails before announcing itself still ends the run with its error', async () => {
+  fsSync.writeFileSync(modeFilePath, 'early-fail\n');
+  process.env.CLOUDCLI_ZCODE_SILENCE_TIMEOUT_MS = '1500';
+  try {
+    const runtime = new ZCodeRuntimeProvider();
+    const { messages, writer } = createWriter();
+    await runtime.run('hello', { sessionId: 'app-sess-earlyfail', cwd: stubDir }, writer, resumedContext);
+
+    const error = messages.find((msg) => msg.kind === 'error');
+    assert.equal(error?.text, 'model config missing', 'the failure must not be dropped as another turn\'s');
+    assert.equal(messages.find((msg) => msg.kind === 'complete')?.exitCode, 1);
+  } finally {
+    delete process.env.CLOUDCLI_ZCODE_SILENCE_TIMEOUT_MS;
+  }
+});
+
+test('a stop pressed while the prompt is still being admitted stops the prompt\'s own turn', async () => {
+  fsSync.writeFileSync(modeFilePath, 'slow-ack\n');
+  fsSync.writeFileSync(logFilePath, '');
+  const runtime = new ZCodeRuntimeProvider();
+  const { messages, writer } = createWriter();
+
+  const runPromise = runtime.run('hello', { sessionId: 'app-sess-slowack', cwd: stubDir }, writer, resumedContext);
+  // Abort lands while the engine is still preempting and has not acknowledged.
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(await runtime.abort('app-sess-slowack'), true);
+
+  const result = await runPromise;
+  assert.deepEqual(result, { sessionId: 'sess_stub_1', success: false });
+  const names = readStubLog().map((entry) => entry.name);
+  assert.ok(names.indexOf('send_acked') >= 0 && names.indexOf('send_acked') < names.lastIndexOf('stop'),
+    'the stop must go out after the prompt was admitted, so it hits the prompt\'s turn');
+  assert.equal(messages.find((msg) => msg.kind === 'complete')?.exitCode, 0);
+});
+
+test('a stop pressed while the run is still setting up keeps its prompt from ever being sent', async () => {
+  fsSync.writeFileSync(modeFilePath, 'slow-subscribe\n');
+  fsSync.writeFileSync(logFilePath, '');
+  const runtime = new ZCodeRuntimeProvider();
+  const { messages, writer } = createWriter();
+
+  const runPromise = runtime.run('hello', { sessionId: 'app-sess-setupstop', cwd: stubDir }, writer, resumedContext);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(await runtime.abort('app-sess-setupstop'), true);
+
+  const result = await runPromise;
+  assert.deepEqual(result, { sessionId: 'sess_stub_1', success: false });
+  assert.equal(readStubLog().filter((entry) => entry.name === 'session_send_attempt').length, 0,
+    'a prompt sent after the stop would start a turn nothing stops');
+  assert.equal(messages.find((msg) => msg.kind === 'complete')?.exitCode, 0);
+});
+
+test('an engine-rejected prompt fails the run visibly instead of vanishing', async () => {
+  fsSync.writeFileSync(modeFilePath, 'send-rejected\n');
+  const runtime = new ZCodeRuntimeProvider();
+  const { messages, writer } = createWriter();
+
+  await assert.rejects(
+    runtime.run('hello', { sessionId: 'app-sess-rejected', cwd: stubDir }, writer, resumedContext),
+    /input rejected by engine/,
+  );
+
+  const error = messages.find((msg) => msg.kind === 'error');
+  assert.ok(error, 'the rejection must reach the chat stream');
+  assert.match(error.text ?? '', /input rejected by engine/);
+});
+
+test('the terminal events of a preempted engine-started turn do not end the user run', async () => {
+  fsSync.writeFileSync(modeFilePath, 'preempt\n');
+  const runtime = new ZCodeRuntimeProvider();
+  const { messages, writer } = createWriter();
+
+  const result = await runtime.run('hello', { sessionId: 'app-sess-preempt', cwd: stubDir }, writer, resumedContext);
+  assert.deepEqual(result, { sessionId: 'sess_stub_1', success: true });
+
+  assert.ok(
+    messages.some((msg) => msg.kind === 'stream_delta' && msg.content === 'user reply'),
+    'the run must stay open until its own turn finished',
+  );
+  const complete = messages.find((msg) => msg.kind === 'complete');
+  assert.equal(complete?.tokens, 7, 'the run must settle on its own turn, not the cancelled one');
+  assert.equal(complete?.exitCode, 0);
+  assert.equal(messages.filter((msg) => msg.kind === 'error').length, 0, 'the other turn\'s cancellation is not this run\'s error');
+  assert.equal(
+    messages.filter((msg) => msg.kind === 'task_notification').length,
+    0,
+    'the other turn\'s cancellation is not this run\'s interruption',
+  );
+});
+
+test('runtime repairs a missing engine-side model selection after resume so subagent spawns can resolve a model', async () => {
+  fsSync.writeFileSync(modeFilePath, 'resume-no-selection\n');
+  fsSync.writeFileSync(logFilePath, '');
+  const runtime = new ZCodeRuntimeProvider();
+  const { writer } = createWriter();
+  // The stored provider mapping points at an engine session, so the run
+  // resumes instead of creating.
+  const resumeContext: ProviderRuntimeContext = {
+    ...context,
+    resolveProviderSessionId: () => 'sess_stub_resume',
+  };
+
+  const result = await runtime.run('hello', {
+    sessionId: 'app-sess-repair',
+    model: 'GLM-5.3',
+    effort: 'high',
+    cwd: stubDir,
+  }, writer, resumeContext);
+
+  assert.deepEqual(result, { sessionId: 'sess_stub_resume', success: true });
+
+  const setModelEntries = readStubLog().filter((entry) => entry.name === 'setModel');
+  assert.equal(setModelEntries.length, 1, 'a resume whose response lacks settings.model.current must be repaired via session/setModel');
+  assert.deepEqual(setModelEntries[0].value, {
+    sessionId: 'sess_stub_resume',
+    model: { providerId: 'bigmodel-coding-plan', modelId: 'GLM-5.3', options: { reasoningLevel: 'high' } },
+  });
+});
+
+test('runtime still completes a run when the post-resume model repair is refused', async () => {
+  fsSync.writeFileSync(modeFilePath, 'resume-no-selection-setmodel-fail\n');
+  fsSync.writeFileSync(logFilePath, '');
+  const runtime = new ZCodeRuntimeProvider();
+  const { writer } = createWriter();
+  const resumeContext: ProviderRuntimeContext = {
+    ...context,
+    resolveProviderSessionId: () => 'sess_stub_resume',
+  };
+
+  // The repair is best-effort: a refused session/setModel must not fail the
+  // send, whose per-turn modelSelection still drives the turn itself.
+  const result = await runtime.run('hello', {
+    sessionId: 'app-sess-repair-refused',
+    model: 'GLM-5.3',
+    effort: 'high',
+    cwd: stubDir,
+  }, writer, resumeContext);
+
+  assert.deepEqual(result, { sessionId: 'sess_stub_resume', success: true });
+  assert.equal(readStubLog().filter((entry) => entry.name === 'setModel').length, 1, 'the repair attempt must still have been made');
+});
+
+test('resume responses carrying the same selection do not trigger a model repair', async () => {
+  fsSync.writeFileSync(modeFilePath, 'resume-matching-selection\n');
+  fsSync.writeFileSync(logFilePath, '');
+  const runtime = new ZCodeRuntimeProvider();
+  const { writer } = createWriter();
+  const resumeContext: ProviderRuntimeContext = {
+    ...context,
+    resolveProviderSessionId: () => 'sess_stub_resume',
+  };
+
+  const result = await runtime.run('hello', {
+    sessionId: 'app-sess-healthy',
+    model: 'GLM-5.3',
+    cwd: stubDir,
+  }, writer, resumeContext);
+
+  assert.deepEqual(result, { sessionId: 'sess_stub_resume', success: true });
+  const setModelEntry = readStubLog().find((entry) => entry.name === 'setModel');
+  assert.equal(setModelEntry, undefined, 'a session with a usable selection must not be re-modeled');
+});
+
+test('resume replaces a legacy provider selection with the native individual plan', async () => {
+  fsSync.writeFileSync(modeFilePath, 'ok\n');
+  fsSync.writeFileSync(logFilePath, '');
+  const credentialsDir = path.join(stubDir, 'v2');
+  fsSync.mkdirSync(credentialsDir, { recursive: true });
+  const credentialsPath = path.join(credentialsDir, 'credentials.json');
+  fsSync.writeFileSync(credentialsPath, JSON.stringify({
+    'account-provider:coding-plan:account:bigmodel-individual-coding-plan:account:123:api-key': 'fixture-personal-key',
+  }));
+  try {
+    const resumeContext: ProviderRuntimeContext = {
+      ...context,
+      resolveProviderSessionId: () => 'sess_stub_resume',
+    };
+    const { writer } = createWriter();
+    await new ZCodeRuntimeProvider().run('hello', {
+      sessionId: 'app-sess-native-personal',
+      model: 'bigmodel-coding-plan/GLM-5.3-Flash',
+      cwd: stubDir,
+    }, writer, resumeContext);
+
+    const selection = { providerId: 'account:bigmodel-individual-coding-plan', modelId: 'GLM-5.3-Flash', options: { reasoningLevel: 'max' } };
+    assert.deepEqual(readStubLog().filter((entry) => entry.name === 'setModel').at(-1)?.value,
+      { sessionId: 'sess_stub_resume', model: selection });
+    assert.deepEqual((readStubLog().filter((entry) => entry.name === 'session_send').at(-1)?.value as { modelSelection?: unknown })?.modelSelection,
+      selection);
+  } finally {
+    fsSync.rmSync(credentialsPath, { force: true });
+  }
 });
 
 test('runtime bridges interaction/requestPermission to the chat stream and answers the engine', async () => {
@@ -906,7 +1234,18 @@ test('a delivered session/stop settles the run as aborted with a complete frame'
   }
   assert.ok(streaming, 'the stub must be streaming before the abort');
 
+  const legacyStopsBefore = readStubLog().filter((entry) => entry.name === 'legacy_stop').length;
   assert.equal(await runtime.abort('app-sess-abort'), true, 'a delivered stop must report success');
+
+  // The legacy session/stop only cancels turns that session/send started; a
+  // turn the engine started from its own queue (a background notification)
+  // survives it. The v4 stop command stops whatever turn is in the foreground.
+  const stopCommand = readStubLog().filter((entry) => entry.name === 'v4_command').at(-1)?.value as
+    { type?: string; sessionId?: string; payload?: unknown } | undefined;
+  assert.equal(stopCommand?.type, 'stop');
+  assert.equal(stopCommand?.sessionId, 'sess_stub_1');
+  assert.deepEqual(stopCommand?.payload, {});
+  assert.equal(readStubLog().filter((entry) => entry.name === 'legacy_stop').length, legacyStopsBefore, 'abort must not use the legacy stop');
 
   const result = await runPromise;
   assert.deepEqual(result, { sessionId: 'sess_stub_1', success: false });
@@ -987,39 +1326,50 @@ test('an engine-side cancellation degrades to a quiet notification instead of an
 // Last: the crash mode kills the shared stub subprocess; the supervisor's
 // restart circuit breaker brings it back, but later tests should not have to
 // race the restart.
-test('attachments reach the engine in its native item shape, not as app descriptors', async () => {
+test('attachments reach the engine in the shape of the channel carrying the prompt, not as app descriptors', async () => {
   fsSync.writeFileSync(modeFilePath, 'ok\n');
   const runtime = new ZCodeRuntimeProvider();
-  const { writer } = createWriter();
-
-  await runtime.run('summarize the files', {
-    sessionId: 'app-sess-attach',
-    cwd: stubDir,
-    attachments: [
-      { path: '/tmp/assets/1-abc/photo.png', name: 'photo.png', mimeType: 'image/png', size: 1024 },
-      { path: '/tmp/assets/1-def/report.pdf', name: 'report.pdf', mimeType: 'application/pdf', size: 20480 },
-      { path: '/tmp/assets/1-ghi/notes.txt', name: 'notes.txt', mimeType: 'text/plain', size: 33 },
-      { path: '/tmp/assets/1-jkl/blob.bin', mimeType: 'application/octet-stream', size: 8 },
-      { path: 'assets/relative/evil.txt', name: 'evil.txt', mimeType: 'text/plain', size: 3 },
-    ],
-  }, writer, context);
-
-  const sendEntry = readStubLog()
+  const attachments = [
+    { path: '/tmp/assets/1-abc/photo.png', name: 'photo.png', mimeType: 'image/png', size: 1024 },
+    { path: '/tmp/assets/1-def/report.pdf', name: 'report.pdf', mimeType: 'application/pdf', size: 20480 },
+    { path: '/tmp/assets/1-ghi/notes.txt', name: 'notes.txt', mimeType: 'text/plain', size: 33 },
+    { path: '/tmp/assets/1-jkl/blob.bin', mimeType: 'application/octet-stream', size: 8 },
+    { path: 'assets/relative/evil.txt', name: 'evil.txt', mimeType: 'text/plain', size: 3 },
+    { path: '/tmp/assets/1-mno/unknown' },
+  ];
+  const lastAttachments = () => readStubLog()
     .filter((entry) => entry.name === 'session_send')
     .map((entry) => entry.value as { attachments?: unknown[] })
-    .find((params) => Array.isArray(params.attachments));
-  assert.ok(sendEntry, 'session/send must carry the attachments param');
+    .filter((params) => Array.isArray(params.attachments))
+    .at(-1)?.attachments;
 
-  // The engine mapper (0.16.5) reads kind/filename/mimeType/sizeBytes/localPath
-  // and silently DROPS any item it cannot map — the app descriptor shape
-  // {path,name,mimeType,size} never reaches the model. Relative paths are
-  // refused too: the engine would resolve them against the session workspace.
+  // A new session's first prompt rides the legacy session/send, whose mapper
+  // (0.16.5) reads kind/filename/mimeType/sizeBytes/localPath and silently
+  // DROPS any item it cannot map.
+  await runtime.run('summarize the files', { sessionId: 'app-sess-attach-new', cwd: stubDir, attachments }, createWriter().writer, context);
+  assert.deepEqual(lastAttachments(), [
+    { kind: 'image', filename: 'photo.png', localPath: '/tmp/assets/1-abc/photo.png', mimeType: 'image/png', sizeBytes: 1024 },
+    { kind: 'pdf', filename: 'report.pdf', localPath: '/tmp/assets/1-def/report.pdf', mimeType: 'application/pdf', sizeBytes: 20480 },
+    { kind: 'file', filename: 'notes.txt', localPath: '/tmp/assets/1-ghi/notes.txt', mimeType: 'text/plain', sizeBytes: 33 },
+    { kind: 'file', filename: 'blob.bin', localPath: '/tmp/assets/1-jkl/blob.bin', mimeType: 'application/octet-stream', sizeBytes: 8 },
+    { kind: 'file', filename: 'unknown', localPath: '/tmp/assets/1-mno/unknown' },
+  ], 'descriptors must be mapped to the legacy item shape; relative paths must be dropped');
+
+  await runtime.run('summarize the files', { sessionId: 'app-sess-attach', cwd: stubDir, attachments }, createWriter().writer, resumedContext);
+  const sendEntry = { attachments: lastAttachments() };
+
+  // The v4 sendText schema is strict ({ref, fileName, mime, bytes}); the
+  // engine maps a non-URI ref to a local file of the type the MIME names, so
+  // the app descriptor shape {path,name,mimeType,size} never reaches it.
+  // Relative paths are refused: the engine would resolve them against the
+  // session workspace. Unknown MIME and size fall back to a generic file.
   assert.deepEqual(sendEntry.attachments, [
-    { kind: 'image', filename: 'photo.png', mimeType: 'image/png', sizeBytes: 1024, localPath: '/tmp/assets/1-abc/photo.png' },
-    { kind: 'pdf', filename: 'report.pdf', mimeType: 'application/pdf', sizeBytes: 20480, localPath: '/tmp/assets/1-def/report.pdf' },
-    { kind: 'file', filename: 'notes.txt', mimeType: 'text/plain', sizeBytes: 33, localPath: '/tmp/assets/1-ghi/notes.txt' },
-    { kind: 'file', filename: 'blob.bin', mimeType: 'application/octet-stream', sizeBytes: 8, localPath: '/tmp/assets/1-jkl/blob.bin' },
-  ], 'descriptors must be mapped to the engine item shape; relative paths must be dropped');
+    { ref: '/tmp/assets/1-abc/photo.png', fileName: 'photo.png', mime: 'image/png', bytes: 1024 },
+    { ref: '/tmp/assets/1-def/report.pdf', fileName: 'report.pdf', mime: 'application/pdf', bytes: 20480 },
+    { ref: '/tmp/assets/1-ghi/notes.txt', fileName: 'notes.txt', mime: 'text/plain', bytes: 33 },
+    { ref: '/tmp/assets/1-jkl/blob.bin', fileName: 'blob.bin', mime: 'application/octet-stream', bytes: 8 },
+    { ref: '/tmp/assets/1-mno/unknown', fileName: 'unknown', mime: 'application/octet-stream', bytes: 0 },
+  ], 'descriptors must be mapped to the v4 attachment shape; relative paths must be dropped');
 });
 
 test('a failed session/stop keeps the run running to its true completion instead of reporting aborted', async () => {
@@ -1041,7 +1391,8 @@ test('a failed session/stop keeps the run running to its true completion instead
 
   // The engine never stopped, so the run continues to its real completion —
   // the old code marked the run completed at abort time and ended it while
-  // the turn was in fact still running.
+  // the turn was in fact still running. The turn ends cancelled, but not by
+  // the refused stop: it is a completion, not this run's abort.
   const result = await runPromise;
   assert.deepEqual(result, { sessionId: 'sess_stub_1', success: true });
   const complete = messages.find((msg) => msg.kind === 'complete');
@@ -1067,18 +1418,314 @@ test('an engine crash fails the run fast through session-lost instead of timing 
   assert.equal(await runtime.abort('app-sess-crash'), false);
 });
 
+
 test('runtime delivers native tool outputs before turn completion without fetching history', async () => {
   fsSync.writeFileSync(modeFilePath, 'tool-results\n');
   const { messages, writer } = createWriter();
-  const result = await new ZCodeRuntimeProvider().run('list files', { sessionId: 'app-sess-tools', cwd: stubDir }, writer, context);
-  assert.deepEqual(result, { sessionId: 'sess_stub_1', success: true });
+  const result = await new ZCodeRuntimeProvider().run('list files', {sessionId:'app-sess-tools', cwd:stubDir}, writer, context);
+  assert.deepEqual(result, {sessionId:'sess_stub_1', success:true});
   const results = messages.filter((message) => message.kind === 'tool_result');
   assert.deepEqual(results.map((message) => [message.toolId, message.toolResult]), [
-    ['call_live_read', { content: 'File not found', isError: true }],
-    ['call_live_bash', { content: 'a.txt', isError: false }],
+    ['call_live_read', {content:'File not found', isError:true}],
+    ['call_live_bash', {content:'a.txt', isError:false}],
   ]);
   const nextTextIndex = messages.findIndex((message) => message.kind === 'stream_delta');
   for (const message of results) assert.ok(messages.indexOf(message) < nextTextIndex);
   assert.equal(messages.at(-1)?.kind, 'complete');
 });
 
+test('a background agent shows as a running Agent card, is listed as background work, and settles after the turn', async () => {
+  fsSync.writeFileSync(modeFilePath, 'subagent-bg\n');
+  const runtime = new ZCodeRuntimeProvider();
+  const { messages, writer } = createWriter();
+
+  assert.deepEqual(runtime.listBackgroundWork(), []);
+
+  const result = await runtime.run('review it', { sessionId: 'app-sess-subagent', cwd: stubDir }, writer, context);
+  assert.deepEqual(result, { sessionId: 'sess_stub_1', success: true });
+
+  // The launch renders through the shared subagent card: the engine's
+  // `Agent` call reaches the client under that name, and the spawn event marks
+  // it running on that very call.
+  const launch = messages.find((message) => message.kind === 'tool_use');
+  assert.equal(launch?.toolName, 'Agent');
+  assert.equal(launch?.toolId, 'call_agent_bg');
+  const started = messages.find((message) => message.kind === 'task_status' && message.event === 'started');
+  assert.equal(started?.taskId, 'agent_bg_1');
+  assert.equal(started?.toolUseId, 'call_agent_bg');
+  assert.ok(messages.indexOf(started!) < messages.findIndex((message) => message.kind === 'complete'));
+
+  // The turn is over but the agent is not: the running-sessions poll must
+  // still see it.
+  const listed = runtime.listBackgroundWork();
+  assert.equal(listed.length, 1);
+  assert.equal(listed[0].sessionId, 'app-sess-subagent');
+  assert.deepEqual(listed[0].tasks.map((task) => [task.taskId, task.toolUseId, task.taskType, task.description]), [
+    ['agent_bg_1', 'call_agent_bg', 'local_agent', 'Review the fix'],
+  ]);
+
+  // The stop lands after the run settled. The lifecycle watcher the run left
+  // behind still forwards it, so the open page settles the card without a
+  // reload, and the agent leaves the background-work list.
+  const deadline = Date.now() + 3000;
+  while (runtime.listBackgroundWork().length > 0 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.deepEqual(runtime.listBackgroundWork(), [], 'the stopped agent is retired');
+  const stopped = messages.find((message) => message.kind === 'task_status' && message.status === 'completed');
+  assert.equal(stopped?.toolUseId, 'call_agent_bg');
+  assert.deepEqual(stopped?.usage, { totalTokens: 300, toolUses: 2, durationMs: 1500 });
+});
+
+test('the composer strip lists a background agent past the turn, without a stop the runtime cannot honour', async () => {
+  fsSync.writeFileSync(modeFilePath, 'subagent-bg\n');
+  const runtime = new ZCodeRuntimeProvider();
+  const { messages, writer } = createWriter();
+  await runtime.run('review it', { sessionId: 'app-sess-strip', cwd: stubDir }, writer, context);
+
+  // The agent outlives the turn: a page that subscribes now gets it back from
+  // the runtime, and is told the session has no run left to stop.
+  const stripTask = { id: 'call_agent_bg', toolName: 'Agent', command: 'Review the fix', description: 'Review the fix' };
+  const withoutStart = (tasks: any[]) => tasks.map(({ startedAt: _startedAt, ...task }) => task);
+  assert.deepEqual(withoutStart(runtime.backgroundTasks.list('app-sess-strip')), [stripTask]);
+  assert.equal(runtime.backgroundTasks.canInterrupt('app-sess-strip'), false);
+
+  const deadline = Date.now() + 3000;
+  while (runtime.listBackgroundWork().length > 0 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+
+  // Spawned mid-turn, the agent's work stops with the turn; once the turn
+  // has ended there is no run to stop, which the strip must say before the
+  // page sees the turn complete.
+  const strips = messages.filter((message) => message.kind === 'status' && message.text === 'background_tasks');
+  assert.deepEqual(
+    strips.map((message) => [withoutStart(message.backgroundTasks ?? []), message.canInterrupt]),
+    [[[stripTask], true], [[stripTask], false], [[], false]],
+  );
+  assert.ok(messages.indexOf(strips[1]) < messages.findIndex((message) => message.kind === 'complete'));
+  assert.deepEqual(runtime.backgroundTasks.list('app-sess-strip'), []);
+});
+
+test('a new run takes the session over from the lifecycle watcher: a late stop is forwarded exactly once', async () => {
+  fsSync.writeFileSync(modeFilePath, 'subagent-bg\n');
+  const runtime = new ZCodeRuntimeProvider();
+  const first = createWriter();
+  await runtime.run('review it', { sessionId: 'app-sess-handover', cwd: stubDir }, first.writer, context);
+  assert.equal(runtime.listBackgroundWork().length, 1, 'the agent outlives the first turn');
+  const forwardedToFirstAtHandover = first.messages.filter((message) => message.kind === 'task_status').length;
+
+  // The user sends again before the agent reports. The engine's stop lands
+  // either during this run (its listener owns the stream) or after it (the
+  // re-armed watcher does) — never through both, and never through the
+  // writer of the turn that is over.
+  fsSync.writeFileSync(modeFilePath, 'ok\n');
+  const second = createWriter();
+  await runtime.run('and again', { sessionId: 'app-sess-handover', cwd: stubDir }, second.writer, context);
+
+  const deadline = Date.now() + 3000;
+  while (runtime.listBackgroundWork().length > 0 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.deepEqual(runtime.listBackgroundWork(), [], 'the stopped agent is retired');
+
+  const settledInSecond = second.messages.filter((message) => message.kind === 'task_status' && message.status === 'completed');
+  assert.equal(settledInSecond.length, 1, 'the stop reaches the live writer once');
+  assert.equal(
+    first.messages.filter((message) => message.kind === 'task_status').length,
+    forwardedToFirstAtHandover,
+    'the superseded turn\'s writer receives nothing after the handover',
+  );
+});
+
+test('a stop landing while a new run is still setting up reaches only the new run, once', async () => {
+  fsSync.writeFileSync(modeFilePath, 'subagent-bg\n');
+  const runtime = new ZCodeRuntimeProvider();
+  const first = createWriter();
+  await runtime.run('review it', { sessionId: 'app-sess-window', cwd: stubDir }, first.writer, context);
+  assert.equal(runtime.listBackgroundWork().length, 1, 'the agent outlives the first turn');
+  const firstCount = first.messages.length;
+
+  // The engine reports the stop while the next run is between its start and
+  // its prompt; the first turn's watcher must not take it.
+  fsSync.writeFileSync(modeFilePath, 'handover-window\n');
+  const second = createWriter();
+  await runtime.run('and again', { sessionId: 'app-sess-window', cwd: stubDir }, second.writer, context);
+
+  assert.equal(first.messages.length, firstCount, 'the finished turn\'s writer hears nothing after the handover');
+  // The straggling turn-end belongs to the earlier turn: the new run still
+  // waits for its own, so its reply arrives before its completion.
+  const replyAt = second.messages.findIndex((message) => message.content === 'hi there');
+  const completeAt = second.messages.findIndex((message) => message.kind === 'complete');
+  assert.ok(replyAt >= 0 && replyAt < completeAt, 'the new run completes on its own turn, not on the earlier one');
+  const settled = second.messages.filter((message) => message.kind === 'task_status' && message.status === 'completed');
+  assert.equal(settled.length, 1, 'the stop reaches the new run\'s writer exactly once');
+  assert.deepEqual(runtime.listBackgroundWork(), []);
+});
+
+test('a superseded run forwards nothing from the stream once a newer run owns the session', async () => {
+  fsSync.writeFileSync(modeFilePath, 'abort-ok\n');
+  const runtime = new ZCodeRuntimeProvider();
+  const first = createWriter();
+  // The superseded run ends with an error; collect it where it happens.
+  const firstRun = runtime.run('stream', { sessionId: 'app-sess-superseded', cwd: stubDir }, first.writer, context)
+    .then(() => null, (error: unknown) => error);
+  for (let i = 0; i < 100 && !first.messages.some((message) => message.kind === 'stream_delta'); i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.ok(first.messages.some((message) => message.kind === 'stream_delta'), 'the first run must be streaming');
+
+  fsSync.writeFileSync(modeFilePath, 'handover-window\n');
+  const second = createWriter();
+  await runtime.run('take over', { sessionId: 'app-sess-superseded', cwd: stubDir }, second.writer, context);
+  assert.match(String(await firstRun), /superseded/);
+
+  const windowText = (messages: NormalizedMessage[]) => messages.filter((message) => message.content === 'window text').length;
+  assert.equal(windowText(second.messages), 1, 'the new run forwards what arrived during its setup');
+  assert.equal(windowText(first.messages), 0, 'the superseded run must not forward a second copy');
+
+  // Stops the stub's ticking stream so it does not outlive the test.
+  await protocolClient.sendRequest('session/stop', { sessionId: 'sess_stub_1' });
+});
+
+test('a setup failure in a new run releases its listener and hands the session back to the watcher', async (t) => {
+  fsSync.writeFileSync(modeFilePath, 'subagent-bg\n');
+  const runtime = new ZCodeRuntimeProvider();
+  const first = createWriter();
+  await runtime.run('review it', { sessionId: 'app-sess-setup-fail', cwd: stubDir }, first.writer, context);
+  assert.equal(runtime.listBackgroundWork().length, 1, 'the agent outlives the first turn');
+
+  // Count the listeners attached to the engine session from here on.
+  const attached = new Set<unknown>();
+  const originalAdd = protocolClient.addSessionListener.bind(protocolClient);
+  const originalRemove = protocolClient.removeSessionListener.bind(protocolClient);
+  t.mock.method(protocolClient, 'addSessionListener', (sessionId: string, listener: unknown) => {
+    attached.add(listener);
+    return originalAdd(sessionId, listener as never);
+  });
+  t.mock.method(protocolClient, 'removeSessionListener', (sessionId: string, listener: unknown) => {
+    attached.delete(listener);
+    return originalRemove(sessionId, listener as never);
+  });
+
+  // The next run dies during setup (model catalog lookup), before any prompt.
+  const failing: ProviderRuntimeContext = {
+    ...context,
+    getProviderModels: async () => { throw new Error('catalog unavailable'); },
+  };
+  const second = createWriter();
+  await assert.rejects(
+    runtime.run('and again', { sessionId: 'app-sess-setup-fail', cwd: stubDir }, second.writer, failing),
+    /catalog unavailable/,
+  );
+
+  // The agent is still outstanding, so the watcher is back on the session and
+  // delivers its stop once, to the writer of the run that handed it over.
+  const deadline = Date.now() + 3000;
+  while (runtime.listBackgroundWork().length > 0 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.deepEqual(runtime.listBackgroundWork(), [], 'the stopped agent is retired');
+  assert.equal(second.messages.filter((m) => m.kind === 'task_status' && m.status === 'completed').length, 1);
+
+  // Once the watcher has stood down, nothing of the failed run still listens.
+  assert.equal(attached.size, 0, 'the failed run leaked its session listener');
+});
+
+test('a background agent asking for approval after its turn ended still reaches the page, and the answer reaches the engine', async () => {
+  fsSync.writeFileSync(modeFilePath, 'subagent-bg-permission\n');
+  const runtime = new ZCodeRuntimeProvider();
+  const { messages, writer } = createWriter();
+  await runtime.run('review it', { sessionId: 'app-sess-bg-perm', cwd: stubDir }, writer, context);
+
+  for (let i = 0; i < 100 && !messages.some((msg) => msg.kind === 'permission_request'); i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  const card = messages.find((msg) => msg.kind === 'permission_request');
+  assert.ok(card, 'the approval card must reach the page although no turn is running');
+  assert.equal(card.requestId, 'perm_bg_1');
+  assert.deepEqual((card.context as { subagent?: unknown }).subagent, { toolUseId: 'call_agent_bg', agentId: 'agent_bg_1', description: 'Review the fix' });
+  assert.deepEqual((zcodeRuntimePermissions.listPending('app-sess-bg-perm') as Array<{ requestId: string }>).map((entry) => entry.requestId), ['perm_bg_1']);
+
+  zcodeRuntimePermissions.resolve('perm_bg_1', { allow: true });
+  const deadline = Date.now() + 3000;
+  while (runtime.listBackgroundWork().length > 0 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  const answer = readStubLog().filter((entry) => entry.name === 'perm_answer' && (entry.value as { id?: string }).id === 'server-perm-bg');
+  assert.equal(answer.length, 1);
+  assert.deepEqual((answer[0].value as { result: unknown }).result, { decision: 'allow' });
+  assert.equal(messages.filter((msg) => msg.kind === 'permission_cancelled').length, 1, 'retracted once when answered, not again when the agent stops');
+});
+
+test('an approval card is retracted when its agent stops before the user answered', async () => {
+  fsSync.writeFileSync(modeFilePath, 'subagent-bg-permission-orphan\n');
+  const runtime = new ZCodeRuntimeProvider();
+  const { messages, writer } = createWriter();
+  await runtime.run('review it', { sessionId: 'app-sess-orphan', cwd: stubDir }, writer, context);
+
+  const deadline = Date.now() + 4000;
+  while (!messages.some((msg) => msg.kind === 'permission_cancelled') && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  }
+  assert.equal(messages.filter((msg) => msg.kind === 'permission_request').length, 1);
+  assert.equal(messages.filter((msg) => msg.kind === 'permission_cancelled').length, 1, 'the dead agent\'s card is taken down');
+  assert.deepEqual(zcodeRuntimePermissions.listPending('app-sess-orphan'), []);
+  // A late answer to the retracted card changes nothing.
+  zcodeRuntimePermissions.resolve('perm_bg_orphan', { allow: true });
+  assert.equal(messages.filter((msg) => msg.kind === 'permission_cancelled').length, 1);
+});
+
+test('a resumed agent\'s approval card is retracted by the agent, whatever call its request names', async () => {
+  fsSync.writeFileSync(modeFilePath, 'subagent-bg-permission-orphan-resumed\n');
+  const runtime = new ZCodeRuntimeProvider();
+  const { messages, writer } = createWriter();
+  await runtime.run('review it', { sessionId: 'app-sess-orphan-resumed', cwd: stubDir }, writer, context);
+
+  const deadline = Date.now() + 4000;
+  while (!messages.some((msg) => msg.kind === 'permission_cancelled') && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  }
+  assert.equal(messages.filter((msg) => msg.kind === 'permission_cancelled').length, 1, 'the stopped agent\'s card is taken down');
+  assert.deepEqual(zcodeRuntimePermissions.listPending('app-sess-orphan-resumed'), []);
+});
+
+// Last: both crash modes kill the shared stub subprocess.
+test('an engine crash settles the agents the watcher was waiting on as stopped, so no card spins', async () => {
+  fsSync.writeFileSync(modeFilePath, 'subagent-bg-crash\n');
+  const runtime = new ZCodeRuntimeProvider();
+  const { messages, writer } = createWriter();
+  await runtime.run('review it', { sessionId: 'app-sess-bg-crash', cwd: stubDir }, writer, context);
+  assert.equal(runtime.listBackgroundWork().length, 1, 'the agent is tracked once the turn ends');
+
+  // The engine dies with the agent still running. Nothing can report it any
+  // more, so the page must be told it stopped and it must leave the list.
+  const deadline = Date.now() + 4000;
+  while (runtime.listBackgroundWork().length > 0 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.deepEqual(runtime.listBackgroundWork(), [], 'the dead engine\'s agent is retired');
+  const settled = messages.filter((message) => message.kind === 'task_status' && message.event === 'notification');
+  assert.deepEqual(settled.map((message) => [message.toolUseId, message.taskId, message.status]), [
+    ['call_agent_bg', 'agent_bg_1', 'stopped'],
+  ]);
+  assert.equal(settled[0].usage, undefined, 'no usage is invented for an agent that never reported');
+  const lastStrip = messages.filter((message) => message.kind === 'status' && message.text === 'background_tasks').at(-1);
+  assert.deepEqual(lastStrip?.backgroundTasks, [], 'the strip empties with the dead engine');
+});
+
+test('an engine crash mid-turn settles the agents the run was waiting on as stopped', async () => {
+  fsSync.writeFileSync(modeFilePath, 'subagent-run-crash\n');
+  const runtime = new ZCodeRuntimeProvider();
+  const { messages, writer } = createWriter();
+  const result = await runtime.run('audit it', { sessionId: 'app-sess-run-crash', cwd: stubDir }, writer, context);
+  assert.equal((result as { success: boolean }).success, false);
+
+  const settled = messages.filter((message) => message.kind === 'task_status' && message.event === 'notification');
+  assert.deepEqual(settled.map((message) => [message.toolUseId, message.status]), [['call_agent_run', 'stopped']]);
+  assert.ok(
+    messages.indexOf(settled[0]) < messages.findIndex((message) => message.kind === 'complete'),
+    'the card settles before the page sees the run complete',
+  );
+  assert.deepEqual(runtime.listBackgroundWork(), []);
+});

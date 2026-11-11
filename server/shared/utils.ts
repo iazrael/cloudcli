@@ -103,6 +103,16 @@ function storeDisplayAsset(bytes: Buffer | string, filename: string): void {
   }
 }
 
+/** Image formats by the base64 of their first bytes; Codex sends generated images without a media type. */
+const BASE64_IMAGE_SIGNATURES: ReadonlyArray<readonly [prefix: string, mimeType: string]> = [
+  ['iVBORw0KGgo', 'image/png'], ['/9j/', 'image/jpeg'], ['UklGR', 'image/webp'],
+];
+
+function isCodexGeneratedImage(record: Record<string, unknown>): boolean {
+  return record.type === 'imageGeneration'
+    || (record.type === 'Extension' && record.kind === 'image_gen.generation');
+}
+
 function storeInlineImage(mimeType: string, encoded: string): string {
   const extension = INLINE_IMAGE_EXTENSIONS[mimeType.toLowerCase()];
   if (!extension) throw new Error(`Unsupported inline image type: ${mimeType}`);
@@ -192,6 +202,15 @@ export function compactProviderPayload<T>(value: T): T {
       const result = { ...rest, uri: storeInlineImage(String(record.mimeType ?? record.mime_type), data) };
       seen.set(input, result);
       return result;
+    }
+    if (isCodexGeneratedImage(record) && typeof record.result === 'string') {
+      const encoded = record.result;
+      const mimeType = BASE64_IMAGE_SIGNATURES.find(([prefix]) => encoded.startsWith(prefix))?.[1];
+      if (mimeType) {
+        const result = { ...record, result: storeInlineImage(mimeType, encoded) };
+        seen.set(input, result);
+        return result;
+      }
     }
     seen.set(input, input);
     let result: unknown = input;
@@ -1126,6 +1145,27 @@ export const readStringRecord = (value: unknown): Record<string, string> | undef
   return Object.keys(normalized).length > 0 ? normalized : undefined;
 };
 
+/**
+ * Reads a record whose keys and values are trimmed non-empty strings.
+ * Entries that do not produce both are dropped; `undefined` means no entry
+ * survived rather than an intentionally empty map.
+ */
+export const readTrimmedStringRecord = (value: unknown): Record<string, string> | undefined => {
+  const record = readObjectRecord(value);
+  if (!record) {
+    return undefined;
+  }
+
+  const entries = Object.entries(record).flatMap(([key, entry]) => {
+    const normalizedKey = key.trim();
+    const normalizedValue = readOptionalString(entry);
+    return normalizedKey && normalizedValue
+      ? [[normalizedKey, normalizedValue] as [string, string]]
+      : [];
+  });
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+};
+
 // ---------------------------
 //----------------- INFRASTRUCTURE WORKSPACE FILTER ------------
 /**
@@ -2046,12 +2086,28 @@ export function sanitizeLeafDirectoryName(inputName: string, label = 'directory 
 // ---------------------------
 //----------------- SESSION SYNCHRONIZER FILESYSTEM HELPERS ------------
 /**
- * Removes one file or directory recursively if it exists.
- *
- * Used by provider session implementations and session cleanup services to
- * remove transcript files, subagents, and provider project folders safely.
- * Returns true if deletion succeeded, false if path was missing or failed.
+ * Sums the bytes under one file or directory. Missing paths count as zero and
+ * symlinks are not followed, so a link can never pull outside data into a
+ * measurement that decides what gets deleted. Used by the session storage
+ * cleanup and by provider session measurements.
  */
+export async function measurePathBytes(targetPath: string): Promise<number> {
+  let stats: Awaited<ReturnType<typeof lstat>>;
+  try {
+    stats = await lstat(targetPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 0;
+    throw error;
+  }
+  if (stats.isSymbolicLink()) return 0;
+  if (!stats.isDirectory()) return stats.size;
+  let total = 0;
+  for (const entry of await readdir(targetPath)) {
+    total += await measurePathBytes(path.join(targetPath, entry));
+  }
+  return total;
+}
+
 export async function removePathIfExists(targetPath: string): Promise<boolean> {
   try {
     await rm(targetPath, { recursive: true, force: true });

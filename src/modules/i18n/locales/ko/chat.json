@@ -295,9 +295,9 @@
     "customLabel": "또는 시간 선택",
     "confirm": "예약",
     "in": {
-      "15": "15분 후",
-      "60": "1시간 후",
-      "480": "8시간 후",
+      "30": "30분 후",
+      "120": "2시간 후",
+      "300": "5시간 후",
       "1440": "내일"
     },
     "pending": "{{when}}에 전송 예정",
@@ -325,6 +325,8 @@
     "expand": "펼쳐보기",
     "fiveHourWindow": "5시간 롤링 윈도우 한도",
     "weeklyWindow": "주간 한도",
+    "weeklyWindowAllModels": "주간 한도 (모든 모델)",
+    "weeklyWindowScoped": "주간 한도 ({{model}})",
     "remainingPercent": "{{percent}}% 남음",
     "resetSoon": "곧 리셋됨",
     "resetDaysHours": "{{days}}일 {{hours}}시간 후 리셋",
@@ -332,13 +334,16 @@
     "resetMinutes": "{{minutes}}분 후 리셋",
     "emptyQuotaHint": {
       "claude": "API 키, Bedrock, Vertex 로그인에는 claude.ai 구독 한도가 없습니다",
-      "codex": "API 키 로그인은 일반적으로 5시간 또는 주간 한도를 제공하지 않습니다"
+      "codex": "API 키 로그인은 일반적으로 5시간 또는 주간 한도를 제공하지 않습니다",
+      "opencode": "OpenCode Go 플랜이 없거나 CLI가 Go 워크스페이스에 로그인하지 않았습니다"
     },
     "resetCardTitle": "사용량 리셋 카드",
     "resetCardHint": "카드를 사용하면 해당 한도가 즉시 충전되며, 리셋 주기를 기다릴 필요가 없습니다.",
+    "resetCardHintReadOnly": "이 재설정은 제공업체 웹사이트에서 사용하세요.",
     "resetCardTypeAll": "전체 한도 (5시간 + 주간)",
     "resetCardType5h": "5시간 한도",
     "resetCardTypeWeekly": "주간 한도",
+    "resetCardTypeFable": "Fable 재설정",
     "resetCardAvailable": "{{count}}장 사용 가능",
     "resetCardExpires": "가장 빠른 만료 {{date}}",
     "resetCardUse": "사용",

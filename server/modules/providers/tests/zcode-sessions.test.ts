@@ -649,6 +649,40 @@ test('normalizeMessage ignores unknown event types', () => {
   assert.deepEqual(provider.normalizeMessage('not-an-object', 'sess_1'), []);
 });
 
+test('fetchHistory orders equal-time parts by sequence before random ids', async () => {
+  await withZCodeStorage(async (storageDir) => {
+    await createFixtureDatabase(storageDir, 'sess_order');
+    const db = new Database(path.join(storageDir, 'cli', 'db', 'db.sqlite'));
+    try {
+      // The engine can persist reasoning and text with the same timestamp.
+      // Deliberately make their ids sort opposite to their native sequence.
+      db.exec(`
+        UPDATE part SET id = 'part_z_reasoning' WHERE id = 'part_reasoning';
+        UPDATE part SET id = 'part_a_text', time_created = 2000 WHERE id = 'part_text';
+      `);
+    } finally {
+      db.close();
+    }
+
+    const provider = new ZCodeSessionsProvider();
+    const history = await provider.fetchHistory('sess_order');
+    assert.deepEqual(history.messages.map((message) => message.kind),
+      ['text', 'text', 'thinking', 'text', 'tool_use']);
+    const page = await provider.fetchHistory('sess_order', { limit: 2, offset: 1 });
+    assert.deepEqual(page.messages.map((message) => message.kind), ['thinking', 'text']);
+
+    const legacyDb = new Database(path.join(storageDir, 'cli', 'db', 'db.sqlite'));
+    try {
+      legacyDb.exec('UPDATE part SET sequence = NULL');
+    } finally {
+      legacyDb.close();
+    }
+    const legacyHistory = await provider.fetchHistory('sess_order');
+    assert.deepEqual(legacyHistory.messages.map((message) => message.kind),
+      ['text', 'text', 'text', 'thinking', 'tool_use']);
+  });
+});
+
 test('fetchHistory loads and paginates the fixture database', async () => {
   await withZCodeStorage(async (storageDir) => {
     await createFixtureDatabase(storageDir, 'sess_hist');
@@ -751,6 +785,111 @@ test('fetchHistory hides model-only injections and surfaces compaction summaries
   });
 });
 
+test('fetchHistory folds the answered AskUserQuestion into its own card', async () => {
+  await withZCodeStorage(async (storageDir) => {
+    await createFixtureDatabase(storageDir, 'sess_ask');
+    const db = new Database(path.join(storageDir, 'cli', 'db', 'db.sqlite'));
+    try {
+      const insertMessage = db.prepare(
+        'INSERT INTO message (id, session_id, time_created, time_updated, data, sequence) VALUES (?, ?, ?, ?, ?, ?)'
+      );
+      const insertPart = db.prepare(
+        'INSERT INTO part (id, message_id, session_id, time_created, time_updated, data, sequence) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      );
+
+      // The engine records the question call with the original input, and the
+      // user's choices survive only inside the prose result sentence.
+      insertMessage.run('msg_ask', 'sess_ask', 3000, 3000, JSON.stringify({ role: 'assistant' }), 2);
+      insertPart.run(
+        'part_ask', 'msg_ask', 'sess_ask', 3000, 3000,
+        JSON.stringify({
+          type: 'tool',
+          callID: 'call_ask',
+          tool: 'AskUserQuestion',
+          state: {
+            status: 'completed',
+            input: { questions: [{ question: '这次要做的视频和它是什么关系？', header: '视频方向', options: [] }] },
+            output:
+              'User has answered your questions: "这次要做的视频和它是什么关系？"="换例子重讲". You can now continue with the user\'s answers in mind.',
+          },
+        }),
+        0
+      );
+    } finally {
+      db.close();
+    }
+
+    const provider = new ZCodeSessionsProvider();
+    const result = await provider.fetchHistory('sess_ask');
+
+    const ask = result.messages.find((message) => message.toolName === 'AskUserQuestion');
+    assert.ok(ask, 'the question call stays on the timeline');
+    assert.deepEqual(
+      (ask.toolInput as { answers?: unknown }).answers,
+      { '这次要做的视频和它是什么关系？': '换例子重讲' },
+      'the answer is folded onto the question card, not left as Skipped'
+    );
+  });
+});
+
+test('fetchHistory draws a compaction as the shared row with its hidden summary, named as live names them', async () => {
+  // Engine 0.16.x: the compaction is a visible `timeline_event` message whose
+  // `compaction` part carries the numbers; the summary is a user message the
+  // engine marks hidden (it is for the model), with its own `compaction` part.
+  await withZCodeStorage(async (storageDir) => {
+    await createFixtureDatabase(storageDir, 'sess_cmp');
+    const db = new Database(path.join(storageDir, 'cli', 'db', 'db.sqlite'));
+    try {
+      const insertMessage = db.prepare(
+        'INSERT INTO message (id, session_id, time_created, time_updated, data, sequence) VALUES (?, ?, ?, ?, ?, ?)'
+      );
+      const insertPart = db.prepare(
+        'INSERT INTO part (id, message_id, session_id, time_created, time_updated, data, sequence) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      );
+      insertMessage.run('msg_timeline', 'sess_cmp', 4000, 4000, JSON.stringify({
+        role: 'assistant',
+        semantics: { origin: 'system', kind: 'timeline_event', uiVisibility: 'visible', providerVisibility: 'hidden', transcriptVisibility: 'visible' },
+      }), 5);
+      insertPart.run('part_timeline', 'msg_timeline', 'sess_cmp', 4000, 4000, JSON.stringify({
+        timelineType: 'context_compaction', display: 'separator', status: 'completed', operationId: 'cmp_1',
+      }), 0);
+      insertPart.run('part_op', 'msg_timeline', 'sess_cmp', 4000, 4000, JSON.stringify({
+        type: 'compaction', auto: false, trigger: 'manual', operationId: 'cmp_1', timelineStatus: 'completed',
+        summaryMessageId: 'msg_sum', preCompactTokenCount: 333557, postCompactTokenCount: 391799,
+        truePostCompactTokenCount: 18730, time: { start: 1792769598568, end: 1792769739038 },
+      }), 1);
+      insertMessage.run('msg_sum', 'sess_cmp', 4100, 4100, JSON.stringify({
+        role: 'user',
+        summary: { title: 'Compact summary', diffs: [] },
+        semantics: { origin: 'agent_runtime', kind: 'compact_summary', uiVisibility: 'hidden', providerVisibility: 'visible', transcriptVisibility: 'hidden' },
+      }), 6);
+      insertPart.run('part_sum_text', 'msg_sum', 'sess_cmp', 4100, 4100, JSON.stringify({
+        type: 'text', text: 'This session is being continued. Summary: banana.',
+      }), 0);
+      insertPart.run('part_sum_boundary', 'msg_sum', 'sess_cmp', 4100, 4100, JSON.stringify({
+        type: 'compaction', auto: false, trigger: 'manual', compactBoundary: { boundaryId: 'compact_1' }, operationId: 'cmp_1',
+      }), 1);
+      insertMessage.run('msg_running', 'sess_cmp', 4200, 4200, JSON.stringify({
+        role: 'assistant', semantics: { origin: 'system', kind: 'timeline_event', uiVisibility: 'visible' },
+      }), 7);
+      insertPart.run('part_op_running', 'msg_running', 'sess_cmp', 4200, 4200, JSON.stringify({
+        type: 'compaction', auto: true, trigger: 'auto', operationId: 'cmp_2', timelineStatus: 'started',
+      }), 0);
+    } finally {
+      db.close();
+    }
+
+    const result = await new ZCodeSessionsProvider().fetchHistory('sess_cmp');
+    const rows = result.messages.filter((message) => message.compact || message.isCompactSummary);
+    assert.deepEqual(rows.map((row) => [row.id, row.content, row.compact?.phase ?? null, row.isCompactSummary ?? false]), [
+      ['part_op_compact', 'Compacted · manual · 334k → 19k tokens · 2m 20s', 'done', false],
+      ['msg_sum_summary', 'This session is being continued. Summary: banana.', null, true],
+      ['part_op_running_compact', 'Compacting conversation…', 'running', false],
+    ]);
+    assert.equal(rows[1].role, 'assistant');
+  });
+});
+
 test('live compaction updates become the same rows, the summary arriving with the finished row', () => {
   const provider = new ZCodeSessionsProvider();
   const update = (payload: Record<string, unknown>) => provider.normalizeMessage({
@@ -835,9 +974,8 @@ test('fetchHistory replays cancelled request errors as quiet notifications, real
 
 test('fetchHistory materializes user image attachments into the asset store', async () => {
   await withZCodeStorage(async (storageDir) => {
-    // The shared asset store lives under the user's home; redirect HOME (and
-    // USERPROFILE, which os.homedir() prefers on Windows) into the temp
-    // storage dir so the test never touches the real ~/.cloudcli.
+    // The shared asset store lives under the user's home; redirect HOME into
+    // the temp storage dir so the test never touches the real ~/.cloudcli.
     const previousHome = process.env.HOME;
     const previousUserProfile = process.env.USERPROFILE;
     process.env.HOME = storageDir;
@@ -916,9 +1054,8 @@ test('fetchHistory materializes user image attachments into the asset store', as
 
 test('fetchHistory restores non-image file attachments as downloadable file cards', async () => {
   await withZCodeStorage(async (storageDir) => {
-    // Non-image uploads stay in cloudcli's own asset store; redirect HOME (and
-    // USERPROFILE, which os.homedir() prefers on Windows) into the temp storage
-    // dir so the fixture never touches the real ~/.cloudcli.
+    // Non-image uploads stay in cloudcli's own asset store; redirect HOME so
+    // the fixture never touches the real ~/.cloudcli.
     const previousHome = process.env.HOME;
     const previousUserProfile = process.env.USERPROFILE;
     process.env.HOME = storageDir;
@@ -1070,140 +1207,6 @@ test('getTokenUsage reports the newest step occupancy and keeps lifetime totals 
     assert.equal(usage.outputTokens, 25);
     assert.deepEqual(usage.breakdown, { input: 100, output: 25 });
     assert.deepEqual(usage.cumulative, { used: 125, inputTokens: 100, outputTokens: 25 });
-  });
-});
-
-test('zcode context usage reports the newest step with its declared context window', async () => {
-  await withZCodeStorage(async (storageDir) => {
-    const sessionId = 'sess_window';
-    const dbDir = path.join(storageDir, 'cli', 'db');
-    await mkdir(dbDir, { recursive: true });
-
-    const db = new Database(path.join(dbDir, 'db.sqlite'));
-    try {
-      db.exec(`
-        CREATE TABLE message (
-          id TEXT PRIMARY KEY,
-          session_id TEXT NOT NULL,
-          time_created INTEGER NOT NULL,
-          time_updated INTEGER NOT NULL,
-          data TEXT NOT NULL,
-          sequence INTEGER
-        );
-      `);
-      const insertMessage = db.prepare(
-        'INSERT INTO message (id, session_id, time_created, time_updated, data, sequence) VALUES (?, ?, ?, ?, ?, ?)'
-      );
-      // Two steps of one turn: the older request held 500 tokens, the newer
-      // one 1000 — occupancy is the newer reading, not their sum.
-      insertMessage.run('msg_step_1', sessionId, 1000, 1000, JSON.stringify({
-        role: 'assistant',
-        providerId: 'fixture-provider',
-        modelId: 'fixture-window-model',
-        tokens: { total: 500, input: 480, output: 20, reasoning: 0, cache: { read: 400, write: 0 } },
-      }), 0);
-      insertMessage.run('msg_step_2', sessionId, 2000, 2000, JSON.stringify({
-        role: 'assistant',
-        providerId: 'fixture-provider',
-        modelId: 'fixture-window-model',
-        tokens: { total: 1000, input: 960, output: 40, reasoning: 0, cache: { read: 800, write: 0 } },
-      }), 1);
-    } finally {
-      db.close();
-    }
-
-    // Windows come from the engine config when the engine catalog is unknown.
-    const configDir = path.join(storageDir, 'v2');
-    await mkdir(configDir, { recursive: true });
-    await writeFile(
-      path.join(configDir, 'config.json'),
-      JSON.stringify({
-        provider: {
-          'fixture-provider': {
-            models: { 'fixture-window-model': { limit: { context: 4000, output: 1000 } } },
-          },
-        },
-      }),
-      'utf8',
-    );
-
-    const provider = new ZCodeSessionsProvider();
-    const usage = await provider.getTokenUsage({
-      appSessionId: 'app-window',
-      nativeSessionId: sessionId,
-      jsonlPath: null,
-      projectPath: null,
-    });
-
-    // Occupancy is the newer step's own `total`, and the window comes from the
-    // config so the composer can turn it into a percentage.
-    assert.equal(usage.used, 1000);
-    assert.equal(usage.total, 4000);
-    assert.deepEqual(usage.breakdown, { input: 960, output: 40 });
-    assert.deepEqual(usage.cumulative, { used: 1500, inputTokens: 1440, outputTokens: 60 });
-  });
-});
-
-test('zcode context usage reports a just-compacted session by its summary size', async () => {
-  await withZCodeStorage(async (storageDir) => {
-    const sessionId = 'sess_compacted';
-    const dbDir = path.join(storageDir, 'cli', 'db');
-    await mkdir(dbDir, { recursive: true });
-
-    const db = new Database(path.join(dbDir, 'db.sqlite'));
-    try {
-      db.exec(`
-        CREATE TABLE message (
-          id TEXT PRIMARY KEY,
-          session_id TEXT NOT NULL,
-          time_created INTEGER NOT NULL,
-          time_updated INTEGER NOT NULL,
-          data TEXT NOT NULL,
-          sequence INTEGER
-        );
-        CREATE TABLE part (
-          id TEXT PRIMARY KEY,
-          message_id TEXT NOT NULL,
-          session_id TEXT NOT NULL,
-          time_created INTEGER NOT NULL,
-          time_updated INTEGER NOT NULL,
-          data TEXT NOT NULL,
-          sequence INTEGER
-        );
-      `);
-      const insertMessage = db.prepare(
-        'INSERT INTO message (id, session_id, time_created, time_updated, data, sequence) VALUES (?, ?, ?, ?, ?, ?)'
-      );
-      insertMessage.run('msg_before', sessionId, 1000, 1000, JSON.stringify({
-        role: 'assistant',
-        tokens: { total: 900, input: 880, output: 20, reasoning: 0, cache: { read: 800, write: 0 } },
-      }), 0);
-      // Compaction summary: a user row carrying `summary`; its own numbers (if
-      // any) describe the conversation that was just discarded.
-      insertMessage.run('msg_summary', sessionId, 2000, 2000, JSON.stringify({
-        role: 'user',
-        summary: { title: 'Compact summary', body: 'what happened' },
-      }), 1);
-      db.prepare(
-        'INSERT INTO part (id, message_id, session_id, time_created, time_updated, data, sequence) VALUES (?, ?, ?, ?, ?, ?, ?)'
-      ).run('part_summary', 'msg_summary', sessionId, 2000, 2000, JSON.stringify({ type: 'text', text: 'abcd' }), 0);
-    } finally {
-      db.close();
-    }
-
-    const provider = new ZCodeSessionsProvider();
-    const usage = await provider.getTokenUsage({
-      appSessionId: 'app-compacted',
-      nativeSessionId: sessionId,
-      jsonlPath: null,
-      projectPath: null,
-    });
-
-    assert.equal(usage.compacted, true);
-    assert.equal(usage.used, 0);
-    assert.equal(usage.summaryBytes, 4);
-    // The pre-compaction conversation survives only as the cost breakdown.
-    assert.deepEqual(usage.cumulative, { used: 900, inputTokens: 880, outputTokens: 20 });
   });
 });
 

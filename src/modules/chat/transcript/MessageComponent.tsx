@@ -540,6 +540,14 @@ const MessageComponent = memo(({ message, prevMessage, turnAnchorMessage, isTurn
               </div>
             )}
 
+            {message.images && message.images.length > 0 && (
+              <ChatMessageImages
+                images={message.images}
+                projectId={selectedProject?.projectId}
+                variant="assistant"
+              />
+            )}
+
             <OutputAssets content={`${formattedMessageContent}\n${String(message.toolResult?.content || '')}`} />
 
             {message.memoryCitations && message.memoryCitations.length > 0 && (

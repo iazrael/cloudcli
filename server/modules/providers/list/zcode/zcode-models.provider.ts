@@ -16,28 +16,26 @@ import {
   buildDefaultProviderCurrentActiveModel,
   readObjectRecord,
   readOptionalString,
+  readTrimmedStringRecord,
 } from '@/shared/utils.js';
 
 import { readDecryptedZCodeIndividualPlanApiKey, readDecryptedZCodeJwtToken } from './zcode-credentials.js';
+import { resolveZCodeProviderApiType } from './zcode-provider-config.js';
 import { getZCodeDatabasePath, getZCodeStorageDir } from './zcode-data-root.js';
 import { tryResolveEnginePath } from './zcode-engine-path.js';
 import { protocolClient } from './zcode-protocol.client.js';
 
 /**
- * ZCode's trial ("Start Plan") account provider. The engine lists its models in
- * the resolved catalog once `provider/updateAccountConfig` (sent by the
- * protocol client) grants entitlement; the run lifecycle answers its runtime
- * auth-header requests with the stored ZCode JWT.
- *
- * Consumers: zcode-run-lifecycle.ts and `readZCodeSessionModelInfoFromDb`.
+ * Account id of the BigModel trial plan (体验套餐). The picker keys its pinned
+ * option by it, the send resolver routes it to the trial quota, and the
+ * runtime header bridge answers it with the trial JWT.
  */
 export const ZCODE_START_PLAN_PROVIDER_ID = 'account:bigmodel-start-plan';
 /** Used by the send model resolver and runtime header bridge to keep account identity consistent. */
 export const ZCODE_INDIVIDUAL_PLAN_PROVIDER_ID = 'account:bigmodel-individual-coding-plan';
 const ZCODE_START_PLAN_MODEL_ID = 'GLM-5.3-Flash';
 const ZCODE_START_PLAN_MODEL_VALUE = `${ZCODE_START_PLAN_PROVIDER_ID}/${ZCODE_START_PLAN_MODEL_ID}`;
-const ZCODE_GROUP_PERSONAL = 'BigModel (个人)';
-const ZCODE_GROUP_START_PLAN = 'BigModel (体验)';
+const ZCODE_START_PLAN_MODEL_LABEL = 'GLM-5.3-Flash（体验）';
 const ZCODE_PERSONAL_MODELS_WHITELIST = new Set(['GLM-5.3', 'GLM-5.3-Flash']);
 
 /** Legacy provider ids that name the personal ("coding plan") provider family. */
@@ -45,10 +43,6 @@ function isPersonalPlanProviderId(providerId: string): boolean {
   return providerId === 'bigmodel-coding-plan' || providerId === 'builtin:bigmodel-coding-plan';
 }
 
-/**
- * ZCode builtin models definition as fallback when config read fails.
- * Based on integration plan §3.2.5 and spike findings (GLM-5.3 with 1M context, 128K output).
- */
 /**
  * Static fallback catalog used when the engine's model config cannot be read.
  * Exported for the capability tests: the capability catalog's defaultModel is
@@ -59,7 +53,6 @@ export const ZCODE_BUILTIN_MODELS: ProviderModelsDefinition = {
     {
       value: 'GLM-5.3',
       label: 'GLM-5.3',
-      group: ZCODE_GROUP_PERSONAL,
       description: 'ZCode default model with 1M context window and 128K output tokens',
       effort: {
         default: 'max',
@@ -89,9 +82,13 @@ const REASONING_EFFORT_ORDER: Record<string, number> = {
 };
 
 /**
- * Appends the trial-plan model to an on-disk fallback catalog when a stored
- * JWT makes the engine able to serve it. The engine-resolved catalog lists it
- * naturally once entitled, so this only covers the on-disk fallback path.
+ * Appends the pinned trial-plan option when the account holds a trial JWT.
+ * The trial model stays a single hard-coded entry: the plan's billing API
+ * cannot be turned into a usable model catalog, so the plan grants exactly
+ * this Flash model. Kept ungrouped so the menu stays flat like claude's.
+ *
+ * The engine-resolved catalog lists it naturally once entitled; this only
+ * covers the on-disk fallback path.
  */
 function appendStartPlanModelIfEligible(options: ProviderModelOption[]): ProviderModelOption[] {
   const jwtToken = readDecryptedZCodeJwtToken();
@@ -102,8 +99,7 @@ function appendStartPlanModelIfEligible(options: ProviderModelOption[]): Provide
     ...options,
     {
       value: ZCODE_START_PLAN_MODEL_VALUE,
-      label: ZCODE_START_PLAN_MODEL_ID,
-      group: ZCODE_GROUP_START_PLAN,
+      label: ZCODE_START_PLAN_MODEL_LABEL,
       description: 'ZCode 体验套餐专享模型',
       effort: {
         default: 'max',
@@ -210,14 +206,16 @@ const readZCodeModelConfig = async (): Promise<ProviderModelsDefinition> => {
           };
         }
 
+        // The personal plan stays ungrouped so the menu reads like a flat
+        // list; user-added providers keep their own heading.
         const group = isPersonalProvider
-          ? ZCODE_GROUP_PERSONAL
+          ? undefined
           : (readOptionalString(providerRecord?.name) || providerId);
 
         modelOptions.push({
           value: modelKey,
           label: modelKey,
-          group,
+          ...(group ? { group } : {}),
           description: readOptionalString(modelRecord.description) || description,
           effort: hasReasoning ? effort : undefined,
         });
@@ -236,19 +234,13 @@ const readZCodeModelConfig = async (): Promise<ProviderModelsDefinition> => {
     baseDefinition = ZCODE_BUILTIN_MODELS;
   }
 
-  // The individual plan runs through the engine's native account provider.
-  // Remap the personal group's values when its API key is stored so sends
-  // resolve to the entitled account instead of the local provider path.
-  const personalApiKey = readDecryptedZCodeIndividualPlanApiKey();
-  const personalOptions = personalApiKey
-    ? baseDefinition.OPTIONS.map((option) => option.group === ZCODE_GROUP_PERSONAL
-      ? { ...option, value: `${ZCODE_INDIVIDUAL_PLAN_PROVIDER_ID}/${option.value}` }
-      : option)
-    : baseDefinition.OPTIONS;
-  const optionsWithStartPlan = appendStartPlanModelIfEligible(personalOptions);
+  // Model keys stay bare (`GLM-5.3`) so the picker reads like claude's and
+  // antigravity's; the account scoping is applied at send resolution instead.
+  // The trial plan is the one exception: its pinned option carries the scoped
+  // id because the bare Flash id already belongs to the personal plan.
   return {
-    OPTIONS: optionsWithStartPlan,
-    DEFAULT: optionsWithStartPlan[0]?.value ?? baseDefinition.DEFAULT,
+    OPTIONS: appendStartPlanModelIfEligible(baseDefinition.OPTIONS),
+    DEFAULT: baseDefinition.OPTIONS[0]?.value ?? baseDefinition.DEFAULT,
   };
 };
 
@@ -573,13 +565,15 @@ export function readZCodeSessionModelInfoFromDb(providerSessionId: string): { mo
       return null;
     }
 
+    // Only the trial option is keyed by its account-scoped id in the picker,
+    // so its readback re-attaches the scope for exact matching; individual-plan
+    // sessions report bare ids that match the personal options directly.
     const providerId = readOptionalString(messageData?.providerID)
       || readOptionalString(messageData?.providerId)
       || readOptionalString(modelRecord?.providerID)
       || readOptionalString(modelRecord?.providerId);
-
-    const modelId = providerId === ZCODE_START_PLAN_PROVIDER_ID || providerId === ZCODE_INDIVIDUAL_PLAN_PROVIDER_ID
-      ? `${providerId}/${rawModelId}`
+    const modelId = providerId === ZCODE_START_PLAN_PROVIDER_ID
+      ? `${ZCODE_START_PLAN_PROVIDER_ID}/${rawModelId}`
       : rawModelId;
 
     const variant = readOptionalString(messageData?.variant)
@@ -624,10 +618,12 @@ export function readZCodeSessionModelFromDb(providerSessionId: string): string |
  */
 export function resolveZCodeModelRef(
   modelKey: string,
-  variant?: string,
-): { providerId: string; modelId: string; variant?: string } {
+  reasoningLevel?: string,
+): { providerId: string; modelId: string; options?: { reasoningLevel: string } } {
   const trimmed = modelKey.trim();
-  const trimmedVariant = variant && variant !== 'default' ? variant.trim() : undefined;
+  const normalizedReasoningLevel = reasoningLevel && reasoningLevel !== 'default'
+    ? reasoningLevel.trim().toLowerCase()
+    : undefined;
   const slashIndex = trimmed.indexOf('/');
   const requestedProviderId = slashIndex >= 0 ? trimmed.slice(0, slashIndex).trim() : undefined;
   const requestedModelId = slashIndex >= 0 ? trimmed.slice(slashIndex + 1).trim() : trimmed;
@@ -638,15 +634,30 @@ export function resolveZCodeModelRef(
   const nativePersonalId = hasIndividualKey && ZCODE_PERSONAL_MODELS_WHITELIST.has(requestedModelId)
     ? ZCODE_INDIVIDUAL_PLAN_PROVIDER_ID : null;
 
-  if (slashIndex >= 0) {
-    const routedProviderId: string = nativePersonalId
-      && requestedProviderId !== undefined
-      && isPersonalPlanProviderId(requestedProviderId)
-      ? nativePersonalId : (requestedProviderId ?? '');
+  if (nativePersonalId && (requestedProviderId === 'bigmodel-coding-plan'
+      || requestedProviderId === 'builtin:bigmodel-coding-plan')) {
     return {
-      providerId: routedProviderId,
+      providerId: nativePersonalId,
       modelId: requestedModelId,
-      ...(trimmedVariant ? { variant: trimmedVariant } : {}),
+      ...(normalizedReasoningLevel ? { options: { reasoningLevel: normalizedReasoningLevel } } : {}),
+    };
+  }
+
+  if (requestedProviderId === ZCODE_START_PLAN_PROVIDER_ID || requestedProviderId === ZCODE_INDIVIDUAL_PLAN_PROVIDER_ID) {
+    // Explicit account-plan selections route to their own quota: the trial
+    // plan keeps its pinned option and the individual plan its personal quota.
+    return {
+      providerId: requestedProviderId,
+      modelId: requestedModelId,
+      ...(normalizedReasoningLevel ? { options: { reasoningLevel: normalizedReasoningLevel } } : {}),
+    };
+  }
+
+  if (requestedProviderId && !requestedProviderId.startsWith('builtin:') && !requestedProviderId.startsWith('account:')) {
+    return {
+      providerId: requestedProviderId,
+      modelId: requestedModelId,
+      ...(normalizedReasoningLevel ? { options: { reasoningLevel: normalizedReasoningLevel } } : {}),
     };
   }
 
@@ -664,28 +675,30 @@ export function resolveZCodeModelRef(
       const providers = readObjectRecord(config?.provider);
       if (!providers) continue;
       for (const [providerId, providerConfig] of Object.entries(providers)) {
+        if (providerId.startsWith('builtin:') || providerId.startsWith('account:')) continue;
         const providerRecord = readObjectRecord(providerConfig);
         if (providerRecord?.enabled === false) continue;
         const models = readObjectRecord(providerRecord?.models);
-        if (models && trimmed in models) {
+        if (models && requestedModelId in models) {
           return {
             providerId: isPersonalPlanProviderId(providerId) && nativePersonalId
               ? nativePersonalId : providerId,
-            modelId: trimmed,
-            ...(trimmedVariant ? { variant: trimmedVariant } : {}),
+            modelId: requestedModelId,
+            ...(normalizedReasoningLevel ? { options: { reasoningLevel: normalizedReasoningLevel } } : {}),
           };
         }
       }
       // Fallback: search even disabled providers if matching model
       for (const [providerId, providerConfig] of Object.entries(providers)) {
+        if (providerId.startsWith('builtin:') || providerId.startsWith('account:')) continue;
         const providerRecord = readObjectRecord(providerConfig);
         const models = readObjectRecord(providerRecord?.models);
-        if (models && trimmed in models) {
+        if (models && requestedModelId in models) {
           return {
             providerId: isPersonalPlanProviderId(providerId) && nativePersonalId
               ? nativePersonalId : providerId,
-            modelId: trimmed,
-            ...(trimmedVariant ? { variant: trimmedVariant } : {}),
+            modelId: requestedModelId,
+            ...(normalizedReasoningLevel ? { options: { reasoningLevel: normalizedReasoningLevel } } : {}),
           };
         }
       }
@@ -714,11 +727,11 @@ export function resolveZCodeModelRef(
           ...(Array.isArray(ruleConfig.modelOrder) ? ruleConfig.modelOrder : []),
           ...(Array.isArray(ruleConfig.personalModelIds) ? ruleConfig.personalModelIds : []),
         ];
-        if (candidates.some((candidate) => readOptionalString(candidate) === trimmed)) {
+        if (candidates.some((candidate) => readOptionalString(candidate) === requestedModelId)) {
           return {
             providerId,
-            modelId: trimmed,
-            ...(trimmedVariant ? { variant: trimmedVariant } : {}),
+            modelId: requestedModelId,
+            ...(normalizedReasoningLevel ? { options: { reasoningLevel: normalizedReasoningLevel } } : {}),
           };
         }
       }
@@ -728,9 +741,112 @@ export function resolveZCodeModelRef(
   }
 
   return {
-    providerId: nativePersonalId ?? 'builtin:bigmodel-coding-plan',
-    modelId: trimmed,
-    ...(trimmedVariant ? { variant: trimmedVariant } : {}),
+    providerId: requestedProviderId ?? nativePersonalId ?? 'builtin:bigmodel-coding-plan',
+    modelId: requestedModelId,
+    ...(normalizedReasoningLevel ? { options: { reasoningLevel: normalizedReasoningLevel } } : {}),
+  };
+}
+
+/**
+ * Builds the per-turn model fields of ZCode's v4 `sendText` command payload.
+ *
+ * The provider identity and request authentication are resolved from the same
+ * `cli/config.json` record so they cannot drift apart. The runtime consumes
+ * this result directly as `sendText` payload fields; credentials only travel to
+ * the local engine subprocess over stdio.
+ *
+ * Returns null when the local config cannot produce a complete, executable
+ * selection (missing provider/model record, unsupported API kind, no base
+ * URL, or no credentials). Both fields are optional in the engine's schema
+ * (verified live against 0.16.9: a send without them runs on the engine's
+ * own default model), so an incomplete local config degrades to a plain send
+ * instead of blocking the turn.
+ *
+ * Consumer: zcode-runtime.provider.ts (per-turn model resolution).
+ */
+export function buildZCodeSendModelParams(
+  modelKey: string,
+  reasoningLevel?: string,
+): {
+  modelSelection: { providerId: string; modelId: string; options?: { reasoningLevel: string } };
+  modelExecution: {
+    selectionScope: 'execution';
+    requestAuth?: { apiKey?: string; headers?: Record<string, string> };
+  };
+} | null {
+  const explicitSelection = resolveZCodeModelRef(modelKey, reasoningLevel);
+
+  if (explicitSelection.providerId === ZCODE_START_PLAN_PROVIDER_ID
+      || explicitSelection.providerId === ZCODE_INDIVIDUAL_PLAN_PROVIDER_ID) {
+    const apiKey = explicitSelection.providerId === ZCODE_START_PLAN_PROVIDER_ID
+      ? readDecryptedZCodeJwtToken() : readDecryptedZCodeIndividualPlanApiKey();
+    if (!apiKey) {
+      const plan = explicitSelection.providerId === ZCODE_START_PLAN_PROVIDER_ID ? 'start' : 'individual';
+      throw new Error(`ZCode ${plan} plan credential is missing or ambiguous`);
+    }
+    const selectedReasoningLevel = explicitSelection.options?.reasoningLevel ?? 'max';
+    return {
+      modelSelection: {
+        providerId: explicitSelection.providerId,
+        modelId: explicitSelection.modelId,
+        options: { reasoningLevel: selectedReasoningLevel },
+      },
+      modelExecution: {
+        selectionScope: 'execution',
+        requestAuth: {
+          apiKey,
+        },
+      },
+    };
+  }
+  const configPath = path.join(getZCodeStorageDir(), 'cli', 'config.json');
+  let providerRecord: Record<string, unknown> | null = null;
+  let modelRecord: Record<string, unknown> | null = null;
+
+  try {
+    const config = readObjectRecord(JSON.parse(fsSync.readFileSync(configPath, 'utf8')));
+    providerRecord = readObjectRecord(readObjectRecord(config?.provider)?.[explicitSelection.providerId]);
+    modelRecord = readObjectRecord(readObjectRecord(providerRecord?.models)?.[explicitSelection.modelId]);
+  } catch {
+    // Treated as "not configured" below; the send degrades to the engine default.
+  }
+  if (!providerRecord || !modelRecord) {
+    return null;
+  }
+  const providerOptions = readObjectRecord(providerRecord.options);
+  const baseUrl = readOptionalString(providerOptions?.baseURL)
+    ?? readOptionalString(providerOptions?.baseUrl);
+  if (!resolveZCodeProviderApiType(providerRecord.kind) || !baseUrl) {
+    return null;
+  }
+
+  const configuredDefault = readOptionalString(readObjectRecord(modelRecord?.reasoning)?.defaultLevel);
+  const selectedReasoningLevel = explicitSelection.options?.reasoningLevel
+    ?? configuredDefault?.toLowerCase();
+  const modelSelection = {
+    providerId: explicitSelection.providerId,
+    modelId: explicitSelection.modelId,
+    ...(selectedReasoningLevel ? { options: { reasoningLevel: selectedReasoningLevel } } : {}),
+  };
+
+  const apiKey = readOptionalString(providerOptions?.apiKey);
+  const headers = readTrimmedStringRecord(providerOptions?.headers);
+  const requestAuth = apiKey || headers
+    ? {
+        ...(apiKey ? { apiKey } : {}),
+        ...(headers ? { headers } : {}),
+      }
+    : undefined;
+  if (!requestAuth) {
+    return null;
+  }
+
+  return {
+    modelSelection,
+    modelExecution: {
+      selectionScope: 'execution',
+      requestAuth,
+    },
   };
 }
 

@@ -215,8 +215,11 @@ run('pnpm', ['build']);
 const deployDir = path.join(CLOUDCLI_HOME, 'deploy');
 fs.mkdirSync(deployDir, { recursive: true });
 
-// pnpm v10 默认拦截依赖的安装脚本。白名单写进这个独立运行目录的 package.json，
-// 不再修改共享的全局 pnpm 配置，也不会影响机器上的其他全局工具。
+// pnpm v11 起 onlyBuiltDependencies 被移除，改为 pnpm-workspace.yaml 的
+// allowBuilds 白名单，且 strictDepBuilds 默认 true 会把未申报的构建脚本
+// 直接判成安装失败。这里沿用 v10 语义：白名单只放行本包和 better-sqlite3，
+// 其余构建脚本静默跳过（better-sqlite3 与 node-pty 另有兜底检查）。
+// 白名单写进 staging 自己的 pnpm-workspace.yaml，不碰共享的全局 pnpm 配置。
 const BUILD_ALLOWLIST = [APP_NAME, 'better-sqlite3'];
 
 const packOut = capture('pnpm', ['pack', '--pack-destination', deployDir]);
@@ -235,9 +238,49 @@ fs.mkdirSync(NEXT_RUNTIME_DIR, { recursive: true });
 fs.writeFileSync(path.join(NEXT_RUNTIME_DIR, 'package.json'), JSON.stringify({
   private: true,
   dependencies: { [APP_NAME]: `file:${tarball}` },
-  pnpm: { onlyBuiltDependencies: BUILD_ALLOWLIST },
 }, null, 2) + '\n');
-run('pnpm', ['install', '--prod', '--config.node-linker=hoisted'], NEXT_RUNTIME_DIR);
+// pnpm 12 起只读 pnpm-workspace.yaml 里的构建脚本白名单，写进 package.json
+// 的 `pnpm` 字段会被静默忽略，better-sqlite3 等原生依赖就永远走不上兜底路径。
+fs.writeFileSync(
+  path.join(NEXT_RUNTIME_DIR, 'pnpm-workspace.yaml'),
+  `allowBuilds:\n${BUILD_ALLOWLIST.map((name) => `  ${name}: true`).join('\n')}\nstrictDepBuilds: false\n`,
+);
+// staging 安装按档回退：
+// ① 默认源直连——剥掉全部代理环境变量走直连。默认源来自 ~/.npmrc（2026-11-09
+//    起是官方源，官方源经本机 TUN 直连实测可达；若换回 npmmirror 镜像，直连
+//    同样是它的唯一正确姿势：代理出口 IP 请求镜像实测吃 500）。
+// ② 官方源走代理——显式指到 registry.npmjs.org 并继承代理环境，兜默认源不可
+//    用（镜像抽风/TUN 故障）时的底。
+// 每次安装都对 900+ 包全量解析元数据，曾把部署卡死在安装阶段。
+// 不做 staging 锁持久化 + frozen 安装的原因见 docs/design/部署registry源回退.md。
+const OFFICIAL_REGISTRY = 'https://registry.npmjs.org';
+const PROXY_ENV_KEYS = [
+  'http_proxy', 'https_proxy', 'all_proxy',
+  'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY',
+  'npm_config_proxy', 'npm_config_https_proxy',
+];
+const directEnv = { ...process.env };
+for (const key of PROXY_ENV_KEYS) delete directEnv[key];
+const installAttempts = [
+  { name: '默认源直连（禁代理）', env: directEnv },
+  { name: `npm 官方源走代理（${OFFICIAL_REGISTRY}）`, env: { ...process.env, npm_config_registry: OFFICIAL_REGISTRY } },
+];
+let installed = false;
+for (const attempt of installAttempts) {
+  console.log(`\n[deploy] staging 安装：${attempt.name}`);
+  try {
+    execFileSync('pnpm', ['install', '--prod', '--config.node-linker=hoisted'], {
+      cwd: NEXT_RUNTIME_DIR,
+      stdio: 'inherit',
+      env: attempt.env,
+    });
+    installed = true;
+    break;
+  } catch {
+    console.log(`\n[deploy] ✗ ${attempt.name} 安装失败${attempt === installAttempts.at(-1) ? '' : '，换下一档重试'}`);
+  }
+}
+if (!installed) fail(`staging 安装失败（镜像直连与官方源走代理均尝试过）：${NEXT_RUNTIME_DIR}`);
 
 let pkgDir = path.join(NEXT_RUNTIME_DIR, 'node_modules', APP_NAME);
 const serverEntry = path.join(pkgDir, 'dist-server', 'server', 'index.js');
@@ -468,4 +511,29 @@ if (globalBinDir) {
 
 cutoverInProgress = false;
 deployCompleted = true;
+
+// ── 6. 清理历史部署包 ───────────────────────────────────────
+// tarball 只在本次安装 runtime-next 时用一次；回滚不依赖它——线上回滚走
+// runtime-previous，源码回退走 git。部署成功后只留最新 2 个包（本次 + 一个旧版），
+// 更早的自动删掉，防止 deploy 目录随版本无限膨胀。放在成功路径上：失败部署
+// 不动存量；清理本身出错也只警告，部署结果已经成立，不能被收尾步骤掀翻。
+function pruneDeployTarballs(keepCount = 2) {
+  try {
+    const tarballs = fs.readdirSync(deployDir)
+      .filter((f) => f.endsWith('.tgz'))
+      .map((f) => ({ name: f, mtimeMs: fs.statSync(path.join(deployDir, f)).mtimeMs }))
+      .sort((a, b) => b.mtimeMs - a.mtimeMs);
+    for (const old of tarballs.slice(keepCount)) {
+      fs.rmSync(path.join(deployDir, old.name), { force: true });
+    }
+    if (tarballs.length > keepCount) {
+      const kept = tarballs.slice(0, keepCount).map((t) => t.name).join('、');
+      console.log(`[deploy] 已清理 ${tarballs.length - keepCount} 个历史部署包，保留：${kept}`);
+    }
+  } catch (error) {
+    console.warn(`[deploy] ! 历史部署包清理失败（不影响部署）：${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+pruneDeployTarballs();
+
 console.log(`\n[deploy] ✓ 部署完成，访问 http://localhost:${PORT}`);

@@ -13,10 +13,16 @@
  * - Events only flow after `session/subscribe` (`deliveryKind:
  *   'desktop-continuous'`); subscribe may fail for inactive sessions (-32004)
  *   and is best-effort.
- * - `session/send` takes `content` (not `message`). Its own response returns
- *   immediately and says nothing about the turn; turn completion is observed
- *   on the event stream (`turn.completed`), so the send request itself is
- *   issued without a request timeout.
+ * - Prompts and stops go through `v4/command` (`sendText` / `stop`), the
+ *   command channel the ZCode app itself uses. The legacy `session/send` and
+ *   `session/stop` only know turns `session/send` started, while engine 0.17
+ *   also runs turns of its own from queued background-task notifications:
+ *   the legacy stop leaves those running and the legacy send loses the
+ *   prompt to them. Only a session's very first prompt still uses the legacy
+ *   send (see `sendUserMessage`). A command answers with an acknowledgement
+ *   whose status says whether the engine took it; turn completion is observed
+ *   on the event stream (`turn.completed`), so the send itself has no request
+ *   timeout.
  * - The gateway keys aborts by the app-facing session id, which arrives in
  *   `options.sessionId`; the ZCode-native `sess_*` id is resolved/created and
  *   announced back via `writer.setSessionId` plus a `session_created` event.
@@ -24,6 +30,7 @@
  * @module zcode-runtime.provider
  */
 
+import { randomUUID } from 'node:crypto';
 import fsSync from 'node:fs';
 import path from 'node:path';
 
@@ -33,6 +40,7 @@ import type { IProviderRuntime } from '@/shared/interfaces.js';
 import type { ChatAttachmentDescriptor } from '@/shared/image-attachments.js';
 import type {
   AnyRecord,
+  SessionBackgroundWork,
   NormalizedMessage,
   ProviderPermissionDecision,
   ProviderRuntimeContext,
@@ -42,13 +50,30 @@ import type {
 import { createCompleteMessage, createNormalizedMessage, generateMessageId, readObjectRecord, readOptionalString } from '@/shared/utils.js';
 import { notifyRunFailed, notifyRunStopped } from '@/modules/notifications/index.js';
 import { sessionsDb } from '@/modules/database/index.js';
+import {
+  LOCAL_AGENT_TASK_TYPE,
+  createBackgroundTasksStatusMessage,
+  createTaskStatusMessage,
+} from '@/modules/providers/shared/background-work/task-status.js';
 
+import { zcodeBackgroundWork } from './zcode-background-work.js';
 import { SESSION_LOST_METHOD } from './zcode-codec.js';
 import { protocolClient } from './zcode-protocol.client.js';
 import { readZCodeContextUsage } from './zcode-context-usage.js';
 import { getZCodeDatabasePath } from './zcode-data-root.js';
-import { ZCODE_CANCELLED_NOTICE, ZCODE_CANCELLED_NOTICE_KEY } from './zcode-live-event-normalizer.js';
-import { ingestZCodeModelCatalog, readZCodeSessionModelInfoFromDb, resolveZCodeModelDefaultReasoningLevel, resolveZCodeModelRef } from './zcode-models.provider.js';
+import {
+  isZCodeSubagentLifecycleEvent,
+  readZCodeSessionEvent,
+  ZCODE_CANCELLED_NOTICE,
+  ZCODE_CANCELLED_NOTICE_KEY,
+} from './zcode-live-event-normalizer.js';
+import {
+  buildZCodeSendModelParams,
+  ingestZCodeModelCatalog,
+  readZCodeSessionModelInfoFromDb,
+  resolveZCodeModelDefaultReasoningLevel,
+  resolveZCodeModelRef,
+} from './zcode-models.provider.js';
 import { EngineSilenceTimeoutError, ZCodeRunLifecycle, resolveSilenceTimeoutMs } from './zcode-run-lifecycle.js';
 import type { RunHandle, RunSettle } from './zcode-run-lifecycle.js';
 
@@ -151,6 +176,29 @@ function rememberAppliedPermissionMode(sessionId: string, zcodeMode: string): vo
 const runLifecycle = new ZCodeRunLifecycle();
 
 /**
+ * The subagent lifecycle watcher left on each engine session whose
+ * background agents outlived their turn, keyed by ZCode-native session id.
+ *
+ * A run's own listener leaves with the turn, but a background agent keeps
+ * working after `turn_complete`, and its `subagent_stopped` lands on the
+ * parent session with nobody listening. The watcher stays on the session for
+ * exactly the lifecycle events — nothing else, so it never competes with a
+ * run's listener for the stream — until the last tracked agent reports or
+ * the next run takes the session over.
+ */
+const subagentWatchers = new Map<string, (notification: AnyRecord) => void>();
+
+/**
+ * Engine sessions this runtime created whose first prompt has not reached
+ * the engine yet. The engine writes a created session's row only when its
+ * first input arrives through the legacy `session/send`; until then a
+ * `sendText` fails its foreign key. Keyed by session rather than by "created
+ * in this run": a run can fail after creating the session and before its
+ * prompt went out, and the next run then resumes the still-unwritten session.
+ */
+const sessionsAwaitingFirstPrompt = new Set<string>();
+
+/**
  * ZCode permissions facet: answers the engine's pending
  * `interaction/requestPermission` calls and replays pending cards after a
  * page reload.
@@ -171,13 +219,24 @@ export const zcodeRuntimePermissions = {
 };
 
 /**
- * Attachment item shape the engine's `session/send` mapper accepts (verified
- * against engine 0.16.5). The mapper reads `kind`/`filename`/`mimeType`/
- * `sizeBytes` plus exactly one source field — `localPath`, `dataBase64` or
- * `textContent` — and silently DROPS any item it cannot map, so a wrong shape
- * never errors: the model just receives plain text without the attachment.
+ * Attachment item of the v4 `sendText` command (strict schema, engine
+ * 0.17.1). The engine maps a `ref` that is not a URI to a local file and
+ * picks image/video/pdf/file from `mime`; `fileName`, `mime` and `bytes` are
+ * all required.
  */
-type ZcodeEngineAttachment = {
+type ZcodeCommandAttachment = {
+  ref: string;
+  fileName: string;
+  mime: string;
+  bytes: number;
+};
+
+/**
+ * Attachment item of the legacy `session/send` (verified against engine
+ * 0.16.5). Its mapper reads `kind`/`filename`/`mimeType`/`sizeBytes` plus one
+ * source field and silently DROPS any item it cannot map.
+ */
+type ZcodeLegacySendAttachment = {
   kind: 'image' | 'video' | 'pdf' | 'audio' | 'file';
   filename: string;
   localPath: string;
@@ -185,8 +244,8 @@ type ZcodeEngineAttachment = {
   sizeBytes?: number;
 };
 
-/** Derives the engine's attachment kind from the descriptor's MIME type. */
-function resolveEngineAttachmentKind(mimeType: string | undefined): ZcodeEngineAttachment['kind'] {
+/** Derives the legacy send's attachment kind from the descriptor's MIME type. */
+function resolveLegacyAttachmentKind(mimeType: string | undefined): ZcodeLegacySendAttachment['kind'] {
   if (!mimeType) {
     return 'file';
   }
@@ -206,34 +265,76 @@ function resolveEngineAttachmentKind(mimeType: string | undefined): ZcodeEngineA
 }
 
 /**
- * Maps app attachment descriptors into the engine's native `session/send`
- * item shape. The gateway (`filterAttachmentsToUploadStore`) only forwards
- * direct children of the upload store, so paths arrive absolute — anything
- * else is dropped here because the engine resolves relative `localPath`
- * values against the session workspace and would report a bogus read failure
- * instead of the file.
+ * Maps app attachment descriptors into the shape of the channel carrying the
+ * prompt (see `sendUserMessage`). The gateway (`filterAttachmentsToUploadStore`)
+ * only forwards direct children of the upload store, so paths arrive absolute
+ * — anything else is dropped here because the engine resolves a relative path
+ * against the session workspace and would report a bogus read failure instead
+ * of the file. On `sendText`, a descriptor without MIME type or size is sent
+ * as a generic file of unknown size, since the schema requires both.
  */
-function toEngineAttachments(descriptors: ChatAttachmentDescriptor[]): ZcodeEngineAttachment[] {
-  const items: ZcodeEngineAttachment[] = [];
+function toEngineAttachments(
+  descriptors: ChatAttachmentDescriptor[],
+  channel: 'sendText' | 'legacySend',
+): Array<ZcodeCommandAttachment | ZcodeLegacySendAttachment> {
+  const items: Array<ZcodeCommandAttachment | ZcodeLegacySendAttachment> = [];
   for (const descriptor of descriptors) {
     if (!path.isAbsolute(descriptor.path)) {
       console.warn(`[ZCodeRuntime] Dropping attachment with non-absolute path: ${descriptor.path}`);
       continue;
     }
-    const item: ZcodeEngineAttachment = {
-      kind: resolveEngineAttachmentKind(descriptor.mimeType),
-      filename: descriptor.name ?? path.basename(descriptor.path),
+    const fileName = descriptor.name ?? path.basename(descriptor.path);
+    if (channel === 'sendText') {
+      items.push({
+        ref: descriptor.path,
+        fileName,
+        mime: descriptor.mimeType || 'application/octet-stream',
+        bytes: typeof descriptor.size === 'number' ? descriptor.size : 0,
+      });
+      continue;
+    }
+    items.push({
+      kind: resolveLegacyAttachmentKind(descriptor.mimeType),
+      filename: fileName,
       localPath: descriptor.path,
-    };
-    if (descriptor.mimeType) {
-      item.mimeType = descriptor.mimeType;
-    }
-    if (typeof descriptor.size === 'number') {
-      item.sizeBytes = descriptor.size;
-    }
-    items.push(item);
+      ...(descriptor.mimeType ? { mimeType: descriptor.mimeType } : {}),
+      ...(typeof descriptor.size === 'number' ? { sizeBytes: descriptor.size } : {}),
+    });
   }
   return items;
+}
+
+/** How long an abort waits for the engine to admit a prompt still being sent. */
+const ABORT_ADMISSION_WAIT_MS = 10_000;
+
+/** Client id the engine records on every command cloudcli issues. */
+const ZCODE_COMMAND_CLIENT_ID = 'cloudcli';
+
+/**
+ * Issues one `v4/command` and returns its acknowledgement when the engine
+ * took it. Any status outside `acceptedStatuses` (`rejected`, `stale`,
+ * `failed`, ...) throws with the engine's reason, so a refused command is an
+ * error the caller reports instead of a silent no-op.
+ */
+async function sendZCodeCommand(
+  command: { commandId: string; sessionId: string; type: 'sendText' | 'stop'; payload: AnyRecord },
+  acceptedStatuses: readonly string[],
+  timeoutMs?: number,
+): Promise<AnyRecord> {
+  const ack = await protocolClient.sendRequest<AnyRecord>('v4/command', {
+    commandId: command.commandId,
+    clientId: ZCODE_COMMAND_CLIENT_ID,
+    sessionId: command.sessionId,
+    type: command.type,
+    payload: command.payload,
+    issuedAt: Date.now(),
+  }, timeoutMs);
+  const status = readOptionalString(ack?.status);
+  if (!status || !acceptedStatuses.includes(status)) {
+    const reason = readOptionalString(ack?.message) ?? readOptionalString(ack?.reasonCode) ?? 'no reason given';
+    throw new Error(`ZCode ${command.type} ${status ?? 'unacknowledged'}: ${reason}`);
+  }
+  return ack;
 }
 
 /**
@@ -247,7 +348,7 @@ function toEngineAttachments(descriptors: ChatAttachmentDescriptor[]): ZcodeEngi
  * - Token usage aggregation
  */
 export class ZCodeRuntimeProvider implements IProviderRuntime {
-  /** execution 模块依赖引擎终态通知和 session/stop 确认，RPC 失败只发送 error。 */
+  /** execution 模块依赖引擎终态通知和 v4 stop 确认，RPC 失败只发送 error。 */
   readonly supportsTaskExecution = true;
   constructor() {
     // Installed once per process: the bridge is stateless over the lifecycle
@@ -266,7 +367,7 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
    * 3. Subscribe to session events so the event stream starts flowing
    * 4. Set model if different from the session's current model
    * 5. Map permission mode and call session/setMode
-   * 6. Send user message via session/send
+   * 6. Send user message (v4 sendText; a new session's first one via session/send)
    * 7. Wait for the run end event, then send exactly one complete with tokens
    */
   async run(
@@ -281,7 +382,10 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
       context,
       configureSession: true,
       failureMessage: 'ZCode run failed',
-      startTurn: (zcodeSessionId) => this.sendUserMessage(zcodeSessionId, command, options),
+      startTurn: (_zcodeSessionId, handle, modelParams) => {
+        handle.promptSend = this.sendUserMessage(handle, command, options, modelParams);
+        return handle.promptSend;
+      },
     });
   }
 
@@ -336,7 +440,11 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
     /** Failure text for the run notification when the engine ends the turn as failed. */
     failureMessage: string;
     /** Issues the turn itself; the settle wait observes its terminal event. */
-    startTurn: (zcodeSessionId: string) => Promise<void>;
+    startTurn: (
+      zcodeSessionId: string,
+      handle: RunHandle,
+      modelParams: ReturnType<typeof buildZCodeSendModelParams>,
+    ) => Promise<void>;
   }): Promise<unknown> {
     const { options, writer, context, configureSession, failureMessage, startTurn } = input;
     const appSessionId = readOptionalString(options.sessionId) ?? null;
@@ -370,18 +478,36 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
     const handle = runLifecycle.startRun({ abortKey, sessionId: zcodeSessionId, appSessionId, writer });
 
     try {
-      await this.subscribeToSessionEvents(zcodeSessionId);
-      if (configureSession) {
-        await this.configureSessionModel(zcodeSessionId, options, context, resumedSession);
-        await this.configureSessionMode(zcodeSessionId, options);
-      }
-
+      // The run's listener owns the whole stream from the moment the run
+      // starts, lifecycle events included. Stand the previous turn's watcher
+      // down and attach it before any await: while the setup awaits below are
+      // pending, an event for this session (a background agent's late stop, a
+      // delta) would otherwise reach the watcher — and through it the previous
+      // turn's writer — instead of this run's.
       const eventListener = this.createSessionEventListener(handle, writer, context);
+      this.standDownSubagentWatcher(zcodeSessionId);
       protocolClient.addSessionListener(zcodeSessionId, eventListener);
+
+      let modelParams: ReturnType<typeof buildZCodeSendModelParams> = null;
+      try {
+        await this.subscribeToSessionEvents(zcodeSessionId);
+        if (configureSession) {
+          await this.configureSessionMode(zcodeSessionId, options);
+          modelParams = await this.resolveSendModelParams(options, context);
+        }
+      } catch (error) {
+        this.releaseSessionListener(handle, eventListener, writer, context);
+        throw error;
+      }
 
       let settle: RunSettle | null = null;
       try {
-        await startTurn(zcodeSessionId);
+        handle.promptDispatched = true;
+        // A stop that landed during setup found nothing of this run to stop;
+        // sending the prompt now would start a turn nothing stops.
+        if (!handle.abortRequested) {
+          await startTurn(zcodeSessionId, handle, modelParams);
+        }
         settle = await runLifecycle.waitForSettle(handle, silenceTimeoutMs);
 
         if (settle.kind === 'silent') {
@@ -404,10 +530,10 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
           return { sessionId: zcodeSessionId, success: false };
         }
 
-        protocolClient.removeSessionListener(zcodeSessionId, eventListener);
+        this.releaseSessionListener(handle, eventListener, writer, context);
 
         if (settle.kind === 'aborted') {
-          // A delivered session/stop settles the run here: report it as
+          // A delivered stop settles the run here: report it as
           // stopped with an `aborted` reason instead of a failure, matching
           // the other runtimes. The complete frame is still emitted so the
           // client ends the turn immediately.
@@ -437,7 +563,7 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
 
         throw new Error('ZCode run was superseded by a newer run for this session');
       } catch (error) {
-        protocolClient.removeSessionListener(zcodeSessionId, eventListener);
+        this.releaseSessionListener(handle, eventListener, writer, context);
 
         // Surface the failure to the chat stream before propagating.
         this.sendRuntimeError(writer, zcodeSessionId, error);
@@ -527,9 +653,13 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
   /**
    * Aborts an active ZCode session.
    *
-   * Calls `session/stop` for the ZCode session mapped to the given app-facing
-   * session id (no SIGINT fallback per §3.2.3 - the app-server process is
-   * shared across sessions). Uses protocol-level retry on failure.
+   * Issues the v4 `stop` command for the ZCode session mapped to the given
+   * app-facing session id (no SIGINT fallback per §3.2.3 - the app-server
+   * process is shared across sessions). Unlike the legacy `session/stop`, it
+   * stops whatever turn is in the foreground, including one the engine
+   * started itself from a queued background notification. `noop` means
+   * nothing was running, which leaves nothing to wait for either. Uses
+   * protocol-level retry on failure.
    *
    * Only a stop that was actually delivered settles the run as aborted: the
    * run then reports `aborted` and ends promptly. When every stop attempt
@@ -548,17 +678,38 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
       return false;
     }
 
+    // While the engine is still admitting the prompt (winding a preempted
+    // turn down), a stop would hit that turn and the prompt's own turn would
+    // start afterwards with nothing to stop it. Let the admission finish
+    // first; how the send ended is the run's to report.
+    if (handle.promptSend && !handle.promptAcknowledged) {
+      let admissionTimer: NodeJS.Timeout | undefined;
+      await Promise.race([
+        Promise.allSettled([handle.promptSend]),
+        // An engine that never acknowledges must not leave the stop button
+        // hanging: past the bound, stop whatever is running.
+        new Promise<void>((resolve) => { admissionTimer = setTimeout(resolve, ABORT_ADMISSION_WAIT_MS); }),
+      ]);
+      clearTimeout(admissionTimer);
+      if (!runLifecycle.isActiveRun(handle)) {
+        return false;
+      }
+    }
+
+    handle.stopSent = true;
     try {
       await this.callWithRetry(
         async () => {
-          await protocolClient.sendRequest('session/stop', {
-            sessionId: handle.sessionId,
-          });
+          await sendZCodeCommand(
+            { commandId: randomUUID(), sessionId: handle.sessionId, type: 'stop', payload: {} },
+            ['accepted', 'noop'],
+          );
         },
-        'session/stop',
+        'v4 stop',
         3
       );
     } catch (error) {
+      handle.stopSent = false;
       console.error(`[ZCodeRuntime] Failed to abort session ${handle.sessionId}:`, error);
       this.sendRuntimeError(
         handle.writer,
@@ -571,6 +722,193 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
     console.info(`[ZCodeRuntime] Aborted session ${handle.sessionId}`);
     runLifecycle.requestAbort(handle);
     return true;
+  }
+
+  /**
+   * Sessions with spawned agents still running, for the running-sessions
+   * poll. The engine outlives turns, so an agent launched in the background
+   * keeps working after the turn's `complete` — this is how the sidebar
+   * and the activity indicator learn it is still going.
+   */
+  listBackgroundWork(): SessionBackgroundWork[] {
+    return zcodeBackgroundWork.list();
+  }
+
+  /**
+   * What the composer's strip shows for a session that subscribes, and
+   * whether that work can still be stopped: `abort` stops the run on the
+   * session, so once the turn has ended its agents keep running with nothing
+   * left to cancel. A session whose agents this runtime does not hold is none
+   * of its business and answers true.
+   */
+  readonly backgroundTasks = {
+    list: (sessionId: string) => zcodeBackgroundWork.listStripTasks(sessionId),
+    canInterrupt: (sessionId: string) => !zcodeBackgroundWork.hasSession(sessionId)
+      || Boolean(runLifecycle.handleOf(sessionId)),
+  };
+
+  /**
+   * Re-sends the composer strip's list for an app session; called after
+   * every change to its tracked agents. `canInterrupt` is true while a run
+   * is on the session and false once only the lifecycle watcher is left
+   * (see `backgroundTasks.canInterrupt`).
+   */
+  private broadcastBackgroundTasks(
+    appSessionKey: string,
+    engineSessionId: string | null,
+    writer: ProviderRuntimeWriter,
+    canInterrupt: boolean,
+  ): void {
+    writer.send(createBackgroundTasksStatusMessage(
+      { provider: 'zcode', sessionId: engineSessionId },
+      zcodeBackgroundWork.listStripTasks(appSessionKey),
+      canInterrupt,
+    ));
+  }
+
+  /**
+   * Keeps the background-work registry in step with the lifecycle events
+   * the stream translated: a spawn registers the agent on the app session,
+   * a settled status retires it. `taskId` and `toolUseId` are guaranteed by
+   * the normalizer (an event naming neither never becomes a message).
+   */
+  private recordSubagentLifecycle(
+    appSessionKey: string,
+    message: NormalizedMessage,
+    writer: ProviderRuntimeWriter,
+    runOnSession: boolean,
+  ): void {
+    if (!message.taskId || !message.toolUseId) {
+      return;
+    }
+    if (message.event === 'started') {
+      zcodeBackgroundWork.start(appSessionKey, {
+        taskId: message.taskId,
+        toolUseId: message.toolUseId,
+        taskType: message.taskType ?? LOCAL_AGENT_TASK_TYPE,
+        description: message.description ?? '',
+      });
+      this.broadcastBackgroundTasks(appSessionKey, message.sessionId || null, writer, runOnSession);
+      return;
+    }
+    if (message.status === 'completed' || message.status === 'failed' || message.status === 'stopped') {
+      if (zcodeBackgroundWork.end(appSessionKey, message.taskId)) {
+        this.broadcastBackgroundTasks(appSessionKey, message.sessionId || null, writer, runOnSession);
+      }
+      // Its unanswered approval cards have nobody left to answer them.
+      if (message.sessionId) {
+        runLifecycle.retractSubagentPermissions(message.sessionId, message.taskId);
+      }
+    }
+  }
+
+  /**
+   * Detaches a run's listener from the engine session and, when agents it
+   * launched are still running, leaves the lifecycle watcher behind so their
+   * stops still reach the page and retire them from the background list.
+   *
+   * A superseded run leaves nothing behind: the newer run's listener owns
+   * the stream, and a watcher armed beside it would forward every lifecycle
+   * event twice.
+   */
+  private releaseSessionListener(
+    handle: RunHandle,
+    eventListener: (notification: AnyRecord) => void,
+    writer: ProviderRuntimeWriter,
+    context: ProviderRuntimeContext,
+  ): void {
+    protocolClient.removeSessionListener(handle.sessionId, eventListener);
+    if (zcodeBackgroundWork.hasSession(handle.abortKey) && runLifecycle.isNewestRunForEngineSession(handle)) {
+      this.armSubagentWatcher(handle.sessionId, handle.abortKey, writer, context);
+      // The agents outlive the turn with no run left to stop them.
+      this.broadcastBackgroundTasks(handle.abortKey, handle.sessionId, writer, false);
+    }
+  }
+
+  /**
+   * Settles every agent the session still tracks as `stopped`, then forgets
+   * them. The engine died with its agents, so nothing can report them any
+   * more; without this their cards keep spinning for ever. Shared by the
+   * run's listener and the lifecycle watcher, whichever hears the engine go.
+   */
+  private settleAgentsOfLostEngine(appSessionKey: string, engineSessionId: string, writer: ProviderRuntimeWriter): void {
+    runLifecycle.retractSubagentPermissions(engineSessionId);
+    const outstanding = zcodeBackgroundWork.clearSession(appSessionKey);
+    if (outstanding.length > 0) {
+      this.broadcastBackgroundTasks(appSessionKey, engineSessionId, writer, false);
+    }
+    for (const task of outstanding) {
+      writer.send(createTaskStatusMessage(
+        { provider: 'zcode', sessionId: engineSessionId, taskId: task.taskId, toolUseId: task.toolUseId, taskType: LOCAL_AGENT_TASK_TYPE },
+        { event: 'notification', status: 'stopped' },
+      ));
+    }
+  }
+
+  /**
+   * Installs (or re-installs, on the latest run's writer) the narrow
+   * listener that forwards only subagent lifecycle events while the session
+   * has agents outstanding. It stands itself down once the last one reports,
+   * or when the engine dies and takes the agents with it.
+   */
+  private armSubagentWatcher(
+    zcodeSessionId: string,
+    appSessionKey: string,
+    writer: ProviderRuntimeWriter,
+    context: ProviderRuntimeContext,
+  ): void {
+    this.standDownSubagentWatcher(zcodeSessionId);
+
+    const watcher = (notification: AnyRecord): void => {
+      try {
+        const method = readOptionalString(notification.method);
+        if (method === SESSION_LOST_METHOD) {
+          this.settleAgentsOfLostEngine(appSessionKey, zcodeSessionId, writer);
+          this.standDownSubagentWatcher(zcodeSessionId);
+          return;
+        }
+        if (method && method !== 'session/event') {
+          return;
+        }
+
+        // Only lifecycle events pass: the watcher must never normalize the
+        // rest of the stream, whose state belongs to the next run.
+        const event = readZCodeSessionEvent(notification.params ?? notification, zcodeSessionId);
+        if (!event || !isZCodeSubagentLifecycleEvent(event.type)) {
+          return;
+        }
+
+        // Same exit as the run's listener, so a lifecycle event becomes the
+        // same frame whoever hears it.
+        for (const message of context.normalizeMessage(notification.params ?? notification, zcodeSessionId)) {
+          if (message.kind !== 'task_status') {
+            continue;
+          }
+          this.recordSubagentLifecycle(appSessionKey, message, writer, false);
+          writer.send(message);
+        }
+        if (!zcodeBackgroundWork.hasSession(appSessionKey)) {
+          this.standDownSubagentWatcher(zcodeSessionId);
+        }
+      } catch (error) {
+        console.error('[ZCodeRuntime] Error processing subagent lifecycle event:', error);
+      }
+    };
+
+    subagentWatchers.set(zcodeSessionId, watcher);
+    protocolClient.addSessionListener(zcodeSessionId, watcher);
+    // The agents may still ask for approval; their cards go to this writer.
+    runLifecycle.adoptIdleTarget(zcodeSessionId, { writer, appSessionId: appSessionKey });
+  }
+
+  private standDownSubagentWatcher(zcodeSessionId: string): void {
+    const watcher = subagentWatchers.get(zcodeSessionId);
+    if (!watcher) {
+      return;
+    }
+    subagentWatchers.delete(zcodeSessionId);
+    protocolClient.removeSessionListener(zcodeSessionId, watcher);
+    runLifecycle.releaseIdleTarget(zcodeSessionId);
   }
 
   /**
@@ -622,6 +960,7 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
       const resumed = await this.tryResumeSession(existingSessionId);
       if (resumed) {
         console.debug(`[ZCodeRuntime] Resumed existing session: ${existingSessionId}`);
+        await this.repairSessionModelSelection(existingSessionId, resumed, options, context);
         return { sessionId: existingSessionId, resumed: true };
       }
       if (options.strictResume === true) {
@@ -669,6 +1008,7 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
       }
 
       writer.setSessionId?.(newSessionId);
+      sessionsAwaitingFirstPrompt.add(newSessionId);
 
       const sessionCreatedEvent = createNormalizedMessage({
         id: generateMessageId('zcode'),
@@ -699,7 +1039,7 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
    * transport errors) must propagate so the run surfaces the real cause
    * instead of silently forking a fresh session on every send.
    */
-  private async tryResumeSession(sessionId: string): Promise<boolean> {
+  private async tryResumeSession(sessionId: string): Promise<AnyRecord | null> {
     try {
       // Engine 0.16.9 validates resume against a strict schema that accepts
       // `sessionId` alone; any extra key is rejected with -32602.
@@ -707,9 +1047,9 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
         sessionId,
       });
       // A resumed session carries the same settings payload as create; capture
-      // the catalog for the reasoning level required by session/setModel.
+      // the catalog for the reasoning level required by a model repair.
       ingestZCodeModelCatalog(result);
-      return true;
+      return result ?? {};
     } catch (error) {
       const code = (error as AnyRecord | undefined)?.code;
       const message = error instanceof Error ? error.message : String(error);
@@ -720,7 +1060,62 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
         throw error;
       }
       console.warn(`[ZCodeRuntime] Session ${sessionId} is gone engine-side (${message}); will create a replacement`);
-      return false;
+      return null;
+    }
+  }
+
+  /**
+   * Re-applies this run's model selection to a resumed session when the
+   * engine's stored selection is missing or differs.
+   *
+   * The engine logs "Failed to restore model selection ... selection-missing"
+   * even though the main turn carries its own per-turn `modelSelection`.
+   * Resume restores that selection from the engine's database but silently
+   * drops it when the current engine's registry cannot validate the stored
+   * selection. It can also keep a valid legacy provider selection while this
+   * turn resolves to a native account provider. A resumed session never
+   * receives the default selection a fresh create would.
+   *
+   * The resume response carries `settings.model.current` when the session has
+   * a usable selection. Best-effort by design: a refused repair must not block
+   * the send — the turn itself still carries its per-turn selection; only
+   * subagent spawns would keep failing.
+   */
+  private async repairSessionModelSelection(
+    sessionId: string,
+    resumeResponse: AnyRecord | undefined,
+    options: AnyRecord,
+    context: ProviderRuntimeContext,
+  ): Promise<void> {
+    const settings = readObjectRecord(resumeResponse?.settings);
+    const model = readObjectRecord(settings?.model);
+    const current = readObjectRecord(model?.current);
+    const modelParams = await this.resolveSendModelParams(options, context);
+    const selection = modelParams?.modelSelection;
+    if (!selection) {
+      console.debug(
+        `[ZCodeRuntime] Session ${sessionId} has no engine-side model selection and this run resolves no model; subagent spawns may fail with selection-missing until a modeled send.`
+      );
+      return;
+    }
+    const currentOptions = readObjectRecord(current?.options);
+    if (readOptionalString(current?.providerId) === selection.providerId
+        && readOptionalString(current?.modelId) === selection.modelId
+        && readOptionalString(currentOptions?.reasoningLevel) === selection.options?.reasoningLevel) {
+      return;
+    }
+
+    try {
+      // A short timeout: the repair is an optimization, not a prerequisite —
+      // a wedged engine must not hold the send hostage for the default
+      // request timeout when the turn itself is ready to go.
+      await protocolClient.sendRequest('session/setModel', {
+        sessionId,
+        model: selection,
+      }, 5000);
+      console.info(`[ZCodeRuntime] Repaired session model selection for ${sessionId} -> ${selection.providerId}/${selection.modelId}`);
+    } catch (error) {
+      console.warn(`[ZCodeRuntime] Failed to repair model selection for session ${sessionId}:`, error);
     }
   }
 
@@ -741,90 +1136,6 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
       console.debug(`[ZCodeRuntime] Subscribed to events for session ${sessionId}`);
     } catch (error) {
       console.warn(`[ZCodeRuntime] Subscribe failed for session ${sessionId}:`, error);
-    }
-  }
-
-  /**
-   * Configures session model and reasoning effort when it differs from the session's current configuration.
-   *
-   * The current model and variant are read from ZCode's own database (most recent
-   * `message.data.modelID` / `model.variant`).
-   *
-   * `forceModelSync` skips the database early-return: a resumed session's
-   * stored model reference may name a provider that no longer exists in the
-   * engine's config (provider ids drift across engine lifetimes), which makes
-   * the next send fail with -32031 until the model is explicitly re-selected.
-   */
-  private async configureSessionModel(
-    sessionId: string,
-    options: AnyRecord,
-    context: ProviderRuntimeContext,
-    forceModelSync = false,
-  ): Promise<void> {
-    const appSessionId = readOptionalString(options.sessionId);
-    // The composer's explicit choice wins; without one, fall back to the model
-    // recorded on the app session row, and finally to the provider's default —
-    // a forced sync (resumed session) must always re-select *some* valid model
-    // instead of silently keeping a dead engine-side reference.
-    const requestedModel = readOptionalString(options.model)
-      ?? await context.resolveResumeModel(appSessionId ?? undefined, undefined)
-      ?? (forceModelSync ? (await context.getProviderModels()).DEFAULT : undefined);
-    let requestedEffort = readOptionalString(options.effort);
-    if ((!requestedEffort || requestedEffort === 'default') && appSessionId) {
-      const sessionRow = sessionsDb.getSessionById(appSessionId);
-      if (sessionRow?.effort && sessionRow.effort !== 'default') {
-        requestedEffort = sessionRow.effort;
-      }
-    }
-
-    if (!requestedModel) {
-      return; // No model change requested
-    }
-
-    const normalizedVariant = requestedEffort && requestedEffort !== 'default'
-      ? requestedEffort.toLowerCase().trim()
-      : undefined;
-
-    const currentModelInfo = readZCodeSessionModelInfoFromDb(sessionId);
-    if (
-      !forceModelSync
-      && currentModelInfo
-      && currentModelInfo.modelId === requestedModel
-      && (currentModelInfo.variant || undefined) === normalizedVariant
-    ) {
-      return; // Session already runs the requested model and effort variant
-    }
-
-    const resolvedRef = resolveZCodeModelRef(requestedModel, normalizedVariant);
-
-    // The engine's setModel schema is strict: the reasoning level lives under
-    // `model.options.reasoningLevel` (a bare `variant` key is rejected), and a
-    // model with reasoning levels is refused when none is supplied. The user's
-    // explicit effort wins; otherwise use the default captured from the
-    // session/create (or session/resume) response. A resumed session created
-    // outside the app may carry no defaults yet, so fall back to the provider
-    // catalog (which resolves the engine catalog on demand).
-    let reasoningLevel = resolvedRef.variant ?? resolveZCodeModelDefaultReasoningLevel(requestedModel);
-    if (!reasoningLevel) {
-      await context.getProviderModels().catch(() => null);
-      reasoningLevel = resolveZCodeModelDefaultReasoningLevel(requestedModel);
-    }
-    const modelObj: AnyRecord = {
-      providerId: resolvedRef.providerId,
-      modelId: resolvedRef.modelId,
-      ...(reasoningLevel ? { options: { reasoningLevel } } : {}),
-    };
-
-    try {
-      await protocolClient.sendRequest('session/setModel', {
-        sessionId,
-        model: modelObj,
-      });
-
-      console.debug(`[ZCodeRuntime] Set model for session ${sessionId}: ${JSON.stringify(modelObj)}`);
-    } catch (error) {
-      console.warn(`[ZCodeRuntime] Failed to set model ${requestedModel} for session ${sessionId}:`, error);
-      // Continue anyway - use session's existing model
     }
   }
 
@@ -872,43 +1183,110 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
   }
 
   /**
-   * Sends user message to ZCode session.
-   *
-   * `session/send` is issued without a request timeout: the response only
-   * acknowledges acceptance (observed immediate on engine 0.16.5), while the
-   * turn itself completes on the event stream — a timeout here could fire
-   * after acceptance on slow engines. The params are strict-schema validated
-   * by the engine (validated against engine 0.16.3 and 0.16.9), so only
-   * `sessionId`, `content`, and `attachments` are sent.
-   *
-   * Attachments arrive as app descriptors `{path, name, mimeType, size}` and
-   * must be re-shaped into the engine's native items before sending — the
-   * engine silently drops items it cannot map, which used to make every
-   * attachment invisible to the model.
+   * Resolves the chat window's model and reasoning controls into the per-turn
+   * `modelSelection`/`modelExecution` fields for `sendText`, or null to let the
+   * engine's default model take the turn.
    */
-  private async sendUserMessage(
-    sessionId: string,
-    command: string,
+  private async resolveSendModelParams(
     options: AnyRecord,
-  ): Promise<void> {
-    const messagePayload: AnyRecord = {
-      sessionId,
-      // Message content field: content (not message) per protocol findings
-      content: command,
-    };
+    context: ProviderRuntimeContext,
+  ): Promise<ReturnType<typeof buildZCodeSendModelParams>> {
+    const appSessionId = readOptionalString(options.sessionId);
+    const requestedModel = readOptionalString(options.model)
+      ?? await context.resolveResumeModel(appSessionId ?? undefined, undefined)
+      ?? (await context.getProviderModels()).DEFAULT;
+    if (!requestedModel?.trim()) {
+      return null;
+    }
 
-    if (Array.isArray(options.attachments)) {
-      const engineAttachments = toEngineAttachments(options.attachments as ChatAttachmentDescriptor[]);
-      if (engineAttachments.length > 0) {
-        messagePayload.attachments = engineAttachments;
+    let requestedEffort = readOptionalString(options.effort);
+    if ((!requestedEffort || requestedEffort === 'default') && appSessionId) {
+      const sessionRow = sessionsDb.getSessionById(appSessionId);
+      if (sessionRow?.effort && sessionRow.effort !== 'default') {
+        requestedEffort = sessionRow.effort;
       }
     }
 
+    const modelParams = buildZCodeSendModelParams(
+      requestedModel,
+      requestedEffort && requestedEffort !== 'default' ? requestedEffort : undefined,
+    );
+    if (!modelParams) {
+      console.warn(
+        `[ZCodeRuntime] Model ${requestedModel} is not fully configured in cli/config.json; sending without a per-turn model selection so the engine default applies.`,
+      );
+    }
+    return modelParams;
+  }
+
+  /**
+   * Sends the user's prompt, tagged with a fresh input id that the engine
+   * copies onto the turn it starts (`turn.started`/`turn.completed` payload
+   * `inputId`). The id is recorded on the handle before sending so the
+   * listener can recognise the turn as this run's.
+   *
+   * The prompt normally goes out as a v4 `sendText` command. `startNow` makes
+   * it take over at once: when the engine is busy with a turn it started
+   * itself (a queued background-task notification — the gateway never lets
+   * two cloudcli runs share a session), that turn is cancelled and the
+   * prompt's turn starts. `keepQueueAndSend` leaves the other queued
+   * notifications in place, to be delivered afterwards. A refused command
+   * throws instead of vanishing.
+   *
+   * The first prompt of a session this runtime created goes through the
+   * legacy `session/send` instead (`sessionsAwaitingFirstPrompt`): the engine
+   * writes a new session's row only when its first input arrives through
+   * that path, and `sendText` on an unwritten session fails with a
+   * foreign-key error (engine 0.17.1). A session that never ran a turn has no
+   * background work, so no engine-started turn can compete with the prompt.
+   *
+   * No request timeout: the acknowledgement only comes once a preempted turn
+   * has wound down, and the turn itself completes on the event stream.
+   * `modelSelection`/`modelExecution` are optional on both channels: when the
+   * local config cannot build them the engine runs the turn on its own
+   * default model.
+   */
+  private async sendUserMessage(
+    handle: RunHandle,
+    command: string,
+    options: AnyRecord,
+    modelParams: ReturnType<typeof buildZCodeSendModelParams>,
+  ): Promise<void> {
+    const channel = sessionsAwaitingFirstPrompt.has(handle.sessionId) ? 'legacySend' : 'sendText';
+    const attachments = Array.isArray(options.attachments)
+      ? toEngineAttachments(options.attachments as ChatAttachmentDescriptor[], channel)
+      : [];
+    const inputId = randomUUID();
+    handle.promptInputId = inputId;
+
     try {
-      await protocolClient.sendRequest('session/send', messagePayload, 0);
-      console.debug(`[ZCodeRuntime] Sent message to session ${sessionId}`);
+      if (channel === 'legacySend') {
+        await protocolClient.sendRequest('session/send', {
+          sessionId: handle.sessionId,
+          content: command,
+          inputId,
+          ...(modelParams ?? {}),
+          ...(attachments.length > 0 ? { attachments } : {}),
+        }, 0);
+        sessionsAwaitingFirstPrompt.delete(handle.sessionId);
+      } else {
+        await sendZCodeCommand({
+          commandId: inputId,
+          sessionId: handle.sessionId,
+          type: 'sendText',
+          payload: {
+            text: command,
+            requestedDelivery: 'startNow',
+            heldQueueDisposition: 'keepQueueAndSend',
+            ...(modelParams ?? {}),
+            ...(attachments.length > 0 ? { attachments } : {}),
+          },
+        }, ['accepted'], 0);
+      }
+      handle.promptAcknowledged = true;
+      console.debug(`[ZCodeRuntime] Sent message to session ${handle.sessionId} via ${channel}`);
     } catch (error) {
-      console.error(`[ZCodeRuntime] Failed to send message to session ${sessionId}:`, error);
+      console.error(`[ZCodeRuntime] Failed to send message to session ${handle.sessionId}:`, error);
       throw error;
     }
   }
@@ -942,6 +1320,123 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
   }
 
   /**
+   * Whose turn an engine event belongs to: this run's (`own`), another turn
+   * (`foreign`), or not yet decidable (`undecided`).
+   *
+   * The run claims its turn from the first event whose `inputId` is the
+   * prompt's input id (`turn.started`, or `turn.completed` if the start was
+   * missed); once claimed, every other turn id is foreign, and so is any
+   * event naming another input. Before the claim, a turn-tagged event naming
+   * no input is undecided: it is a preempted turn winding down if it came
+   * before the engine acknowledged the prompt, and the prompt's own turn
+   * failing before it announced itself if it came after. Events without a
+   * turn id (session-level, or engines that do not tag turns) are always
+   * `own`, keeping the first-terminal-event rule for them.
+   */
+  private classifyTurnEvent(
+    handle: RunHandle,
+    event: ReturnType<typeof readZCodeSessionEvent>,
+  ): 'own' | 'foreign' | 'undecided' {
+    const turnId = event?.turnId;
+    if (!event || !turnId) {
+      return 'own';
+    }
+    const inputId = readOptionalString(event.payload.inputId);
+    if (handle.promptInputId && inputId === handle.promptInputId) {
+      handle.ownTurnId = turnId;
+      return 'own';
+    }
+    if (handle.ownTurnId) {
+      return turnId === handle.ownTurnId ? 'own' : 'foreign';
+    }
+    if (inputId !== undefined) {
+      return 'foreign';
+    }
+    return handle.promptAcknowledged ? 'own' : 'undecided';
+  }
+
+  /**
+   * Applies one normalized message of this run's own turn: a completion or a
+   * terminal error settles the run (a cancelled completion while a stop is in
+   * flight settles it as the abort), everything else streams to the writer.
+   */
+  private deliverRunMessage(
+    handle: RunHandle,
+    message: NormalizedMessage,
+    sessionEvent: ReturnType<typeof readZCodeSessionEvent>,
+    writer: ProviderRuntimeWriter,
+  ): void {
+    if (message.kind === 'complete') {
+      // The stop just sent cancelled this turn: settle as the abort it
+      // is, even though the acknowledgement has not arrived yet.
+      if (handle.stopSent && readOptionalString(sessionEvent?.payload.resultType) === 'cancelled') {
+        runLifecycle.requestAbort(handle);
+        return;
+      }
+      runLifecycle.recordCompletion(handle, message.tokens);
+      return;
+    }
+
+    if (message.kind === 'error') {
+      // A terminal error can outlive its run: the engine's cancelled
+      // echo (or any late turn.failed) may arrive after this run
+      // settled and a newer run already owns the session. Attributing
+      // it to the live run would fail or finish someone else's turn.
+      if (!runLifecycle.isActiveRun(handle)) {
+        return;
+      }
+      if (message.isCancelledError) {
+        // A cancelled model request is not an engine failure. When the
+        // user's own stop is on record the echo is expected noise —
+        // drop the frame and let the settle wait report the abort. An
+        // engine-side cancellation the user did not ask for degrades
+        // to a quiet transcript line and ends the run as a non-failure
+        // instead of a red error bubble plus a "run failed" notice.
+        if (handle.abortRequested) {
+          return;
+        }
+        writer.send(createNormalizedMessage({
+          // Derived from the engine event this notice reports, so a
+          // replayed run re-announces the same row instead of a new one.
+          id: `${message.id}_cancelled_notice`,
+          sessionId: handle.sessionId,
+          provider: 'zcode',
+          kind: 'task_notification',
+          summary: ZCODE_CANCELLED_NOTICE,
+          summaryKey: ZCODE_CANCELLED_NOTICE_KEY,
+          status: 'interrupted',
+        }));
+        runLifecycle.recordCompletion(handle);
+        return;
+      }
+      // Terminal error events (turn.failed / fatal) end the turn; mark
+      // the run completed-as-failed so the settle wait and the final
+      // complete message reflect it instead of timing out after 10 min.
+      runLifecycle.recordEngineError(handle, readOptionalString(message.text) ?? undefined);
+    }
+
+    if (message.kind === 'task_status') {
+      this.recordSubagentLifecycle(handle.abortKey, message, writer, true);
+    }
+
+    // A finished tool call retracts its own zombie card: the engine's
+    // AskUserQuestion times out and completes itself without telling the
+    // server, so the tool result is the only signal the question is over.
+    if (message.kind === 'tool_result' && message.toolId) {
+      runLifecycle.retractPermissionByToolId(handle.sessionId, message.toolId);
+    }
+
+    writer.send(message);
+
+    if (message.kind === 'tool_result') {
+      // A tool result closes a step: that step's usage is already persisted,
+      // so the composer's context badge can move now instead of waiting for
+      // the completion refresh — which is what a long tool-heavy turn needs.
+      this.publishLiveContextUsage(handle, writer);
+    }
+  }
+
+  /**
    * Creates session event listener for normalizing protocol events to writer.
    *
    * Normalization goes through `context.normalizeMessage` (bound to the
@@ -956,11 +1451,26 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
   ): (notification: AnyRecord) => void {
     return (notification: AnyRecord) => {
       try {
+        const method = readOptionalString(notification.method);
+
+        // A newer run on this engine session owns the stream and forwards
+        // every event itself; this one lingers only until its own wait notices
+        // it was superseded (a poll tick away), and anything it forwarded in
+        // that gap would reach its writer a second time. The engine's death is
+        // the exception: it must still release this run's wait. The newest
+        // run settles the agents, because they belong on its writer.
+        if (!runLifecycle.isNewestRunForEngineSession(handle)) {
+          if (method === SESSION_LOST_METHOD) {
+            runLifecycle.recordSessionLost(handle, readOptionalString(
+              (notification.params as Record<string, unknown> | undefined)?.stderrTail,
+            ));
+          }
+          return;
+        }
+
         // Any notification from the engine for this session is a sign of
         // life: refresh the silence-watchdog stamp before anything else.
         runLifecycle.recordActivity(handle);
-
-        const method = readOptionalString(notification.method);
 
         // Synthetic client-originated notification: the engine process died,
         // so this session no longer exists engine-side. Mark the run failed
@@ -971,6 +1481,7 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
             (notification.params as Record<string, unknown> | undefined)?.stderrTail,
           );
           runLifecycle.recordSessionLost(handle, stderrTail);
+          this.settleAgentsOfLostEngine(handle.abortKey, handle.sessionId, writer);
           return;
         }
 
@@ -979,64 +1490,40 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
           return;
         }
 
-        const normalizedMessages: NormalizedMessage[] = context.normalizeMessage(
-          notification.params ?? notification,
-          handle.sessionId,
-        );
+        const rawEvent = notification.params ?? notification;
+        const sessionEvent = readZCodeSessionEvent(rawEvent, handle.sessionId);
+        const turnOwner = this.classifyTurnEvent(handle, sessionEvent);
+        const normalizedMessages: NormalizedMessage[] = context.normalizeMessage(rawEvent, handle.sessionId);
 
         for (const message of normalizedMessages) {
-          if (message.kind === 'complete') {
-            runLifecycle.recordCompletion(handle, message.tokens);
+          const terminal = message.kind === 'complete' || message.kind === 'error';
+          // The run listens from its start, but until its prompt is out a
+          // turn-ending event can only belong to the turn before it. After
+          // that, the end of a turn the engine started itself (one the prompt
+          // preempted, or one that ran before the prompt's turn began) is not
+          // this run's end either, nor its error.
+          if (terminal && (!handle.promptDispatched || turnOwner === 'foreign')) {
             continue;
           }
-
-          if (message.kind === 'error') {
-            // A terminal error can outlive its run: the engine's cancelled
-            // echo (or any late turn.failed) may arrive after this run
-            // settled and a newer run already owns the session. Attributing
-            // it to the live run would fail or finish someone else's turn.
-            if (!runLifecycle.isActiveRun(handle)) {
-              continue;
-            }
-            if (message.isCancelledError) {
-              // A cancelled model request is not an engine failure. When the
-              // user's own stop is on record the echo is expected noise —
-              // drop the frame and let the settle wait report the abort. An
-              // engine-side cancellation the user did not ask for degrades
-              // to a quiet transcript line and ends the run as a non-failure
-              // instead of a red error bubble plus a "run failed" notice.
-              if (handle.abortRequested) {
-                continue;
+          if (terminal && turnOwner === 'undecided') {
+            // The engine's acknowledgement may sit in the same batch of output
+            // as this event, and the send only records it once that batch has
+            // been handled. Decide then: still unclaimed after the
+            // acknowledgement means this run's turn failed early; anything
+            // else was the preempted turn.
+            setImmediate(() => {
+              if (!handle.promptAcknowledged || handle.ownTurnId) {
+                return;
               }
-              writer.send(createNormalizedMessage({
-                // Derived from the engine event this notice reports, so a
-                // replayed run re-announces the same row instead of a new one.
-                id: `${message.id}_cancelled_notice`,
-                sessionId: handle.sessionId,
-                provider: 'zcode',
-                kind: 'task_notification',
-                summary: ZCODE_CANCELLED_NOTICE,
-                summaryKey: ZCODE_CANCELLED_NOTICE_KEY,
-                status: 'interrupted',
-              }));
-              runLifecycle.recordCompletion(handle);
-              continue;
-            }
-            // Terminal error events (turn.failed / fatal) end the turn; mark
-            // the run completed-as-failed so the settle wait and the final
-            // complete message reflect it instead of timing out after 10 min.
-            runLifecycle.recordEngineError(handle, readOptionalString(message.text) ?? undefined);
+              try {
+                this.deliverRunMessage(handle, message, sessionEvent, writer);
+              } catch (error) {
+                console.error(`[ZCodeRuntime] Error processing session event:`, error);
+              }
+            });
+            continue;
           }
-
-          writer.send(message);
-
-          if (message.kind === 'tool_result') {
-            // A tool result closes a step: that step's usage is already
-            // persisted, so the composer's context badge can move now instead
-            // of waiting for the completion refresh — which is what a long
-            // tool-heavy turn needs.
-            this.publishLiveContextUsage(handle, writer);
-          }
+          this.deliverRunMessage(handle, message, sessionEvent, writer);
         }
       } catch (error) {
         console.error(`[ZCodeRuntime] Error processing session event:`, error);
@@ -1197,7 +1684,7 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
   /**
    * Calls protocol method with retry on failure.
    *
-   * Protocol-level retry per §3.2.3 for operations like session/stop.
+   * Protocol-level retry per §3.2.3 for operations like the v4 stop.
    */
   private async callWithRetry(
     fn: () => Promise<void>,

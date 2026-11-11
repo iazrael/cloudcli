@@ -1,4 +1,8 @@
+import { useState } from 'react';
+
+import { api, readExternalFileContent } from '@/shared/api';
 import type { CodeEditorFile } from '@/shared/types';
+import { saveOrShareBlob } from '@/shared/utils';
 
 type CodeEditorBinaryFileProps = {
   file: CodeEditorFile;
@@ -8,6 +12,8 @@ type CodeEditorBinaryFileProps = {
   onToggleFullscreen: () => void;
   title: string;
   message: string;
+  downloadLabel: string;
+  downloadFailedLabel: string;
 };
 
 /** Rendered by CodeEditor inside the code-editor module when the opened file is binary and cannot be edited as text. */
@@ -19,7 +25,42 @@ export default function CodeEditorBinaryFile({
   onToggleFullscreen,
   title,
   message,
+  downloadLabel,
+  downloadFailedLabel,
 }: CodeEditorBinaryFileProps) {
+  // 下载进行中标记：禁用按钮，避免重复点击重复拉取同一份字节。
+  const [downloading, setDownloading] = useState(false);
+  // 下载失败的就地提示：二进制视图没有其他错误出口。
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+
+  // 二进制文件只给下载不给编辑：外部只读文件走外部流式端点，项目内文件
+  // 复用文件树的字节端点；取到完整 blob 后交给 saveOrShareBlob，iOS 上
+  // 由它转系统分享面板，避免 blob URL 导航。
+  const handleDownload = async () => {
+    if (!file.isReadOnlyExternal && !file.projectId) {
+      setDownloadError(downloadFailedLabel);
+      return;
+    }
+
+    setDownloading(true);
+    setDownloadError(null);
+    try {
+      const response = file.isReadOnlyExternal
+        ? await readExternalFileContent(file.path, {}, file.projectId)
+        : await api.readFileBlob(file.projectId as string, file.path);
+
+      if (!response.ok) {
+        throw new Error(`Download failed with status ${response.status}`);
+      }
+
+      await saveOrShareBlob(await response.blob(), file.name);
+    } catch {
+      setDownloadError(downloadFailedLabel);
+    } finally {
+      setDownloading(false);
+    }
+  };
+
   const binaryContent = (
     <div className="flex h-full w-full flex-col items-center justify-center bg-background p-8 text-muted-foreground">
       <div className="flex max-w-md flex-col items-center gap-4 text-center">
@@ -32,12 +73,24 @@ export default function CodeEditorBinaryFile({
           <h3 className="mb-2 text-lg font-medium text-foreground">{title}</h3>
           <p className="text-sm text-muted-foreground">{message}</p>
         </div>
-        <button
-          onClick={onClose}
-          className="mt-4 rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground transition-colors hover:bg-primary/90"
-        >
-          Close
-        </button>
+        <div className="mt-4 flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => { void handleDownload(); }}
+            disabled={downloading}
+            className="rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {downloadLabel}
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md border border-border px-4 py-2 text-sm text-foreground transition-colors hover:bg-muted"
+          >
+            Close
+          </button>
+        </div>
+        {downloadError && <p className="text-sm text-red-600 dark:text-red-400">{downloadError}</p>}
       </div>
     </div>
   );

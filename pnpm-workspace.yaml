@@ -1,0 +1,19 @@
+# pnpm 12 起配置不再读 package.json 的 `pnpm` 字段，统一收在这里。
+# 本仓库依赖由 npm 管理（package-lock.json + npm ci），pnpm 只作为 deploy 的
+# 脚本运行器/打包器。关闭跑脚本前的依赖同步校验（verifyDepsBeforeRun），
+# 避免 pnpm 用自动 install 接管 node_modules、生成第二套 lockfile。
+# pnpm v11 起 onlyBuiltDependencies 被移除，改为 allowBuilds 白名单；
+# strictDepBuilds: false 保持 v10 行为——白名单外的构建脚本静默跳过，
+# 而不是让 install 直接失败。overrides 与 package.json 的 npm `overrides`
+# 保持一致，供万一有人用 pnpm 安装时对齐版本。
+verifyDepsBeforeRun: false
+strictDepBuilds: false
+allowBuilds:
+  bcrypt: true
+  better-sqlite3: true
+  electron-winstaller: true
+  esbuild: true
+  node-pty: true
+  unrs-resolver: true
+overrides:
+  mdast-util-gfm-autolink-literal: 2.0.0

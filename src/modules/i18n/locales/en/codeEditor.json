@@ -33,7 +33,9 @@
   },
   "binaryFile": {
     "title": "Binary File",
-    "message": "The file \"{{fileName}}\" cannot be displayed in the text editor because it is a binary file."
+    "message": "The file \"{{fileName}}\" cannot be displayed in the text editor because it is a binary file.",
+    "download": "Download",
+    "downloadFailed": "Download failed"
   },
   "filePreview": {
     "loading": "Loading preview...",

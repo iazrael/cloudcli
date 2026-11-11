@@ -76,11 +76,18 @@ export function buildTranscriptMarkdown(input: BuildTranscriptMarkdownInput): st
     }
 
     const content = readString(message.content);
-    if (!content.trim()) {
+    const imageCount = message.images?.length ?? 0;
+    if (!content.trim() && imageCount === 0) {
       continue;
     }
 
-    sections.push('', `### ${providerLabel}`, '', content);
+    sections.push('', `### ${providerLabel}`);
+    if (content.trim()) {
+      sections.push('', content);
+    }
+    if (imageCount > 0) {
+      sections.push('', `_${imageCount} image attachment(s)_`);
+    }
     renderedCount += 1;
   }
 

@@ -116,6 +116,13 @@ export type LiveTaskStatus = {
   usage?: TaskUsage;
   /** A workflow's only: where each agent the run spawned stands, from its latest progress event. */
   agents?: WorkflowAgentProgress[];
+  /**
+   * Set by a `started` event that re-announces an agent which had already
+   * stopped (ZCode's SendMessage resume) and kept by that task's later events.
+   * The backend's settled `subagent` record predates such a run, so this live
+   * word outranks it.
+   */
+  resumed?: boolean;
 };
 
 export type CompactionInfo = {
@@ -543,6 +550,8 @@ export type NormalizedMessage = {
   outputFile?: string;
   /** A workflow's `progress` only: where each agent the run spawned stands. */
   agents?: WorkflowAgentProgress[];
+  /** A `started` event only: the agent had already stopped and is running again (ZCode's SendMessage resume). */
+  resumed?: boolean;
   /**
    * Timeline of everything a subagent did, attached to the `tool_use` that
    * spawned it. Present for `Agent` calls (every engine's subagent spawn);

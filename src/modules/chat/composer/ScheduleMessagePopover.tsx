@@ -36,7 +36,7 @@ type ScheduleMessagePopoverProps = {
 };
 
 /** Offsets people actually mean when they say "later". */
-const QUICK_OFFSETS_MINUTES = [15, 60, 8 * 60, 24 * 60];
+const QUICK_OFFSETS_MINUTES = [30, 2 * 60, 5 * 60, 24 * 60];
 
 /** The task half's options: the cron presets, plus a single one-off instant. */
 const TASK_CHOICES: ScheduleChoiceId[] = ['once', 'daily', 'weekdays', 'weekly', 'hourly', 'custom'];

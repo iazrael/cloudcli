@@ -284,9 +284,9 @@
     "customLabel": "Ou choisir une heure",
     "confirm": "Programmer",
     "in": {
-      "15": "Dans 15 minutes",
-      "60": "Dans une heure",
-      "480": "Dans 8 heures",
+      "30": "Dans 30 minutes",
+      "120": "Dans 2 heures",
+      "300": "Dans 5 heures",
       "1440": "Demain"
     },
     "pending": "Programmé pour {{when}}",
@@ -314,6 +314,8 @@
     "expand": "Développer",
     "fiveHourWindow": "Fenêtre glissante de 5 heures",
     "weeklyWindow": "Quota hebdomadaire",
+    "weeklyWindowAllModels": "Quota hebdomadaire (tous les modèles)",
+    "weeklyWindowScoped": "Quota hebdomadaire ({{model}})",
     "remainingPercent": "{{percent}}% restant",
     "resetSoon": "Réinitialisation imminente",
     "resetDaysHours": "Réinitialisation dans {{days}}j {{hours}}h",
@@ -321,13 +323,16 @@
     "resetMinutes": "Réinitialisation dans {{minutes}}m",
     "emptyQuotaHint": {
       "claude": "Les connexions par clé API, Bedrock ou Vertex n'ont pas de limites d'abonnement claude.ai",
-      "codex": "La connexion par clé API n'indique généralement pas de limite de 5 h ou hebdomadaire"
+      "codex": "La connexion par clé API n'indique généralement pas de limite de 5 h ou hebdomadaire",
+      "opencode": "Aucun abonnement OpenCode Go, ou la CLI n'est pas connectée à un espace de travail Go"
     },
     "resetCardTitle": "Cartes de réinitialisation d'utilisation",
     "resetCardHint": "Utiliser une carte replit immédiatement le quota concerné, sans attendre la fenêtre de réinitialisation.",
+    "resetCardHintReadOnly": "Utilisez cette réinitialisation sur le site du fournisseur.",
     "resetCardTypeAll": "Quota complet (5 heures + hebdomadaire)",
     "resetCardType5h": "Quota de 5 heures",
     "resetCardTypeWeekly": "Quota hebdomadaire",
+    "resetCardTypeFable": "Réinitialisation Fable",
     "resetCardAvailable": "{{count}} disponibles",
     "resetCardExpires": "la plus proche expire le {{date}}",
     "resetCardUse": "Utiliser",

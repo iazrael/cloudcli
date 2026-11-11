@@ -1957,6 +1957,10 @@ export class ClaudeSessionsProvider implements IProviderSessions {
   /**
    * Cleans up Claude native storage (JSONL file and subagent directory).
    */
+  listStorageRoots(): string[] {
+    return [path.join(os.homedir(), '.claude', 'projects')];
+  }
+
   async cleanupSession(nativeSessionId: string, jsonlPath?: string | null): Promise<boolean> {
     let removed = false;
     if (jsonlPath) {

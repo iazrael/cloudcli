@@ -117,6 +117,7 @@ temp/
 CLAUDE.md
 .mcp.json
 .gemini/
+.playwright-mcp/
 
 # Database files
 *.db

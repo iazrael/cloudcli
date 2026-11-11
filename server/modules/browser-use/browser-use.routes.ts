@@ -1,9 +1,14 @@
 import express from 'express';
 import type { Response } from 'express';
 
-import { browserUseService } from '@/modules/browser-use/browser-use.service.js';
-
-const router = express.Router();
+import {
+  MANUAL_MAX_SCROLL_DELTA,
+  MANUAL_TYPE_MAX_LENGTH,
+  browserUseService,
+  isManualKeyAllowed,
+  isManualViewportSize,
+  normalizeManualUrl,
+} from '@/modules/browser-use/browser-use.service.js';
 
 /**
  * Stable machine-readable error codes for the browser-use API.
@@ -19,6 +24,9 @@ export const BROWSER_USE_ERROR_CODES = {
   SETTINGS_SAVE_FAILED: 'BROWSER_USE_SETTINGS_SAVE_FAILED',
   RUNTIME_INSTALL_FAILED: 'BROWSER_USE_RUNTIME_INSTALL_FAILED',
   SESSIONS_LOAD_FAILED: 'BROWSER_USE_SESSIONS_LOAD_FAILED',
+  SESSION_CREATE_FAILED: 'BROWSER_USE_SESSION_CREATE_FAILED',
+  SESSION_CONTROL_FAILED: 'BROWSER_USE_SESSION_CONTROL_FAILED',
+  SESSION_SCREEN_LOAD_FAILED: 'BROWSER_USE_SESSION_SCREEN_LOAD_FAILED',
   SESSION_STOP_FAILED: 'BROWSER_USE_SESSION_STOP_FAILED',
   SESSION_DELETE_FAILED: 'BROWSER_USE_SESSION_DELETE_FAILED',
 } as const;
@@ -44,116 +52,317 @@ function readParam(value: string | string[] | undefined): string {
   return Array.isArray(value) ? value[0] || '' : value || '';
 }
 
-router.get('/status', async (_req, res) => {
-  try {
-    res.json({ success: true, data: await browserUseService.getStatus() });
-  } catch (error) {
-    sendError(
-      res,
-      500,
-      BROWSER_USE_ERROR_CODES.STATUS_LOAD_FAILED,
-      'Failed to load Browser status.',
-      error instanceof Error ? error.message : undefined,
-    );
-  }
-});
+function readBody(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' ? value as Record<string, unknown> : {};
+}
 
-router.get('/settings', async (_req, res) => {
-  try {
-    res.json({ success: true, data: { settings: await browserUseService.getSettings() } });
-  } catch (error) {
-    sendError(
-      res,
-      500,
-      BROWSER_USE_ERROR_CODES.SETTINGS_LOAD_FAILED,
-      'Failed to load Browser settings.',
-      error instanceof Error ? error.message : undefined,
-    );
-  }
-});
+function readNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
 
-router.put('/settings', async (req, res) => {
-  try {
-    const settings = await browserUseService.updateSettings(req.body || {});
-    res.json({ success: true, data: { settings } });
-  } catch (error) {
-    sendError(
-      res,
-      400,
-      BROWSER_USE_ERROR_CODES.SETTINGS_SAVE_FAILED,
-      'Failed to save Browser settings.',
-      error instanceof Error ? error.message : undefined,
-    );
-  }
-});
+function errorDetails(error: unknown): string | undefined {
+  return error instanceof Error ? error.message : undefined;
+}
 
-router.post('/runtime/install', async (_req, res) => {
-  try {
-    const result = await browserUseService.installRuntime();
-    if (result.success) {
-      res.json({ success: true, data: result });
-      return;
+/** Service surface consumed by the browser-use HTTP routes; the real implementation is browserUseService. */
+export type BrowserUseRouterService = typeof browserUseService;
+
+/**
+ * Builds the full browser-use HTTP router against an injected service so tests
+ * can drive the real routes with a fake. The default export binds the
+ * production singleton and is mounted by server/index.ts behind
+ * `authenticateToken`.
+ */
+export function createBrowserUseRouter(service: BrowserUseRouterService): express.Router {
+  const router = express.Router();
+
+  router.get('/status', async (_req, res) => {
+    try {
+      res.json({ success: true, data: await service.getStatus() });
+    } catch (error) {
+      sendError(
+        res,
+        500,
+        BROWSER_USE_ERROR_CODES.STATUS_LOAD_FAILED,
+        'Failed to load Browser status.',
+        errorDetails(error),
+      );
     }
-    sendError(
-      res,
-      500,
-      BROWSER_USE_ERROR_CODES.RUNTIME_INSTALL_FAILED,
-      'Failed to install Browser runtime.',
-      result.message,
-    );
-  } catch (error) {
-    sendError(
-      res,
-      500,
-      BROWSER_USE_ERROR_CODES.RUNTIME_INSTALL_FAILED,
-      'Failed to install Browser runtime.',
-      error instanceof Error ? error.message : undefined,
-    );
-  }
-});
+  });
 
-router.get('/sessions', async (_req, res) => {
-  try {
-    res.json({ success: true, data: { sessions: await browserUseService.listSessions() } });
-  } catch (error) {
-    sendError(
-      res,
-      401,
-      BROWSER_USE_ERROR_CODES.SESSIONS_LOAD_FAILED,
-      'Failed to list browser sessions.',
-      error instanceof Error ? error.message : undefined,
-    );
-  }
-});
+  router.get('/settings', async (_req, res) => {
+    try {
+      res.json({ success: true, data: { settings: await service.getSettings() } });
+    } catch (error) {
+      sendError(
+        res,
+        500,
+        BROWSER_USE_ERROR_CODES.SETTINGS_LOAD_FAILED,
+        'Failed to load Browser settings.',
+        errorDetails(error),
+      );
+    }
+  });
 
-router.post('/sessions/:sessionId/stop', async (req, res) => {
-  try {
-    const result = await browserUseService.stopSession(readParam(req.params.sessionId));
-    res.json({ success: true, data: result });
-  } catch (error) {
-    sendError(
-      res,
-      400,
-      BROWSER_USE_ERROR_CODES.SESSION_STOP_FAILED,
-      'Failed to stop browser session.',
-      error instanceof Error ? error.message : undefined,
-    );
-  }
-});
+  router.put('/settings', async (req, res) => {
+    try {
+      const settings = await service.updateSettings(req.body || {});
+      res.json({ success: true, data: { settings } });
+    } catch (error) {
+      sendError(
+        res,
+        400,
+        BROWSER_USE_ERROR_CODES.SETTINGS_SAVE_FAILED,
+        'Failed to save Browser settings.',
+        errorDetails(error),
+      );
+    }
+  });
 
-router.delete('/sessions/:sessionId', async (req, res) => {
-  try {
-    const result = await browserUseService.deleteSession(readParam(req.params.sessionId));
-    res.json({ success: true, data: result });
-  } catch (error) {
-    sendError(
-      res,
-      400,
-      BROWSER_USE_ERROR_CODES.SESSION_DELETE_FAILED,
-      'Failed to delete browser session.',
-      error instanceof Error ? error.message : undefined,
-    );
-  }
-});
+  router.post('/runtime/install', async (_req, res) => {
+    try {
+      const result = await service.installRuntime();
+      if (result.success) {
+        res.json({ success: true, data: result });
+        return;
+      }
+      sendError(
+        res,
+        500,
+        BROWSER_USE_ERROR_CODES.RUNTIME_INSTALL_FAILED,
+        'Failed to install Browser runtime.',
+        result.message,
+      );
+    } catch (error) {
+      sendError(
+        res,
+        500,
+        BROWSER_USE_ERROR_CODES.RUNTIME_INSTALL_FAILED,
+        'Failed to install Browser runtime.',
+        errorDetails(error),
+      );
+    }
+  });
 
-export default router;
+  router.get('/sessions', async (_req, res) => {
+    try {
+      res.json({ success: true, data: { sessions: await service.listSessions() } });
+    } catch (error) {
+      sendError(
+        res,
+        401,
+        BROWSER_USE_ERROR_CODES.SESSIONS_LOAD_FAILED,
+        'Failed to list browser sessions.',
+        errorDetails(error),
+      );
+    }
+  });
+
+  router.post('/sessions', async (_req, res) => {
+    try {
+      const session = await service.createManualSession();
+      res.json({ success: true, data: { session } });
+    } catch (error) {
+      sendError(
+        res,
+        400,
+        BROWSER_USE_ERROR_CODES.SESSION_CREATE_FAILED,
+        'Failed to create browser session.',
+        errorDetails(error),
+      );
+    }
+  });
+
+  router.get('/sessions/:sessionId/screen', async (req, res) => {
+    try {
+      const session = await service.getManualScreen(readParam(req.params.sessionId));
+      res.json({ success: true, data: { session } });
+    } catch (error) {
+      sendError(
+        res,
+        500,
+        BROWSER_USE_ERROR_CODES.SESSION_SCREEN_LOAD_FAILED,
+        'Failed to load the browser screen.',
+        errorDetails(error),
+      );
+    }
+  });
+
+  router.post('/sessions/:sessionId/navigate', async (req, res) => {
+    try {
+      const url = normalizeManualUrl(String(readBody(req.body).url ?? ''));
+      const session = await service.manualNavigate(readParam(req.params.sessionId), url);
+      res.json({ success: true, data: { session } });
+    } catch (error) {
+      sendError(
+        res,
+        400,
+        BROWSER_USE_ERROR_CODES.SESSION_CONTROL_FAILED,
+        'Failed to control the browser session.',
+        errorDetails(error),
+      );
+    }
+  });
+
+  router.post('/sessions/:sessionId/nav', async (req, res) => {
+    try {
+      const action = readBody(req.body).action;
+      if (action !== 'back' && action !== 'forward' && action !== 'reload') {
+        throw new Error('Unknown navigation action.');
+      }
+
+      const session = await service.manualNav(readParam(req.params.sessionId), action);
+      res.json({ success: true, data: { session } });
+    } catch (error) {
+      sendError(
+        res,
+        400,
+        BROWSER_USE_ERROR_CODES.SESSION_CONTROL_FAILED,
+        'Failed to control the browser session.',
+        errorDetails(error),
+      );
+    }
+  });
+
+  router.post('/sessions/:sessionId/click', async (req, res) => {
+    try {
+      const body = readBody(req.body);
+      const x = readNumber(body.x);
+      const y = readNumber(body.y);
+      if (x === null || y === null) {
+        throw new Error('Click coordinates must be numbers.');
+      }
+
+      const session = await service.manualClick(readParam(req.params.sessionId), { x, y });
+      res.json({ success: true, data: { session } });
+    } catch (error) {
+      sendError(
+        res,
+        400,
+        BROWSER_USE_ERROR_CODES.SESSION_CONTROL_FAILED,
+        'Failed to control the browser session.',
+        errorDetails(error),
+      );
+    }
+  });
+
+  router.post('/sessions/:sessionId/scroll', async (req, res) => {
+    try {
+      const body = readBody(req.body);
+      const deltaX = readNumber(body.deltaX);
+      const deltaY = readNumber(body.deltaY);
+      if (deltaX === null || deltaY === null
+        || Math.abs(deltaX) > MANUAL_MAX_SCROLL_DELTA
+        || Math.abs(deltaY) > MANUAL_MAX_SCROLL_DELTA) {
+        throw new Error(`Scroll deltas must be finite and within ±${MANUAL_MAX_SCROLL_DELTA}.`);
+      }
+
+      const session = await service.manualScroll(readParam(req.params.sessionId), { deltaX, deltaY });
+      res.json({ success: true, data: { session } });
+    } catch (error) {
+      sendError(
+        res,
+        400,
+        BROWSER_USE_ERROR_CODES.SESSION_CONTROL_FAILED,
+        'Failed to control the browser session.',
+        errorDetails(error),
+      );
+    }
+  });
+
+  router.post('/sessions/:sessionId/type', async (req, res) => {
+    try {
+      const text = readBody(req.body).text;
+      if (typeof text !== 'string' || text.length === 0 || text.length > MANUAL_TYPE_MAX_LENGTH) {
+        throw new Error(`Text must be a non-empty string of at most ${MANUAL_TYPE_MAX_LENGTH} characters.`);
+      }
+
+      const session = await service.manualType(readParam(req.params.sessionId), text);
+      res.json({ success: true, data: { session } });
+    } catch (error) {
+      sendError(
+        res,
+        400,
+        BROWSER_USE_ERROR_CODES.SESSION_CONTROL_FAILED,
+        'Failed to control the browser session.',
+        errorDetails(error),
+      );
+    }
+  });
+
+  router.post('/sessions/:sessionId/key', async (req, res) => {
+    try {
+      const key = readBody(req.body).key;
+      if (typeof key !== 'string' || !isManualKeyAllowed(key)) {
+        throw new Error('Key is not allowed for remote control.');
+      }
+
+      const session = await service.manualPressKey(readParam(req.params.sessionId), key);
+      res.json({ success: true, data: { session } });
+    } catch (error) {
+      sendError(
+        res,
+        400,
+        BROWSER_USE_ERROR_CODES.SESSION_CONTROL_FAILED,
+        'Failed to control the browser session.',
+        errorDetails(error),
+      );
+    }
+  });
+
+  router.post('/sessions/:sessionId/viewport', async (req, res) => {
+    try {
+      const body = readBody(req.body);
+      const width = readNumber(body.width);
+      const height = readNumber(body.height);
+      if (width === null || height === null || !isManualViewportSize({ width, height })) {
+        throw new Error('Viewport size must be integers within 320-1920 x 240-1440.');
+      }
+
+      const session = await service.manualViewport(readParam(req.params.sessionId), { width, height });
+      res.json({ success: true, data: { session } });
+    } catch (error) {
+      sendError(
+        res,
+        400,
+        BROWSER_USE_ERROR_CODES.SESSION_CONTROL_FAILED,
+        'Failed to control the browser session.',
+        errorDetails(error),
+      );
+    }
+  });
+
+  router.post('/sessions/:sessionId/stop', async (req, res) => {
+    try {
+      const result = await service.stopSession(readParam(req.params.sessionId));
+      res.json({ success: true, data: result });
+    } catch (error) {
+      sendError(
+        res,
+        400,
+        BROWSER_USE_ERROR_CODES.SESSION_STOP_FAILED,
+        'Failed to stop browser session.',
+        errorDetails(error),
+      );
+    }
+  });
+
+  router.delete('/sessions/:sessionId', async (req, res) => {
+    try {
+      const result = await service.deleteSession(readParam(req.params.sessionId));
+      res.json({ success: true, data: result });
+    } catch (error) {
+      sendError(
+        res,
+        400,
+        BROWSER_USE_ERROR_CODES.SESSION_DELETE_FAILED,
+        'Failed to delete browser session.',
+        errorDetails(error),
+      );
+    }
+  });
+
+  return router;
+}
+
+export default createBrowserUseRouter(browserUseService);

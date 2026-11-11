@@ -32,10 +32,11 @@
 
 ### 一次提交只产生一次发送
 
-从点击发送到消息被后端接收之间存在一段异步窗口：附件上传、以及新会话在 `POST /api/providers/sessions` 里分配 id。窗口期内会话 id 还不存在，因此一次提交被重放就会各自开出一个新会话。以下闸门共同保证"一次提交 = 一个会话 = 一次 run"：
+从点击发送到消息被后端接收之间存在一段异步窗口：排队请求、以及新会话在 `POST /api/providers/sessions` 里分配 id。窗口期内会话 id 还不存在，因此一次提交被重放就会各自开出一个新会话。以下闸门共同保证"一次提交 = 一个会话 = 一次 run"：
 
-- **composer 闩**（`src/modules/chat/hooks/useChatComposerState.ts`）：`submitInFlightRef` 同步挡住窗口期内的任何重复提交（第二次点击、再按一次 Enter、排队草稿的 flush）。提交被接受的瞬间就清空输入框并把发送按钮切成 spinner，点击立刻可见。提交失败时在唯一的 catch 里把消息放回它来的地方——手动提交回输入框，排队消息回队列——并渲染一条 error 行，不允许静默丢消息。`handleSubmit` 返回「本次提交是否被受理」，排队草稿的 flush 据此决定保留还是清空；flush 只把草稿作为参数传入，从不写进输入框，用户正在输入的下一条消息因此不受影响。
-- **附件上传幂等**（`server/modules/assets/services/upload-replay.service.ts`）：一次上传生成一个标识，同一次上传的自动重试复用该标识；普通发送与排队发送走同一上传函数。后端在解析 multipart、写入文件前登记上传，按已鉴权用户和上传入口隔离，同标识的并发请求等待首次结果，成功响应丢失后也复用已存文件。
+- **附件闸门**（`useChatComposerState.ts` 的 `handleSubmit` 入口）：输入框里有未完成或失败的附件时，`handleSubmit` 在清空输入框之前返回 false，文字不动。按钮、Enter、语音“停止并发送”和命令展开都走这一个判断，发送按钮的禁用只负责显示。排队消息的自动发送带自己的附件描述符，不受闸门影响。运行中按钮保持排队外观并禁用，不会变成停止，停止走活动条。
+- **composer 闩**（`src/modules/chat/hooks/useChatComposerState.ts`）：`submittingScopesRef` 按草稿作用域（会话 id，新会话未分配 id 前是 `project:<id>`）同步挡住窗口期内同一作用域的重复提交（第二次点击、再按一次 Enter、排队卡片的立即发送）。闩只锁发起提交的那个作用域：新会话还在等 session id 时切到别的会话，那边照常能发；新会话拿到 id 后，这个 id 也加进闩里，直到本次提交结束。同一项目里再开一个新会话共用 `project:<id>`，在前一个拿到 id 之前仍被挡住，发送按钮保持转圈，输入框里的文字不丢。提交被接受的瞬间就清空输入框并把发送按钮切成 spinner，点击立刻可见。提交失败时在唯一的 catch 里把消息放回它来的地方——手动提交回输入框，排队消息回队列——并渲染一条 error 行，不允许静默丢消息。`handleSubmit` 返回「本次提交是否被受理」，提交失败也返回 false，排队卡片的立即发送据此决定是否放回队列；排队消息只作为参数传入，从不写进输入框，用户正在输入的下一条消息因此不受影响。socket 未连接时提交直接失败（不分配会话、不回显、不发帧），文字留在输入框并给出 error 行，因为断开的 socket 会静默丢掉发送帧。
+- **附件上传幂等**（`server/modules/assets/services/upload-replay.service.ts`）：每个附件有一个标识，自动重试和手动重试都复用它。后端在解析 multipart、写入文件前登记上传，按已鉴权用户和上传入口隔离，同标识的并发请求等待首次结果，成功响应丢失后也复用已存文件。
 - **会话网关幂等**（`sessionsService.createAppSession`）：每次提交携带一个 `clientRequestId`，短 TTL 内重复请求返回首次分配的同一个 session（若该会话已被删除则重新分配）。这挡的是前端闩看不见的重放——请求重试、另一个标签页。
 - **run 登记**（`chatRunRegistry.startRun`）：同一会话已有 run 在跑时，重复的 `chat.send` 得到 `RUN_IN_PROGRESS` 协议错误而不是第二次运行。唯一例外是带 `injectInput` 切面且 `inputWhileBusy: 'always'` 的引擎（当前无；opencode 迁移前曾如此）：网关先把消息交给 `injectInput`，成功则不登记新 run——消息搭原 run 的 writer 输出、由原 run 的 `complete` 一并收尾，发送方 socket 补挂到该 run；返回 false（回合已结束/已中止）才回落到 `dispatchRun`。
 - **引擎自发的回合**（`chatRunRegistry.adoptExternalRun`）：常驻引擎（codex / claude 的 idle 常驻、opencode 从 inbox 恢复）会在用户没有发送的情况下自己开一轮汇报。runtime 在事件流里发现后向网关要一个 run；网关按正常 run 登记（无属主 socket、`isProcessing` 对所有人可见、可回放），再把当前订阅者接到 writer 上，页面因此看到的是正常时间线而不是刷新后才出现的孤儿消息。会话 id 映射不到行、行已归档、provider 不符或已有 run 在跑时返回 null，runtime 不重试。
@@ -44,6 +45,20 @@
 `POST /api/providers/sessions` 的 `initialMessage` 只作标题来源，客户端只发前缀，不发整条消息——它正处在用户等待的那段窗口里。
 
 ### 附件上传与恢复
+
+附件一加入输入框就开始上传，发送时只带服务端返回的附件描述符，不再上传文件。上传队列 `src/modules/chat/utils/attachmentUploadQueue.ts` 按草稿作用域保存附件项，全局最多同时上传 3 个，每个附件一个请求，切换会话不打断上传。这样慢网下每个文件有独立的 Cloudflare 响应窗口，一个失败不影响其他文件。移除附件会中止它的请求；输入框卸载或退出登录时中止全部上传。
+
+```mermaid
+stateDiagram-v2
+  [*] --> queued: 添加
+  [*] --> tooLarge: 超过大小上限
+  queued --> uploading: 有空闲名额
+  uploading --> done: 服务端返回描述符
+  uploading --> failed: 重试用完或不可重试
+  failed --> queued: 手动重试
+```
+
+上传进度由 `authenticatedUpload` 通过 XHR 上报，它的鉴权处理和错误语义与 `authenticatedFetch` 一致，进度封顶 99%，收到响应才算完成。文件树上传共用这个函数。百分比保存在队列里，每个缩略图用 `useSyncExternalStore` 单独订阅，进度变化不重渲染输入框。上传失败只显示在缩略图上，不写时间线。
 
 聊天通过 `src/shared/api.ts` 的 `uploadChatAttachments` 上传文件，功能模块只编排重试。请求头 `X-Upload-Request-Id` 表示一次上传；服务端在边界校验标识，首次结果是该标识对应的权威结果，同一标识不得用于另一批文件。`/api/assets/files` 与兼容图片入口 `/api/assets/images` 共享去重机制，但互不复用结果。不带标识的旧客户端按独立请求处理。
 
@@ -63,12 +78,22 @@ flowchart TD
 
 缓存只保留文件描述符和进行中的 Promise，不保存文件内容；成功记录按有效期释放，进行中的上传不因时间到期被移除；上传中途断线时，存储适配器终止写流、清理未完成文件后释放失败记录，容量满时拒绝新标识而不驱逐仍有效的结果。容量、有效期以服务实现为准。缓存属于当前进程，重启和成功记录过期后无法复用；文件本身保留，历史消息路径不受缓存清理影响。这不是跨进程、永久去重协议。
 
-浏览器只重试网络传输异常和明确列出的临时 HTTP 状态，错误文案不参与重试判断；成功响应的读取中断也可重试。无效成功数据、取消操作和普通客户端错误直接失败。重试用完后仍由 composer 恢复文本和附件，排队草稿回到队列。重传可能消耗额外带宽，去重保证缓存有效期间不重复保存。文件树上传使用独立 XHR 和项目文件语义，未接入聊天上传重试。
+浏览器只重试网络传输异常和明确列出的临时 HTTP 状态，包括 Cloudflare 的 520 到 524，错误文案不参与重试判断；成功响应的读取中断也可重试。无效成功数据、取消操作和普通客户端错误直接失败。重试用完后附件项变为失败，由用户手动重试或移除。发送失败时附件项以已完成状态放回，编辑排队消息时按序配对恢复的文件和描述符，都不重传。用户移除或放弃的已上传文件保留在附件目录，没有清理机制。重传可能消耗额外带宽，去重保证缓存有效期间不重复保存。文件树上传使用项目文件语义，未接入聊天上传重试。
 
 ### 模型选择与分组呈现（ComposerModelMenu）
 
 - 输入框底部的模型菜单按 `ProviderModelOption` 呈现；当选项带有 `group` 字段时，前端以 `ComposerMenuHeading` 划分展示区块。同名模型的区分靠每行的 `description`（如 OpenCode Zen / Go 网关、zcode 引擎目录的 `providerLabel`），折叠行与每个选项都显示。目前 zcode 的模型目录取自引擎（`settings.model.available`），不带 `group`。
 - 选项标识与展示解耦：底层 `value` 允许包含 Provider 前缀（例如 `account:bigmodel-start-plan/GLM-5.3-Flash`）以保障后端唯一路由；触发器与折叠标题通过友好前缀截断与 `label` 解析，保证用户可见区域始终展示人类可读的友好名称，绝不泄露底层内部原始 ID。
+
+### 子 agent 卡片只认 `Agent`
+
+前端把工具名等于 `Agent` 的 `tool_use` 行渲染成子 agent 面板（`useChatMessages` 的 `isSubagentContainer`，常量来自 `shared/protocol/subagent.ts`），不按引擎分支，也不看 `Task`：`Task` 只指任务清单类工具。面板的状态先看历史行上的 `subagent`：它给出 `running` 以外的状态就是定论，唯一例外是带 `resumed` 的实时状态（ZCode 用 `SendMessage` 复活了已结束的 agent，由 `resumed: true` 的 `started` 置上、同一任务后续事件沿用），这次运行比历史记录新，以实时为准；否则看 `task_status` 事件（实时，按 `toolUseId` 折回这张卡）；两者都没有时才看工具结果：结果带错误标记（引擎拒绝了这次派发，例如 agent 类型不存在）读作 `failed`，其余有结果读作完成，没有结果读作运行中。状态文案和 `stopped` 的提示语走 `chat` 命名空间的 `subagent.*` 键。面板的 `subagent`、`subagentActivity` 由转换函数从后端行的 `subagent`、`subagentTools` 原样带上；直播送来的、`parentToolUseId` 指向某张 `Agent` 卡的行（工具调用、定稿文本、思考，含对应工具结果）不进主线程，而是折成这张卡的时间线，历史行自带 `subagentTools` 时以历史为准，复活中的卡则把直播行接在历史时间线后面。转换缓存按被折进的子行（含它们的结果）是否变化失效。
+
+折叠的归属规则：行的 `parentToolUseId` 沿父链找到最外层的 `Agent` 调用，行就折进那张顶层卡；agent 里再派的 agent 只是外层卡时间线里的一步，它名下的行也折进同一张外层卡。父链沿途的非 agent 调用不影响结果（取最外层的 `Agent`），父链成环时在闭合处截断，环里的 agent 仍是卡片。父链走不到任何 agent 且止于本页没有的调用时：会话还在运行（有前台回复或后台工作）且这是直播行（带 `seq`）才先不进主线程、等卡片到了再折入，避免先出现在主线程又跳走；历史行（卡片可能在未加载的页里）和会话已经结算后的行照常显示在主线程，不会永远消失；父调用存在但不是 `Agent`（Bash、workflow）的行照常留在主线程。
+
+运行中的卡片（后端和直播都没给出结算状态）在折叠的标题下多一行进度：步数和最新一步（`Bash: npm test` 这样的“工具名: 输入要点”，由 `describeLatestStep` 生成）；展开时显示最新的步骤，更早的收在“显示更早的 N 步”后，结算后恢复为从头显示。卡片默认仍是折叠的。
+
+批准和提问卡片的 `context.subagent`（`toolUseId`、`description`）由 provider 在边界填入，横幅在卡片上方显示“来自子 agent：<description>”。一轮成功结束（`complete`）时，带 `context.subagent` 的卡片保留（派它的后台 agent 可能还在跑，要撤回由服务端发 `permission_cancelled`），其余卡片随这一轮清掉；失败或中止的结束清掉全部。没有前台回复在跑时到达的批准卡片只把会话记成后台工作（`onSessionProcessing(id, { awaitingApproval: true })`），不会让它变成前台“处理中”。各引擎怎样把自家的派 agent 形态翻成 `Agent` 行、怎样保证结算，见 [providers.md](./providers.md)「子 agent 卡片」。
 
 ## 断线恢复
 
@@ -198,7 +223,7 @@ flowchart LR
 
 - 思考块按稳定 id 归组 upsert（`src/modules/chat/utils/sessionThinkingRows.ts`）。
 - 流式文本由 `transcript/StreamingMarkdown.tsx` 渲染：按 `streamingMarkdown.ts` 切"已定稿前缀 + 待定尾块"两段 `MarkdownBody`，前缀字节稳定命中 memo，每 100ms tick 只重解析尾块。
-- **转录是虚拟列表**：`ChatMessagesPane` 用 virtua 的 `Virtualizer` 渲染，只有视口附近的行在 DOM 里；行高由 virtua 实测，估高与真高的差值由它改写滚动偏移吸收。这取代了原先「服务端分页 + `visibleMessageCount` 切片 + 懒挂载占位」三层各管一段、互相错拍的结构——现在「渲染哪些行」只有 `transcriptItems` 一个来源。
+- **转录是虚拟列表**：`ChatMessagesPane` 用 virtua 的 `Virtualizer` 渲染，只有视口附近的行在 DOM 里；行高由 virtua 实测，估高与真高的差值由它改写滚动偏移吸收。这取代了原先「服务端分页 + `visibleMessageCount` 切片 + 懒挂载占位」三层各管一段、互相错拍的结构——现在「渲染哪些行」只有 `transcriptItems` 一个来源。视口外预渲染余量（`bufferSize`）是 1200px，不用 virtua 默认的 200px：消息行渲染重，iOS 惯性滑动由合成线程推进、一次能走几千 px，余量太小就会划进还没挂载的区域，露出一块空白。
 - 视口行为归 `hooks/useTranscriptViewport`：贴底跟随、距顶两屏预取旧页、按下标跳转。它不做任何位置补偿——补偿是 virtua 的职责，业务层再补一次只会打架。前插旧页的那一次提交带 `shift`，请求发出时置位、请求结束且该次提交渲染后复位（只按行数复位会在空页时卡住，把下一次追加误当历史）。
 - 搜索跳转按 `searchTargetLocator.ts` 在**分组后的行**上解析命中下标（-1 即确定性放弃），再交给 `scrollToIndex` 居中；不再需要渲染窗口，也不再有 DOM 查找和多段定时器。分组会折叠工具行、丢弃隐藏行，所以消息下标与行下标不是一回事，定位必须在行空间做。
 - 工具卡片按 toolId upsert，服务端把引擎的流式参数增量累积成稳定快照再发。
@@ -215,3 +240,30 @@ flowchart LR
 | 新增权限相关能力 | 引擎 runtime 的 `permissions` 网关 → 矩阵自动推导 `supportsPermissionRequests` → 前端按矩阵渲染 |
 | 新增由能力矩阵驱动的 UI 差异 | 静态能力进 `provider-capabilities.catalog.ts`，前端只读矩阵、不写 provider 分支：`supportsCompaction` 决定 `/compact` 是否出现，`editRevertsFiles` 决定编辑横幅说"已修改的文件不会被还原"还是"会一并还原"（会还原文件类引擎标 true），`supportsNativeScheduling` 决定定时任务表单是否提示"引擎自带会话内调度"。提问卡（`AskUserQuestionPanel`）文案与引擎无关，用 `chat:misc.*` 中性串 |
 | 改历史分页 | `src/modules/chat/utils/sessionMessagePagination.ts` + store 的序列化测试（`sessionTimelineSequences.test.ts`）必须跟着改 |
+
+## 重连缓存的容量
+
+例如一个工具返回一张内嵌截图，writer 广播的是图片资源引用，registry 不保留图片正文。registry 同时限制单条事件、单个运行和所有运行的缓存字节数，并保留条数限制。预算常量以 `chat-run-registry.service.ts` 为准；字节数按序列化消息计费，与 Node 实际堆占用不同。
+
+**会话活动有两种忙。** 运行中的回合，和已提交但引擎还没起回合的等待。引擎是唯一知道排队输入有没有被取走的一方，所以服务端把"在等引擎"和"引擎在跑自己的汇报回合"作为标志带在 `running-sessions` 载荷里，页面据此把等待和干活分开显示：等待时标签是"排队中——等引擎空闲"，停止按钮说明它取消的是排队中的消息。
+
+这个状态不只靠轮询。引擎接管回合和开始跑它的时刻，运行时都发一帧活动状态（`status` 帧的 `activityState`），页面立刻改标签；`running-sessions` 的 5 秒轮询只负责断线重连后把状态补齐。
+
+**两套受众各管各的。** 运行（round）的受众是这一轮开始时就在看的那些 socket：这一轮结束后才打开会话的标签页不接收这轮的迟到事件，它靠重放补上。会话通道的受众是订阅了这个会话的 socket：引擎在用户那一轮结束后还在发的事件走这条通道，订阅着的标签页都要收到。Codex 常驻引擎的自发汇报回合、OpenCode 后台 agent 的过程和它结束后引擎起的汇报回合都属于这一类。运行在跑、或会话还有后台工作时，socket 同时进两套受众。
+
+单条超预算事件仍发给当前在线客户端，但不进入重放缓存。缓存不足时先裁掉较早会话的旧事件。每个会话记录最大的缺失序号，客户端订阅序号早于缺失位置时收到 `stale: true`，包括从零订阅、缓存已空和中间单条事件被跳过的情况。重放缓存与序号属于**会话**而不是某一次运行：新一轮只换运行记录，不换会话通道，这样引擎在回合结束后自发的汇报回合也有唯一序号、有受众、可重放。运行过期和测试清空释放对应字节账目。运行过期后，客户端序号落后于会话水位时仍标记缺口，避免断线期间完成的结果被漏掉。全局预算只约束 registry 的缓存，不代表整个服务进程的内存上限。
+
+
+## 本机执行 MCP 的会话
+
+execution 模块复用聊天运行登记和应用会话映射，外部派发的会话可在界面查看并处理审批。
+执行模块等待引擎回合结束与后台工作收尾后，才向 `chatRunRegistry` 发送最终 complete；
+MCP 客户端连接断开不关闭会话。运行记录与查询游标由 execution 模块保存，规则见 providers.md「本机执行 MCP」。
+
+## 聊天图片加载
+
+聊天附件和本地 Markdown 图片通过共享的 `useSignedImage` 申请短期图片 URL，由浏览器直接读取图片字节。引用解析保留所属项目；聊天绝对路径允许外部白名单读取被拒后回退到项目边界；旧附件允许全局资产缺失后回退到原项目文件。回退在后端完成，签名绑定实际解析结果。
+
+图片接近视口才申请签名，相邻申请合并，同图复用有效票据，已有有效票据时挂载首帧直接出图；Markdown 图片在内存里记住原始尺寸，行被虚拟列表卸载再挂载时先占住原来的高度，机制见 [frontend.md](./frontend.md#图片直连与缓存)；同秒续签也产生不同地址。图片解码或传输失败最多自动续签一次，仍失败则显示错误并允许手动重试。放大和保存图片会按需续签。签名 URL 不进入消息持久化；上传前本地预览和导出嵌入图片保留原有数据形式。
+
+助手消息也可以带 `images`，用于显示引擎生成的图片。这类消息可以没有文字，图片左对齐，和用户附件一样显示为固定大小的方形缩略图，完整缩放不裁切，点击打开统一查看器；用户附件右对齐并裁切填满。高度固定，所以这类图片不会让滚动位置变化。Markdown 导出写明图片数量，HTML 和 JSON 导出嵌入图片字节；导出文件里没有查看器，生成图片按阅读尺寸显示。

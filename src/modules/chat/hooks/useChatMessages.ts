@@ -63,6 +63,27 @@ function parseTaskNotification(content: string): ParsedTaskNotification | null {
 }
 
 /**
+ * A card's timeline: the history record when the row carries one, else the
+ * live rows. A resumed agent ran again after that record was written, so its
+ * live rows follow the record instead of being hidden behind it.
+ */
+function buildSubagentActivity(
+  msg: NormalizedMessage,
+  taskStatus: LiveTaskStatus | undefined,
+  live: SubagentActivity[] | undefined,
+): SubagentActivity[] | undefined {
+  if (!msg.subagentTools?.length) {
+    return live;
+  }
+  if (taskStatus?.resumed && live) {
+    return [...msg.subagentTools, ...live];
+  }
+  // A mid-run refresh can attach a partial server timeline while newer live
+  // rows keep streaming; the longer list is the fresher one.
+  return live && live.length > msg.subagentTools.length ? live : msg.subagentTools;
+}
+
+/**
  * Per-row conversion cache. Conversion output for one NormalizedMessage is a
  * pure function of the row itself plus, for tool_use rows, the attached
  * tool_result row object. Caching by row identity means a store update that
@@ -124,6 +145,9 @@ function foldTaskStatus(
     summary: msg.summary ?? previous?.summary,
     usage: msg.usage ?? previous?.usage,
     ...(agents ? { agents } : {}),
+    // A resume's `started` marks the run as newer than any settled history
+    // record; a fresh `started` clears that, the run's later events keep it.
+    ...((msg.event === 'started' ? msg.resumed : previous?.resumed) ? { resumed: true } : {}),
   });
   lastTaskSourceByToolUseId.set(toolUseId, msg);
 }
@@ -427,6 +451,7 @@ function convertRow(
             type: 'assistant',
             content: text,
             timestamp: msg.timestamp,
+            images,
             memoryCitations: msg.memoryCitations,
             model: msg.model,
             ...sharedMetadata,
@@ -437,6 +462,7 @@ function convertRow(
 
       case 'tool_use': {
         const tr = msg.toolResult || (msg.toolId ? toolResultMap.get(msg.toolId) : null);
+        const taskStatus = msg.toolId ? liveTasksByToolUseId.get(msg.toolId) : undefined;
         // A row is a subagent container when the backend attached agent
         // metadata to it, or when its tool is an engine's spawn call whose
         // metadata has not been indexed yet (Claude Task/Agent, OpenCode
@@ -455,12 +481,6 @@ function convertRow(
         // covers the run in progress. A mid-run refresh can attach a partial
         // server timeline while newer live rows keep streaming, so the longer
         // list is the fresher one.
-        const serverActivity = Array.isArray(msg.subagentTools) ? msg.subagentTools : undefined;
-        const liveActivity = msg.toolId ? liveSubagentActivity.get(msg.toolId) : undefined;
-        const subagentActivity = liveActivity && liveActivity.length > (serverActivity?.length ?? 0)
-          ? liveActivity
-          : serverActivity;
-
         outputs.push({
           type: 'assistant',
           content: '',
@@ -473,12 +493,24 @@ function convertRow(
           toolStatus: typeof msg.status === 'string' ? msg.status : undefined,
           isSubagentContainer,
           subagent: msg.subagent,
-          subagentActivity,
+          // The agent's outcome and work: the history reader's record when the
+          // row carries one, else the child rows the live stream delivered. A
+          // resumed agent's live rows are a run newer than that record, so
+          // they follow it.
+          subagentActivity: buildSubagentActivity(
+            msg,
+            taskStatus,
+            msg.toolId
+              ? (liveSubagentActivity.get(msg.toolId)?.length
+                ? liveSubagentActivity.get(msg.toolId)
+                : undefined)
+              : undefined,
+          ),
           workflow: msg.workflow,
           // The latest live word on this call's background work, folded from
           // the session's task_status events. Undefined once the transcript's
           // own settled record (subagent / workflow) takes over.
-          taskStatus: msg.toolId ? liveTasksByToolUseId.get(msg.toolId) : undefined,
+          taskStatus,
           ...sharedMetadata,
         });
         break;

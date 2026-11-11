@@ -41,9 +41,9 @@ describe('the label a reported model is shortened to', () => {
     expect(formatAnsweringModelLabel('grok-4.6')).toBe('grok-4.6');
   });
 
-  it('drops the zcode account scope and shows the bare model id', () => {
+  it('drops the zcode account scope and marks trial-plan answers with （体验）', () => {
     expect(formatAnsweringModelLabel('account:bigmodel-individual-coding-plan/GLM-5.3-Flash')).toBe('GLM-5.3-Flash');
-    expect(formatAnsweringModelLabel('account:bigmodel-start-plan/GLM-5.3')).toBe('GLM-5.3');
+    expect(formatAnsweringModelLabel('account:bigmodel-start-plan/GLM-5.3-Flash')).toBe('GLM-5.3-Flash（体验）');
     expect(formatAnsweringModelLabel('builtin:bigmodel-coding-plan/GLM-5.3')).toBe('GLM-5.3');
   });
 

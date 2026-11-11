@@ -282,9 +282,9 @@
     "customLabel": "Oppure scegli un orario",
     "confirm": "Programma",
     "in": {
-      "15": "Tra 15 minuti",
-      "60": "Tra un’ora",
-      "480": "Tra 8 ore",
+      "30": "Tra 30 minuti",
+      "120": "Tra 2 ore",
+      "300": "Tra 5 ore",
       "1440": "Domani"
     },
     "pending": "Programmato per {{when}}",
@@ -312,6 +312,8 @@
     "expand": "Espandi",
     "fiveHourWindow": "Finestra mobile di 5 ore",
     "weeklyWindow": "Quota settimanale",
+    "weeklyWindowAllModels": "Quota settimanale (tutti i modelli)",
+    "weeklyWindowScoped": "Quota settimanale ({{model}})",
     "remainingPercent": "{{percent}}% rimanente",
     "resetSoon": "Ripristino a breve",
     "resetDaysHours": "Si ripristina in {{days}}g {{hours}}h",
@@ -319,13 +321,16 @@
     "resetMinutes": "Si ripristina in {{minutes}}m",
     "emptyQuotaHint": {
       "claude": "Gli accessi con chiave API, Bedrock o Vertex non hanno limiti di abbonamento claude.ai",
-      "codex": "L'accesso tramite chiave API di solito non riporta limiti di 5 ore o settimanali"
+      "codex": "L'accesso tramite chiave API di solito non riporta limiti di 5 ore o settimanali",
+      "opencode": "Nessun abbonamento OpenCode Go, oppure la CLI non ha effettuato l'accesso a un workspace Go"
     },
     "resetCardTitle": "Carte di reset dell'utilizzo",
     "resetCardHint": "Usare una carta ricarica immediatamente la quota coperta, senza attendere la finestra di reset.",
+    "resetCardHintReadOnly": "Usa questo ripristino sul sito del provider.",
     "resetCardTypeAll": "Quota completa (5 ore + settimanale)",
     "resetCardType5h": "Quota di 5 ore",
     "resetCardTypeWeekly": "Quota settimanale",
+    "resetCardTypeFable": "Ripristino Fable",
     "resetCardAvailable": "{{count}} disponibili",
     "resetCardExpires": "la prima scade il {{date}}",
     "resetCardUse": "Usa",

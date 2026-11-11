@@ -215,6 +215,35 @@ describe('uploadAttachmentFiles', () => {
     expect(fetchFn).toHaveBeenCalledTimes(2);
   });
 
+  it.each([520, 522, 524])('retries Cloudflare status %s', async (status) => {
+    const attachments = [{ name: 'img1.png' }];
+    const fetchFn = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status, statusText: '', json: async () => { throw new SyntaxError('html'); } })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ attachments }) });
+    await expect(uploadAttachmentFiles([createFile('a.png')], { fetchFn, retryDelayMs: 0 })).resolves.toEqual(attachments);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses the caller\'s upload identity on every attempt', async () => {
+    const requestId = 'caller-owned-identity-0001';
+    const fetchFn = vi.fn()
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValue({ ok: true, status: 200, json: async () => ({ attachments: [{ path: '/a' }] }) });
+    await uploadAttachmentFiles([createFile('a.png')], { fetchFn, retryDelayMs: 0, requestId });
+    expect(fetchFn.mock.calls.map(([, init]) => init.headers['X-Upload-Request-Id'])).toEqual([requestId, requestId]);
+  });
+
+  it('stops retrying once the caller aborts', async () => {
+    const controller = new AbortController();
+    const fetchFn = vi.fn().mockImplementation(async () => {
+      controller.abort();
+      throw new TypeError('Failed to fetch');
+    });
+    await expect(uploadAttachmentFiles([createFile('a.png')], { fetchFn, retryDelayMs: 0, signal: controller.signal }))
+      .rejects.toMatchObject({ name: 'AbortError' });
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
   it('retries when server returns HTTP 400 with "Request aborted" and succeeds on subsequent attempt', async () => {
     const mockAttachments = [{ id: '1', name: 'img1.png' }];
     const fetchFn = vi

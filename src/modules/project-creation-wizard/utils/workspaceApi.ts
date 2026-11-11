@@ -109,7 +109,7 @@ export const fetchGithubTokenCredentials = async () => {
   return (data.credentials || []).filter((credential) => credential.is_active);
 };
 
-export const browseFilesystemFolders = async (pathToBrowse: string) => {
+export const browseFilesystemFolders = async (pathToBrowse: string | null = null) => {
   const response = await api.browseFilesystem(pathToBrowse);
   const data = await parseJson<BrowseFilesystemResponse>(response);
 
@@ -118,7 +118,9 @@ export const browseFilesystemFolders = async (pathToBrowse: string) => {
   }
 
   return {
-    path: data.path || pathToBrowse,
+    // A null request lists the server's workspace root; the answered path is
+    // the only reliable working directory, so callers never render the input.
+    path: data.path || pathToBrowse || '',
     suggestions: (data.suggestions || []) as FolderSuggestion[],
     drives: data.drives || [],
   };

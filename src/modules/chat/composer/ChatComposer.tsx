@@ -18,7 +18,8 @@ import { useVoiceInput } from '@/modules/chat/hooks/useVoiceInput';
 import { useVoiceAvailable } from '@/modules/chat/hooks/useVoiceAvailable';
 import type { QueuedDraft } from '@/modules/chat/hooks/useChatComposerState';
 import type { LLMProvider, SessionActivity, ScheduledJob, ScheduledMessage } from '@/shared/types';
-import type { PendingPermissionRequest, PermissionMode } from '@/shared/types';
+import type { BackgroundSendChoice, BackgroundSendPrompt, PendingPermissionRequest, PermissionMode } from '@/shared/types';
+import type { ComposerAttachmentBlock, ComposerAttachmentItem, ComposerAttachmentQueue } from '@/shared/types';
 import type { ProviderModelOption } from '@/shared/types';
 import {
   PromptInput,
@@ -42,6 +43,7 @@ import QueuedMessageCard from '@/modules/chat/composer/QueuedMessageCard';
 import { ScheduleMessagePopover } from '@/modules/chat/composer/ScheduleMessagePopover';
 import { ScheduledMessageList } from '@/modules/chat/composer/ScheduledMessageList';
 import BackgroundTaskIndicator from '@/modules/chat/composer/BackgroundTaskIndicator';
+import BackgroundSendDialog from '@/modules/chat/composer/BackgroundSendDialog';
 import type { ActiveBackgroundTask } from '@/shared/types';
 import ComposerModelMenu from '@/modules/chat/composer/ComposerModelMenu';
 import ComposerPermissionMenu from '@/modules/chat/composer/ComposerPermissionMenu';
@@ -95,8 +97,8 @@ type ChatComposerProps = {
   onSubmit: (event: FormEvent<HTMLFormElement> | MouseEvent<HTMLButtonElement> | TouchEvent<HTMLButtonElement>) => void;
   /**
    * True from the moment a submit is accepted until the backend has the
-   * message — the window where attachments upload and a new conversation's id
-   * is allocated. Shown as a spinning, disabled send button so the click is
+   * message — the window where it is queued or a new conversation's id is
+   * allocated. Shown as a spinning, disabled send button so the click is
    * visibly acknowledged instead of looking ignored.
    */
   isSubmitting: boolean;
@@ -129,10 +131,10 @@ type ChatComposerProps = {
   /** Whether the current provider schedules inside its own session (hint only). */
   supportsNativeScheduling: boolean;
   onDeleteQueuedDraft: () => void;
-  attachedFiles: File[];
-  onRemoveAttachment: (index: number) => void;
-  uploadingFiles: Map<string, number>;
-  fileErrors: Map<string, string>;
+  attachments: readonly ComposerAttachmentItem[];
+  attachmentQueue: ComposerAttachmentQueue;
+  /** Why attachments hold the send back; the hook's submit gate enforces it, this only shows it. */
+  attachmentBlock: ComposerAttachmentBlock;
   showFileDropdown: boolean;
   filteredFiles: MentionableFile[];
   selectedFileIndex: number;
@@ -173,6 +175,10 @@ type ChatComposerProps = {
   /** The session is busy with work a new message must wait for, so sending queues it. */
   queuesInput?: boolean;
   onForceSendQueuedDraft?: () => void;
+  /** Open send-over-background-work prompt; rendered by BackgroundSendDialog. */
+  backgroundSendPrompt: BackgroundSendPrompt | null;
+  /** Answers the open prompt: send now (stopping the work), queue, or cancel. */
+  onResolveBackgroundSendPrompt: (choice: BackgroundSendChoice) => void;
 }
 
 function ChatComposer({
@@ -212,19 +218,18 @@ function ChatComposer({
   isEditingSentMessage,
   editRevertsFiles,
   onCancelEditMessage,
-  scheduledMessages,
-  scheduledJobs,
-  scheduledJobsEnabled,
+  scheduledMessages = [],
+  scheduledJobs = [],
+  scheduledJobsEnabled = false,
   onScheduleMessage,
   onScheduleTask,
   onCancelScheduledMessage,
   onDeleteScheduledJob,
   supportsNativeScheduling,
   onDeleteQueuedDraft,
-  attachedFiles,
-  onRemoveAttachment,
-  uploadingFiles,
-  fileErrors,
+  attachments,
+  attachmentQueue,
+  attachmentBlock,
   showFileDropdown,
   filteredFiles,
   selectedFileIndex,
@@ -261,6 +266,8 @@ function ChatComposer({
   backgroundWorkQueuesInput = false,
   queuesInput = false,
   onForceSendQueuedDraft,
+  backgroundSendPrompt,
+  onResolveBackgroundSendPrompt,
 }: ChatComposerProps) {
   const { t } = useTranslation('chat');
   const fileDropdownRef = useRef<HTMLDivElement | null>(null);
@@ -327,7 +334,7 @@ function ChatComposer({
   const hasActivityIndicator = Boolean(activity && !hasPendingPermissions);
 
   const hasQueuedDraft = Boolean(queuedDraft);
-  const hasDraftContent = Boolean(input.trim() || attachedFiles.length > 0);
+  const hasDraftContent = Boolean(input.trim() || attachments.length > 0);
   const canQueueDraft = queuesInput && hasDraftContent;
   // The engine takes a message mid-turn: typed content is sent now, and the
   // button only turns back into stop once the input is empty.
@@ -350,6 +357,10 @@ function ChatComposer({
   const sendButtonLabel = `${t('input.send')} (${sendByCtrlEnter ? 'Ctrl+Enter' : 'Enter'})`;
   const submitAriaLabel = isSubmitting
     ? t('input.sending')
+    : attachmentBlock === 'uploading'
+    ? t('input.attachments.stillUploading')
+    : attachmentBlock === 'failed'
+    ? t('input.attachments.needsAttention')
     : canQueueDraft
     ? hasQueuedDraft
       ? t('input.queue.append', { defaultValue: 'Add to queued message' })
@@ -519,18 +530,12 @@ function ChatComposer({
             </div>
           )}
 
-          {attachedFiles.length > 0 && (
+          {attachments.length > 0 && (
             <PromptInputHeader>
               <div className="rounded-xl bg-muted/40 p-2">
                 <div className="flex flex-wrap gap-2">
-                  {attachedFiles.map((file, index) => (
-                    <ComposerAttachment
-                      key={`${file.name}-${file.lastModified}-${index}`}
-                      file={file}
-                      onRemove={() => onRemoveAttachment(index)}
-                      uploadProgress={uploadingFiles.get(file.name)}
-                      error={fileErrors.get(file.name)}
-                    />
+                  {attachments.map((item) => (
+                    <ComposerAttachment key={item.id} item={item} queue={attachmentQueue} />
                   ))}
                 </div>
               </div>
@@ -668,8 +673,11 @@ function ChatComposer({
                         }
                       : undefined
               }
+              // Attachments win over Stop: a button the user reached for to send
+              // must not turn into one that interrupts the turn. Stop stays in
+              // the activity bar.
               disabled={
-                isSubmitting
+                isSubmitting || attachmentBlock
                   ? true
                   : isLoading
                     ? false
@@ -677,7 +685,7 @@ function ChatComposer({
                       ? false
                       : isTranscribing
                         ? true
-                        : !input.trim() && attachedFiles.length === 0
+                        : !input.trim() && attachments.length === 0
               }
               aria-label={submitAriaLabel}
               title={submitAriaLabel}
@@ -693,6 +701,10 @@ function ChatComposer({
         </PromptInputFooter>
       </PromptInput>
       </div>}
+      <BackgroundSendDialog
+        prompt={backgroundSendPrompt}
+        onResolve={onResolveBackgroundSendPrompt}
+      />
     </div>
   );
 }

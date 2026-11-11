@@ -200,10 +200,9 @@ function ChatInterface({
     selectedFileIndex,
     renderInputWithMentions,
     selectFile,
-    attachedFiles,
-    setAttachedFiles,
-    uploadingFiles,
-    fileErrors,
+    attachments,
+    attachmentQueue,
+    attachmentBlock,
     getRootProps,
     getInputProps,
     isDragActive,
@@ -236,8 +235,11 @@ function ChatInterface({
     closeCommandModal,
     showCostModal,
     forceSendQueuedDraft,
+    canForceSendQueuedDraft,
     backgroundWorkQueuesInput,
     queuesInput,
+    backgroundSendPrompt,
+    resolveBackgroundSendPrompt,
   } = useChatComposerState({
     selectedProject,
     selectedSession,
@@ -601,14 +603,9 @@ function ChatInterface({
           onDeleteQueuedDraft={deleteQueuedDraft}
           pendingCompact={pendingCompact}
           onCancelPendingCompact={cancelPendingCompact}
-          attachedFiles={attachedFiles}
-          onRemoveAttachment={(index) =>
-            setAttachedFiles((previous) =>
-              previous.filter((_, currentIndex) => currentIndex !== index),
-            )
-          }
-          uploadingFiles={uploadingFiles}
-          fileErrors={fileErrors}
+          attachments={attachments}
+          attachmentQueue={attachmentQueue}
+          attachmentBlock={attachmentBlock}
           showFileDropdown={showFileDropdown}
           filteredFiles={filteredFiles}
           selectedFileIndex={selectedFileIndex}
@@ -655,7 +652,9 @@ function ChatInterface({
           hasActiveBackgroundTasks={hasActiveBackgroundTasks}
           backgroundWorkQueuesInput={backgroundWorkQueuesInput}
           queuesInput={queuesInput}
-          onForceSendQueuedDraft={forceSendQueuedDraft}
+          onForceSendQueuedDraft={canForceSendQueuedDraft ? forceSendQueuedDraft : undefined}
+          backgroundSendPrompt={backgroundSendPrompt}
+          onResolveBackgroundSendPrompt={resolveBackgroundSendPrompt}
         />
         </div>
       </div>

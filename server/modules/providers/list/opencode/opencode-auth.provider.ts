@@ -57,6 +57,15 @@ export class OpenCodeProviderAuth implements IProviderAuth {
   }
 
   /**
+   * Reads the signed-in workspace's OpenCode Go plan usage meters (5-hour,
+   * weekly, monthly). Consumer: the provider token-usage service
+   * (GET /providers/quota).
+   */
+  async getQuota(options?: { forceRefresh?: boolean }): Promise<ProviderQuotaData | null> {
+    return fetchOpenCodeQuota(options);
+  }
+
+  /**
    * Reads OpenCode's credential store. OpenCode v2 keeps credentials in the
    * `credential` table of its shared SQLite database and no longer writes the
    * v1-era auth.json, so the database is checked first; auth.json and the
@@ -122,17 +131,6 @@ export class OpenCodeProviderAuth implements IProviderAuth {
       method: null,
       error: 'OpenCode not configured',
     };
-  }
-
-  /**
-   * Retrieves OpenCode Go subscription usage (5-hour, weekly and monthly
-   * limits). Resolves to null for Zen-only installs, which have no usage
-   * endpoint.
-   *
-   * Consumer: the provider token-usage service (GET /providers/quota).
-   */
-  async getQuota(options?: { forceRefresh?: boolean }): Promise<ProviderQuotaData | null> {
-    return fetchOpenCodeQuota(options);
   }
 
   /**

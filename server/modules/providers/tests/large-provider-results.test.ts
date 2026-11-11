@@ -238,11 +238,11 @@ test('ZCode SQLite history compacts results attached after the tool call is crea
     const db = new Database(path.join(directory, 'db.sqlite'));
     const prompt = 'x'.repeat(300_000) + 'KEEP_THE_END';
     try {
-      db.exec('CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, sequence INTEGER, data TEXT); CREATE TABLE part (id TEXT, message_id TEXT, session_id TEXT, time_created INTEGER, data TEXT)');
+      db.exec('CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, sequence INTEGER, data TEXT); CREATE TABLE part (id TEXT, message_id TEXT, session_id TEXT, time_created INTEGER, data TEXT, sequence INTEGER)');
       db.prepare('INSERT INTO message VALUES (?, ?, ?, ?, ?)').run('m', 'native', 1, 1, JSON.stringify({ role: 'assistant' }));
-      db.prepare('INSERT INTO part VALUES (?, ?, ?, ?, ?)').run('p', 'm', 'native', 1, JSON.stringify({ type: 'tool', tool: 'read', callID: 't', state: { status: 'completed', input: {}, output: [{ type: 'image', mimeType: 'image/png', data: PNG }] } }));
+      db.prepare('INSERT INTO part VALUES (?, ?, ?, ?, ?, ?)').run('p', 'm', 'native', 1, JSON.stringify({ type: 'tool', tool: 'read', callID: 't', state: { status: 'completed', input: {}, output: [{ type: 'image', mimeType: 'image/png', data: PNG }] } }), 0);
       db.prepare('INSERT INTO message VALUES (?, ?, ?, ?, ?)').run('u', 'native', 2, 2, JSON.stringify({ role: 'user' }));
-      db.prepare('INSERT INTO part VALUES (?, ?, ?, ?, ?)').run('up', 'u', 'native', 2, JSON.stringify({ type: 'text', text: prompt }));
+      db.prepare('INSERT INTO part VALUES (?, ?, ?, ?, ?, ?)').run('up', 'u', 'native', 2, JSON.stringify({ type: 'text', text: prompt }), 0);
     } finally { db.close(); }
     const result = await new ZCodeSessionsProvider().fetchHistory('app', { providerSessionId: 'native', limit: 20 });
     assert.equal(result.messages.length, 2);

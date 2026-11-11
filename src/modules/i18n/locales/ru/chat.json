@@ -294,9 +294,9 @@
     "customLabel": "Или выберите время",
     "confirm": "Запланировать",
     "in": {
-      "15": "Через 15 минут",
-      "60": "Через час",
-      "480": "Через 8 часов",
+      "30": "Через 30 минут",
+      "120": "Через 2 часа",
+      "300": "Через 5 часов",
       "1440": "Завтра"
     },
     "pending": "Запланировано на {{when}}",
@@ -324,6 +324,8 @@
     "expand": "Развернуть",
     "fiveHourWindow": "Скользящее 5-часовое окно",
     "weeklyWindow": "Недельная квота",
+    "weeklyWindowAllModels": "Недельная квота (все модели)",
+    "weeklyWindowScoped": "Недельная квота ({{model}})",
     "remainingPercent": "Осталось {{percent}}%",
     "resetSoon": "Сброс скоро",
     "resetDaysHours": "Сброс через {{days}}д {{hours}}ч",
@@ -331,13 +333,16 @@
     "resetMinutes": "Сброс через {{minutes}}мин",
     "emptyQuotaHint": {
       "claude": "Вход по API-ключу, через Bedrock или Vertex не имеет лимитов подписки claude.ai",
-      "codex": "Вход по API Key обычно не сообщает о 5-часовых и недельных лимитах"
+      "codex": "Вход по API Key обычно не сообщает о 5-часовых и недельных лимитах",
+      "opencode": "Нет подписки OpenCode Go или CLI не выполнен вход в Go-воркспейс"
     },
     "resetCardTitle": "Карты сброса использования",
     "resetCardHint": "Использование карты мгновенно восполняет соответствующую квоту — без ожидания окна сброса.",
+    "resetCardHintReadOnly": "Используйте этот сброс на сайте провайдера.",
     "resetCardTypeAll": "Вся квота (5 часов + недельная)",
     "resetCardType5h": "5-часовая квота",
     "resetCardTypeWeekly": "Недельная квота",
+    "resetCardTypeFable": "Сброс Fable",
     "resetCardAvailable": "доступно: {{count}}",
     "resetCardExpires": "ближайшая истекает {{date}}",
     "resetCardUse": "Использовать",

@@ -1282,10 +1282,11 @@ export type WorktreeServices = {
 /**
  * One filesystem item returned by the File Tree API.
  *
- * The service populates metadata without following symlinks and recursively
- * attaches `children` only while the requested depth permits traversal. The
- * frontend uses the absolute `path` as the stable identifier for editor and
- * file-operation requests.
+ * The service populates metadata without following symlinks. Listings are one
+ * directory level deep, so a node never carries its children; the browser asks
+ * for a directory's entries when it is expanded. The frontend uses the
+ * absolute `path` as the stable identifier for editor and file-operation
+ * requests.
  */
 export type FileTreeNode = {
   name: string;
@@ -1296,7 +1297,59 @@ export type FileTreeNode = {
   permissions: string;
   permissionsRwx: string;
   isSymlink?: boolean;
-  children?: FileTreeNode[];
+};
+
+/**
+ * Outcome for one directory requested from `FileTreeServices.listDirectories`.
+ *
+ * `request` echoes the path exactly as the browser sent it so batched answers
+ * can be matched back to their requests. A readable directory carries its
+ * visible entries (one level, directories first) and `truncated` when the
+ * per-directory entry cap stopped the read early. A directory that cannot be
+ * listed carries an error instead, without failing its siblings in the batch.
+ */
+export type FileTreeDirectoryListing =
+  | { request: string; path: string; entries: FileTreeNode[]; truncated: boolean }
+  | { request: string; error: { code: string; message: string } };
+
+/**
+ * One match returned by `FileTreeServices.searchFiles`.
+ *
+ * `relativePath` uses `/` separators and is relative to the project root, so
+ * chat mentions and path matching can use it without knowing the server's
+ * platform separator.
+ */
+export type FileTreeSearchMatch = FileTreeNode & { relativePath: string };
+
+/**
+ * Result of one project file search.
+ *
+ * `truncated` means more entries matched than `limit` allowed. `indexIncomplete`
+ * means the project holds more files than the search index keeps, so some files
+ * can never match until the project is narrowed.
+ */
+export type FileTreeSearchResult = {
+  results: FileTreeSearchMatch[];
+  truncated: boolean;
+  indexIncomplete: boolean;
+};
+
+/**
+ * Project file-listing capability behind File Tree search.
+ *
+ * Production runs ripgrep, which applies every nested `.gitignore` and
+ * `.git/info/exclude` but not `.ignore`, global, or parent ignore files. It
+ * returns project-relative file paths with `/` separators, skips every
+ * directory named in `excludedDirectoryNames` at any depth, and stops after
+ * `maximumFiles`, reporting `incomplete` when it had to. Unit tests supply an
+ * in-memory list.
+ */
+export type FileTreeFileIndexer = {
+  listFiles(input: {
+    rootPath: string;
+    excludedDirectoryNames: string[];
+    maximumFiles: number;
+  }): Promise<{ files: string[]; incomplete: boolean }>;
 };
 
 /**
@@ -1308,6 +1361,8 @@ export type FileTreeNode = {
 export type FileTreeDirectoryEntry = {
   name: string;
   isDirectory(): boolean;
+  /** Present on Node `Dirent`s; search uses it to index symlinks without following them. */
+  isSymbolicLink?(): boolean;
 };
 
 /**
@@ -1368,6 +1423,19 @@ export type FileTreeProjectGateway = {
  */
 export type FileTreeWorkspaceGateway = {
   rootPath: string;
+  /**
+   * The workspace root the viewer may read from — normally `rootPath`, so
+   * transcript references to sibling workspace folders resolve like the file
+   * browser lists them. `null` disables workspace-root reads entirely: the
+   * composition root injects null when the configured `WORKSPACES_ROOT` is a
+   * system-critical directory, and a misconfiguration must not widen the read
+   * policy. Write endpoints do not consult this.
+   */
+  readOnlyRoot: string | null;
+  /**
+   * Browsing accepts an optional `allowDriveRoot` so the Windows drive picker
+   * can stop at a drive root without widening project-scoped writes.
+   */
   validatePath(
     candidatePath: string,
     options?: { allowDriveRoot?: boolean },
@@ -1419,6 +1487,10 @@ export type FileTreeServiceDependencies = {
   resolveMimeType(filePath: string): string;
   fileSystemConcurrency: number;
   logger: FileTreeLogger;
+  /** Lists a project's visible files for search; see `FileTreeFileIndexer`. */
+  fileIndexer: FileTreeFileIndexer;
+  /** Millisecond clock used to expire cached search indexes. */
+  now(): number;
   /**
    * Absolute directory roots the service may read text files from outside any
    * project. Populated by the composition root (currently the Antigravity
@@ -1483,10 +1555,26 @@ export type FileTreeServices = {
     path: string;
     message: string;
   }>;
-  listProjectFiles(
-    projectId: string,
-    options?: { respectGitignore: boolean },
-  ): Promise<FileTreeNode[]>;
+  /**
+   * Lists several directories of a project one level deep. Each path is
+   * project-relative (`''` is the root) or absolute inside the project; it is
+   * realpath-checked against the project root, so traversal and symlinks out of
+   * the project are refused per path. Entries hidden by hard exclusions and the
+   * `.gitignore` chain from the root down are omitted.
+   */
+  listDirectories(projectId: string, paths: string[]): Promise<FileTreeDirectoryListing[]>;
+  /**
+   * Searches a project's visible files (and, for `type: 'any'`, the
+   * directories that contain them) by case-insensitive substring tokens over
+   * the relative path, best name matches first. An empty query returns the
+   * first entries in path order.
+   */
+  searchFiles(input: {
+    projectId: string;
+    query: string;
+    limit: number;
+    type: 'file' | 'any';
+  }): Promise<FileTreeSearchResult>;
   createEntry(input: {
     projectId: string;
     parentPath: string;
@@ -1945,4 +2033,17 @@ export type ImageMediaDependencies = {
   userExists: (id: string) => boolean | Promise<boolean>;
   resolveImage: (source: ImageMediaSource) => Promise<ImageMediaFile>;
   openImage: (file: ImageMediaFile) => Promise<Readable>;
+};
+
+// ---------------------------
+//----------------- SESSION STORAGE CLEANUP ------------
+/**
+ * Outcome of one engine-owned batch purge, by native session id. `deleted` is
+ * the only group whose application rows may be removed: `kept` sessions stay
+ * for a later pass and `failed` ones stay untouched.
+ */
+export type SessionPurgeResult = {
+  deleted: { sessionId: string; bytes: number }[];
+  kept: { sessionId: string; reason: 'running' | 'referenced' }[];
+  failed: { sessionId?: string; code: string }[];
 };

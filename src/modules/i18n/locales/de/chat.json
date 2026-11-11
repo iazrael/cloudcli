@@ -282,9 +282,9 @@
     "customLabel": "Oder Zeit wählen",
     "confirm": "Planen",
     "in": {
-      "15": "In 15 Minuten",
-      "60": "In einer Stunde",
-      "480": "In 8 Stunden",
+      "30": "In 30 Minuten",
+      "120": "In 2 Stunden",
+      "300": "In 5 Stunden",
       "1440": "Morgen"
     },
     "pending": "Geplant für {{when}}",
@@ -312,6 +312,8 @@
     "expand": "Ausklappen",
     "fiveHourWindow": "Gleitendes 5-Stunden-Limit",
     "weeklyWindow": "Wöchentliches Kontingent",
+    "weeklyWindowAllModels": "Wöchentliches Kontingent (alle Modelle)",
+    "weeklyWindowScoped": "Wöchentliches Kontingent ({{model}})",
     "remainingPercent": "{{percent}}% verbleibend",
     "resetSoon": "Wird bald zurückgesetzt",
     "resetDaysHours": "Zurücksetzung in {{days}}T {{hours}}Std",
@@ -319,13 +321,16 @@
     "resetMinutes": "Zurücksetzung in {{minutes}}Min",
     "emptyQuotaHint": {
       "claude": "API-Schlüssel-, Bedrock- und Vertex-Anmeldungen haben keine Abo-Limits von Claude.ai",
-      "codex": "API-Schlüssel-Anmeldungen liefern in der Regel keine 5-Stunden- oder Wochenlimits"
+      "codex": "API-Schlüssel-Anmeldungen liefern in der Regel keine 5-Stunden- oder Wochenlimits",
+      "opencode": "Kein OpenCode-Go-Abo oder die CLI ist nicht in einem Go-Workspace angemeldet"
     },
     "resetCardTitle": "Nutzungs-Reset-Karten",
     "resetCardHint": "Mit einer Karte wird das abgedeckte Kontingent sofort aufgefüllt — ohne Wartezeit auf das Fenster.",
+    "resetCardHintReadOnly": "Diese Zurücksetzung kann nur auf der Website des Anbieters verwendet werden.",
     "resetCardTypeAll": "Gesamtkontingent (5-Stunden + wöchentlich)",
     "resetCardType5h": "5-Stunden-Kontingent",
     "resetCardTypeWeekly": "Wochenkontingent",
+    "resetCardTypeFable": "Fable-Zurücksetzung",
     "resetCardAvailable": "{{count}} verfügbar",
     "resetCardExpires": "läuft frühestens {{date}} ab",
     "resetCardUse": "Verwenden",

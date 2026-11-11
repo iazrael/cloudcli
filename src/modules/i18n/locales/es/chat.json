@@ -353,9 +353,9 @@
     "customLabel": "O elige una hora",
     "confirm": "Programar",
     "in": {
-      "15": "En 15 minutos",
-      "60": "En una hora",
-      "480": "En 8 horas",
+      "30": "En 30 minutos",
+      "120": "En 2 horas",
+      "300": "En 5 horas",
       "1440": "Mañana"
     },
     "pending": "Programado para {{when}}",
@@ -383,6 +383,8 @@
     "expand": "Expandir",
     "fiveHourWindow": "Ventana deslizante de 5 horas",
     "weeklyWindow": "Cuota semanal",
+    "weeklyWindowAllModels": "Cuota semanal (todos los modelos)",
+    "weeklyWindowScoped": "Cuota semanal ({{model}})",
     "remainingPercent": "{{percent}}% restante",
     "resetSoon": "Reinicio inminente",
     "resetDaysHours": "Se reinicia en {{days}}d {{hours}}h",
@@ -390,13 +392,16 @@
     "resetMinutes": "Se reinicia en {{minutes}}m",
     "emptyQuotaHint": {
       "claude": "Los inicios de sesión con API key, Bedrock o Vertex no tienen límites de suscripción de claude.ai",
-      "codex": "Los inicios de sesión con API Key no suelen indicar límites de 5 horas o semanales"
+      "codex": "Los inicios de sesión con API Key no suelen indicar límites de 5 horas o semanales",
+      "opencode": "Sin suscripción a OpenCode Go, o la CLI no ha iniciado sesión en un espacio de trabajo Go"
     },
     "resetCardTitle": "Tarjetas de reinicio de uso",
     "resetCardHint": "Usar una tarjeta rellena de inmediato la cuota cubierta, sin esperar la ventana de reinicio.",
+    "resetCardHintReadOnly": "Usa este restablecimiento en el sitio web del proveedor.",
     "resetCardTypeAll": "Cuota completa (5 h + semanal)",
     "resetCardType5h": "Cuota de 5 horas",
     "resetCardTypeWeekly": "Cuota semanal",
+    "resetCardTypeFable": "Restablecimiento de Fable",
     "resetCardAvailable": "{{count}} disponibles",
     "resetCardExpires": "la más próxima vence {{date}}",
     "resetCardUse": "Usar",

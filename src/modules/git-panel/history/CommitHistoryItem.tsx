@@ -9,10 +9,12 @@ import GitDiffViewer from '@/modules/git-panel/GitDiffViewer';
 import CommitGraphStrip from '@/modules/git-panel/history/CommitGraphStrip';
 
 function formatDate(dateString: string, locale: string): string {
-  return new Date(dateString).toLocaleDateString(locale || undefined, {
+  return new Date(dateString).toLocaleString(locale || undefined, {
     year: 'numeric',
     month: 'short',
     day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
   });
 }
 

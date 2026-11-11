@@ -1,41 +1,35 @@
+import { useEffect, useState } from 'react';
+
 import { api } from '@/shared/api';
 import { useApiSource } from '@/modules/command-palette/hooks/useApiSource';
+import type { FileTreeSearchResponse } from '@/shared/types';
 
 export type FileResult = {
   path: string;
   name: string;
 };
 
-type FileNode = {
-  type: 'file' | 'directory';
-  name: string;
-  path: string;
-  children?: FileNode[];
-};
+const SEARCH_LIMIT = 50;
+// Waits for a pause in typing so each keystroke does not cost a request.
+const SEARCH_DEBOUNCE_MS = 150;
 
-const MAX_FILES = 500;
+/**
+ * Project files matching the palette's search text, ranked by the server so
+ * every file of a large project is reachable. Empty text lists the first files
+ * in path order.
+ */
+export function useFilesSource(projectId: string | undefined, enabled: boolean, query: string) {
+  // The search text once typing pauses; requests follow this, not every keystroke.
+  const [settledQuery, setSettledQuery] = useState(query.trim());
+  useEffect(() => {
+    const timer = setTimeout(() => setSettledQuery(query.trim()), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [query]);
 
-function flatten(nodes: FileNode[], out: FileResult[]): void {
-  for (const node of nodes) {
-    if (out.length >= MAX_FILES) return;
-    if (node.type === 'file') {
-      out.push({ path: node.path, name: node.name });
-    } else if (node.children && node.children.length > 0) {
-      flatten(node.children, out);
-    }
-  }
-}
-
-export function useFilesSource(projectId: string | undefined, enabled: boolean) {
-  return useApiSource<FileResult, unknown>({
+  return useApiSource<FileResult, FileTreeSearchResponse>({
     enabled: enabled && !!projectId,
-    deps: [projectId],
-    fetcher: (signal) => api.getFiles(projectId!, { signal }),
-    parse: (data) => {
-      const tree: FileNode[] = Array.isArray(data) ? (data as FileNode[]) : [];
-      const flat: FileResult[] = [];
-      flatten(tree, flat);
-      return flat;
-    },
+    deps: [projectId, settledQuery],
+    fetcher: (signal) => api.searchFiles(projectId!, { query: settledQuery, limit: SEARCH_LIMIT, type: 'file' }, { signal }),
+    parse: (data) => (Array.isArray(data?.results) ? data.results : []).map((match) => ({ path: match.path, name: match.name })),
   });
 }

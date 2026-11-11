@@ -18,6 +18,13 @@ const MAX_SESSIONS_PER_OWNER = Number.parseInt(process.env.CLOUDCLI_BROWSER_USE_
 const SESSION_TTL_MS = Number.parseInt(process.env.CLOUDCLI_BROWSER_USE_SESSION_TTL_MS || String(30 * 60 * 1000), 10);
 const BROWSER_USE_SETTINGS_KEY = 'browser_use_settings';
 const BROWSER_USE_MCP_TOKEN_KEY = 'browser_use_mcp_token';
+// Viewport for user-created remote-control sessions; smaller than agent sessions so
+// the phone-sized panel stays readable when the screenshot is scaled down.
+const MANUAL_VIEWPORT = { width: 1024, height: 768 };
+/** Scroll wheel budget per manual-control request; enforced by HTTP routes to bound one gesture. */
+export const MANUAL_MAX_SCROLL_DELTA = 5000;
+/** Maximum characters per manual keyboard.type() call; enforced by HTTP routes. */
+export const MANUAL_TYPE_MAX_LENGTH = 2000;
 
 type BrowserUseRuntime = ReturnType<typeof getBrowserUseRuntime>;
 type BrowserUseSessionStatus = 'ready' | 'stopped' | 'unavailable';
@@ -25,7 +32,7 @@ type BrowserUseSessionStatus = 'ready' | 'stopped' | 'unavailable';
 type BrowserUseSession = {
   id: string;
   ownerId: string;
-  createdBy: 'agent';
+  createdBy: 'agent' | 'manual';
   runtime: BrowserUseRuntime;
   status: BrowserUseSessionStatus;
   url: string | null;
@@ -43,7 +50,7 @@ type BrowserUseSession = {
   cursor: {
     x: number;
     y: number;
-    actor: 'agent';
+    actor: 'agent' | 'user';
   } | null;
 };
 
@@ -80,6 +87,7 @@ const DEFAULT_SETTINGS: BrowserUseSettings = {
   enabled: false,
 };
 const AGENT_OWNER_ID = 'agent';
+const USER_OWNER_ID = 'user';
 const BROWSER_USE_ROOT = path.join(os.homedir(), '.cloudcli', 'browser-use');
 const PROFILE_ROOT = path.join(BROWSER_USE_ROOT, 'profiles');
 // Dedicated out-of-repo npm project. Playwright installed here survives the
@@ -341,21 +349,71 @@ async function installRuntime(): Promise<{ success: boolean; message: string }> 
   }
 }
 
-function normalizeUrl(rawUrl: string): string {
-  const trimmed = rawUrl.trim();
-  if (!trimmed) {
-    throw new Error('URL is required.');
-  }
-
-  const withProtocol = /^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(trimmed)
-    ? trimmed
-    : `https://${trimmed}`;
+function parseHttpUrl(trimmed: string, defaultOriginPrefix: string): string {
+  // Only treat `scheme://` as an explicit protocol so host:port addresses
+  // (localhost:3001) are not misread as unknown URL schemes.
+  const hasExplicitScheme = /^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//.test(trimmed);
+  const withProtocol = hasExplicitScheme ? trimmed : `${defaultOriginPrefix}${trimmed}`;
   const parsed = new URL(withProtocol);
   if (!['http:', 'https:'].includes(parsed.protocol)) {
     throw new Error('Only http and https URLs are supported.');
   }
 
   return parsed.toString();
+}
+
+function normalizeUrl(rawUrl: string): string {
+  const trimmed = rawUrl.trim();
+  if (!trimmed) {
+    throw new Error('URL is required.');
+  }
+
+  return parseHttpUrl(trimmed, 'https://');
+}
+
+/**
+ * Normalizes an address typed into the panel's manual address bar. Bare hosts
+ * default to http because LAN devices such as routers rarely serve https,
+ * unlike the agent path which defaults to https. Used by manual-control HTTP
+ * routes and unit tests.
+ */
+export function normalizeManualUrl(rawUrl: string): string {
+  const trimmed = rawUrl.trim();
+  if (!trimmed) {
+    throw new Error('URL is required.');
+  }
+
+  return parseHttpUrl(trimmed, 'http://');
+}
+
+const MANUAL_KEY_ALLOWLIST = new Set([
+  'Enter', 'Backspace', 'Delete', 'Tab', 'Escape',
+  'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+  'Home', 'End', 'PageUp', 'PageDown',
+]);
+
+/** Guards page.keyboard.press against arbitrary key injection; used by manual-control HTTP routes and unit tests. */
+export function isManualKeyAllowed(key: string): boolean {
+  return MANUAL_KEY_ALLOWLIST.has(key);
+}
+
+/** True for a supported manual viewport size (panel layout switch range); used by manual-control HTTP routes and unit tests. */
+export function isManualViewportSize(size: { width: number; height: number }): boolean {
+  return Number.isInteger(size.width) && Number.isInteger(size.height)
+    && size.width >= 320 && size.width <= 1920
+    && size.height >= 240 && size.height <= 1440;
+}
+
+/** True when a manual click point lands inside the session viewport; used by manual service methods and unit tests. */
+export function isManualPointWithinViewport(
+  point: { x: number; y: number },
+  viewport: { width: number; height: number } | null,
+): boolean {
+  if (!viewport || !Number.isFinite(point.x) || !Number.isFinite(point.y)) {
+    return false;
+  }
+
+  return point.x >= 0 && point.x < viewport.width && point.y >= 0 && point.y < viewport.height;
 }
 
 function publicSession(session: BrowserUseSession): PublicBrowserUseSession {
@@ -426,6 +484,37 @@ async function getActionPoint(page: any, input: { selector?: string; text?: stri
     x: Math.round(box.x + box.width / 2),
     y: Math.round(box.y + box.height / 2),
   };
+}
+
+async function getManualSession(sessionId: string): Promise<BrowserUseSession> {
+  const settings = readSettings();
+  if (!settings.enabled) {
+    throw new Error('Browser is disabled in settings.');
+  }
+
+  const session = sessions.get(sessionId);
+  if (!session || session.ownerId !== USER_OWNER_ID) {
+    throw new Error('Browser session not found.');
+  }
+
+  return session;
+}
+
+async function getReadyManualPage(sessionId: string): Promise<{ session: BrowserUseSession; page: any }> {
+  // Sweep the TTL first so an idle-expired session is rejected instead of
+  // being revived by the next control request or screenshot poll.
+  await expireStaleSessions();
+  const session = await getManualSession(sessionId);
+  if (session.status !== 'ready') {
+    throw new Error(session.message || 'Browser session is not available.');
+  }
+
+  const handle = handles.get(sessionId);
+  if (!handle?.page) {
+    throw new Error('Browser runtime handle is not available.');
+  }
+
+  return { session, page: handle.page };
 }
 
 /**
@@ -526,7 +615,7 @@ export const browserUseService = {
   async listSessions() {
     await expireStaleSessions();
     return [...sessions.values()]
-      .filter((session) => session.ownerId === AGENT_OWNER_ID)
+      .filter((session) => session.ownerId === AGENT_OWNER_ID || session.ownerId === USER_OWNER_ID)
       .map(publicSession);
   },
 
@@ -818,9 +907,157 @@ export const browserUseService = {
     };
   },
 
+  /**
+   * Creates a remote-control session owned by the panel user rather than an
+   * agent. Same pool as agent sessions: TTL reaping, per-owner limits, and the
+   * settings toggle all apply.
+   */
+  async createManualSession() {
+    const settings = readSettings();
+    if (!settings.enabled) {
+      throw new Error('Browser is disabled in settings.');
+    }
+
+    await expireStaleSessions();
+    const now = new Date().toISOString();
+    const session: BrowserUseSession = {
+      id: randomUUID(),
+      ownerId: USER_OWNER_ID,
+      createdBy: 'manual',
+      runtime: getBrowserUseRuntime(),
+      status: 'unavailable',
+      url: null,
+      title: null,
+      screenshotDataUrl: null,
+      createdAt: now,
+      updatedAt: now,
+      lastAction: 'create',
+      message: null,
+      profileName: null,
+      viewport: { ...MANUAL_VIEWPORT },
+      cursor: null,
+    };
+
+    const activeOwnerSessions = ownerSessions(USER_OWNER_ID).filter((item) => item.status === 'ready');
+    if (activeOwnerSessions.length >= MAX_SESSIONS_PER_OWNER) {
+      throw new Error(`Browser is limited to ${MAX_SESSIONS_PER_OWNER} active sessions.`);
+    }
+
+    const readiness = getRuntimeReadiness();
+    if (!readiness.playwrightInstalled || !readiness.chromiumInstalled || !readiness.playwright) {
+      session.message = getSetupMessage(settings, readiness);
+      sessions.set(session.id, session);
+      return publicSession(session);
+    }
+
+    const browser = await readiness.playwright.chromium.launch({
+      headless: true,
+      args: ['--disable-dev-shm-usage'],
+    });
+    const context = await browser.newContext({
+      viewport: { ...MANUAL_VIEWPORT },
+      serviceWorkers: 'block',
+    });
+    const page = await context.newPage();
+    session.status = 'ready';
+    session.message = 'Browser session is ready.';
+    sessions.set(session.id, session);
+    handles.set(session.id, { browser, context, page });
+    await captureSession(session, page);
+    return publicSession(session);
+  },
+
+  /** Navigates a manual session; bare hosts default to http for LAN addresses. */
+  async manualNavigate(sessionId: string, rawUrl: string) {
+    const { session, page } = await getReadyManualPage(sessionId);
+    const url = normalizeManualUrl(rawUrl);
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+    session.lastAction = `navigate:${url}`;
+    session.cursor = null;
+    await captureSession(session, page);
+    return publicSession(session);
+  },
+
+  async manualNav(sessionId: string, action: 'back' | 'forward' | 'reload') {
+    const { session, page } = await getReadyManualPage(sessionId);
+    if (action === 'back') {
+      await page.goBack();
+    } else if (action === 'forward') {
+      await page.goForward();
+    } else {
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: 30_000 });
+    }
+    session.lastAction = action;
+    await captureSession(session, page);
+    return publicSession(session);
+  },
+
+  async manualClick(sessionId: string, point: { x: number; y: number }) {
+    const { session, page } = await getReadyManualPage(sessionId);
+    if (!isManualPointWithinViewport(point, session.viewport)) {
+      throw new Error('Click coordinates are outside the browser viewport.');
+    }
+
+    await page.mouse.click(point.x, point.y);
+    session.lastAction = 'click';
+    session.cursor = { ...point, actor: 'user' };
+    await captureSession(session, page);
+    return publicSession(session);
+  },
+
+  async manualScroll(sessionId: string, delta: { deltaX: number; deltaY: number }) {
+    const { session, page } = await getReadyManualPage(sessionId);
+    if (!session.viewport) {
+      throw new Error('Browser runtime handle is not available.');
+    }
+
+    await page.mouse.move(session.viewport.width / 2, session.viewport.height / 2);
+    await page.mouse.wheel(delta.deltaX, delta.deltaY);
+    session.lastAction = 'scroll';
+    await captureSession(session, page);
+    return publicSession(session);
+  },
+
+  async manualType(sessionId: string, text: string) {
+    const { session, page } = await getReadyManualPage(sessionId);
+    await page.keyboard.type(text);
+    session.lastAction = 'type';
+    await captureSession(session, page);
+    return publicSession(session);
+  },
+
+  async manualPressKey(sessionId: string, key: string) {
+    const { session, page } = await getReadyManualPage(sessionId);
+    await page.keyboard.press(key);
+    session.lastAction = `press_key:${key}`;
+    await captureSession(session, page);
+    return publicSession(session);
+  },
+
+  /** Fresh screenshot for the manual-control polling loop; also refreshes url/title/viewport metadata. */
+  async getManualScreen(sessionId: string) {
+    const { session, page } = await getReadyManualPage(sessionId);
+    await captureSession(session, page);
+    return publicSession(session);
+  },
+
+  /** Resizes a manual session live for the panel's mobile/desktop layout switch. */
+  async manualViewport(sessionId: string, viewport: { width: number; height: number }) {
+    const { session, page } = await getReadyManualPage(sessionId);
+    if (!isManualViewportSize(viewport)) {
+      throw new Error('Viewport size is out of the supported range.');
+    }
+
+    await page.setViewportSize({ ...viewport });
+    session.lastAction = `viewport:${viewport.width}x${viewport.height}`;
+    session.cursor = null;
+    await captureSession(session, page);
+    return publicSession(session);
+  },
+
   async stopSession(sessionId: string) {
     const session = sessions.get(sessionId);
-    if (!session || session.ownerId !== AGENT_OWNER_ID) {
+    if (!session || (session.ownerId !== AGENT_OWNER_ID && session.ownerId !== USER_OWNER_ID)) {
       return { stopped: false };
     }
 
@@ -835,7 +1072,7 @@ export const browserUseService = {
 
   async deleteSession(sessionId: string) {
     const session = sessions.get(sessionId);
-    if (!session || session.ownerId !== AGENT_OWNER_ID) {
+    if (!session || (session.ownerId !== AGENT_OWNER_ID && session.ownerId !== USER_OWNER_ID)) {
       return { deleted: false };
     }
 

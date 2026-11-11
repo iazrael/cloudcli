@@ -1,19 +1,27 @@
 import type { DragEvent, ReactNode, RefObject } from 'react';
-import { AlertTriangle, Folder, Search } from 'lucide-react';
+import { AlertTriangle, Folder, Loader2, Search } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import type { FileTreeNode, FileTreeViewMode } from '@/shared/types';
 import FileTreeEmptyState from '@/modules/file-tree/FileTreeEmptyState';
 import FileTreeList from '@/modules/file-tree/FileTreeList';
 
+// Present while the search box holds text; the body then shows search results.
+type FileTreeBodySearch = {
+  searching: boolean;
+  error: string | null;
+  truncated: boolean;
+  indexIncomplete: boolean;
+};
+
 type FileTreeBodyProps = {
-  files: FileTreeNode[];
-  filteredFiles: FileTreeNode[];
+  items: FileTreeNode[];
   error?: string | null;
-  searchQuery: string;
+  search: FileTreeBodySearch | null;
   viewMode: FileTreeViewMode;
   expandedDirs: Set<string>;
   onItemClick: (item: FileTreeNode) => void;
+  onRetryDirectory?: (path: string) => void;
   renderFileIcon: (filename: string) => ReactNode;
   formatFileSize: (bytes?: number) => string;
   formatRelativeTime: (date?: string) => string;
@@ -40,13 +48,13 @@ type FileTreeBodyProps = {
 
 /** Rendered by FileTree to choose between the empty/error states and the file list. */
 export default function FileTreeBody({
-  files,
-  filteredFiles,
+  items,
   error,
-  searchQuery,
+  search,
   viewMode,
   expandedDirs,
   onItemClick,
+  onRetryDirectory,
   renderFileIcon,
   formatFileSize,
   formatRelativeTime,
@@ -78,24 +86,36 @@ export default function FileTreeBody({
           title={t('fileTree.loadFailed')}
           description={error}
         />
-      ) : files.length === 0 ? (
+      ) : search?.searching ? (
+        <div className="flex items-center gap-2 px-2 py-3 text-sm text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          {t('fileTree.searching')}
+        </div>
+      ) : search?.error ? (
         <FileTreeEmptyState
-          icon={Folder}
-          title={t('fileTree.noFilesFound')}
-          description={t('fileTree.checkProjectPath')}
+          icon={AlertTriangle}
+          title={t('fileTree.searchFailed')}
+          description={search.error}
         />
-      ) : filteredFiles.length === 0 && searchQuery ? (
+      ) : items.length === 0 && search ? (
         <FileTreeEmptyState
           icon={Search}
           title={t('fileTree.noMatchesFound')}
           description={t('fileTree.tryDifferentSearch')}
         />
+      ) : items.length === 0 ? (
+        <FileTreeEmptyState
+          icon={Folder}
+          title={t('fileTree.noFilesFound')}
+          description={t('fileTree.checkProjectPath')}
+        />
       ) : (
         <FileTreeList
-          items={filteredFiles}
+          items={items}
           viewMode={viewMode}
           expandedDirs={expandedDirs}
           onItemClick={onItemClick}
+          onRetryDirectory={onRetryDirectory}
           renderFileIcon={renderFileIcon}
           formatFileSize={formatFileSize}
           formatRelativeTime={formatRelativeTime}
@@ -117,6 +137,11 @@ export default function FileTreeBody({
           renameInputRef={renameInputRef}
           operationLoading={operationLoading}
         />
+      )}
+      {search && !search.searching && !search.error && (search.truncated || search.indexIncomplete) && (
+        <p className="px-2 py-2 text-xs text-muted-foreground">
+          {search.indexIncomplete ? t('fileTree.searchIndexIncomplete') : t('fileTree.searchTruncated')}
+        </p>
       )}
     </>
   );

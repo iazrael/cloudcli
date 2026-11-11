@@ -1,6 +1,6 @@
 # 前端架构（Frontend）
 
-> 基准：2.9.0 / 2026-10-17
+> 基准：2.11.0 / 2026-10-24（i18n 节 2026-10-29 核对，性能守则第 12 条 2026-11-08 核对，第 13 条 2026-11-09 核对）
 > **核心文档**：改动 `src/shared/**` 或聊天渲染/性能相关代码时**必须同步更新本文**。
 > 普通 bug 修复不动架构的不需要更新（提交时走 `--no-verify`，见 `AGENTS.md`）。
 
@@ -138,6 +138,12 @@ MCP 服务器表单按 `useProviderMcpCapabilities()` 渲染。首屏与请求�
 10. **折叠体首次展开才挂载**：`CollapsibleContent`（thinking、工具输出共用）从未展开过就不渲染内容，展开过一次后保持挂载，用于收起动画；原生 `<details>` 导出形态始终保留内容。贴底打开会话时，视口内的折叠 thinking 不应为了隐藏而解析 markdown。
 11. **Markdown 解析预算**：micromark 解析强调标记的耗时，与单个行内文本块的长度成平方关系。`MarkdownBody` 在最长的行内文本块（不计围栏代码，表格逐行计算）超过 `INLINE_RUN_PARSE_LIMIT`（10,000 字符）时，原样输出纯文本。模型复读出来的 190KB 单行 thinking 曾让页面卡死近一分钟。
 
+11. **高频进度不走 React state**：聊天附件的上传百分比存在上传队列里，缩略图用 `useSyncExternalStore` 单独订阅，只在整数百分比变化时通知。进度变化不能重渲染输入框和 `ChatInterface`。
+
+12. **文件树按目录按需加载，按名找文件只走服务端搜索**：打开项目只读根目录一层，目录第一次展开时才请求（`useLazyFileTree`，批量接口 `api.listDirectories`）；刷新只重读根目录和当前展开链，收起的目录标为过期，下次展开再读。文件树搜索框、聊天 `@` 提及、命令面板、聊天文件引用解析统一调 `api.searchFiles`，由服务端用 ripgrep 列文件、排序后只返回前几十条。前端不得再拉整个项目的文件列表：大项目会把服务端内存、网络和手机渲染一起拖垮。
+
+13. **点击先出界面，回包绑定这次打开**：用户经外网隧道访问时，一个往返可能要几秒。打开弹窗、面板这类操作要在点击当下就显示，已有的本地数据先填上，其余显示加载状态，后续请求在挂载时并行发出，不能等前一个请求回来再打开。回包只填充发起它的那一次打开：用户关掉后，迟到的回包不得重新弹出界面，也不得改写其他状态。聊天内置命令弹窗（`/cost` `/help` `/models` `/status`）按此实现，见 `useChatComposerState.executeCommand`。
+
 ## i18n
 
 - 目录 `src/modules/i18n/`：15 种语言 × 8 个命名空间（auth/chat/codeEditor/common/git/scheduled/settings/sidebar）；`scheduled` 目前只有 en / zh-CN / zh-TW 三份，其余语言整包回退英文（i18next fallback 按命名空间生效）。
@@ -147,6 +153,7 @@ MCP 服务器表单按 `useProviderMcpCapabilities()` 渲染。首屏与请求�
 ## PWA 与版本
 
 - `public/manifest.json` + `public/sw.js`（当前由 `src/main.tsx` 与 `index.html` 注册）；HTML 始终走网络，hash 静态资源走 cache-first，API 与 WebSocket 永不经 SW；因此刷新可拿到新版本，已缓存资源可复用。设置 → 关于的版本提示用 `__APP_VERSION__`（vite define）与含 git describe 的 `__BUILD_INFO__` 判断长驻窗口是否过期。
+- iOS 状态栏：`apple-mobile-web-app-status-bar-style` 固定为 `default`，运行时不改。iOS 27 会给已安装的 PWA 顶部叠一层系统模糊，CSS 和 meta 都关不掉；只有状态栏不透明、且页面顶部有固定定位元素时，系统才改用该元素的背景色铺满状态栏并撤掉模糊。`black-translucent` 下这条路径不生效。因此 `index.html` 的 `body` 首个子元素是 `.ios-pwa-status-strip`：只在 iOS standalone 显示，11px 高，取 `--background`，用 `background-clip: text` 不实际绘制。这是未公开的系统行为，升级 iOS 时要回看。已安装的图标要删掉重新添加才会用上新的状态栏样式。
 - 冷启动会话恢复：`src/shared/sessionProtection*` / `useSessionProtection`——仅 standalone 模式记忆并预验证回跳；恢复 effect 必须声明在记录 effect 之前（顺序敏感）。
 - Web Push 复用 SW：`src/modules/settings/hooks/useWebPush.ts`，服务端 VAPID 在 `server/modules/notifications/`。
 
@@ -159,3 +166,25 @@ MCP 服务器表单按 `useProviderMcpCapabilities()` 渲染。首屏与请求�
 | 新增设置分区 | `src/modules/settings/`（各分区独立组件），文案走 i18n 三语言。全局功能开关（Browser、定时任务）都在这里：保存后广播一个 `*SettingsChanged` window 事件，工作区 Tab 与 composer 入口用对应 hook 监听，不轮询 |
 | 新增面板/标签页 | `src/modules/project-workspace/`（Shell 布局 + 标签页） |
 | 引入新依赖 | 先确认不破坏性能守则（全量 Prism、per-frame setState、CV:auto 都是禁区） |
+
+## 大结果附件
+
+`OutputAssets` 从结果里的受限资源地址提取图片和完整文本入口，重复地址只展示一次。入口默认折叠，展开前不挂载图片组件，因此浏览器不会为整段读图历史一次性拉取所有图片。图片复用 `ChatMessageImages` 和统一查看器；全文复用文件附件下载。图片引用即使落在旧的 `images.data` 字段，也先申请签名 URL，再由浏览器直接加载。
+
+HTML、PDF 导出通过 assets API 顺序读取引用的资源并内嵌 data URL，附件用原生 `details` 与下载链接显示，不依赖 React 事件。JSON 导出保留消息并附资源映射。读取失败使导出明确失败，不生成缺少附件的文件。完整导出需要在浏览器汇总资源，因此不能用日常聊天读取的内存预算承诺导出峰值。
+
+## 图片直连与缓存
+
+`useSignedImage` 供聊天、Markdown 预览、文件树和编辑器图片预览共用。Hook 只保留签名 URL、有效期与错误，不保存图片字节；浏览器通过 `<img>` 加载和解码。视口附近的组件才申请，查看器立即申请；缺少 IntersectionObserver 时立即申请保证可用。相邻申请按接口上限分批，同一账号和引用共享进行中的申请与有效结果，已完成条目受容量限制。组件挂载时如果同一引用已有有效票据，首帧直接使用，不等视口判断，也不显示占位。
+
+转录图片的行会被虚拟列表卸载，重新挂载时高度必须和卸载前一致，否则 virtua 会把高度差写进滚动偏移。用户附件和助手生成图都是固定大小的缩略图，高度与图片无关。Markdown 图片高度不定，由 `useRememberedImageSize` 按图片引用在内存里记住解码后的原始尺寸，容量有上限，刷新页面后清空。尺寸已知时，占位和图片用同一个盒子；尺寸未知时才用固定占位，所以每张图在一次页面生命周期内最多换一次高度。
+
+签名元数据不缓存，图片响应允许浏览器保存：max-age 窗口内直接复用缓存，过期后以 ETag 再验证；普通鉴权 API 继续使用 `no-store`，图片响应不带令牌刷新头。签名即将过期时，新的读取和保存操作按需续签；已显示图片不定时更换地址。图片加载失败最多自动续签一次，错误不无限重试。换引用或卸载后的异步结果不能更新旧组件；账号切换、退出登录和会话失效会使缓存及旧请求结果失效。
+
+统一查看器保留浏览器加载方式，下载或分享时才按需读取 Blob。上传前本地预览、导出嵌入图片以及 PDF、音视频预览保留各自的 Blob 生命周期。图片 URL 不持久化；注销不能清除已下载的图片字节。
+
+全屏查看器与编辑器图片预览共用 `ImageViewerSurface` 的底部信息栏。分辨率来自浏览器解码后的 `naturalWidth`、`naturalHeight`，按图片源隔离，缩放不改变它。入口单独传入原始路径，信息栏不把临时签名地址当文件路径；复制复用公共剪贴板工具，路径保留手动选择能力。
+
+聊天正文的图片地址识别共用 `isImageReference`，仅判断明确图片扩展名及可用的地址形式，不读取文件；本地权限仍由图片签名入口校验。
+
+聊天 Markdown 的本地文件、目录链接由聊天模块私有的 `usePathExists` 挂载时经 file-tree 批量存在性接口探测（转录已虚拟化，挂载行即贴近视口）；明确不存在或不可读的判定渲染为不可点的普通文字，其余保持可点。探测只缓存成功结果，失败结果不缓存，账号切换使缓存失效。

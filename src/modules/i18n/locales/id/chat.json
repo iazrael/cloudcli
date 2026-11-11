@@ -312,9 +312,9 @@
     "customLabel": "Atau pilih waktu",
     "confirm": "Jadwalkan",
     "in": {
-      "15": "Dalam 15 menit",
-      "60": "Dalam satu jam",
-      "480": "Dalam 8 jam",
+      "30": "Dalam 30 menit",
+      "120": "Dalam 2 jam",
+      "300": "Dalam 5 jam",
       "1440": "Besok"
     },
     "pending": "Dijadwalkan untuk {{when}}",

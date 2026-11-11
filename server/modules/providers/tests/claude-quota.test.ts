@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   clearClaudeQuotaCache,
+  consumeClaudeQuotaReset,
   fetchClaudeQuota,
 } from '../list/claude/claude-quota.provider.js';
 
@@ -17,10 +18,44 @@ const usageResponse = {
   },
 };
 
+/** The direct read is primary; tests that don't exercise it fall back to the SDK fixture. */
+const noDirectUsage = async () => null;
+
+/** Direct usage fixture: the SDK fixture's windows plus a reset-grant block. */
+const directUsageWithGrants = (cedarEmber: unknown) => ({
+  payload: { ...usageResponse.rate_limits, cedar_ember: cedarEmber },
+  subscriptionType: 'pro',
+});
+
+const fableGrant = {
+  id: 'launch-2610-fable-week',
+  label: 'New model launch: one Fable reset for Pro and Team Standard',
+  resets_left: 1,
+  ends_at: '2026-11-17T07:59:00+00:00',
+  clears: ['five_hour', 'seven_day_overage_included'],
+  paused: false,
+  usable_now: true,
+  type: 'full',
+};
+
+const fullGrant = {
+  id: 'full-reset-2611',
+  label: 'One full limit reset (November 2026)',
+  resets_left: 1,
+  ends_at: '2026-12-10T22:00:00+00:00',
+  clears: ['five_hour', 'seven_day', 'seven_day_overage_included'],
+  paused: false,
+  usable_now: true,
+  type: 'full',
+};
+
+const eligibleGrants = { eligible: true, grants: [fableGrant, fullGrant] };
+
 test('fetchClaudeQuota maps the subscription windows onto quota buckets', async () => {
   clearClaudeQuotaCache();
   const quota = await fetchClaudeQuota({}, {
     readUsage: async () => usageResponse,
+    readDirectUsage: noDirectUsage,
     now: () => 1_000,
   });
 
@@ -68,6 +103,7 @@ test('fetchClaudeQuota adds the per-model weekly windows the account actually ha
         ],
       },
     }),
+    readDirectUsage: noDirectUsage,
     now: () => 1_000,
   });
 
@@ -77,8 +113,84 @@ test('fetchClaudeQuota adds the per-model weekly windows the account actually ha
     quota.groups[0].buckets.map((bucket) => bucket.id),
     ['claude-5h', 'claude-7d', 'claude-7d-opus', 'claude-7d-fable'],
   );
+  // Only the narrower windows name a model family; the all-models window does not.
+  assert.equal(quota.groups[0].buckets[1].modelScope, undefined);
+  assert.equal(quota.groups[0].buckets[2].modelScope, 'Opus');
+  assert.equal(quota.groups[0].buckets[3].modelScope, 'Fable');
   // A window the server left open-ended still renders, just without a reset.
   assert.equal(quota.groups[0].buckets[2].resetTime, undefined);
+});
+
+test('fetchClaudeQuota labels a Pro account\'s model-scoped weekly window', async () => {
+  clearClaudeQuotaCache();
+  // 2026-11-11 observed Pro payload: the Sonnet/Opus legacy windows are null,
+  // but a Fable model-scoped window still ships and the official /usage renders it.
+  const quota = await fetchClaudeQuota({}, {
+    readUsage: async () => ({
+      subscription_type: 'pro',
+      rate_limits_available: true,
+      rate_limits: {
+        five_hour: { utilization: 10, resets_at: '2026-11-11T04:39:59+00:00' },
+        seven_day: { utilization: 8, resets_at: '2026-11-15T10:59:59+00:00' },
+        seven_day_opus: null,
+        seven_day_sonnet: null,
+        model_scoped: [
+          { display_name: 'Fable', utilization: 0, resets_at: '2026-11-15T11:00:00+00:00' },
+        ],
+      },
+    }),
+    readDirectUsage: noDirectUsage,
+    now: () => 1_000,
+  });
+
+  assert.ok(quota);
+  assert.equal(quota.groups[0].name, 'Claude (PRO)');
+  assert.deepEqual(
+    quota.groups[0].buckets.map((bucket) => [bucket.id, bucket.modelScope]),
+    [
+      ['claude-5h', undefined],
+      ['claude-7d', undefined],
+      ['claude-7d-fable', 'Fable'],
+    ],
+  );
+});
+
+test('fetchClaudeQuota derives a model-scoped window from the limits array', async () => {
+  clearClaudeQuotaCache();
+  // The direct usage body can leave model_scoped null while the same Fable
+  // window is present as a weekly_scoped row in limits[].
+  const quota = await fetchClaudeQuota({}, {
+    readUsage: async () => ({
+      subscription_type: 'pro',
+      rate_limits_available: true,
+      rate_limits: {
+        ...usageResponse.rate_limits,
+        model_scoped: null,
+        limits: [
+          { kind: 'session', percent: 10, resets_at: '2026-11-11T04:39:59+00:00', scope: null },
+          { kind: 'weekly_all', percent: 8, resets_at: '2026-11-15T10:59:59+00:00', scope: null },
+          {
+            kind: 'weekly_scoped',
+            percent: 0,
+            resets_at: '2026-11-15T11:00:00+00:00',
+            scope: { model: { display_name: 'Fable' }, surface: null },
+          },
+        ],
+      },
+    }),
+    readDirectUsage: noDirectUsage,
+    now: () => 1_000,
+  });
+
+  assert.ok(quota);
+  assert.deepEqual(
+    quota.groups[0].buckets.map((bucket) => [bucket.id, bucket.modelScope]),
+    [
+      ['claude-5h', undefined],
+      ['claude-7d', undefined],
+      ['claude-7d-fable', 'Fable'],
+    ],
+  );
 });
 
 test('fetchClaudeQuota reports no quota when plan limits do not apply to the login', async () => {
@@ -90,14 +202,22 @@ test('fetchClaudeQuota reports no quota when plan limits do not apply to the log
   };
 
   assert.equal(
-    await fetchClaudeQuota({}, { readUsage: async () => apiKeyUsage, now: () => 1_000 }),
+    await fetchClaudeQuota({}, {
+      readUsage: async () => apiKeyUsage,
+      readDirectUsage: noDirectUsage,
+      now: () => 1_000,
+    }),
     null,
   );
 
   clearClaudeQuotaCache();
   // An SDK that no longer exposes the experimental usage reader answers null.
   assert.equal(
-    await fetchClaudeQuota({}, { readUsage: async () => null, now: () => 1_000 }),
+    await fetchClaudeQuota({}, {
+      readUsage: async () => null,
+      readDirectUsage: noDirectUsage,
+      now: () => 1_000,
+    }),
     null,
   );
 
@@ -110,6 +230,7 @@ test('fetchClaudeQuota reports no quota when plan limits do not apply to the log
         rate_limits_available: true,
         rate_limits: { five_hour: null, seven_day: { utilization: null } },
       }),
+      readDirectUsage: noDirectUsage,
       now: () => 1_000,
     }),
     null,
@@ -125,6 +246,7 @@ test('fetchClaudeQuota caches reads and honours a forced refresh', async () => {
       readCount += 1;
       return response;
     },
+    readDirectUsage: noDirectUsage,
     now: () => 10_000,
   };
 
@@ -137,11 +259,296 @@ test('fetchClaudeQuota caches reads and honours a forced refresh', async () => {
   assert.equal(readCount, 2);
 });
 
+test('fetchClaudeQuota lists the account\'s Claude reset grants', async () => {
+  clearClaudeQuotaCache();
+  // 2026-11-11 observed Pro response: a Fable launch-week reset beside a full reset.
+  const quota = await fetchClaudeQuota({}, {
+    readUsage: async () => usageResponse,
+    readDirectUsage: async () => directUsageWithGrants({
+      eligible: true,
+      grants: [
+        {
+          id: 'launch-2610-fable-week',
+          label: 'New model launch: one Fable reset for Pro and Team Standard, launch week only',
+          resets_total: 1,
+          resets_left: 1,
+          starts_at: '2026-11-09T18:00:00+00:00',
+          ends_at: '2026-11-17T07:59:00+00:00',
+          clears: ['five_hour', 'seven_day_overage_included'],
+          paused: false,
+          usable_now: true,
+          type: 'full',
+          gives_back_weekly: true,
+        },
+        {
+          id: 'full-reset-2611',
+          label: 'One full limit reset (November 2026)',
+          resets_total: 1,
+          resets_left: 1,
+          starts_at: '2026-11-10T21:30:00+00:00',
+          ends_at: '2026-12-10T22:00:00+00:00',
+          clears: ['five_hour', 'seven_day', 'seven_day_overage_included'],
+          paused: false,
+          usable_now: true,
+          type: 'full',
+          gives_back_weekly: false,
+        },
+      ],
+    }),
+    now: () => Date.parse('2026-11-11T00:00:00Z'),
+  });
+
+  assert.ok(quota);
+  assert.deepEqual(quota.resetCredits?.credits, [
+    {
+      id: 'launch-2610-fable-week',
+      resetType: 'fable',
+      title: 'New model launch: one Fable reset for Pro and Team Standard, launch week only',
+      grantType: 'full',
+      available: true,
+      expireTime: '2026-11-17T07:59:00.000Z',
+      remaining: 1,
+    },
+    {
+      id: 'full-reset-2611',
+      resetType: 'all',
+      title: 'One full limit reset (November 2026)',
+      grantType: 'full',
+      available: true,
+      expireTime: '2026-12-10T22:00:00.000Z',
+      remaining: 1,
+    },
+  ]);
+});
+
+test('fetchClaudeQuota marks used, paused and expired reset grants unavailable', async () => {
+  clearClaudeQuotaCache();
+  const quota = await fetchClaudeQuota({}, {
+    readUsage: async () => usageResponse,
+    readDirectUsage: async () => directUsageWithGrants({
+      eligible: true,
+      grants: [
+        { id: 'used', resets_left: 0, clears: ['seven_day'], paused: false, usable_now: false },
+        { id: 'paused', resets_left: 1, clears: ['five_hour'], paused: true, usable_now: true },
+        {
+          id: 'expired',
+          resets_left: 1,
+          clears: ['five_hour', 'seven_day'],
+          paused: false,
+          usable_now: true,
+          ends_at: '2026-11-01T00:00:00+00:00',
+        },
+      ],
+    }),
+    now: () => Date.parse('2026-11-11T00:00:00Z'),
+  });
+
+  assert.ok(quota);
+  assert.deepEqual(
+    quota.resetCredits?.credits.map((credit) => [
+      credit.id,
+      credit.resetType,
+      credit.available,
+      credit.remaining,
+    ]),
+    [
+      ['used', 'weekly', false, 0],
+      ['paused', '5h', false, 1],
+      ['expired', 'all', false, 1],
+    ],
+  );
+});
+
+test('fetchClaudeQuota keeps the quota windows when reset grants cannot be read', async () => {
+  clearClaudeQuotaCache();
+  const quota = await fetchClaudeQuota({}, {
+    readUsage: async () => usageResponse,
+    readDirectUsage: async () => { throw new Error('reset endpoint unavailable'); },
+    now: () => 1_000,
+  });
+
+  assert.ok(quota);
+  assert.equal(quota.resetCredits, undefined);
+  assert.equal(quota.groups[0].buckets.length, 2);
+});
+
+test('fetchClaudeQuota ignores a malformed reset-grant payload', async () => {
+  for (const cedarEmber of [
+    null,
+    { eligible: false, grants: [] },
+    { eligible: true, grants: 'not-an-array' },
+  ]) {
+    clearClaudeQuotaCache();
+    const quota = await fetchClaudeQuota({}, {
+      readUsage: async () => usageResponse,
+      readDirectUsage: async () => directUsageWithGrants(cedarEmber),
+      now: () => 1_000,
+    });
+    assert.ok(quota);
+    assert.equal(quota.resetCredits, undefined);
+  }
+});
+
+type ClaimInput = {
+  organizationUuid: string;
+  grantId: string;
+  requestId: string;
+};
+
+const quotaWithGrants = async (cedarEmber: unknown) => {
+  clearClaudeQuotaCache();
+  const quota = await fetchClaudeQuota({ forceRefresh: true }, {
+    readUsage: async () => usageResponse,
+    readDirectUsage: async () => directUsageWithGrants(cedarEmber),
+    now: () => Date.parse('2026-11-11T00:00:00Z'),
+  });
+  assert.ok(quota);
+  return quota;
+};
+
+const resetConsumeDeps = (overrides: Record<string, unknown> = {}) => ({
+  readQuota: async () => quotaWithGrants(eligibleGrants),
+  readOrganizationUuid: async () => 'org-123',
+  claimReset: async () => ({ result: 'reset', resets_left: 0 }),
+  now: () => Date.parse('2026-11-11T00:00:00Z'),
+  ...overrides,
+});
+
+test('consumeClaudeQuotaReset claims the grant matching the clicked reset type', async () => {
+  clearClaudeQuotaCache();
+  const captured: { claim?: ClaimInput } = {};
+  const result = await consumeClaudeQuotaReset({ resetType: 'fable' }, resetConsumeDeps({
+    claimReset: async (input: ClaimInput) => {
+      captured.claim = input;
+      return { result: 'reset', resets_left: 0 };
+    },
+  }));
+
+  assert.equal(result.ok, true);
+  assert.equal(result.code, 'reset');
+  assert.ok(captured.claim);
+  assert.equal(captured.claim.organizationUuid, 'org-123');
+  assert.equal(captured.claim.grantId, 'launch-2610-fable-week');
+  assert.match(
+    captured.claim.requestId,
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+  );
+});
+
+test('consumeClaudeQuotaReset claims the full grant for resetType all', async () => {
+  clearClaudeQuotaCache();
+  const captured: { claim?: ClaimInput } = {};
+  const result = await consumeClaudeQuotaReset({ resetType: 'all' }, resetConsumeDeps({
+    claimReset: async (input: ClaimInput) => {
+      captured.claim = input;
+      return { result: 'reset' };
+    },
+  }));
+
+  assert.equal(result.ok, true);
+  assert.equal(captured.claim?.grantId, 'full-reset-2611');
+});
+
+test('consumeClaudeQuotaReset refuses a reset type the account does not hold', async () => {
+  clearClaudeQuotaCache();
+  let claimed = false;
+  const result = await consumeClaudeQuotaReset({ resetType: 'weekly' }, resetConsumeDeps({
+    readQuota: async () => quotaWithGrants({ eligible: true, grants: [fableGrant] }),
+    claimReset: async () => {
+      claimed = true;
+      return { result: 'reset' };
+    },
+  }));
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'noCard');
+  assert.equal(claimed, false);
+});
+
+test('consumeClaudeQuotaReset picks the earliest-expiring grant of a type', async () => {
+  clearClaudeQuotaCache();
+  const captured: { claim?: ClaimInput } = {};
+  const result = await consumeClaudeQuotaReset({ resetType: 'fable' }, resetConsumeDeps({
+    readQuota: async () => quotaWithGrants({
+      eligible: true,
+      grants: [
+        { ...fableGrant, id: 'fable-later', ends_at: '2026-11-20T00:00:00+00:00' },
+        { ...fableGrant, id: 'fable-earlier', ends_at: '2026-11-15T00:00:00+00:00' },
+      ],
+    }),
+    claimReset: async (input: ClaimInput) => {
+      captured.claim = input;
+      return { result: 'reset' };
+    },
+  }));
+
+  assert.equal(result.ok, true);
+  assert.equal(captured.claim?.grantId, 'fable-earlier');
+});
+
+test('consumeClaudeQuotaReset never claims after a failed fresh card read', async () => {
+  clearClaudeQuotaCache();
+  let claimed = false;
+  const result = await consumeClaudeQuotaReset({ resetType: 'all' }, resetConsumeDeps({
+    readQuota: async () => {
+      throw new Error('network unavailable');
+    },
+    claimReset: async () => {
+      claimed = true;
+      return { result: 'reset' };
+    },
+  }));
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'readFailed');
+  assert.equal(claimed, false);
+});
+
+test('consumeClaudeQuotaReset needs a signed-in organization', async () => {
+  clearClaudeQuotaCache();
+  let claimed = false;
+  const result = await consumeClaudeQuotaReset({ resetType: 'fable' }, resetConsumeDeps({
+    readOrganizationUuid: async () => null,
+    claimReset: async () => {
+      claimed = true;
+      return { result: 'reset' };
+    },
+  }));
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'notAuthenticated');
+  assert.equal(claimed, false);
+});
+
+test('consumeClaudeQuotaReset relays a server refusal without claiming twice', async () => {
+  clearClaudeQuotaCache();
+  const result = await consumeClaudeQuotaReset({ resetType: 'fable' }, resetConsumeDeps({
+    claimReset: async () => ({ result: 'not_limited', reason: 'needs_limit' }),
+  }));
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'spendFailed');
+  assert.match(result.message ?? '', /limit/i);
+});
+
+test('consumeClaudeQuotaReset treats a lost claim response as unconfirmed', async () => {
+  clearClaudeQuotaCache();
+  const result = await consumeClaudeQuotaReset({ resetType: 'fable' }, resetConsumeDeps({
+    claimReset: async () => {
+      throw new Error('socket hang up');
+    },
+  }));
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'unknown');
+});
+
 test('fetchClaudeQuota propagates SDK failures so the route can show an error', async () => {
   clearClaudeQuotaCache();
   await assert.rejects(
     () => fetchClaudeQuota({}, {
       readUsage: async () => { throw new Error('Claude Code CLI is unavailable'); },
+      readDirectUsage: noDirectUsage,
       now: () => 10_000,
     }),
     /Claude Code CLI is unavailable/,

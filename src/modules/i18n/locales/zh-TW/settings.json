@@ -570,6 +570,33 @@
       "14days": "14 天前（两周前）",
       "30days": "30 天前（一个月前）"
     },
+    "storageCleanup": {
+      "title": "儲存空間清理",
+      "enableLabel": "清理長期未活動的已封存工作階段",
+      "enableDescription": "每天執行一次，只刪除引擎可以重建的資料。對話仍然可以查看和繼續。",
+      "retentionLabel": "保留時長",
+      "retentionDescription": "超過這個時長沒有活動的已封存工作階段會被清理。置頂、執行中或有待傳送訊息的工作階段不受影響。",
+      "days": "{{count}} 天",
+      "purgeLabel": "同時刪除對話和相關資源（無法復原）",
+      "purgeDescription": "永久刪除對話、轉錄和相關檔案，引擎裡的記錄也會一起刪除。預設不選。",
+      "purgeConfirmTitle": "確定永久刪除對話嗎？",
+      "purgeConfirmBody": "現在會刪除 {{count}} 個對話，之後每天還會刪除新到期的對話。此操作無法復原。",
+      "purgeConfirmButton": "確定刪除",
+      "runConfirmTitle": "確定現在刪除對話嗎？",
+      "runConfirmBody": "本次最多永久刪除 {{count}} 個對話。此操作無法復原。",
+      "widenConfirmTitle": "確定要刪除更多對話嗎？",
+      "widenConfirmBody": "「同時刪除對話」已開啟，這個改動會永久刪除更多對話，無法復原。",
+      "previewButton": "查看會清理什麼",
+      "cancel": "取消",
+      "previewArtifacts": "目前：{{count}} 個工作階段，約 {{size}} 可重建的資料。",
+      "previewPurge": "如果刪除對話：{{count}} 個對話，約 {{size}}。",
+      "previewPartial": "部分大小無法統計，實際可能更多。",
+      "runTitle": "立即清理",
+      "runDescription": "按上面的設定執行一次。",
+      "runButton": "立即清理",
+      "runningHint": "正在背景清理，可能需要幾分鐘。關掉這個頁面不影響。",
+      "lastRun": "上次執行 {{time}}：釋放 {{size}}，清理 {{cleaned}}，刪除 {{deleted}}，略過 {{skipped}}，失敗 {{failed}}。"
+    },
     "manualSection": {
       "title": "手动清理操作"
     },

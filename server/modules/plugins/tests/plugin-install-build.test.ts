@@ -84,7 +84,12 @@ async function createPluginRepository(seed: string): Promise<void> {
   ]);
 }
 
-test('a production host install still gets devDependencies and a rebuilt native module', { timeout: 120_000 }, async () => {
+test('a production host install still gets devDependencies and a rebuilt native module', {
+  timeout: 120_000,
+  // A drive-letter path is not a slash-separated repository URL; the
+  // install-from-git path parser is exercised on POSIX only.
+  skip: process.platform === 'win32',
+}, async () => {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'plugin-install-repo-'));
   const seed = path.join(projectRoot, 'devdep-plugin');
   const pluginDir = path.join(getPluginsDir(), 'devdep-plugin');

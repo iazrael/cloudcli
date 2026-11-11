@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import type { ChildProcess } from 'node:child_process';
 
 import {
+  buildZCodeEngineSpawnEnv,
   EngineSupervisor,
   type EngineSupervisorOptions,
 } from '@/modules/providers/list/zcode/zcode-engine-supervisor.js';
@@ -224,4 +228,55 @@ test('getProcessId returns child PID when running and null before spawn or after
 
   processes[0].exit(0);
   assert.equal(supervisor.getProcessId(), null);
+});
+
+/** Runs a test with ZCODE_APP_VERSION set to a known ambient value, then restores it. */
+const withAmbientAppVersion = async (value: string | undefined, runTest: () => Promise<void>): Promise<void> => {
+  const previous = process.env.ZCODE_APP_VERSION;
+  if (value === undefined) {
+    delete process.env.ZCODE_APP_VERSION;
+  } else {
+    process.env.ZCODE_APP_VERSION = value;
+  }
+  try {
+    await runTest();
+  } finally {
+    if (previous === undefined) {
+      delete process.env.ZCODE_APP_VERSION;
+    } else {
+      process.env.ZCODE_APP_VERSION = previous;
+    }
+  }
+};
+
+test('engine spawn env carries the installed app version, overriding an ambient value', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'zcode-spawn-env-'));
+  const engineDir = path.join(root, 'Contents', 'Resources', 'glm');
+  await mkdir(engineDir, { recursive: true });
+  await writeFile(
+    path.join(root, 'Contents', 'Info.plist'),
+    '<plist><dict><key>CFBundleShortVersionString</key><string>3.17.2</string></dict></plist>',
+    'utf8',
+  );
+
+  try {
+    await withAmbientAppVersion('1.0.0', async () => {
+      const env = buildZCodeEngineSpawnEnv(path.join(engineDir, 'zcode.cjs'));
+      assert.equal(env.ZCODE_APP_VERSION, '3.17.2');
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('engine spawn env leaves the app version unset when the engine is not in an app bundle', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'zcode-spawn-env-'));
+  try {
+    await withAmbientAppVersion(undefined, async () => {
+      const env = buildZCodeEngineSpawnEnv(path.join(root, 'zcode.cjs'));
+      assert.equal(env.ZCODE_APP_VERSION, undefined);
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

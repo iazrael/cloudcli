@@ -6,11 +6,10 @@ import test from 'node:test';
 
 import Database from 'better-sqlite3';
 
+import { encryptZCodeCredentialValue } from '@/modules/providers/list/zcode/zcode-credentials.js';
 import {
   ZCodeProviderModels,
-  ingestZCodeModelCatalog,
-  readZCodeSessionModelFromDb,
-  resolveZCodeModelDefaultReasoningLevel,
+  buildZCodeSendModelParams,
   resolveZCodeModelRef,
 } from '@/modules/providers/list/zcode/zcode-models.provider.js';
 
@@ -46,12 +45,12 @@ test('getSupportedModels falls back to the builtin catalog without a config', as
   });
 });
 
-test('getSupportedModels parses the v2 config provider catalog', async () => {
+test('getSupportedModels parses the cli config provider catalog', async () => {
   await withZCodeStorage(async (storageDir) => {
-    const v2Dir = path.join(storageDir, 'v2');
-    await mkdir(v2Dir, { recursive: true });
+    const cliDir = path.join(storageDir, 'cli');
+    await mkdir(cliDir, { recursive: true });
     await writeFile(
-      path.join(v2Dir, 'config.json'),
+      path.join(cliDir, 'config.json'),
       JSON.stringify({
         provider: {
           'builtin:bigmodel-coding-plan': {
@@ -84,10 +83,10 @@ test('getSupportedModels parses the v2 config provider catalog', async () => {
 
 test('getSupportedModels ignores disabled providers and deduplicates model options', async () => {
   await withZCodeStorage(async (storageDir) => {
-    const v2Dir = path.join(storageDir, 'v2');
-    await mkdir(v2Dir, { recursive: true });
+    const cliDir = path.join(storageDir, 'cli');
+    await mkdir(cliDir, { recursive: true });
     await writeFile(
-      path.join(v2Dir, 'config.json'),
+      path.join(cliDir, 'config.json'),
       JSON.stringify({
         provider: {
           'builtin:disabled-provider': {
@@ -131,68 +130,38 @@ test('getSupportedModels ignores disabled providers and deduplicates model optio
   });
 });
 
-test('readZCodeSessionModelFromDb returns the latest message model', async () => {
-  await withZCodeStorage(async (storageDir) => {
-    const dbDir = path.join(storageDir, 'cli', 'db');
-    await mkdir(dbDir, { recursive: true });
-
-    const db = new Database(path.join(dbDir, 'db.sqlite'));
-    try {
-      db.exec(`
-        CREATE TABLE message (
-          id TEXT PRIMARY KEY,
-          session_id TEXT NOT NULL,
-          time_created INTEGER NOT NULL,
-          time_updated INTEGER NOT NULL,
-          data TEXT NOT NULL,
-          sequence INTEGER
-        );
-      `);
-      const insert = db.prepare(
-        'INSERT INTO message (id, session_id, time_created, time_updated, data, sequence) VALUES (?, ?, ?, ?, ?, ?)'
-      );
-      insert.run('m1', 'sess_m', 1000, 1000, JSON.stringify({ role: 'user' }), 0);
-      insert.run('m2', 'sess_m', 2000, 2000, JSON.stringify({ role: 'assistant', modelID: 'GLM-4.7' }), 1);
-    } finally {
-      db.close();
-    }
-
-    assert.equal(readZCodeSessionModelFromDb('sess_m'), 'GLM-4.7');
-    assert.equal(readZCodeSessionModelFromDb('sess_unknown'), null);
-  });
-});
-
-test('readZCodeSessionModelFromDb returns null without a database', async () => {
+test('readZCodeSessionModelInfoFromDb returns null without a database', async () => {
   await withZCodeStorage(async () => {
-    assert.equal(readZCodeSessionModelFromDb('sess_any'), null);
+    const { readZCodeSessionModelInfoFromDb } = await import('@/modules/providers/list/zcode/zcode-models.provider.js');
+    assert.equal(readZCodeSessionModelInfoFromDb('sess_any'), null);
   });
 });
 
 test('resolveZCodeModelRef parses full ref and bare model key', async () => {
   // Case 1: Full ref with slash
-  const full = resolveZCodeModelRef('builtin:zai/GLM-5.3');
+  const full = resolveZCodeModelRef('custom:zai/GLM-5.3');
   assert.deepEqual(full, {
-    providerId: 'builtin:zai',
+    providerId: 'custom:zai',
     modelId: 'GLM-5.3',
   });
 
   // Case 2: With reasoning effort variant
-  const fullWithVariant = resolveZCodeModelRef('builtin:zai/GLM-5.3', 'high');
+  const fullWithVariant = resolveZCodeModelRef('custom:zai/GLM-5.3', 'high');
   assert.deepEqual(fullWithVariant, {
-    providerId: 'builtin:zai',
+    providerId: 'custom:zai',
     modelId: 'GLM-5.3',
-    variant: 'high',
+    options: { reasoningLevel: 'high' },
   });
 
   // Case 3: Bare model with config and variant
   await withZCodeStorage(async (storageDir) => {
-    const v2Dir = path.join(storageDir, 'v2');
-    await mkdir(v2Dir, { recursive: true });
+    const cliDir = path.join(storageDir, 'cli');
+    await mkdir(cliDir, { recursive: true });
     await writeFile(
-      path.join(v2Dir, 'config.json'),
+      path.join(cliDir, 'config.json'),
       JSON.stringify({
         provider: {
-          'builtin:custom-provider': {
+          'custom-provider': {
             enabled: true,
             models: {
               'GLM-5.3': {},
@@ -205,10 +174,81 @@ test('resolveZCodeModelRef parses full ref and bare model key', async () => {
 
     const resolved = resolveZCodeModelRef('GLM-5.3', 'max');
     assert.deepEqual(resolved, {
-      providerId: 'builtin:custom-provider',
+      providerId: 'custom-provider',
       modelId: 'GLM-5.3',
-      variant: 'max',
+      options: { reasoningLevel: 'max' },
     });
+  });
+});
+
+test('buildZCodeSendModelParams maps the selected model, reasoning level, and auth for 0.16.9', async () => {
+  await withZCodeStorage(async (storageDir) => {
+    const cliDir = path.join(storageDir, 'cli');
+    await mkdir(cliDir, { recursive: true });
+    await writeFile(
+      path.join(cliDir, 'config.json'),
+      JSON.stringify({
+        provider: {
+          'bigmodel-coding-plan': {
+            kind: 'anthropic',
+            options: { apiKey: 'fixture-key', baseURL: 'https://example.invalid/api/anthropic' },
+            models: {
+              'GLM-5.3-Flash': {
+                reasoning: { enabled: true, levels: ['low', 'max'], defaultLevel: 'max' },
+              },
+            },
+          },
+        },
+      }),
+      'utf8'
+    );
+
+    assert.deepEqual(buildZCodeSendModelParams("GLM-5.3-Flash", "low"), {
+      modelSelection: {
+        providerId: 'bigmodel-coding-plan',
+        modelId: 'GLM-5.3-Flash',
+        options: { reasoningLevel: 'low' },
+      },
+      modelExecution: {
+        selectionScope: 'execution',
+        requestAuth: { apiKey: 'fixture-key' },
+      },
+    });
+    assert.deepEqual(
+      buildZCodeSendModelParams('builtin:bigmodel-coding-plan/GLM-5.3-Flash'),
+      {
+        modelSelection: {
+          providerId: 'bigmodel-coding-plan',
+          modelId: 'GLM-5.3-Flash',
+          options: { reasoningLevel: 'max' },
+        },
+        modelExecution: {
+          selectionScope: 'execution',
+          requestAuth: { apiKey: 'fixture-key' },
+        },
+      },
+    );
+  });
+});
+
+test('buildZCodeSendModelParams degrades to null instead of blocking the send when config is incomplete', async () => {
+  await withZCodeStorage(async (storageDir) => {
+    // No cli/config.json at all.
+    assert.equal(buildZCodeSendModelParams('GLM-5.3'), null);
+
+    // Provider present but without credentials or base URL.
+    const cliDir = path.join(storageDir, 'cli');
+    await mkdir(cliDir, { recursive: true });
+    await writeFile(
+      path.join(cliDir, 'config.json'),
+      JSON.stringify({
+        provider: {
+          'bigmodel-coding-plan': { kind: 'anthropic', models: { 'GLM-5.3': {} } },
+        },
+      }),
+      'utf8'
+    );
+    assert.equal(buildZCodeSendModelParams('GLM-5.3'), null);
   });
 });
 
@@ -248,66 +288,112 @@ test('readZCodeSessionModelInfoFromDb returns model and variant from latest mess
   });
 });
 
-test('resolveZCodeModelRef maps a bare model through provider_config.json modelOrder', async () => {
+test('getSupportedModels appends the pinned trial Flash option when a trial JWT exists', async () => {
   await withZCodeStorage(async (storageDir) => {
+    const cliDir = path.join(storageDir, 'cli');
     const v2Dir = path.join(storageDir, 'v2');
+    await mkdir(cliDir, { recursive: true });
     await mkdir(v2Dir, { recursive: true });
+
     await writeFile(
-      path.join(v2Dir, 'provider_config.json'),
+      path.join(cliDir, 'config.json'),
       JSON.stringify({
-        config: {
-          providerConfigRules: {
-            providerRules: [
-              {
-                providerId: 'opencode-go-chat',
-                config: { modelOrder: ['deepseek-v4.1-flash'], personalModelIds: ['longcat-2.0'] },
-              },
-            ],
+        provider: {
+          'bigmodel-coding-plan': {
+            kind: 'anthropic',
+            models: {
+              'GLM-5.3': { reasoning: { variants: ['low', 'high', 'max'], defaultLevel: 'max' } },
+              'GLM-5.3-Flash': { reasoning: { variants: ['low', 'high', 'max'], defaultLevel: 'max' } },
+            },
           },
         },
       }),
       'utf8'
     );
 
-    assert.deepEqual(resolveZCodeModelRef('deepseek-v4.1-flash', 'high'), {
-      providerId: 'opencode-go-chat',
-      modelId: 'deepseek-v4.1-flash',
-      variant: 'high',
-    });
-    assert.deepEqual(resolveZCodeModelRef('longcat-2.0'), {
-      providerId: 'opencode-go-chat',
-      modelId: 'longcat-2.0',
-    });
+    await writeFile(
+      path.join(v2Dir, 'credentials.json'),
+      JSON.stringify({ zcodejwttoken: 'mock-jwt-token' }),
+      'utf8'
+    );
+
+    const models = new ZCodeProviderModels(async () => null);
+    const definition = await models.getSupportedModels();
+
+    // The trial plan appends exactly one pinned option keyed by its
+    // account-scoped id; personal options stay bare and ungrouped.
+    assert.deepEqual(
+      definition.OPTIONS.map((opt) => opt.value),
+      ['GLM-5.3', 'GLM-5.3-Flash', 'account:bigmodel-start-plan/GLM-5.3-Flash']
+    );
+    const trial = definition.OPTIONS[2];
+    assert.equal(trial.label, 'GLM-5.3-Flash（体验）');
+    assert.equal(trial.group, undefined);
+    assert.equal(trial.effort?.default, 'max');
+    assert.deepEqual(
+      trial.effort?.values.map((value) => value.value),
+      ['low', 'high', 'max']
+    );
+    assert.equal(definition.DEFAULT, 'GLM-5.3');
   });
 });
 
-test('ingestZCodeModelCatalog captures the engine-default reasoning level', () => {
-  ingestZCodeModelCatalog({
-    settings: {
-      model: {
-        available: [
-          {
-            ref: { providerId: 'opencode-go-chat', modelId: 'glm-5.3' },
-            label: 'glm-5.3',
-            reasoning: {
-              levels: [{ value: 'low', label: 'low' }, { value: 'max', label: 'max' }],
-              defaultLevel: 'max',
+test('getSupportedModels falls back to the builtin catalog when only the legacy v2 config exists', async () => {
+  await withZCodeStorage(async (storageDir) => {
+    const v2Dir = path.join(storageDir, 'v2');
+    await mkdir(v2Dir, { recursive: true });
+    await writeFile(
+      path.join(v2Dir, 'config.json'),
+      JSON.stringify({
+        provider: {
+          'builtin:bigmodel-coding-plan': {
+            kind: 'anthropic',
+            models: {
+              'GLM-5.3': { reasoning: { variants: ['low', 'high', 'max'] } },
+              'GLM-5.2': {},
             },
           },
-          {
-            ref: { providerId: 'opencode-zen-chat', modelId: 'kimi-k3' },
-            label: 'kimi-k3',
-            reasoning: { levels: [{ value: 'max', label: 'max' }] },
-          },
-        ],
-      },
-    },
-  });
+        },
+      }),
+      'utf8'
+    );
 
-  assert.equal(resolveZCodeModelDefaultReasoningLevel('opencode-go-chat/glm-5.3'), 'max');
-  // The last level is the fallback when the engine omits a default.
-  assert.equal(resolveZCodeModelDefaultReasoningLevel('kimi-k3'), 'max');
-  assert.equal(resolveZCodeModelDefaultReasoningLevel('unknown-model'), undefined);
+    const models = new ZCodeProviderModels(async () => null);
+    const definition = await models.getSupportedModels();
+
+    // The v2 path is no longer consulted; the builtin catalog wins.
+    assert.deepEqual(
+      definition.OPTIONS.map((opt) => opt.value),
+      ['GLM-5.3']
+    );
+  });
+});
+
+test('buildZCodeSendModelParams sends start-plan refs on the trial plan with its JWT', async () => {
+  await withZCodeStorage(async (storageDir) => {
+    const v2Dir = path.join(storageDir, 'v2');
+    await mkdir(v2Dir, { recursive: true });
+    const encryptedToken = encryptZCodeCredentialValue('trial-jwt-token');
+    assert.match(encryptedToken, /^enc:v1:/);
+    await writeFile(
+      path.join(v2Dir, 'credentials.json'),
+      JSON.stringify({ zcodejwttoken: encryptedToken }),
+      'utf8'
+    );
+
+    const params = buildZCodeSendModelParams('account:bigmodel-start-plan/GLM-5.3-Flash', 'high');
+    assert.ok(params);
+    assert.deepEqual(params.modelSelection, {
+      providerId: 'account:bigmodel-start-plan',
+      modelId: 'GLM-5.3-Flash',
+      options: { reasoningLevel: 'high' },
+    });
+    // The decrypted plain token must be passed, never raw ciphertext.
+    assert.deepEqual(params.modelExecution, {
+      selectionScope: 'execution',
+      requestAuth: { apiKey: 'trial-jwt-token' },
+    });
+  });
 });
 
 test('personal plan uses the native account provider and its own credential', async () => {
@@ -326,23 +412,37 @@ test('personal plan uses the native account provider and its own credential', as
       },
     }), 'utf8');
     await writeFile(path.join(v2Dir, 'credentials.json'), JSON.stringify({
-      'account-provider:coding-plan:account:bigmodel-individual-coding-plan:account:123:api-key': 'personal-plan-key',
-      zcodejwttoken: 'trial-jwt',
+      'account-provider:coding-plan:account:bigmodel-individual-coding-plan:account:123:api-key':
+        encryptZCodeCredentialValue('personal-plan-key'),
+      zcodejwttoken: encryptZCodeCredentialValue('trial-jwt'),
     }), 'utf8');
 
     const catalog = await new ZCodeProviderModels(async () => null).getSupportedModels();
-    assert.equal(catalog.OPTIONS.find((option) => option.group === 'BigModel (个人)')?.value,
-      'account:bigmodel-individual-coding-plan/GLM-5.3-Flash');
-    assert.deepEqual(resolveZCodeModelRef('account:bigmodel-individual-coding-plan/GLM-5.3-Flash', 'high'), {
-      providerId: 'account:bigmodel-individual-coding-plan',
-      modelId: 'GLM-5.3-Flash',
-      variant: 'high',
+    assert.equal(catalog.OPTIONS.find((option) => option.value === 'GLM-5.3-Flash')?.group,
+      undefined);
+    // Bare model ids resolve to the native account provider at send time.
+    assert.deepEqual(buildZCodeSendModelParams('GLM-5.3-Flash', 'high'), {
+      modelSelection: {
+        providerId: 'account:bigmodel-individual-coding-plan',
+        modelId: 'GLM-5.3-Flash',
+        options: { reasoningLevel: 'high' },
+      },
+      modelExecution: { selectionScope: 'execution', requestAuth: { apiKey: 'personal-plan-key' } },
+    });
+    // Saved account-prefixed selections keep working.
+    assert.deepEqual(buildZCodeSendModelParams('account:bigmodel-individual-coding-plan/GLM-5.3-Flash', 'high'), {
+      modelSelection: {
+        providerId: 'account:bigmodel-individual-coding-plan',
+        modelId: 'GLM-5.3-Flash',
+        options: { reasoningLevel: 'high' },
+      },
+      modelExecution: { selectionScope: 'execution', requestAuth: { apiKey: 'personal-plan-key' } },
     });
     for (const legacyRef of [
       'bigmodel-coding-plan/GLM-5.3-Flash',
       'builtin:bigmodel-coding-plan/GLM-5.3-Flash',
     ]) {
-      assert.equal(resolveZCodeModelRef(legacyRef).providerId,
+      assert.equal(buildZCodeSendModelParams(legacyRef)?.modelSelection.providerId,
         'account:bigmodel-individual-coding-plan');
     }
   });
@@ -356,23 +456,22 @@ test('native individual plan remains selectable without a legacy provider config
       'account-provider:coding-plan:account:bigmodel-individual-coding-plan:account:123:api-key': 'personal-key',
     }), 'utf8');
     const catalog = await new ZCodeProviderModels(async () => null).getSupportedModels();
-    assert.equal(catalog.DEFAULT, 'account:bigmodel-individual-coding-plan/GLM-5.3');
-    assert.deepEqual(resolveZCodeModelRef('GLM-5.3-Flash'), {
+    assert.equal(catalog.DEFAULT, 'GLM-5.3');
+    assert.deepEqual(buildZCodeSendModelParams('GLM-5.3-Flash')?.modelSelection, {
       providerId: 'account:bigmodel-individual-coding-plan', modelId: 'GLM-5.3-Flash',
+      options: { reasoningLevel: 'max' },
     });
   });
 });
 
-test('bare personal models only route natively while the plan key is stored', async () => {
+test('account plan selection fails when its credential is missing', async () => {
   await withZCodeStorage(async () => {
-    // No credentials: the bare id keeps its builtin provider fallback.
-    assert.deepEqual(resolveZCodeModelRef('GLM-5.3-Flash'), {
-      providerId: 'builtin:bigmodel-coding-plan', modelId: 'GLM-5.3-Flash',
-    });
-    // Explicit account refs always pass through unchanged.
-    assert.deepEqual(resolveZCodeModelRef('account:bigmodel-start-plan/GLM-5.3-Flash'), {
-      providerId: 'account:bigmodel-start-plan', modelId: 'GLM-5.3-Flash',
-    });
+    assert.throws(() => buildZCodeSendModelParams('account:bigmodel-individual-coding-plan/GLM-5.3-Flash'),
+      /individual.*credential/i);
+    // The trial selection needs its own trial JWT; it never falls back to the
+    // individual key or the engine default.
+    assert.throws(() => buildZCodeSendModelParams('account:bigmodel-start-plan/GLM-5.3-Flash'),
+      /start.*credential/i);
   });
 });
 
@@ -395,12 +494,12 @@ test('a same-name custom model keeps its provider when an individual-plan key ex
     }), 'utf8');
     const catalog = await new ZCodeProviderModels(async () => null).getSupportedModels();
     assert.equal(catalog.OPTIONS[0]?.group, 'custom-provider');
-    assert.equal(resolveZCodeModelRef(catalog.OPTIONS[0].value).providerId,
+    assert.equal(buildZCodeSendModelParams(catalog.OPTIONS[0].value)?.modelSelection.providerId,
       'custom-provider');
   });
 });
 
-test('readZCodeSessionModelInfoFromDb preserves providerId when session ran on start-plan with providerID', async () => {
+test('readZCodeSessionModelInfoFromDb re-scopes start-plan sessions for picker highlighting', async () => {
   await withZCodeStorage(async (storageDir) => {
     const dbDir = path.join(storageDir, 'cli', 'db');
     await mkdir(dbDir, { recursive: true });
@@ -429,13 +528,28 @@ test('readZCodeSessionModelInfoFromDb preserves providerId when session ran on s
           variant: 'max',
         },
       }), 0);
+      insert.run('m_ind', 'sess_individual', 3000, 3000, JSON.stringify({
+        role: 'user',
+        model: {
+          providerID: 'account:bigmodel-individual-coding-plan',
+          modelID: 'GLM-5.3-Flash',
+          variant: 'max',
+        },
+      }), 1);
     } finally {
       db.close();
     }
 
     const { readZCodeSessionModelInfoFromDb } = await import('@/modules/providers/list/zcode/zcode-models.provider.js');
+    // The trial option is the only picker entry keyed by its scoped id, so
+    // the start-plan readback re-attaches the scope for exact matching.
     assert.deepEqual(readZCodeSessionModelInfoFromDb('sess_start_plan'), {
       modelId: 'account:bigmodel-start-plan/GLM-5.3-Flash',
+      variant: 'max',
+    });
+    // Individual-plan sessions report bare ids that match the personal options.
+    assert.deepEqual(readZCodeSessionModelInfoFromDb('sess_individual'), {
+      modelId: 'GLM-5.3-Flash',
       variant: 'max',
     });
   });
@@ -474,8 +588,9 @@ test('getSupportedModels enforces personal whitelist and keeps custom provider g
     const models = new ZCodeProviderModels(async () => null);
     const definition = await models.getSupportedModels();
 
-    // Whitelist blocks GLM-4.7 and OBSOLETE-MODEL from personal provider
-    const personalModels = definition.OPTIONS.filter((opt) => opt.group === 'BigModel (个人)');
+    // Whitelist blocks GLM-4.7 and OBSOLETE-MODEL from personal provider; the
+    // personal plan itself stays ungrouped so the menu reads like a flat list.
+    const personalModels = definition.OPTIONS.filter((opt) => opt.group === undefined);
     assert.deepEqual(
       personalModels.map((opt) => opt.value),
       ['GLM-5.3', 'GLM-5.3-Flash']
