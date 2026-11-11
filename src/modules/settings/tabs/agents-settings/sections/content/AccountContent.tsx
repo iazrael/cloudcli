@@ -1,3 +1,4 @@
+import ProviderCliVersion from '@/modules/settings/tabs/agents-settings/sections/content/ProviderCliVersion';
 import { AlertTriangle, LogIn } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
@@ -166,6 +167,14 @@ export default function AccountContent({ agent, authStatus, onLogin }: AccountCo
               )}
             </div>
           </div>
+
+          <ProviderCliVersion
+            key={agent}
+            agent={agent}
+            installedVersion={authStatus.installedVersion ?? null}
+            textClass={config.textClass}
+            subtextClass={config.subtextClass}
+          />
 
           {!authStatus.loading && authStatus.subscriptionOverride && (
             <SubscriptionOverrideNotice override={authStatus.subscriptionOverride} />

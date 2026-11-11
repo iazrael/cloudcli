@@ -9,8 +9,10 @@ import { tryResolveOpenCodeEnginePath } from '@/modules/providers/list/opencode/
 import { fetchOpenCodeQuota } from '@/modules/providers/list/opencode/opencode-quota.provider.js';
 import { createCliInstallationProbe } from '@/modules/providers/shared/installation/cli-installation-probe.js';
 import type { IProviderAuth } from '@/shared/interfaces.js';
-import type { ProviderAuthStatus, ProviderQuotaData } from '@/shared/types.js';
-import { readObjectRecord, readOptionalString } from '@/shared/utils.js';
+import type {
+  CliVersionProbe, ProviderAuthStatus, ProviderQuotaData } from '@/shared/types.js';
+import {
+  probeCliVersion, readObjectRecord, readOptionalString } from '@/shared/utils.js';
 
 type OpenCodeCredentialsStatus = {
   authenticated: boolean;
@@ -35,22 +37,26 @@ const installationProbe = createCliInstallationProbe({
 
 export class OpenCodeProviderAuth implements IProviderAuth {
   /**
-   * Checks whether the OpenCode CLI is available to the server process.
+   * Checks whether the OpenCode CLI is available to the server process, and
+   * which version it is. Unlike the other CLIs it has always needed a clean
+   * `--version` exit to count as installed.
    */
-  private checkInstalled(): Promise<boolean> {
-    return installationProbe.isInstalled();
+  checkInstalled(): CliVersionProbe {
+    const probe = probeCliVersion('opencode');
+    return { ...probe, installed: probe.exitCode === 0 };
   }
 
   /**
    * Returns OpenCode CLI installation and credential status.
    */
   async getStatus(): Promise<ProviderAuthStatus> {
-    const installed = await this.checkInstalled();
+    const { installed, version: installedVersion } = this.checkInstalled();
     const credentials = await this.checkCredentials();
 
     return {
       installed,
       provider: 'opencode',
+      installedVersion,
       authenticated: credentials.authenticated,
       email: credentials.email,
       method: credentials.method,

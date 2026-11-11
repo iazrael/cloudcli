@@ -511,6 +511,12 @@ export const api = {
     capabilities: () => get('/api/providers/capabilities'),
     authStatus: (provider: string) =>
       get(`/api/providers/${encodeURIComponent(provider)}/auth/status`),
+    // The installed CLI version, the newest npm release, whether this server
+    // can update the CLI and whether it is doing so.
+    cliStatus: (provider: string) =>
+      get(`/api/providers/${encodeURIComponent(provider)}/cli`),
+    updateCli: (provider: string) =>
+      post(`/api/providers/${encodeURIComponent(provider)}/cli/update`),
     claudeSettingsPermissions: () => get('/api/providers/claude/settings-permissions'),
 
     models: (provider: string) => get(`/api/providers/${provider}/models`),

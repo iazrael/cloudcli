@@ -7,6 +7,7 @@ import type {
   LLMProvider,
   McpScope,
   NormalizedMessage,
+  CliVersionProbe,
   ProviderAuthStatus,
   ProviderCurrentActiveModel,
   ProviderMcpCapabilities,
@@ -221,6 +222,13 @@ export interface IProviderAuth {
    * Checks whether the provider is installed and has usable credentials.
    */
   getStatus(): Promise<ProviderAuthStatus>;
+
+  /**
+   * Probes the installed CLI's version directly (`--version` or equivalent).
+   * Optional: providers whose status endpoint already reports a usable
+   * version may leave it out and let `getCliStatus` fall back to `getStatus`.
+   */
+  checkInstalled?(options?: { timeoutMs?: number }): CliVersionProbe;
 
   /**
    * Reads account-level quota and rate-limit status for this provider.

@@ -13,12 +13,14 @@ import {
   stat,
   writeFile,
 } from 'node:fs/promises';
+import spawn from 'cross-spawn';
 import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
+import type { CliVersionProbe } from '@/shared/types.js';
 
 import type { MessageInputForKind, VolatileMessageId } from '../../shared/protocol/messageKinds.js';
 import { VOLATILE_MESSAGE_ID_PREFIX } from '../../shared/protocol/messageKinds.js';
@@ -446,6 +448,36 @@ const READ_ONLY_ROOTS = [...new Set([
  * its own, so one that does not exist on this machine — `/tmp` on Windows — is
  * skipped and the roots after it are still checked.
  */
+/**
+ * One CLI's `--version` answer, for the Settings page's CLI-version card and
+ * its updater. `version` is null when the command did not exit 0 or printed
+ * nothing that looks like a release version.
+ */
+export function parseCliVersion(output: string): string | null {
+  const match = output.match(/(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)/);
+  return match ? match[1] : null;
+}
+
+export function probeCliVersion(command: string, args: string[] = ['--version']): CliVersionProbe {
+  const result = spawn.sync(command, args, {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+    timeout: 5000,
+    windowsHide: true,
+  });
+
+  if (result.error) {
+    const timedOut = (result.error as NodeJS.ErrnoException).code === 'ETIMEDOUT';
+    return { installed: timedOut, exitCode: null, version: null };
+  }
+
+  return {
+    installed: true,
+    exitCode: result.status,
+    version: result.status === 0 ? parseCliVersion(String(result.stdout ?? '')) : null,
+  };
+}
+
 export async function resolvePathUnderRoots(targetPath: string, roots: string[]): Promise<string | null> {
   const normalizedTarget = normalizeProjectPath(targetPath);
   if (!normalizedTarget || !path.isAbsolute(normalizedTarget)) {

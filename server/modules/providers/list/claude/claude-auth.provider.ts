@@ -6,6 +6,7 @@ import { hasKeychainItem } from '@/modules/providers/shared/credentials/macos-ke
 import { createCliInstallationProbe } from '@/modules/providers/shared/installation/cli-installation-probe.js';
 import { resolveClaudeCodeExecutablePath } from '@/shared/claude-cli-path.js';
 import type { IProviderAuth } from '@/shared/interfaces.js';
+import type { CliVersionProbe } from '@/shared/types.js';
 import type {
   ProviderAuthStatus,
   ProviderAuthSubscriptionOverride,
@@ -13,7 +14,8 @@ import type {
   ProviderQuotaResetConsumeInput,
   ProviderQuotaResetConsumeResult,
 } from '@/shared/types.js';
-import { readObjectRecord, readOptionalString } from '@/shared/utils.js';
+import {
+  probeCliVersion, readObjectRecord, readOptionalString } from '@/shared/utils.js';
 
 import { consumeClaudeQuotaReset, fetchClaudeQuota } from './claude-quota.provider.js';
 
@@ -65,22 +67,30 @@ export class ClaudeProviderAuth implements IProviderAuth {
   }
 
   /**
-   * Checks whether the Claude Code CLI is available on this host.
+   * Checks whether the Claude Code CLI that chats run is available on this
+   * host, and which version it is.
    */
-  private checkInstalled(): Promise<boolean> {
-    return installationProbe.isInstalled();
+  checkInstalled(): CliVersionProbe {
+    const cliPath = resolveClaudeCodeExecutablePath(process.env.CLAUDE_CLI_PATH);
+    if (!cliPath) {
+      // Windows with no resolvable CLI: the SDK falls back to the binary it
+      // bundles, so chats still work. Its version is not this CLI's to report.
+      return { installed: true, exitCode: null, version: null };
+    }
+    return probeCliVersion(cliPath);
   }
 
   /**
    * Returns Claude installation and credential status using Claude Code's auth priority.
    */
   async getStatus(): Promise<ProviderAuthStatus> {
-    const installed = await this.checkInstalled();
+    const { installed, version: installedVersion } = this.checkInstalled();
 
     if (!installed) {
       return {
         installed,
         provider: 'claude',
+        installedVersion: null,
         authenticated: false,
         email: null,
         method: null,
@@ -93,6 +103,7 @@ export class ClaudeProviderAuth implements IProviderAuth {
     return {
       installed,
       provider: 'claude',
+      installedVersion,
       authenticated: credentials.authenticated,
       email: credentials.authenticated ? credentials.email || 'Authenticated' : credentials.email,
       method: credentials.method,

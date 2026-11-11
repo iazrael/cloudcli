@@ -776,6 +776,12 @@ export type ProviderAuthSubscriptionOverride = {
 export type ProviderAuthStatus = {
   installed: boolean;
   provider: LLMProvider;
+  /**
+   * Version of the CLI the provider runs, as its `--version` printed it
+   * (`2.1.295`, `2026.07.20-8cc9c0b`), or null when it is not installed or
+   * printed no version.
+   */
+  installedVersion?: string | null;
   authenticated: boolean;
   email: string | null;
   method: string | null;
@@ -804,6 +810,18 @@ export type ProviderAuthStatus = {
  * This intentionally excludes the raw credential secret while still exposing
  * metadata needed for UI rendering and management operations.
  */
+
+/**
+ * What one installed CLI's `--version` (or equivalent) answered, used by the
+ * Settings page's CLI-version card and its updater. `version` is null when the
+ * command did not exit 0 or printed nothing that looks like a version.
+ */
+export type CliVersionProbe = {
+  installed: boolean;
+  exitCode: number | null;
+  version: string | null;
+};
+
 export type CredentialPublicRow = {
   id: number;
   credential_name: string;

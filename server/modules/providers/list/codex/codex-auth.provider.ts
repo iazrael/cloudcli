@@ -1,11 +1,14 @@
+import { createRequire } from 'node:module';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { getCodexHome } from '@/shared/index.js';
 import { createCliInstallationProbe } from '@/modules/providers/shared/installation/cli-installation-probe.js';
 import type { IProviderAuth } from '@/shared/interfaces.js';
-import type { ProviderAuthStatus, ProviderQuotaData, ProviderQuotaResetConsumeInput, ProviderQuotaResetConsumeResult } from '@/shared/types.js';
-import { extractEmailFromJwt, readObjectRecord, readOptionalString } from '@/shared/utils.js';
+import type {
+  CliVersionProbe, ProviderAuthStatus, ProviderQuotaData, ProviderQuotaResetConsumeInput, ProviderQuotaResetConsumeResult } from '@/shared/types.js';
+import {
+  probeCliVersion, extractEmailFromJwt, readObjectRecord, readOptionalString } from '@/shared/utils.js';
 
 import { consumeCodexQuotaReset, fetchCodexQuota } from './codex-quota.provider.js';
 
@@ -20,22 +23,32 @@ const installationProbe = createCliInstallationProbe({ command: () => 'codex' })
 
 export class CodexProviderAuth implements IProviderAuth {
   /**
-   * Checks whether Codex is available to the server runtime.
+   * Checks whether Codex is available to the server runtime, and which
+   * version it is. That is the `@openai/codex` package CloudCLI depends on,
+   * which `@openai/codex-sdk` resolves from node_modules, not a `codex` on
+   * PATH.
    */
-  private checkInstalled(): Promise<boolean> {
-    return installationProbe.isInstalled();
+  checkInstalled(): CliVersionProbe {
+    let launcherPath: string;
+    try {
+      launcherPath = createRequire(import.meta.url).resolve('@openai/codex/bin/codex.js');
+    } catch {
+      return { installed: false, exitCode: null, version: null };
+    }
+    return probeCliVersion(process.execPath, [launcherPath, '--version']);
   }
 
   /**
    * Returns Codex SDK availability and credential status.
    */
   async getStatus(): Promise<ProviderAuthStatus> {
-    const installed = await this.checkInstalled();
+    const { installed, version: installedVersion } = this.checkInstalled();
     const credentials = await this.checkCredentials();
 
     return {
       installed,
       provider: 'codex',
+      installedVersion,
       authenticated: credentials.authenticated,
       email: credentials.email,
       method: credentials.method,

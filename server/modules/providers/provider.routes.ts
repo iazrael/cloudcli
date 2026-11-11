@@ -25,6 +25,7 @@ import type {
   ProviderSkillCreateInput,
   UpsertProviderMcpServerInput,
 } from '@/shared/types.js';
+import { providerCliService } from '@/modules/providers/services/provider-cli.service.js';
 import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/utils.js';
 
 const router = express.Router();
@@ -643,6 +644,24 @@ const parseCustomModelsOnlyPayload = (payload: unknown): boolean => {
 
   return enabled;
 };
+
+/** The installed CLI version, the newest npm release, whether this server can update the CLI and whether it is doing so. */
+router.get(
+  '/:provider/cli',
+  asyncHandler(async (req: Request, res: Response) => {
+    const provider = parseProvider(req.params.provider);
+    res.json(createApiSuccessResponse(await providerCliService.getCliStatus(provider)));
+  }),
+);
+
+/** Runs the CLI's own updater; refused while the provider is busy in a session. */
+router.post(
+  '/:provider/cli/update',
+  asyncHandler(async (req: Request, res: Response) => {
+    const provider = parseProvider(req.params.provider);
+    res.json(createApiSuccessResponse(await providerCliService.updateCli(provider)));
+  }),
+);
 
 router.get(
   '/:provider/auth/status',
