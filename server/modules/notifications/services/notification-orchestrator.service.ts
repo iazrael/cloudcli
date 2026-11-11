@@ -1,4 +1,5 @@
 import webPush from 'web-push';
+import { webhookNotificationsService } from '@/modules/notifications/services/webhook-notifications.service.js';
 
 import { notificationPreferencesDb, pushSubscriptionsDb, sessionsDb } from '@/modules/database/index.js';
 import { sendDesktopNotification as sendDesktopNotificationToClients } from '@/modules/notifications/services/desktop-notification-clients.service.js';
@@ -34,10 +35,12 @@ export type NotificationEvent = {
   createdAt: string;
 };
 
-/** One delivery channel (web push, desktop relay) with its preference gate. */
+/** One delivery channel (web push, desktop relay, outbound webhook) with its preference gate. */
 type NotificationChannel = {
   id: string;
   isEnabled: (preferences: NotificationPreferencesSnapshot) => boolean;
+  /** Webhook 等自带开关的通道：去重窗口不适用于它们（接收方按事件 id 去重）。 */
+  bypassesDedupe?: boolean;
   send: (input: { userId: string | number; event: NotificationEvent; payload: NotificationPayload }) => unknown;
 };
 
@@ -304,6 +307,20 @@ const notificationChannels: NotificationChannel[] = [
     id: 'desktop',
     isEnabled: (preferences) => Boolean(preferences?.channels?.desktop),
     send: ({ userId, payload }) => sendDesktopNotificationToClients(userId, payload)
+  },
+  {
+    id: 'webhook',
+    // Gated by the webhook endpoint row's own `enabled` flag instead of
+    // preferences.channels, which the Settings client rewrites with only its
+    // known keys. The channel sends run lifecycle events only.
+    isEnabled: () => true,
+    bypassesDedupe: true,
+    send: ({ userId, event }) => {
+      if (typeof userId !== 'number') {
+        return null;
+      }
+      return webhookNotificationsService.sendForEvent({ userId, event });
+    }
   }
 ];
 
@@ -324,12 +341,13 @@ export function notifyUserIfEnabled({
   if (!isNotificationEventEnabled(preferences, normalizedEvent)) {
     return;
   }
-  if (isDuplicate(normalizedEvent)) {
-    return;
-  }
+  const duplicate = isDuplicate(normalizedEvent);
 
   const payload = buildNotificationPayload(normalizedEvent);
   for (const channel of notificationChannels) {
+    if (duplicate && !channel.bypassesDedupe) {
+      continue;
+    }
     if (!channel.isEnabled(preferences)) {
       continue;
     }
