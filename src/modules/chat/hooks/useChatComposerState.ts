@@ -1196,7 +1196,11 @@ export function useChatComposerState({
             attachments: uploadedAttachments,
           },
         });
-        setEditingAnchorId(null);
+        // Only the anchor this send read is cleared: an edit begun in another
+        // chat while this send waited must survive it (upstream #1775).
+        if (editingAnchorId) {
+          setEditingAnchorId(null);
+        }
 
         // Recorded under the (possibly just-allocated) session id, so the first
         // message of a new chat lands in the history of the session the user is
@@ -1246,6 +1250,7 @@ export function useChatComposerState({
       isConnected,
       hasActiveBackgroundTasks,
       backgroundTasks,
+      editingAnchorId,
       processingSessions,
       queuedDraft,
       askBeforeSendingOverBackgroundWork,
