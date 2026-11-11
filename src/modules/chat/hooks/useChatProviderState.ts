@@ -686,6 +686,7 @@ export function useChatProviderState({
   // here). Server matrix wins once loaded; until then assume supported, since
   // the primary providers (claude, codex) implement both.
   const supportsMessageEditing = providerCapabilities?.[provider]?.supportsMessageEditing ?? true;
+  const supportsSteering = providerCapabilities?.[provider]?.supportsSteering ?? false;
   const supportsSessionForking = providerCapabilities?.[provider]?.supportsSessionForking ?? true;
 
   const applyProviderCatalog = useCallback((
@@ -828,6 +829,7 @@ export function useChatProviderState({
     provider,
     setProvider,
     supportsMessageEditing,
+    supportsSteering,
     supportsSessionForking,
     providerModels,
     setProviderModel,

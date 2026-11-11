@@ -10,14 +10,14 @@ import type {
   RefObject,
   TouchEvent,
 } from 'react';
-import { PaperclipIcon, MessageSquareIcon, XIcon, Loader2, ArrowUpIcon, PencilIcon } from 'lucide-react';
+import { PaperclipIcon, MessageSquareIcon, MessageSquarePlusIcon, XIcon, Loader2, ArrowUpIcon, PencilIcon } from 'lucide-react';
 
 import { useVoiceInput } from '@/modules/chat/hooks/useVoiceInput';
 import { useVoiceAvailable } from '@/modules/chat/hooks/useVoiceAvailable';
 import type { QueuedDraft } from '@/modules/chat/hooks/useChatComposerState';
 import type { LLMProvider, SessionActivity, ScheduledMessage } from '@/shared/types';
 import { MCP_ELICITATION_TOOL_NAME } from '@/shared/constants';
-import type { BackgroundSendChoice, BackgroundSendPrompt, PendingPermissionRequest, PermissionMode } from '@/shared/types';
+import type { BackgroundSendChoice, BackgroundSendPrompt, PendingPermissionRequest, PendingSteer, PermissionMode } from '@/shared/types';
 import type { ComposerAttachmentBlock, ComposerAttachmentItem, ComposerAttachmentQueue } from '@/shared/types';
 import type { ProviderModelOption } from '@/shared/types';
 import {
@@ -38,6 +38,7 @@ import VoiceInputButton from '@/modules/chat/composer/VoiceInputButton';
 import PermissionRequestsBanner from '@/modules/chat/composer/PermissionRequestsBanner';
 import TokenUsageSummary from '@/modules/chat/composer/TokenUsageSummary';
 import QueuedMessageCard from '@/modules/chat/composer/QueuedMessageCard';
+import SteeredMessageCard from '@/modules/chat/composer/SteeredMessageCard';
 import { ScheduleMessagePopover } from '@/modules/chat/composer/ScheduleMessagePopover';
 import { ScheduledMessageList } from '@/modules/chat/composer/ScheduledMessageList';
 import BackgroundTaskIndicator from '@/modules/chat/composer/BackgroundTaskIndicator';
@@ -158,6 +159,12 @@ type ChatComposerProps = {
   backgroundSendPrompt: BackgroundSendPrompt | null;
   /** Answers the open prompt: send now (stopping the work), queue, or cancel. */
   onResolveBackgroundSendPrompt: (choice: BackgroundSendChoice) => void;
+  /** Whether the provider can take a message into a running turn; gates the composer's Steer button. */
+  supportsSteering?: boolean;
+  /** Sends the current draft into the running turn (chat.steer) instead of queueing it. */
+  onSteerFromComposer?: () => void;
+  /** Messages sent into the running turn that the agent has not read yet, each shown as a card above the composer until its echo lands in the transcript. */
+  pendingSteers?: PendingSteer[];
 }
 
 /**
@@ -168,6 +175,10 @@ type ChatComposerProps = {
  * the list above the input and are still sent on time.
  */
 const SHOW_SCHEDULE_TRIGGER = true;
+
+// A stable empty default, so a composer with no steered messages (every
+// caller but the chat tab) does not get a new array each render.
+const NO_PENDING_STEERS: PendingSteer[] = [];
 
 function ChatComposer({
   pendingPermissionRequests,
@@ -248,6 +259,9 @@ function ChatComposer({
   onForceSendQueuedDraft,
   backgroundSendPrompt,
   onResolveBackgroundSendPrompt,
+  supportsSteering = false,
+  pendingSteers = NO_PENDING_STEERS,
+  onSteerFromComposer,
 }: ChatComposerProps) {
   const { t } = useTranslation('chat');
   const fileDropdownRef = useRef<HTMLDivElement | null>(null);
@@ -323,6 +337,9 @@ function ChatComposer({
   // sent by this button, so it is Send rather than Stop then.
   const offersStop = isLoading && canAbortSession && !(hasDraftContent && !isBusy);
   const canQueueDraft = isBusy && hasDraftContent;
+  // A reply is streaming and the provider can take a message into it: the
+  // composer offers Steer beside the queueing send button (upstream #1760).
+  const canSteerRunningTurn = supportsSteering && isReplyInFlight && hasDraftContent && !hasPendingPermissions;
   const submitHint = canQueueDraft
     ? hasQueuedDraft
       ? sendByCtrlEnter
@@ -402,6 +419,10 @@ function ChatComposer({
           onAbort={backgroundTasks.every((task) => task.taskId) ? onAbortBackgroundTasks : undefined}
         />
       )}
+
+      {pendingSteers.map((steer) => (
+        <SteeredMessageCard key={steer.messageId} steer={steer} providerLabel={providerLabel} />
+      ))}
 
       {queuedDraft && (
         <QueuedMessageCard
@@ -596,6 +617,22 @@ function ChatComposer({
               onSelectPermissionMode={onSelectPermissionMode}
               providerLabel={providerLabel}
             />
+
+            {canSteerRunningTurn && onSteerFromComposer && (
+              <PromptInputButton
+                tooltip={{ content: t('input.steer.button', { provider: providerLabel, defaultValue: 'Send into the running {{provider}} turn' }) }}
+                onClick={(e: MouseEvent<HTMLButtonElement>) => {
+                  e.preventDefault();
+                  onSteerFromComposer();
+                }}
+                disabled={isSubmitting || Boolean(attachmentBlock)}
+                aria-label={t('input.steer.button', { provider: providerLabel, defaultValue: 'Send into the running {{provider}} turn' })}
+                title={t('input.steer.button', { provider: providerLabel, defaultValue: 'Send into the running {{provider}} turn' })}
+                className="h-10 w-10 sm:h-10 sm:w-10"
+              >
+                <MessageSquarePlusIcon className="h-4 w-4" />
+              </PromptInputButton>
+            )}
 
             <PromptInputSubmit
               onClick={

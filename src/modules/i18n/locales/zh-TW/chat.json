@@ -319,6 +319,13 @@
         "queue": "排隊",
         "sendAnyway": "仍要送出"
       }
+    },
+    "steer": {
+      "label": "插話",
+      "sending": "送出中…",
+      "willRead": "{{provider}} 會在下一個工具調用邊界讀取",
+      "attachments": "{{count}} 個附件",
+      "button": "插入正在執行的 {{provider}} 回合"
     }
   },
   "projectSelection": {

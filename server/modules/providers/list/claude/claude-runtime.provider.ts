@@ -2446,6 +2446,10 @@ async function runClaudeProcess(
         if (stillOutstanding) {
           heldForBackgroundWork = true;
           scheduleRelease();
+        } else if (pendingSteerIds.size > 0) {
+          // The steered follow-up turn the CLI is about to run keeps stdin
+          // open on its own; the steer grace timer above is the backstop.
+          heldForBackgroundWork = false;
         } else if (!pendingTurn) {
           // Either nothing was backgrounded, or the background work just
           // reported in — the process waits for the next turn, idle.

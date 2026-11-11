@@ -1280,13 +1280,14 @@ export class ClaudeSessionsProvider implements IProviderSessions {
     // a row without its own uuid produces messages with no anchor at all.
     const raw = readObjectRecord(compactProviderPayload(rawMessage));
     const anchorId = typeof raw?.uuid === 'string' && raw.uuid ? raw.uuid : null;
-    if (anchorId) {
+    if (anchorId && this.steerHistoryMessages !== messages) {
       for (const message of messages) {
         if (message.role === 'user') {
           message.transcriptAnchorId = anchorId;
         }
       }
     }
+    this.steerHistoryMessages = null;
 
     return messages;
   }
@@ -1299,6 +1300,9 @@ export class ClaudeSessionsProvider implements IProviderSessions {
   private consumeCompactBoundary(sessionId: string | null): boolean {
     return this.sessionsAwaitingCompactSummary.delete(compactBoundaryKey(sessionId));
   }
+
+  /** 归一化时的直通标记：steer 的 queued_command 转换结果不做锚盖写（upstream #1760）。 */
+  private steerHistoryMessages: NormalizedMessage[] | null = null;
 
   private normalizeMessageRows(rawMessage: unknown, sessionId: string | null): NormalizedMessage[] {
     const raw = readObjectRecord(compactProviderPayload(rawMessage));
@@ -1321,6 +1325,33 @@ export class ClaudeSessionsProvider implements IProviderSessions {
     const messages: NormalizedMessage[] = [];
     const ts = raw.timestamp || new Date().toISOString();
     const baseId = raw.uuid || generateMessageId('claude');
+
+    // A message steered into a running turn that Claude read at a tool-call
+    // boundary is stored as a `queued_command` attachment of that turn rather
+    // than as a user row. It reads as the user's message, at the point Claude
+    // read it — under the id it was sent with (`source_uuid`), which is the id
+    // the live echo carried, so the two reconcile into one bubble.
+    // `commandMode` other than `prompt` (task notifications and the like) is
+    // the CLI talking to itself, not the user.
+    if (raw.type === 'attachment') {
+      const attachment = readObjectRecord(raw.attachment);
+      const commandMode = attachment?.commandMode ?? 'prompt';
+      if (attachment?.type === 'queued_command' && commandMode === 'prompt' && attachment.prompt) {
+        const steered = this.normalizeMessageRows({
+          type: 'user',
+          uuid: typeof attachment.source_uuid === 'string' && attachment.source_uuid ? attachment.source_uuid : baseId,
+          timestamp: ts,
+          message: { role: 'user', content: attachment.prompt },
+        }, sessionId);
+        // The message read mid-turn is stored under the turn it joined, not as
+        // a user row of its own: no anchor for editing (upstream #1760).
+        for (const message of steered) {
+          delete message.transcriptAnchorId;
+        }
+        this.steerHistoryMessages = steered;
+        return steered;
+      }
+    }
 
     // The live stream reports on background work — a launched workflow, agent
     // or shell command — through four `system` subtypes that the transcript

@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
 
 import type { ServerEvent } from '@/shared/context/WebSocketContext';
+import type { SteerOutcome } from '@/shared/types';
 import { showCompletionTitleIndicator } from '@/shared/utils';
 import { playChatCompletionSound, playNotificationSound } from '@/modules/chat/utils/notificationSound';
 import type { MarkSessionIdle, MarkSessionProcessing, SessionActivityMap, PendingPermissionRequest, ProjectSession, LLMProvider } from '@/shared/types';
@@ -39,6 +40,12 @@ type UseChatRealtimeHandlersArgs = {
   /** Which sessions are busy; a `background_tasks` frame must not demote a reply in flight. */
   processingSessions?: SessionActivityMap;
   onWebSocketReconnect?: () => void;
+  /**
+   * Reports what became of a message sent into a running turn, so the
+   * composer can settle its card: the server's acceptance or refusal, and —
+   * for every live user message, steered or not — `delivered` with its id.
+   */
+  onSteerOutcome?: (sessionId: string, messageId: string, outcome: SteerOutcome) => void;
   requestLatestMessages: (sessionId: string, allowNetwork?: boolean) => Promise<void>;
   sessionStore: SessionStore;
 }
@@ -71,6 +78,7 @@ export function useChatRealtimeHandlers({
   onSessionIdle,
   processingSessions,
   onWebSocketReconnect,
+  onSteerOutcome,
   requestLatestMessages,
   sessionStore,
 }: UseChatRealtimeHandlersArgs) {
@@ -127,6 +135,34 @@ export function useChatRealtimeHandlers({
         for (const sessionId of sessions) executeDirective({ effect: 'replay_request', sessionId });
         onWebSocketReconnect?.();
         return;
+      }
+
+      // Steer bookkeeping — owned by useChatComposerState's pendingSteers.
+      // `chat_steer_accepted` and the STEER_UNAVAILABLE protocol error are
+      // free-shaped frames, never transcript rows.
+      const freeFrame = msg as unknown as { kind?: unknown; sessionId?: unknown; messageId?: unknown; code?: unknown };
+      if (freeFrame.kind === 'chat_steer_accepted') {
+        if (typeof freeFrame.sessionId === 'string' && typeof freeFrame.messageId === 'string') {
+          onSteerOutcome?.(freeFrame.sessionId, freeFrame.messageId, 'accepted');
+        }
+        return;
+      }
+      if (freeFrame.kind === 'protocol_error' && freeFrame.code === 'STEER_UNAVAILABLE') {
+        if (typeof freeFrame.sessionId === 'string' && typeof freeFrame.messageId === 'string') {
+          onSteerOutcome?.(freeFrame.sessionId, freeFrame.messageId, 'refused');
+        }
+        return;
+      }
+      // A user message on the live stream is a steered message the agent just
+      // read (the turn's own prompt is never echoed); the composer drops its
+      // card if it is one of its own.
+      const liveFrame = msg as unknown as { kind?: unknown; sessionId?: unknown; role?: unknown; id?: unknown };
+      if (liveFrame.kind === 'text' && liveFrame.role === 'user' && typeof liveFrame.id === 'string') {
+        onSteerOutcome?.(
+          typeof liveFrame.sessionId === 'string' ? liveFrame.sessionId : (activeViewSessionIdRef.current ?? ''),
+          liveFrame.id,
+          'delivered',
+        );
       }
 
       // Sidebar/global events — owned by useProjectsState; queued-message

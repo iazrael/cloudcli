@@ -330,6 +330,13 @@
         "sendAnyway": "Send anyway"
       }
     },
+    "steer": {
+      "label": "Steering",
+      "sending": "Sending…",
+      "willRead": "{{provider}} reads it at its next tool call",
+      "attachments": "{{count}} files attached",
+      "button": "Send into the running {{provider}} turn"
+    },
     "controls": {
       "stopGeneration": "Stop Generation",
       "pressEscToStop": "Press Esc anytime to stop"

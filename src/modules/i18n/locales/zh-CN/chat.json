@@ -300,6 +300,13 @@
         "queue": "排队",
         "sendAnyway": "仍要发送"
       }
+    },
+    "steer": {
+      "label": "插话",
+      "sending": "发送中…",
+      "willRead": "{{provider}} 会在下一个工具调用边界读取",
+      "attachments": "{{count}} 个附件",
+      "button": "插入正在运行的 {{provider}} 回合"
     }
   },
   "projectSelection": {

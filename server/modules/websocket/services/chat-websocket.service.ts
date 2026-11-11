@@ -210,7 +210,7 @@ async function handleChatSteer(
   const attachments = readVerifiedAttachments(clientOptions);
 
   if (!content.trim() && attachments.length === 0) {
-    sendProtocolError(ws, 'MESSAGE_REQUIRED', 'chat.steer requires a message.', sessionId);
+    sendProtocolError(ws, 'MESSAGE_REQUIRED', 'chat.steer requires a message.', sessionId, { messageId });
     return;
   }
 
@@ -229,6 +229,7 @@ async function handleChatSteer(
       'STEER_UNAVAILABLE',
       `Session "${sessionId}" has no running turn to send the message into.`,
       sessionId,
+      { messageId },
     );
     return;
   }
@@ -260,13 +261,15 @@ function sendProtocolError(
   ws: WebSocket,
   code: string,
   error: string,
-  sessionId?: string
+  sessionId?: string,
+  details?: Record<string, unknown>
 ): void {
   sendJson(ws, {
     kind: 'protocol_error',
     code,
     error,
     sessionId: sessionId ?? null,
+    ...(details ?? {}),
     timestamp: new Date().toISOString(),
   });
 }

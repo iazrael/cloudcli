@@ -67,6 +67,7 @@ function ChatInterface({
     providerModels,
     setProviderModel,
     supportsMessageEditing,
+    supportsSteering,
     supportsSessionForking,
     currentProviderEffort,
     currentProviderEffortOptions,
@@ -224,6 +225,9 @@ function ChatInterface({
     canForceSendQueuedDraft,
     backgroundSendPrompt,
     resolveBackgroundSendPrompt,
+    pendingSteers,
+    handleSteerOutcome,
+    steerFromComposer,
   } = useChatComposerState({
     selectedProject,
     selectedSession,
@@ -234,6 +238,7 @@ function ChatInterface({
     currentProviderModel,
     currentProviderEffort,
     isLoading: isProcessing,
+    supportsSteering,
     processingSessions,
     canAbortSession,
     tokenBudget,
@@ -299,6 +304,7 @@ function ChatInterface({
     onSessionProcessing,
     onSessionIdle,
     processingSessions,
+    onSteerOutcome: handleSteerOutcome,
     onWebSocketReconnect: handleWebSocketReconnect,
     requestLatestMessages,
     sessionStore,
@@ -562,6 +568,9 @@ function ChatInterface({
           onForceSendQueuedDraft={canForceSendQueuedDraft ? forceSendQueuedDraft : undefined}
           backgroundSendPrompt={backgroundSendPrompt}
           onResolveBackgroundSendPrompt={resolveBackgroundSendPrompt}
+          supportsSteering={supportsSteering}
+          pendingSteers={pendingSteers}
+          onSteerFromComposer={supportsSteering ? steerFromComposer : undefined}
         />
         </div>
       </div>
