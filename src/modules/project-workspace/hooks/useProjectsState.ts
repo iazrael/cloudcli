@@ -82,10 +82,21 @@ type ProjectSessionPage = Pick<Project, 'sessions' | 'sessionMeta'>;
 
 const removeSessionFromProject = (project: Project, sessionIdToDelete: string): Project => {
   const sessions = project.sessions ?? [];
-  const nextSessions = sessions.filter((session) => session.id !== sessionIdToDelete);
-  if (nextSessions.length === sessions.length) {
-    return project;
-  }
+  let changed = false;
+  const nextSessions = sessions.filter((session) => {
+    if (session.id !== sessionIdToDelete) return true;
+    changed = true;
+    return false;
+  }).map((session) => {
+    // Deleting a fork's ancestor also drops it from the descendants' context
+    // rows; an off-page ancestor deletes through this path alone.
+    const ancestors = session.forkAncestors;
+    if (!ancestors?.some((ancestor) => ancestor.id === sessionIdToDelete)) return session;
+    changed = true;
+    return { ...session, forkAncestors: ancestors.filter((ancestor) => ancestor.id !== sessionIdToDelete) };
+  });
+  if (!changed) return project;
+
   const updatedProject: Project = { ...project, sessions: nextSessions };
   const totalSessions = Math.max(0, Number(project.sessionMeta?.total ?? 0) - 1);
   updatedProject.sessionMeta = {
@@ -144,8 +155,26 @@ const applySessionTitleToProject = (
 // Writes a confirmed rename onto the matching sidebar row. Returns the same
 // project when it holds no such row, or the row already carries that title, so
 // the sidebar list does not re-render for projects the rename did not touch.
-const renameSessionInProject = (project: Project, sessionIdToRename: string, summary: string): Project =>
-  applySessionTitleToProject(project, new Set([sessionIdToRename]), summary);
+const renameSessionInProject = (project: Project, sessionIdToRename: string, summary: string): Project => {
+  const sessions = project.sessions ?? [];
+  let changed = false;
+  const nextSessions = sessions.map((session) => {
+    let next = session;
+    if (session.id === sessionIdToRename && session.summary !== summary) {
+      next = { ...next, summary };
+    }
+    // An off-page ancestor only appears inside the visible forks' context, so
+    // the rename must reach those rows too.
+    if (session.forkAncestors?.some((ancestor) => ancestor.id === sessionIdToRename && ancestor.summary !== summary)) {
+      next = { ...next, forkAncestors: session.forkAncestors.map((ancestor) => (
+        ancestor.id === sessionIdToRename ? { ...ancestor, summary } : ancestor
+      )) };
+    }
+    if (next !== session) changed = true;
+    return next;
+  });
+  return changed ? { ...project, sessions: nextSessions } : project;
+};
 
 const DEFAULT_PROVIDER: LLMProvider = 'claude';
 
@@ -259,7 +288,10 @@ const upsertSessionIntoProject = (project: Project, event: SessionUpsertedEvent)
 
   const next: Project = { ...project, sessions: nextSessions };
   if (inserted) {
-    const total = Number(project.sessionMeta?.total ?? 0) + 1;
+    // A session already carried as an ancestor context of a loaded fork is
+    // not a new row to count — the upsert just gives it a live row.
+    const wasAncestor = sessions.some((session) => session.forkAncestors?.some((ancestor) => aliasIds.has(ancestor.id)));
+    const total = Number(project.sessionMeta?.total ?? 0) + (wasAncestor ? 0 : 1);
     next.sessionMeta = {
       ...project.sessionMeta,
       total,
