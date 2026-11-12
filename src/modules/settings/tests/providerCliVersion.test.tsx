@@ -405,11 +405,13 @@ describe('AccountContent CLI version row', () => {
       <AccountContent
         agent="claude"
         authStatus={{
+          installed: true,
           authenticated: true,
           email: 'someone@example.com',
           method: 'credentials_file',
           error: null,
           loading: false,
+          loginCommand: null,
           installedVersion: '2.1.295',
         }}
         onLogin={() => {}}

@@ -1,6 +1,6 @@
 import { memo, useState } from 'react';
 import type { KeyboardEvent } from 'react';
-import { Check, CheckSquare, Edit2, GitBranch, Loader2, MoreHorizontal, Pin, PinOff, Square, Trash2, X } from 'lucide-react';
+import { Archive, Check, CheckSquare, Edit2, GitBranch, Loader2, MoreHorizontal, Pin, PinOff, Square, Trash2, X } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
 import { Badge, Dialog, DialogContent, DialogTitle, LLMProviderLogo, Tooltip, buttonVariants } from '@/shared/ui';
@@ -8,6 +8,7 @@ import { cn, getSessionWorktreeLabel } from '@/shared/utils';
 import type { LLMProvider, Project, ProjectSession, SessionWithProvider } from '@/shared/types';
 import { createSessionViewModel, formatCompactAge } from '@/modules/sidebar/utils/sidebarProjectFormatting';
 import { useCompactSidebar } from '@/modules/sidebar/hooks/useCompactSidebar';
+import { useSessionForkingProviders } from '@/shared/hooks/useProviderCapabilities';
 import { getProviderDisplayName } from '@/shared/providerDisplay';
 import { useProviderSessionIdCopy } from '@/modules/sidebar/hooks/useProviderSessionIdCopy';
 import SessionOptions from '@/modules/sidebar/SessionOptions';
@@ -156,6 +157,11 @@ function SidebarSessionItem({
       onCancelEditingSession();
     }
   };
+
+  // The mobile sheet follows the same capability and running-session rules as
+  // the desktop SessionOptions menu. The capability request is shared by rows.
+  const forkableProviders = useSessionForkingProviders();
+  const canForkMobile = Boolean(onForkSession) && forkableProviders.has(session.__provider) && !isProcessing;
 
   const startMobileRename = () => {
     onStartEditingSession(project.projectId, session.id, sessionView.sessionName);
@@ -361,6 +367,23 @@ function SidebarSessionItem({
                   <span className="text-sm font-medium">{t('sessions.renameSession')}</span>
                 </button>
 
+                {canForkMobile && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMobileOptionsOpen(false);
+                      onForkSession?.(session);
+                    }}
+                    className="flex min-h-12 w-full items-center gap-3 rounded-xl border border-border bg-muted/35 px-4 py-3 text-left text-foreground transition-colors active:bg-muted"
+                  >
+                    <GitBranch className="h-5 w-5 flex-shrink-0" />
+                    <span>
+                      <span className="block text-sm font-medium">{t('sessions.forkSession')}</span>
+                      <span className="mt-0.5 block text-xs text-muted-foreground">{t('sessions.forkSessionDescription')}</span>
+                    </span>
+                  </button>
+                )}
+
                 {onSetSessionPinned && (
                   <button
                     type="button"
@@ -403,6 +426,21 @@ function SidebarSessionItem({
                   </span>
                 </button>
 
+                {!isProcessing && onDeleteSession && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMobileOptionsOpen(false);
+                      // 归档 = 同一端点的软删;确认弹层由调用方的 pendingDeletion 流负责。
+                      onDeleteSession(session.id, sessionView.sessionName);
+                    }}
+                    className="flex min-h-12 w-full items-center gap-3 rounded-xl border border-border bg-muted/35 px-4 py-3 text-left text-foreground transition-colors active:bg-muted"
+                  >
+                    <Archive className="h-5 w-5 flex-shrink-0" />
+                    <span className="text-sm font-medium">{t('sessions.archiveSession')}</span>
+                  </button>
+                )}
+
                 {!isProcessing && (
                   <button
                     type="button"
@@ -413,7 +451,7 @@ function SidebarSessionItem({
                     className="flex min-h-12 w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-red-600 transition-colors active:bg-red-500/10 dark:text-red-400"
                   >
                     <Trash2 className="h-5 w-5 flex-shrink-0" />
-                    <span className="text-sm font-medium">{t('sessions.archiveOrDelete')}</span>
+                    <span className="text-sm font-medium">{t('sessions.deleteSession')}</span>
                   </button>
                 )}
               </div>
