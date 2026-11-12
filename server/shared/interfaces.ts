@@ -2,6 +2,9 @@ import type {
   ActiveBackgroundTask,
   AnyRecord,
   SessionBackgroundWork,
+  SideQuestionOutcome,
+  SideQuestionRequest,
+  SideQuestionSink,
   FetchHistoryOptions,
   FetchHistoryResult,
   LLMProvider,
@@ -133,6 +136,12 @@ export interface IProviderRuntime {
    * it — the caller sends the message the ordinary way instead.
    */
   steer?(sessionId: string, command: string, options: { messageId: string; images?: unknown; files?: unknown }): Promise<boolean>;
+  /**
+   * Answers a side question on a read-only fork of the provider's own
+   * session (upstream #1673): never rejects, all failures come back as
+   * error outcomes. Absent means the provider has no side questions.
+   */
+  askSideQuestion?(request: SideQuestionRequest, sink: SideQuestionSink, context: ProviderRuntimeContext): Promise<SideQuestionOutcome>;
 }
 
 /**

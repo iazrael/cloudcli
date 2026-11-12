@@ -51,8 +51,12 @@ import type {
   ProviderModelsDefinition,
   ProviderRuntimeContext,
   ProviderRuntimeWriter,
-  SessionBackgroundWork
+  SessionBackgroundWork,
+  SideQuestionOutcome,
+  SideQuestionRequest,
+  SideQuestionSink
 } from '@/shared/types.js';
+import { askClaudeSideQuestion } from '@/modules/providers/list/claude/claude-side-question.provider.js';
 
 export { createBackgroundWorkTracker, extractBackgroundTasks, startsBackgroundWork } from '@/modules/providers/list/claude/claude-background-work.js';
 
@@ -2884,6 +2888,21 @@ export const claudeRuntime = {
   run: queryClaudeSDK,
   abort: abortClaudeSDKSession,
   steer: steerClaudeSDKSession,
+  /**
+   * Answers a side question on a read-only fork of the session's native
+   * process (upstream #1673). The session's live background tasks are told
+   * to the fork in the prompt, so it never mistakes their state.
+   */
+  askSideQuestion: (request: SideQuestionRequest, sink: SideQuestionSink): Promise<SideQuestionOutcome> =>
+    askClaudeSideQuestion(request, sink, {
+      liveTasks: backgroundWork.activeTasks(request.appSessionId).map((task) => ({
+        taskId: task.taskId ?? task.id,
+        toolUseId: task.id,
+        taskType: task.toolName,
+        description: task.description ?? task.command ?? '',
+        startedAt: task.startedAt,
+      })),
+    }),
   permissions: {
     resolve: resolveToolApproval,
     listPending: getPendingApprovalsForSession,

@@ -1,5 +1,6 @@
 import express, { type Request, type Response } from 'express';
 
+import { sideQuestionsService } from '@/modules/providers/services/side-questions.service.js';
 import { providerAuthService } from '@/modules/providers/services/provider-auth.service.js';
 import { claudeSettingsPermissionsService } from '@/modules/providers/services/claude-settings-permissions.service.js';
 import { providerCapabilitiesService } from '@/modules/providers/services/provider-capabilities.service.js';
@@ -26,7 +27,7 @@ import type {
   UpsertProviderMcpServerInput,
 } from '@/shared/types.js';
 import { providerCliService } from '@/modules/providers/services/provider-cli.service.js';
-import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/utils.js';
+import { AppError, asyncHandler, createApiSuccessResponse, SIDE_QUESTION_ID_PATTERN } from '@/shared/utils.js';
 
 const router = express.Router();
 
@@ -1113,6 +1114,34 @@ router.post(
   }),
 );
 
+// Declared before the generic `/sessions/:sessionId` routes below, like every
+// other session-specific route in this file.
+router.delete(
+  '/sessions/:sessionId/side-questions/:sideQuestionId',
+  asyncHandler(async (req: Request, res: Response) => {
+    const sessionId = parseSessionId(req.params.sessionId);
+    const sideQuestionId = SIDE_QUESTION_ID_PATTERN.test(String(req.params.sideQuestionId))
+      ? String(req.params.sideQuestionId)
+      : '';
+    if (!sideQuestionId) {
+      throw new AppError('Invalid sideQuestionId.', {
+        code: 'INVALID_SIDE_QUESTION_ID',
+        statusCode: 400,
+      });
+    }
+    // `dismiss` broadcasts the `dismissed` event itself, through the same
+    // connected-clients fan-out the `chat.side_question` handler uses.
+    const deleted = sideQuestionsService.dismiss(sessionId, sideQuestionId);
+    if (!deleted) {
+      throw new AppError('Side question not found.', {
+        code: 'SIDE_QUESTION_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+    res.json(createApiSuccessResponse({ deleted: true }));
+  }),
+);
+
 // Must stay registered after the static and session-specific routes so their
 // literals never match the generic `:sessionId` parameter.
 router.get(
@@ -1187,7 +1216,11 @@ router.get(
       limit,
       offset,
     });
-    res.json(createApiSuccessResponse(result));
+    // The session's whole side-question list, on every page: side questions
+    // are not part of the paged transcript, and the client wants to draw
+    // every one of them regardless of which page it is looking at.
+    const sideQuestions = sideQuestionsService.listForSession(sessionId);
+    res.json(createApiSuccessResponse({ ...result, sideQuestions }));
   }),
 );
 

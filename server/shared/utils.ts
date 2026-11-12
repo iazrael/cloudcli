@@ -2687,8 +2687,6 @@ export function readQueuedChatMessage(value: unknown): QueuedChatMessage | null 
   return { content, ...(options ? { options } : {}), attachments };
 }
 
-export const SIDE_QUESTION_ID_PATTERN = /^[A-Za-z0-9_-]{1,100}$/;
-
 // ---------------------------
 //----------------- SIDE-QUESTION ANSWER JOINING ------------
 /**
@@ -2742,3 +2740,14 @@ export function errorMessage(error: unknown): string {
   }
   return String(error ?? 'The side question failed for an unknown reason.');
 }
+
+//----------------- SIDE QUESTION IDS ------------
+/**
+ * Shape a client-generated side question id may take (upstream #1673): 1 to
+ * 100 characters of `[A-Za-z0-9_-]`. The websocket frame handler and the
+ * delete route both validate against it, so a malformed id is refused before
+ * it reaches the store or any provider runtime.
+ *
+ * Consumers: chat-websocket.service, provider.routes.
+ */
+export const SIDE_QUESTION_ID_PATTERN = /^[A-Za-z0-9_-]{1,100}$/;

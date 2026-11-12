@@ -2,6 +2,7 @@ import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import { providerModelsService } from '@/modules/providers/services/provider-models.service.js';
 import { sessionsService } from '@/modules/providers/services/sessions.service.js';
 import type { IProvider } from '@/shared/interfaces.js';
+import { errorMessage } from '@/shared/utils.js';
 import type {
   ActiveBackgroundTask,
   TaskBridgeEngineCall,
@@ -12,6 +13,9 @@ import type {
   ProviderRunFunction,
   ProviderRuntimeContext,
   ProviderRuntimeWriter,
+  SideQuestionOutcome,
+  SideQuestionRequest,
+  SideQuestionSink,
 } from '@/shared/types.js';
 
 type ProviderRuntimeServiceDependencies = {
@@ -255,6 +259,31 @@ export function createProviderRuntimeService(
       // A runtime that cannot write into a running turn has nothing to steer.
       const { runtime } = dependencies.resolveProvider(providerName);
       return Boolean(await runtime.steer?.(sessionId, command, options));
+    },
+
+    /**
+     * Answers a side question on the provider's own session (upstream
+     * #1673). Never rejects: a missing runtime, a thrown resolve and a
+     * thrown call all come back as error outcomes, which is what the
+     * side-questions service settles the question with.
+     */
+    async askSideQuestion(
+      providerName: LLMProvider,
+      request: SideQuestionRequest,
+      sink: SideQuestionSink,
+    ): Promise<SideQuestionOutcome> {
+      try {
+        const provider = dependencies.resolveProvider(providerName);
+
+        if (provider.runtime.askSideQuestion) {
+          return await provider.runtime.askSideQuestion(request, sink, createRuntimeContext(provider));
+        }
+
+        // No runtime support: name it and stop, instead of guessing at an answer.
+        return { status: 'error', error: `Provider "${providerName}" has no side questions.`, answer: '' };
+      } catch (error) {
+        return { status: 'error', error: errorMessage(error), answer: '' };
+      }
     },
 
     isBackgroundWorkPending,
