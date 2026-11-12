@@ -7,6 +7,7 @@ type AppBrandingDependencies = {
   readFile(filePath: string): string;
   fileExists(filePath: string): boolean;
   logError(message: string, detail?: string): void;
+  logWarn(message: string, detail?: string): void;
 };
 
 /**
@@ -63,10 +64,10 @@ export function createAppBrandingService(dependencies: AppBrandingDependencies) 
   const appName = configuredName || dependencies.hostname().trim() || 'CloudCLI';
   const shortName = toShortName(appName);
 
-  // Both responses are cached because the name is fixed for the lifetime of
-  // the process and the packaged files only change across restarts.
-  let cachedManifestJson: string | null = null;
-  let cachedIndexHtml: string | null | undefined;
+  // Neither response is cached: this fork updates in place, and vite empties
+  // dist/ on every rebuild. A cached shell would reference deleted hashed
+  // assets (white screen until restart) and a cached manifest would freeze the
+  // icon `?v=` cache-busting. The files are a few KB on local disk.
 
   function loadManifestTemplate(): Record<string, unknown> | null {
     for (const relativePath of RELATIVE_MANIFEST_PATHS) {
@@ -78,8 +79,8 @@ export function createAppBrandingService(dependencies: AppBrandingDependencies) 
         return JSON.parse(dependencies.readFile(manifestPath)) as Record<string, unknown>;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        dependencies.logError('Failed to read the app manifest template:', message);
-        return null;
+        dependencies.logError(`Failed to read the app manifest template at ${manifestPath}:`, message);
+        // Fall through to the next candidate (dist/ after the source copy).
       }
     }
     return null;
@@ -98,17 +99,12 @@ export function createAppBrandingService(dependencies: AppBrandingDependencies) 
 
     /** Returns the manifest served at /manifest.json with this node's name fields. */
     getManifestJson(): string {
-      if (cachedManifestJson !== null) {
-        return cachedManifestJson;
-      }
-
       const template = loadManifestTemplate() ?? { start_url: '/', display: 'standalone' };
-      cachedManifestJson = JSON.stringify(
+      return JSON.stringify(
         { ...template, name: appName, short_name: shortName },
         null,
         2,
       );
-      return cachedManifestJson;
     },
 
     /**
@@ -117,27 +113,33 @@ export function createAppBrandingService(dependencies: AppBrandingDependencies) 
      * the Vite dev redirect.
      */
     renderIndexHtml(): string | null {
-      if (cachedIndexHtml !== undefined) {
-        return cachedIndexHtml;
-      }
-
       const indexPath = path.join(dependencies.appRoot, RELATIVE_INDEX_PATH);
-      let renderedHtml: string | null = null;
-      if (dependencies.fileExists(indexPath)) {
-        try {
-          renderedHtml = dependencies.readFile(indexPath).replace(
-            /(<meta name="apple-mobile-web-app-title" content=")[^"]*(")/,
-            `$1${escapeHtmlAttribute(appName)}$2`,
-          );
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          dependencies.logError('Failed to inject the app name into index.html:', message);
-          renderedHtml = null;
-        }
+      if (!dependencies.fileExists(indexPath)) {
+        return null;
       }
 
-      cachedIndexHtml = renderedHtml;
-      return renderedHtml;
+      try {
+        const source = dependencies.readFile(indexPath);
+        let replaced = false;
+        const escapedName = escapeHtmlAttribute(appName);
+        // A replacer function (not a string) so `$&`, `$$`, `$'` in the name
+        // cannot be interpreted as replacement patterns.
+        const rendered = source.replace(
+          /(<meta name="apple-mobile-web-app-title" content=")[^"]*(")/,
+          (_match, prefix: string, suffix: string) => {
+            replaced = true;
+            return `${prefix}${escapedName}${suffix}`;
+          },
+        );
+        if (!replaced) {
+          dependencies.logWarn('No apple-mobile-web-app-title meta tag found in index.html; PWA name not injected.');
+        }
+        return rendered;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        dependencies.logError('Failed to inject the app name into index.html:', message);
+        return null;
+      }
     },
   };
 }

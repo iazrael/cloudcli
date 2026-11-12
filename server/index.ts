@@ -118,6 +118,7 @@ const appBranding = createAppBrandingService({
     readFile: (filePath) => fs.readFileSync(filePath, 'utf8'),
     fileExists: (filePath) => fs.existsSync(filePath),
     logError: (message, detail) => console.error(message, detail ?? ''),
+    logWarn: (message, detail) => console.warn(message, detail ?? ''),
 });
 console.log('SERVER_PORT from env:', process.env.SERVER_PORT);
 
@@ -326,6 +327,9 @@ function sendSpaIndexHtml(request: Request, response: Response) {
 // Per-node PWA identity: served before the static manifest so each machine
 // installs under its own name (CLOUDCLI_NODE_NAME or the hostname).
 app.get('/manifest.json', (_request, response) => {
+    response.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    response.setHeader('Pragma', 'no-cache');
+    response.setHeader('Expires', '0');
     response.type('application/manifest+json').send(appBranding.getManifestJson());
 });
 

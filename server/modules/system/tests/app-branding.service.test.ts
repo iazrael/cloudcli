@@ -57,6 +57,7 @@ function createTestContext(options: {
     },
     fileExists: (filePath) => files.has(toRelativePath(filePath)),
     logError: () => undefined,
+    logWarn: () => undefined,
   };
 
   return { dependencies, files };
@@ -152,6 +153,40 @@ test('escapes the app name before injecting it into HTML', () => {
 
   assert.ok(html);
   assert.ok(html.includes('content="a&quot;b"'));
+});
+
+test('does not interpret replacement patterns in the node name', () => {
+  const { dependencies } = createTestContext({
+    environment: { CLOUDCLI_NODE_NAME: 'Mac $& PWA' },
+  });
+  const service = createAppBrandingService(dependencies);
+
+  const html = service.renderIndexHtml();
+
+  assert.ok(html);
+  assert.ok(html.includes('content="Mac $&amp; PWA"'), html);
+});
+
+test('reads the manifest and index shell fresh on every request', () => {
+  const { dependencies, files } = createTestContext();
+  const service = createAppBrandingService(dependencies);
+
+  assert.ok(JSON.parse(service.getManifestJson()).description === 'CloudCLI UI web application');
+  files.set(MANIFEST_RELATIVE_PATH, JSON.stringify({ description: 'rebuilt manifest' }));
+  files.set(INDEX_RELATIVE_PATH, DEFAULT_INDEX_HTML.replace('Claude UI', 'Rebuilt UI'));
+  assert.equal(JSON.parse(service.getManifestJson()).description, 'rebuilt manifest');
+  assert.ok(service.renderIndexHtml()?.includes('<title>CloudCLI UI</title>'));
+  assert.ok(service.renderIndexHtml()?.includes('content="360W-PC-03"'));
+});
+
+test('falls through to the built manifest when the source copy is unparseable', () => {
+  const { dependencies, files } = createTestContext({ manifest: '{not json' });
+  files.set('dist/manifest.json', DEFAULT_MANIFEST);
+  const service = createAppBrandingService(dependencies);
+
+  const manifest = JSON.parse(service.getManifestJson()) as Record<string, unknown>;
+
+  assert.equal(manifest.description, 'CloudCLI UI web application');
 });
 
 test('returns null when no production build is present', () => {
