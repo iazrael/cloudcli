@@ -31,6 +31,13 @@ const ANTIGRAVITY_WINDOWS_CREDENTIAL_TARGET = `${ANTIGRAVITY_KEYCHAIN_SERVICE}:$
 const SKIP_CREDENTIAL_STORE_ENV = 'CLOUDCLI_ANTIGRAVITY_SKIP_CREDENTIAL_STORE';
 
 /**
+ * The pre-refactor probe honored these names. Keep accepting them so an
+ * existing test harness or sandbox config does not silently start reading the
+ * real keychain after upgrading.
+ */
+const LEGACY_SKIP_ENV_VARS = ['CLOUDCLI_SKIP_KEYCHAIN', 'CLOUDCLI_ANTIGRAVITY_SKIP_KEYCHAIN'];
+
+/**
  * Runs one read-only credential-store query and returns its stdout. Injectable
  * so tests can exercise both platform probes on any machine.
  */
@@ -82,7 +89,12 @@ export function hasWindowsCredentialManagerCredential(
 ): boolean {
   try {
     const stdout = run('cmdkey', ['/list']);
-    return stdout.toLowerCase().includes(`target=${ANTIGRAVITY_WINDOWS_CREDENTIAL_TARGET}`);
+    // Anchor the target to the end of its line: `target=gemini:antigravity-foo`
+    // must not count as a login for `gemini:antigravity`.
+    return stdout
+      .toLowerCase()
+      .split(/\r?\n/)
+      .some((line) => line.trimEnd().endsWith(`target=${ANTIGRAVITY_WINDOWS_CREDENTIAL_TARGET}`));
   } catch {
     return false;
   }
@@ -98,7 +110,10 @@ export function hasWindowsCredentialManagerCredential(
  * OAuth token file is absent.
  */
 export function hasStoredAntigravityCredential(): boolean {
-  if (process.env[SKIP_CREDENTIAL_STORE_ENV] === '1') {
+  if (
+    process.env[SKIP_CREDENTIAL_STORE_ENV] === '1'
+    || LEGACY_SKIP_ENV_VARS.some((name) => process.env[name] === '1')
+  ) {
     return false;
   }
   if (process.platform === 'darwin') {

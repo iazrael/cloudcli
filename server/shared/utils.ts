@@ -371,8 +371,9 @@ export function getGitErrorDetails(error: unknown): string {
  *
  * Checks `WORKSPACES_ROOTS` (preferred) or `WORKSPACES_ROOT` (singular), split
  * by platform delimiter (`;` on Windows, `:` elsewhere). If neither is set,
- * returns `null`, indicating that workspace containment is unconstrained so
- * projects can be added from any non-system drive or folder.
+ * returns `null`; validation then confines paths to the home directory, the
+ * documented default. Setting the variable is the opt-in for browsing and
+ * registering projects outside it (including other Windows drives).
  */
 export function getConfiguredWorkspaceRoots(): string[] | null {
   const configured = process.env.WORKSPACES_ROOTS ?? process.env.WORKSPACES_ROOT;
@@ -395,6 +396,16 @@ export function getConfiguredWorkspaceRoots(): string[] | null {
  * returns those roots. Otherwise defaults to the current user's home directory.
  */
 export const WORKSPACES_ROOTS = getConfiguredWorkspaceRoots() ?? [os.homedir()];
+
+/**
+ * Roots a workspace path must stay inside: the configured ones, or the home
+ * directory when nothing is configured. Consumed by `validateWorkspacePath`;
+ * the composition root separately uses `getConfiguredWorkspaceRoots()` to tell
+ * an explicit multi-root setup from the confined default.
+ */
+function getEffectiveWorkspaceRoots(): string[] {
+  return getConfiguredWorkspaceRoots() ?? [os.homedir()];
+}
 
 /**
  * Primary workspace root: the first configured root, or the home directory
@@ -652,9 +663,17 @@ export function isForbiddenSystemDirectory(candidatePath: string): { forbidden: 
  * roots from A:\ to Z:\ to identify mounted, accessible drives.
  * Consumers: file-tree module (browseWorkspace) for cross-drive browsing.
  */
+let windowsDriveCache: { probedAt: number; drives: string[] } | null = null;
+const WINDOWS_DRIVE_CACHE_MS = 30_000;
+
 export async function getAvailableWindowsDrives(): Promise<string[]> {
   if (process.platform !== 'win32') {
     return [];
+  }
+  // A browse must not wait on up to 26 probes (disconnected network drives are
+  // slow); the drive list is stable on the timescale of a folder dialog.
+  if (windowsDriveCache && Date.now() - windowsDriveCache.probedAt < WINDOWS_DRIVE_CACHE_MS) {
+    return windowsDriveCache.drives;
   }
 
   const drives: string[] = [];
@@ -668,6 +687,7 @@ export async function getAvailableWindowsDrives(): Promise<string[]> {
       // Drive letter not mounted or not accessible
     }
   }
+  windowsDriveCache = { probedAt: Date.now(), drives };
   return drives;
 }
 
@@ -683,11 +703,10 @@ export type ValidateWorkspacePathOptions = {
  * Validates that a user-supplied workspace path is safe to use.
  *
  * Call this before any filesystem mutation that creates or registers projects.
- * When `WORKSPACES_ROOTS` or `WORKSPACES_ROOT` is configured in environment
- * variables, containment within those roots is strictly enforced. When
- * unconfigured, projects may reside in any valid non-system directory on any
- * drive. In all cases, symlinks are checked and system-critical directories
- * are blocked.
+ * Containment within the configured roots is always enforced; when neither
+ * `WORKSPACES_ROOTS` nor `WORKSPACES_ROOT` is set, the home directory is the
+ * root. Setting the variable is the opt-in for other folders or drives.
+ * Symlinks are resolved and system-critical directories are blocked.
  * Consumers: projects and file-tree modules to ensure workspace directories are safe.
  */
 export async function validateWorkspacePath(
@@ -745,71 +764,62 @@ export async function validateWorkspacePath(
       }
     }
 
-    const configuredRoots = getConfiguredWorkspaceRoots();
-    if (configuredRoots && configuredRoots.length > 0) {
-      const resolvedRoots = await Promise.all(configuredRoots.map(async (root) => {
-        try {
-          return normalizeProjectPath(await realpath(root));
-        } catch {
-          return normalizeProjectPath(path.resolve(root));
-        }
-      }));
-      const insideAllowedRoot = resolvedRoots.some(
-        (resolvedRoot) => resolvedPath === resolvedRoot
-          || resolvedPath.startsWith(`${resolvedRoot}${path.sep}`),
-      );
-      if (!insideAllowedRoot) {
+    // Confinement is always enforced: the configured roots, or the home
+    // directory when nothing is configured. Resolving the full path first also
+    // covers symlinks in intermediate components.
+    const roots = getEffectiveWorkspaceRoots();
+    const resolvedRoots = await Promise.all(roots.map(async (root) => {
+      try {
+        return normalizeProjectPath(await realpath(root));
+      } catch {
+        return normalizeProjectPath(path.resolve(root));
+      }
+    }));
+    const insideAllowedRoot = resolvedRoots.some(
+      (resolvedRoot) => resolvedPath === resolvedRoot
+        || resolvedPath.startsWith(`${resolvedRoot}${path.sep}`),
+    );
+    if (!insideAllowedRoot) {
+      return {
+        valid: false,
+        error: `Workspace path must be within the allowed workspace roots: ${roots.join(', ')}`,
+      };
+    }
+
+    // The resolved target can itself be a forbidden directory (for example
+    // `/` reached through a symlink whose own path looked harmless).
+    if (!options?.allowDriveRoot) {
+      const resolvedForbiddenCheck = isForbiddenSystemDirectory(resolvedPath);
+      if (resolvedForbiddenCheck.forbidden) {
         return {
           valid: false,
-          error: `Workspace path must be within the allowed workspace roots: ${configuredRoots.join(', ')}`,
+          error: resolvedForbiddenCheck.reason ?? 'Cannot use system-critical directories as workspace locations',
         };
       }
+    }
 
-      try {
-        await access(absolutePath);
-        const pathStats = await lstat(absolutePath);
-        if (pathStats.isSymbolicLink()) {
-          const symlinkTarget = await readlink(absolutePath);
-          const resolvedSymlinkPath = path.resolve(path.dirname(absolutePath), symlinkTarget);
-          const realSymlinkPath = await realpath(resolvedSymlinkPath);
-          const symlinkInsideAllowedRoot = resolvedRoots.some(
-            (resolvedRoot) => realSymlinkPath === resolvedRoot
-              || realSymlinkPath.startsWith(`${resolvedRoot}${path.sep}`),
-          );
-          if (!symlinkInsideAllowedRoot) {
-            return {
-              valid: false,
-              error: 'Symlink target is outside the allowed workspace roots',
-            };
-          }
-        }
-      } catch (error) {
-        const fileError = error as NodeJS.ErrnoException;
-        if (fileError.code !== 'ENOENT') {
-          throw fileError;
+    try {
+      await access(absolutePath);
+      const pathStats = await lstat(absolutePath);
+      if (pathStats.isSymbolicLink()) {
+        const symlinkTarget = await readlink(absolutePath);
+        const resolvedSymlinkPath = path.resolve(path.dirname(absolutePath), symlinkTarget);
+        const realSymlinkPath = normalizeProjectPath(await realpath(resolvedSymlinkPath));
+        const symlinkInsideAllowedRoot = resolvedRoots.some(
+          (resolvedRoot) => realSymlinkPath === resolvedRoot
+            || realSymlinkPath.startsWith(`${resolvedRoot}${path.sep}`),
+        );
+        if (!symlinkInsideAllowedRoot) {
+          return {
+            valid: false,
+            error: 'Symlink target is outside the allowed workspace roots',
+          };
         }
       }
-    } else {
-      try {
-        await access(absolutePath);
-        const pathStats = await lstat(absolutePath);
-        if (pathStats.isSymbolicLink()) {
-          const symlinkTarget = await readlink(absolutePath);
-          const resolvedSymlinkPath = path.resolve(path.dirname(absolutePath), symlinkTarget);
-          const realSymlinkPath = normalizeProjectPath(await realpath(resolvedSymlinkPath));
-          const forbiddenCheck = isForbiddenSystemDirectory(realSymlinkPath);
-          if (forbiddenCheck.forbidden) {
-            return {
-              valid: false,
-              error: 'Symlink target is in a forbidden system directory',
-            };
-          }
-        }
-      } catch (error) {
-        const fileError = error as NodeJS.ErrnoException;
-        if (fileError.code !== 'ENOENT') {
-          throw fileError;
-        }
+    } catch (error) {
+      const fileError = error as NodeJS.ErrnoException;
+      if (fileError.code !== 'ENOENT') {
+        throw fileError;
       }
     }
 

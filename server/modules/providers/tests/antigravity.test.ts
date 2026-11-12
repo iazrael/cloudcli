@@ -145,6 +145,15 @@ test('credential-store probes detect macOS keychain and Windows Credential Manag
     ].join('\r\n')),
     true,
   );
+  // A suffixed target is a different credential, not this one.
+  assert.equal(
+    hasWindowsCredentialManagerCredential(() => [
+      'Currently stored credentials:',
+      '',
+      '    Target: LegacyGeneric:target=gemini:antigravity-foo',
+    ].join('\r\n')),
+    false,
+  );
   assert.equal(
     hasWindowsCredentialManagerCredential(() => 'Currently stored credentials:\r\n\r\n* NONE *\r\n'),
     false,
