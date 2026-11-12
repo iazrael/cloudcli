@@ -5,7 +5,8 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { ClaudeProviderAuth } from '@/modules/providers/list/claude/claude-auth.provider.js';
-import type { ProviderAuthStatus, ProviderAuthSubscriptionOverride } from '@/shared/types.js';
+import type {
+  CliVersionProbe, ProviderAuthStatus, ProviderAuthSubscriptionOverride } from '@/shared/types.js';
 
 // checkCredentials() is private, but unlike getStatus() it never shells out to the
 // `claude` CLI — it only reads env vars and ~/.claude files. Calling it directly
@@ -88,7 +89,9 @@ const writeSettingsFile = async (homeDir: string, env: Record<string, string>) =
 // `claude --version`. Stubbing checkInstalled() lets the test cover the mapping
 // from checkCredentials() to the wire shape without the CLI.
 const getStatusWithCliInstalled = (auth: ClaudeProviderAuth): Promise<ProviderAuthStatus> => {
-  (auth as unknown as { checkInstalled: () => boolean }).checkInstalled = () => true;
+  (auth as unknown as { checkInstalled: () => CliVersionProbe }).checkInstalled = () => ({
+    installed: true, exitCode: 0, version: '2.1.295',
+  });
   return auth.getStatus();
 };
 

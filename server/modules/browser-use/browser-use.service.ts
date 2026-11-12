@@ -79,6 +79,43 @@ type RuntimeProbe = Omit<RuntimeReadiness, 'installInProgress' | 'installMessage
 
 const sessions = new Map<string, BrowserUseSession>();
 const handles = new Map<string, RuntimeHandle>();
+const MAX_UPLOAD_FILES = 10;
+const MAX_UPLOAD_FILE_BYTES = 25 * 1024 * 1024;
+
+/**
+ * Validates file paths an agent wants to attach to a page's file input.
+ * Only absolute paths to existing regular files within the size cap are accepted, and symlinks are
+ * resolved so the size/type checks apply to the real target.
+ */
+function resolveUploadFiles(rawPaths: string[]): string[] {
+  if (rawPaths.length === 0) {
+    throw new Error('Provide at least one file path.');
+  }
+  if (rawPaths.length > MAX_UPLOAD_FILES) {
+    throw new Error(`At most ${MAX_UPLOAD_FILES} files can be uploaded at once.`);
+  }
+  return rawPaths.map((rawPath) => {
+    if (!path.isAbsolute(rawPath)) {
+      throw new Error(`File path must be absolute: ${rawPath}`);
+    }
+    let realPath: string;
+    let stat: fs.Stats;
+    try {
+      realPath = fs.realpathSync(rawPath);
+      stat = fs.statSync(realPath);
+    } catch {
+      throw new Error(`File not found: ${rawPath}`);
+    }
+    if (!stat.isFile()) {
+      throw new Error(`Not a regular file: ${rawPath}`);
+    }
+    if (stat.size > MAX_UPLOAD_FILE_BYTES) {
+      throw new Error(`File is larger than ${MAX_UPLOAD_FILE_BYTES / (1024 * 1024)} MB: ${rawPath}`);
+    }
+    return realPath;
+  });
+}
+
 let installPromise: Promise<{ success: boolean; message: string }> | null = null;
 let lastInstallMessage: string | null = null;
 let runtimeProbeCache: { value: RuntimeProbe; updatedAt: number } | null = null;
@@ -752,6 +789,22 @@ export const browserUseService = {
       session: publicSession(session),
       text: text.slice(0, 30_000),
     };
+  },
+
+  async agentUploadFiles(sessionId: string, input: { selector?: string; paths: string[] }) {
+    // Validate the files first so bad input fails fast, before taking the session lock.
+    const files = resolveUploadFiles(input.paths);
+    const session = await this.getAgentSession(sessionId);
+    const handle = handles.get(sessionId);
+    if (!handle?.page) {
+      throw new Error('Browser runtime handle is not available.');
+    }
+    const selector = input.selector || 'input[type="file"]';
+    // setInputFiles works on hidden inputs too, which is how most upload widgets are built.
+    await handle.page.locator(selector).first().setInputFiles(files, { timeout: 10_000 });
+    session.lastAction = `upload_files:${files.length}`;
+    await captureSession(session, handle.page);
+    return publicSession(session);
   },
 
   async agentClick(sessionId: string, input: { selector?: string; text?: string; x?: number; y?: number }) {

@@ -45,6 +45,12 @@ router.post('/tools/:toolName', async (req, res) => {
       case 'browser_navigate':
         result = await browserUseService.agentNavigate(sessionId, String(input.url || ''));
         break;
+      case 'browser_upload_file':
+        result = await browserUseService.agentUploadFiles(sessionId, {
+          selector: typeof input.selector === 'string' ? input.selector : undefined,
+          paths: Array.isArray(input.paths) ? input.paths.filter((value): value is string => typeof value === 'string') : [],
+        });
+        break;
       case 'browser_click':
         result = await browserUseService.agentClick(sessionId, {
           selector: typeof input.selector === 'string' ? input.selector : undefined,
