@@ -55,6 +55,7 @@ function deriveCapabilities(providerId: LLMProvider, provider: {
     supportsMessageEditing: typeof provider.sessions?.resolveEditAnchor === 'function',
     supportsSessionForking: provider.fork !== undefined,
     supportsCompaction: catalog.supportsCompaction,
+    supportsNativeScheduling: catalog.supportsNativeScheduling,
     mcp: provider.mcp.capabilities,
   };
 }

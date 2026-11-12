@@ -15,6 +15,7 @@
 | 会话先创建（REST） | `POST /api/providers/sessions` → `sessionsService.createAppSession` → `sessionsDb`；app session id 是服务端生成的 `randomUUID`，URL/帧/store 全用它 |
 | `chat.send` 入口 | `server/modules/websocket/services/chat-websocket.service.ts` 的 `handleChatSend`：`resolveSendTarget`（会话行以 DB 为准，不信任客户端）→ `dispatchRun`（附件过滤只放行 `~/.cloudcli/assets` 直接子文件、记录 model/effort） |
 | 运行登记 | `chat-run-registry.service.ts`：`startRun` / `replayEvents` / `completeRunIfCurrent`；**run 属于服务端不属于 socket**——断线存活、多端同看、无观察者也能跑；完成后事件缓冲保留约 5 分钟供补发 |
+| 定时任务入口 | `scheduled-jobs` 模块的调度器到点调 `runDetachedChatTurn`（与一次性定时消息同一条无附着通道）：`reuse` 任务跑在绑定会话、`new` 任务先 `createAppSession` 再跑；`reuse` 设了 `rotateAfterDays` 时，绑定会话满龄（按会话 `created_at`）的那次先新建会话、改绑任务、归档旧会话再跑；新会话沿用旧会话的 `model`/`effort`，否则会静默回落到引擎当前的默认模型；`new` 任务（以及没有模型选择的复用会话）在起跑前按“任务最近一次运行的会话 → 同项目同 provider 的最近会话 → provider 目录默认”解析并写入 `model`/`effort`，`options.model` 可显式覆盖——侧边栏只留一个活会话，历史载入成本不随时间无限增长（压缩不缩短 transcript），在跑中的会话不轮换；会话忙时记 `skipped`，**永不打断**在跑回合（一次性消息的 interrupt 语义只属于用户手选的时刻）。任务分 cron 循环与 `runAt` 仅一次两种：仅一次的认领事务里直接置 `enabled=0`，跑完读作已完成，composer 卡片随该会话 run 结束时的重新拉取而消失。agent 侧同一能力经受管 MCP `cloudcli-scheduled-tasks` 暴露（`cron` / `runAt` 二选一），默认绑定调用它的会话；整个功能由 Settings 的全局开关驱动，关闭后任务不触发、Tab 与 composer 任务入口隐藏 |
 | 统一分发 | `server/modules/providers/services/provider-runtime.service.ts` → `IProviderRuntime.run(command, options, writer, context)` |
 | 出站写入 | `chat-session-writer.service.ts`（`ChatSessionWriter`）：**先过线上契约闸门**（`server/shared/normalized-message-contract.ts`：信封坏了整条丢、协议未声明的字段剥掉并点名记录，见 [providers.md](./providers.md)），再吞掉 `session_created`、把 provider 原生 id 重映射为 app session id、给每事件打**单调 `seq`**、扇出给所有 watching socket |
 | 终态 | 每次运行**恰好一个 `complete`**（成功/失败/中止都是）；`error` 是信息性行，不终止 run |
@@ -259,6 +260,7 @@ flowchart LR
 | 新增客户端 → 服务端帧 | `chat-websocket.service.ts` 的消息类型 switch；需要鉴权/限流语义时看 `resolveSendTarget` 的模式 |
 | 新增工具卡片渲染 | `src/modules/chat/tools/configs/toolConfigs.ts` 注册（配置驱动，**禁止散落条件分支**），复杂内容加 ContentRenderer；见 `src/modules/chat/tools/README.md`。工具别名/展示分类/命令提取/各引擎路径与改动字段的读取统一在 `toolTaxonomy.ts`，别再拷贝名单。引擎原生工具名（agy、opencode）只需在别名表登记一行：`getToolConfig` 先找原名配置，找不到就用规范名的配置；只有输入或结果形状确实不同才单独注册 |
 | 新增权限相关能力 | 引擎 runtime 的 `permissions` 网关 → 矩阵自动推导 `supportsPermissionRequests` → 前端按矩阵渲染 |
+| 新增由能力矩阵驱动的 UI 差异 | 静态能力进 `provider-capabilities.catalog.ts`，前端只读矩阵、不写 provider 分支：`supportsCompaction` 决定 `/compact` 是否出现，`supportsNativeScheduling` 决定定时任务表单是否提示"引擎自带会话内调度"。提问卡（`AskUserQuestionPanel`）文案与引擎无关，用 `chat:misc.*` 中性串 |
 | 改历史分页 | `src/modules/chat/utils/sessionMessagePagination.ts` + store 的序列化测试（`sessionTimelineSequences.test.ts`）必须跟着改 |
 
 ## 重连缓存的容量

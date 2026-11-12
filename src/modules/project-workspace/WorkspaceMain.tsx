@@ -6,6 +6,7 @@ import { StandaloneShell } from '@/modules/standalone-shell';
 import { GitPanel } from '@/modules/git-panel';
 import { PluginTabContent } from '@/modules/plugins';
 import { BrowserUsePanel, useBrowserUseEnabled } from '@/modules/browser-use';
+import { ScheduledJobsPanel, useScheduledJobsEnabled } from '@/modules/scheduled-jobs';
 import { usePaletteOpsRegister } from '@/modules/command-palette';
 import type { AppTab, DirectoryRevealRequest, Project, ProjectSession, SessionEstablishedContext, SessionNavigationOptions, SettingsMainTab } from '@/shared/types';
 import { useUiPreferences } from '@/shared/context/UiPreferencesContext';
@@ -72,6 +73,7 @@ function WorkspaceMain({
   const { markSessionProcessing, markSessionIdle } = useSessionProtectionActions();
 
   const browserUseEnabled = useBrowserUseEnabled();
+  const scheduledJobsEnabled = useScheduledJobsEnabled();
   const { showTerminalTab } = useUiPreferences();
 
   // The folder an in-chat `path/` reference asked to reveal. Held as an object
@@ -113,6 +115,12 @@ function WorkspaceMain({
     }
   }, [shouldShowShellTab, activeTab, setActiveTab]);
 
+  useEffect(() => {
+    if (!scheduledJobsEnabled && activeTab === 'scheduled') {
+      setActiveTab('chat');
+    }
+  }, [scheduledJobsEnabled, activeTab, setActiveTab]);
+
   // Stable so React.memo(ChatInterface) can bail out: an inline arrow here made
   // every WorkspaceMain render re-render the whole chat tree, including during
   // an editor-divider drag.
@@ -153,6 +161,7 @@ function WorkspaceMain({
         selectedProject={selectedProject}
         selectedSession={selectedSession}
         shouldShowBrowserTab={shouldShowBrowserTab}
+        shouldShowScheduledTab={scheduledJobsEnabled}
         shouldShowShellTab={shouldShowShellTab}
         isMobile={isMobile}
         onMenuClick={onMenuClick}
@@ -181,6 +190,7 @@ function WorkspaceMain({
                 sendByCtrlEnter={sendByCtrlEnter}
                 externalMessageUpdate={externalMessageUpdate}
                 newSessionTrigger={newSessionTrigger}
+                scheduledJobsEnabled={scheduledJobsEnabled}
               />
             </WorkspaceErrorBoundary>
           </div>
@@ -221,6 +231,15 @@ function WorkspaceMain({
           {shouldShowBrowserTab && activeTab === 'browser' && (
             <div className="h-full overflow-hidden">
               <BrowserUsePanel isVisible={activeTab === 'browser'} onShowSettings={onShowSettings} />
+            </div>
+          )}
+
+          {scheduledJobsEnabled && activeTab === 'scheduled' && (
+            <div className="h-full overflow-hidden">
+              <ScheduledJobsPanel
+                projectPath={selectedProject.fullPath}
+                onNavigateToSession={onNavigateToSession}
+              />
             </div>
           )}
 
