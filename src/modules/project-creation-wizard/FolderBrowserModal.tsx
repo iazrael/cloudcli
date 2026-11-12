@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Eye, EyeOff, FolderOpen, FolderPlus, Loader2, Plus, X } from 'lucide-react';
+import { Eye, EyeOff, FolderOpen, FolderPlus, HardDrive, Loader2, Plus, X } from 'lucide-react';
 
 import { Button, Input } from '@/shared/ui';
 import { browseFilesystemFolders, createFolderInFilesystem } from '@/modules/project-creation-wizard/utils/workspaceApi';
@@ -28,6 +28,12 @@ export default function FolderBrowserModal({
   // The server's workspace root, learned from the pathless root listing. It is
   // both the ceiling for `..` and the one folder that cannot become a project.
   const [rootPath, setRootPath] = useState<string | null>(null);
+  // User-editable path input in the path bar so arbitrary paths can be entered or pasted directly.
+  const [pathInputValue, setPathInputValue] = useState('');
+  // Discovered filesystem drive roots (e.g. ['C:\\', 'D:\\', 'E:\\']) on Windows for drive-switching buttons.
+  const [availableDrives, setAvailableDrives] = useState<string[]>([]);
+  const [selectedDrive, setSelectedDrive] = useState<string | null>(null);
+  const [selectedFolderPath, setSelectedFolderPath] = useState<string | null>(null);
   const [folders, setFolders] = useState<FolderSuggestion[]>([]);
   const [loadingFolders, setLoadingFolders] = useState(false);
   const [showHiddenFolders, setShowHiddenFolders] = useState(false);
@@ -35,6 +41,14 @@ export default function FolderBrowserModal({
   const [newFolderName, setNewFolderName] = useState('');
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const activeDrive = useMemo(() => {
+    if (currentPath === null || currentPath === 'drives') {
+      return null;
+    }
+    const match = currentPath.match(/^([a-zA-Z]:)/);
+    return match ? match[1].toUpperCase() : selectedDrive;
+  }, [currentPath, selectedDrive]);
 
   // Keep the loader stable across locale changes: t lands in a ref so an
   // open browser does not reload and snap back to the workspace root when the
@@ -48,11 +62,23 @@ export default function FolderBrowserModal({
     try {
       const result = await browseFilesystemFolders(pathToLoad);
       setCurrentPath(result.path);
+      setPathInputValue(result.path === 'drives' ? '' : result.path);
       setFolders(result.suggestions);
       // A pathless request lists the workspace root; remembering it bounds
       // parent navigation without the client guessing the server's configuration.
       if (pathToLoad === null) {
         setRootPath(result.path);
+      }
+      if (result.path === 'drives') {
+        setSelectedDrive(null);
+      } else {
+        const match = result.path.match(/^([a-zA-Z]:)/);
+        if (match) {
+          setSelectedDrive(match[1].toUpperCase());
+        }
+      }
+      if (result.drives && result.drives.length > 0) {
+        setAvailableDrives(result.drives);
       }
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : t('folderBrowser.loadFailed'));
@@ -67,8 +93,11 @@ export default function FolderBrowserModal({
 
   useEffect(() => {
     if (!isOpen) {
+      setSelectedFolderPath(null);
       return;
     }
+    // Always start at the server's workspace root; the root is the ceiling
+    // for `..` and cannot itself become a project.
     void loadFoldersRef.current?.(null);
   }, [isOpen]);
 
@@ -97,6 +126,7 @@ export default function FolderBrowserModal({
 
   const handleClose = () => {
     setError(null);
+    setSelectedFolderPath(null);
     resetNewFolderState();
     resetBrowserState();
     onClose();
@@ -132,7 +162,7 @@ export default function FolderBrowserModal({
   const parentPath = currentPath !== null && rootPath !== null && currentPath !== rootPath
     ? getParentPath(currentPath)
     : null;
-  const canUseCurrentFolder = currentPath !== null && currentPath !== rootPath;
+  const canUseCurrentFolder = currentPath !== null && currentPath !== 'drives' && currentPath !== rootPath;
 
   if (!isOpen) {
     return null;
@@ -180,6 +210,37 @@ export default function FolderBrowserModal({
             </button>
           </div>
         </div>
+
+        {availableDrives.length > 0 && (
+          <div className="flex items-center gap-1.5 border-b border-gray-200 bg-gray-50/75 px-4 py-2 dark:border-gray-700 dark:bg-gray-800/75 overflow-x-auto overflow-y-hidden">
+            <span className="text-xs font-medium text-gray-500 dark:text-gray-400 mr-1 shrink-0">
+              {t('folderBrowser.drives', 'Drives')}:
+            </span>
+            {availableDrives.map((drive) => {
+              const driveLetter = drive.slice(0, 2).toUpperCase();
+              const isActive = activeDrive === driveLetter;
+              return (
+                <button
+                  key={drive}
+                  type="button"
+                  onClick={() => {
+                    setSelectedDrive(driveLetter);
+                    setSelectedFolderPath(null);
+                    void loadFolders(drive);
+                  }}
+                  className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors shrink-0 ${
+                    isActive
+                      ? 'border border-blue-600 bg-blue-600 text-white shadow-sm'
+                      : 'border border-gray-200 bg-white text-gray-700 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-600 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600 dark:hover:text-blue-400'
+                  }`}
+                >
+                  <HardDrive className={`h-3.5 w-3.5 ${isActive ? 'text-white' : 'text-gray-500 dark:text-gray-400'}`} />
+                  <span>{driveLetter}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         {showNewFolderInput && (
           <div className="border-b border-gray-200 bg-blue-50 px-4 py-3 dark:border-gray-700 dark:bg-blue-900/20">
@@ -242,38 +303,86 @@ export default function FolderBrowserModal({
                   {t('folderBrowser.noSubfolders')}
                 </div>
               ) : (
-                visibleFolders.map((folder) => (
-                  <div key={folder.path} className="flex items-center gap-2">
-                    <button
-                      onClick={() => loadFolders(folder.path)}
-                      className="flex flex-1 items-center gap-3 rounded-lg px-4 py-3 text-left hover:bg-gray-100 dark:hover:bg-gray-700"
+                visibleFolders.map((folder) => {
+                  const isSelected = selectedFolderPath === folder.path;
+
+                  return (
+                    <div
+                      key={folder.path}
+                      className={`flex items-center gap-2 rounded-lg transition-colors ${
+                        isSelected
+                          ? 'bg-blue-600 text-white shadow-sm'
+                          : 'hover:bg-gray-100 dark:hover:bg-gray-700/60 text-gray-900 dark:text-white'
+                      }`}
                     >
-                      <FolderPlus className="h-5 w-5 text-blue-500" />
-                      <span className="font-medium text-gray-900 dark:text-white">
-                        {folder.name}
-                      </span>
-                    </button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => selectFolder(folder.path, autoAdvanceOnSelect)}
-                      className="px-3 text-xs"
-                    >
-                      {t('folderBrowser.select')}
-                    </Button>
-                  </div>
-                ))
+                      <button
+                        onClick={() => {
+                          setSelectedFolderPath(folder.path);
+                          const match = folder.path.match(/^([a-zA-Z]:)/);
+                          if (match) {
+                            setSelectedDrive(match[1].toUpperCase());
+                          }
+                          void loadFolders(folder.path);
+                        }}
+                        className="flex flex-1 items-center gap-3 px-4 py-3 text-left"
+                      >
+                        {currentPath === 'drives' ? (
+                          <HardDrive className={`h-5 w-5 ${isSelected ? 'text-white' : 'text-blue-500'}`} />
+                        ) : (
+                          <FolderPlus className={`h-5 w-5 ${isSelected ? 'text-white' : 'text-blue-500'}`} />
+                        )}
+                        <span className={`font-medium ${isSelected ? 'font-semibold text-white' : ''}`}>
+                          {folder.name}
+                        </span>
+                      </button>
+                      <Button
+                        variant={isSelected ? 'secondary' : 'ghost'}
+                        size="sm"
+                        onClick={() => selectFolder(folder.path, autoAdvanceOnSelect)}
+                        className={`mr-2 px-3 text-xs ${
+                          isSelected
+                            ? 'bg-white text-blue-600 hover:bg-blue-50 font-semibold shadow-sm'
+                            : 'text-gray-600 hover:text-gray-900 dark:text-gray-300 dark:hover:text-white'
+                        }`}
+                      >
+                        {t('folderBrowser.select')}
+                      </Button>
+                    </div>
+                  );
+                })
               )}
             </div>
           )}
         </div>
 
         <div className="border-t border-gray-200 dark:border-gray-700">
-          <div className="flex items-center gap-2 bg-gray-50 px-4 py-3 dark:bg-gray-900/50">
-            <span className="text-sm text-gray-600 dark:text-gray-400">{t('folderBrowser.pathLabel')}</span>
-            <code className="flex-1 truncate font-mono text-sm text-gray-900 dark:text-white">
-              {currentPath ?? ''}
-            </code>
+          <div className="flex items-center gap-2 bg-gray-50 px-4 py-2.5 dark:bg-gray-900/50">
+            <span className="text-sm font-medium text-gray-600 dark:text-gray-400 shrink-0">
+              {t('folderBrowser.pathLabel')}
+            </span>
+            <Input
+              type="text"
+              value={pathInputValue}
+              onChange={(event) => setPathInputValue(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && pathInputValue.trim()) {
+                  void loadFolders(pathInputValue.trim());
+                }
+              }}
+              className="h-8 flex-1 font-mono text-xs"
+            />
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                if (pathInputValue.trim()) {
+                  void loadFolders(pathInputValue.trim());
+                }
+              }}
+              className="h-8 px-2.5 text-xs"
+            >
+              {t('folderBrowser.go', 'Go')}
+            </Button>
           </div>
           <div className="flex items-center justify-end gap-2 p-4">
             <Button variant="outline" onClick={handleClose}>

@@ -29,6 +29,8 @@ import {
   FORBIDDEN_WORKSPACE_PATHS,
   WORKSPACES_ROOT,
   createByteLimitTransform,
+  getAvailableWindowsDrives,
+  getConfiguredWorkspaceRoots,
   normalizeProjectPath,
   resolveReadOnlyRootPath,
   validateWorkspacePath,
@@ -163,7 +165,7 @@ const workspaceReadOnlyRoot = resolveWorkspaceReadOnlyRoot();
 const fileTreeWorkspace: FileTreeWorkspaceGateway = {
   rootPath: WORKSPACES_ROOT,
   readOnlyRoot: workspaceReadOnlyRoot,
-  validatePath: (candidatePath) => validateWorkspacePath(candidatePath),
+  validatePath: (candidatePath, options) => validateWorkspacePath(candidatePath, options),
   resolveReadOnlyRootPath: (candidatePath) => resolveReadOnlyRootPath(candidatePath),
 };
 
@@ -180,6 +182,10 @@ const fileTreeServices = createFileTreeService({
   logger: fileTreeLogger,
   fileIndexer: createRipgrepFileIndexer(rgPath),
   now: () => Date.now(),
+  // Drive browsing is the opt-in for a multi-root setup: with no
+  // WORKSPACES_ROOTS/WORKSPACES_ROOT the browser stays confined to the home
+  // directory, so advertising other drives would only lead to 403s.
+  getAvailableDrives: getConfiguredWorkspaceRoots() ? getAvailableWindowsDrives : async () => [],
   // Providers store chat-referenced artifacts outside the active workspace:
   // Antigravity uses brain directories, Claude uses its per-project tree, and
   // ZCode uses narrow memory/skill/instruction paths. Attachments live in

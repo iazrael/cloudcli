@@ -46,7 +46,7 @@ test('opens at the workspace root without a parent link or a selectable root', a
   assert.ok(await view.findByText('project-a'));
   // The pathless request is the workspace root — the former `~` placeholder is gone.
   assert.equal(browseFilesystemFolders.mock.calls[0]?.[0], null);
-  assert.ok(screen.getByText(ROOT));
+  assert.ok(screen.getByDisplayValue(ROOT));
   assert.equal(screen.queryByText('~'), null);
   assert.equal(screen.queryByText('..'), null);
 
@@ -67,7 +67,7 @@ test('a subfolder can be selected once entered', async () => {
 
   fireEvent.click(await view.findByText('project-a'));
   assert.ok(await view.findByText('folderBrowser.noSubfolders'));
-  assert.ok(screen.getByText(CHILD));
+  assert.ok(screen.getByDisplayValue(CHILD));
   assert.ok(screen.getByText('..'));
 
   const useButton = screen.getByRole('button', { name: 'folderBrowser.useThisFolder' });
@@ -90,7 +90,7 @@ test('.. returns to the workspace root', async () => {
 
   fireEvent.click(screen.getByText('..'));
   assert.ok(await view.findByText('project-a'));
-  assert.ok(screen.getByText(ROOT));
+  assert.ok(screen.getByDisplayValue(ROOT));
   assert.equal(screen.queryByText('..'), null);
 });
 

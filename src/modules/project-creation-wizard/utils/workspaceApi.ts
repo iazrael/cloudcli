@@ -9,6 +9,7 @@ type CredentialsResponse = {
 type BrowseFilesystemResponse = {
   path?: string;
   suggestions?: FolderSuggestion[];
+  drives?: string[];
   error?: string;
 };
 
@@ -121,6 +122,7 @@ export const browseFilesystemFolders = async (pathToBrowse: string | null = null
     // the only reliable working directory, so callers never render the input.
     path: data.path || pathToBrowse || '',
     suggestions: (data.suggestions || []) as FolderSuggestion[],
+    drives: data.drives || [],
   };
 };
 

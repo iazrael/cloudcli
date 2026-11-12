@@ -138,6 +138,7 @@ export class EngineSupervisor {
         env: buildZCodeEngineSpawnEnv(enginePath),
         stdio: ['pipe', 'pipe', 'pipe'],
         detached: false,
+        windowsHide: true,
       })),
       now: dependencies.now ?? Date.now,
     };
