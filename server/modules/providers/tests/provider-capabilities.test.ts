@@ -49,6 +49,7 @@ const BASELINE: Record<string, Omit<ProviderCapabilities, 'provider'>> = {
     supportsMessageEditing: true,
     supportsSessionForking: true,
     supportsCompaction: true,
+    supportsNativeScheduling: true,
     mcp: {
       scopes: ['user', 'local', 'project'],
       transports: ['stdio', 'http', 'sse'],
@@ -73,6 +74,7 @@ const BASELINE: Record<string, Omit<ProviderCapabilities, 'provider'>> = {
     supportsMessageEditing: false,
     supportsSessionForking: false,
     supportsCompaction: false,
+    supportsNativeScheduling: false,
     mcp: {
       scopes: ['user', 'project'],
       transports: ['stdio', 'http'],
@@ -102,6 +104,7 @@ const BASELINE: Record<string, Omit<ProviderCapabilities, 'provider'>> = {
     supportsMessageEditing: true,
     supportsSessionForking: true,
     supportsCompaction: true,
+    supportsNativeScheduling: false,
     mcp: {
       scopes: ['user', 'project'],
       transports: ['stdio', 'http'],
@@ -129,6 +132,7 @@ const BASELINE: Record<string, Omit<ProviderCapabilities, 'provider'>> = {
     supportsMessageEditing: false,
     supportsSessionForking: false,
     supportsCompaction: true,
+    supportsNativeScheduling: false,
     mcp: {
       scopes: ['user', 'project'],
       transports: ['stdio', 'http'],
@@ -160,6 +164,7 @@ const BASELINE: Record<string, Omit<ProviderCapabilities, 'provider'>> = {
     supportsMessageEditing: false,
     supportsSessionForking: false,
     supportsCompaction: true,
+    supportsNativeScheduling: false,
     mcp: {
       scopes: ['user', 'project'],
       transports: ['stdio', 'http'],
@@ -184,6 +189,7 @@ const BASELINE: Record<string, Omit<ProviderCapabilities, 'provider'>> = {
     supportsMessageEditing: false,
     supportsSessionForking: false,
     supportsCompaction: true,
+    supportsNativeScheduling: false,
     mcp: {
       scopes: ['user', 'project'],
       transports: ['stdio', 'http', 'sse'],

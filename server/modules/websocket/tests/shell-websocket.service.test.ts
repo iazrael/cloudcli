@@ -143,7 +143,10 @@ test('shell init launches the selected provider CLI and resumes via provider-nat
     // zcode has no known resume flag; it always launches its interactive CLI.
     { sessionId: `zcode-fresh-${Date.now()}`, provider: 'zcode', hasSession: true, expected: () => 'zcode', expectedBanner: 'ZCode' },
     // Regression guards: the previously supported providers keep their commands.
-    { sessionId: `claude-resume-${Date.now()}`, provider: 'claude', hasSession: true, expected: () => 'claude --resume "claude-resume-id" || claude', expectedBanner: 'Claude' },
+    // PowerShell has no `||`, so the resume fallback is spelled per platform.
+    { sessionId: `claude-resume-${Date.now()}`, provider: 'claude', hasSession: true, expected: () => (process.platform === 'win32'
+      ? 'claude --resume "claude-resume-id"; if ($LASTEXITCODE -ne 0) { claude }'
+      : 'claude --resume "claude-resume-id" || claude'), expectedBanner: 'Claude' },
     { sessionId: `cursor-resume-${Date.now()}`, provider: 'cursor', hasSession: true, expected: () => 'cursor-agent --resume="cursor-resume-id"', expectedBanner: 'Cursor' },
   ] as const;
 
@@ -172,7 +175,9 @@ test('shell init launches the selected provider CLI and resumes via provider-nat
     );
 
     const shellArgs = spawned.at(-1)?.args ?? [];
-    const shellCommand = shellArgs[shellArgs.indexOf('-c') + 1] ?? '';
+    // Windows sessions are wrapped in PowerShell (`-Command`), POSIX shells use `-c`.
+    const commandFlag = process.platform === 'win32' ? '-Command' : '-c';
+    const shellCommand = shellArgs[shellArgs.indexOf(commandFlag) + 1] ?? '';
     assert.equal(
       shellCommand,
       scenario.expected(scenario.sessionId),
@@ -274,12 +279,13 @@ test('bypassPermissions carries through to resumed claude sessions', () => {
   );
 
   assert.equal(spawnedCommands.length, 1);
-  if (os.platform() !== 'win32') {
-    assert.equal(
-      spawnedCommands[0],
-      'claude --resume "resumed-session-id" --dangerously-skip-permissions || claude --dangerously-skip-permissions'
-    );
-  }
+  // Windows PTYs run Windows PowerShell 5.1, which rejects `||` as a parse error.
+  assert.equal(
+    spawnedCommands[0],
+    os.platform() === 'win32'
+      ? 'claude --resume "resumed-session-id" --dangerously-skip-permissions; if ($LASTEXITCODE -ne 0) { claude --dangerously-skip-permissions }'
+      : 'claude --resume "resumed-session-id" --dangerously-skip-permissions || claude --dangerously-skip-permissions'
+  );
 });
 
 test('a missing project directory is reported as an error frame and starts no pty', () => {

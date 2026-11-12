@@ -9,15 +9,19 @@ export { chatRunRegistry } from './services/chat-run-registry.service.js';
 // active sidebar list.
 // broadcastQueuedMessageDispatched: used by the scheduled-messages dispatcher
 // when it starts a session's queued message.
+// broadcastScheduledJobsChanged: used by the scheduled-jobs module so every
+// open composer banner and Scheduled tab refetches after any job change.
 export {
   broadcastQueuedMessageDispatched,
+  broadcastScheduledJobsChanged,
   broadcastSessionRemoved,
   broadcastSessionUpserted,
   broadcastSessionUpsertedBatch,
   broadcastScheduledMessagesChanged,
 } from './services/session-upsert-broadcast.service.js';
-// runDetachedChatTurn: used by the scheduled-messages module to run a
-// scheduled or queued message with no socket to stream to or report errors on.
+// runDetachedChatTurn: used by the scheduled-messages and scheduled-jobs
+// modules to run a turn from a timer, with no socket to stream to or report
+// errors on.
 // emitRuntimeFailureFallback: used by the execution module when a dispatched
 // engine run settles without its terminal `complete`, so the chat UI still
 // sees why the turn ended.

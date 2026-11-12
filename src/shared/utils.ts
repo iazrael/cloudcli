@@ -665,3 +665,27 @@ export const fileReferenceFromMarkdownHref = (href?: string): string | undefined
 
   return decodeFileHref(href);
 };
+
+/**
+ * Reads a `datetime-local` input value as the instant the user picked.
+ *
+ * The input carries no zone, and `new Date(value)` reads it in the browser's
+ * zone — which is what the user meant, since they picked it off their own
+ * clock. Returns null for an empty or malformed value.
+ */
+export function readLocalDateTimeInputValue(value: string): Date | null {
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+/**
+ * Formats an instant for a `datetime-local` input, in the browser's zone.
+ *
+ * The inverse of `readLocalDateTimeInputValue`, so editing an existing one-off
+ * task shows its time instead of shifting it by the zone offset.
+ */
+export function toLocalDateTimeInputValue(date: Date): string {
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+}
+
+// ---------------------------

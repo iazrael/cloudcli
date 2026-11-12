@@ -113,8 +113,16 @@ test('ripgrep indexer gives up on a listing that runs too long', async (t) => {
   const scratch = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'cloudcli-slow-rg-'));
   t.after(() => fsPromises.rm(scratch, { recursive: true, force: true }));
   // Stands in for ripgrep stuck on a slow mount: prints one file, then hangs.
-  const slowRipgrep = path.join(scratch, 'slow-rg');
-  await fsPromises.writeFile(slowRipgrep, '#!/bin/sh\nprintf \'first.txt\\0\'\nexec sleep 30\n', { mode: 0o755 });
+  const slowRipgrep = path.join(scratch, process.platform === 'win32' ? 'slow-rg.cmd' : 'slow-rg');
+  const fakeRipgrepSource = process.platform === 'win32'
+    // cmd.exe does not forward the kill to its node child, so the child also
+    // exits once its parent (and the pipe reader) is gone.
+    ? '@echo off\r\n'
+      + 'node -e "process.stdout.write(\'first.txt\\0\');'
+      + 'const parent = process.ppid;'
+      + 'setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 50)"\r\n'
+    : '#!/bin/sh\nprintf \'first.txt\\0\'\nexec sleep 30\n';
+  await fsPromises.writeFile(slowRipgrep, fakeRipgrepSource, { mode: 0o755 });
 
   const started = Date.now();
   const result = await createRipgrepFileIndexer(slowRipgrep, { timeoutMs: 200 }).listFiles({

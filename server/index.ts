@@ -38,7 +38,7 @@ import {
 } from './modules/auth/index.js';
 import { commandsRoutes } from './modules/commands/index.js';
 import { settingsRoutes } from './modules/settings/index.js';
-import { createSystemModule } from './modules/system/index.js';
+import { createAppBrandingService, createSystemModule } from './modules/system/index.js';
 import { createExecutionModule } from './modules/execution/index.js';
 import { createAgentModule } from './modules/agent/index.js';
 import projectModuleRoutes from './modules/projects/projects.routes.js';
@@ -57,6 +57,13 @@ import {
     initializeScheduledMessageDispatcher,
     scheduledMessagesRoutes,
 } from './modules/scheduled-messages/index.js';
+import {
+    closeScheduledJobDispatcher,
+    initializeScheduledJobDispatcher,
+    scheduledJobsMcpRoutes,
+    scheduledJobsRoutes,
+    scheduledJobsSettingsService,
+} from './modules/scheduled-jobs/index.js';
 import { assetsRoutes } from './modules/assets/index.js';
 import { mediaRoutes } from './modules/media/index.js';
 import { fileTreeRoutes } from './modules/file-tree/index.js';
@@ -110,6 +117,15 @@ const systemRoutes = createSystemModule({
     appRoot: APP_ROOT,
     installMode,
     isPlatform: IS_PLATFORM,
+});
+const appBranding = createAppBrandingService({
+    appRoot: APP_ROOT,
+    environment: process.env,
+    hostname: os.hostname,
+    readFile: (filePath) => fs.readFileSync(filePath, 'utf8'),
+    fileExists: (filePath) => fs.existsSync(filePath),
+    logError: (message, detail) => console.error(message, detail ?? ''),
+    logWarn: (message, detail) => console.warn(message, detail ?? ''),
 });
 console.log('SERVER_PORT from env:', process.env.SERVER_PORT);
 
@@ -193,6 +209,15 @@ createWebSocketServer(server, {
 });
 
 app.use(cors({ exposedHeaders: ['X-Refreshed-Token', 'X-Auth-Error'] }));
+// API responses are per-user and may carry X-Refreshed-Token. Never let the
+// browser cache or revalidate them: a 304 hands fetch the cached 200's headers,
+// replaying a long-expired refreshed token over a fresh login.
+app.set('etag', false);
+app.use('/api', (_req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Pragma', 'no-cache');
+    next();
+});
 app.use(express.json({
     limit: '50mb',
     type: (req) => {
@@ -283,6 +308,10 @@ app.use('/api/browser-use', authenticateToken, browserUseRoutes);
 app.use('/api/providers', authenticateToken, providerRoutes);
 app.use('/api/scheduled-messages', authenticateToken, scheduledMessagesRoutes);
 app.use('/api/tasks', taskContinuationsRouter);
+app.use('/api/scheduled-jobs', authenticateToken, scheduledJobsRoutes);
+
+// Scheduled Tasks MCP bridge API (local token protected)
+app.use('/api/scheduled-jobs-mcp', scheduledJobsMcpRoutes);
 
 // Agent API Routes (uses API key authentication)
 app.use('/api/agent', agentRoutes);
@@ -296,6 +325,36 @@ app.use('/api/local-proxy', createLocalProxyRouter(authenticateToken));
 // Must precede the static handlers: a page served through the proxy asks for
 // its root-absolute assets on this origin, and they belong to the local service.
 app.use(localProxyAbsolutePathFallback);
+
+// Serve the branded index shell for the SPA root before static files so the
+// injected apple title is present when iOS adds the app to the home screen.
+function sendSpaIndexHtml(request: Request, response: Response) {
+    const brandedHtml = appBranding.renderIndexHtml();
+    if (brandedHtml !== null) {
+        // Set no-cache headers for HTML to prevent service worker issues
+        response.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        response.setHeader('Pragma', 'no-cache');
+        response.setHeader('Expires', '0');
+        response.type('html').send(brandedHtml);
+        return;
+    }
+
+    // In development, redirect to Vite dev server only if dist doesn't exist
+    const redirectHost = getConnectableHost(request.hostname);
+    response.redirect(`${request.protocol}://${redirectHost}:${VITE_PORT}`);
+}
+
+// Per-node PWA identity: served before the static manifest so each machine
+// installs under its own name (CLOUDCLI_NODE_NAME or the hostname).
+app.get('/manifest.json', (_request, response) => {
+    response.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    response.setHeader('Pragma', 'no-cache');
+    response.setHeader('Expires', '0');
+    response.type('application/manifest+json').send(appBranding.getManifestJson());
+});
+
+app.get('/', sendSpaIndexHtml);
+app.get('/index.html', sendSpaIndexHtml);
 
 // Serve public files (like api-docs.html)
 app.use(express.static(path.join(APP_ROOT, 'public')));
@@ -330,22 +389,7 @@ app.get('*', (req, res) => {
         return res.status(404).send('Not found');
     }
 
-    // Only serve index.html for HTML routes, not for static assets
-    // Static assets should already be handled by express.static middleware above
-    const indexPath = path.join(APP_ROOT, 'dist', 'index.html');
-
-    // Check if dist/index.html exists (production build available)
-    if (fs.existsSync(indexPath)) {
-        // Set no-cache headers for HTML to prevent service worker issues
-        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-        res.setHeader('Pragma', 'no-cache');
-        res.setHeader('Expires', '0');
-        res.sendFile(indexPath);
-    } else {
-        // In development, redirect to Vite dev server only if dist doesn't exist
-        const redirectHost = getConnectableHost(req.hostname);
-        res.redirect(`${req.protocol}://${redirectHost}:${VITE_PORT}`);
-    }
+    sendSpaIndexHtml(req, res);
 });
 
 // global error middleware must be last
@@ -472,6 +516,9 @@ async function startServer() {
             // Sends anything that came due while the server was not running,
             // then keeps polling.
             initializeScheduledMessageDispatcher(providerRuntimeService);
+            // Recurring jobs: fires their next occurrence, marks stale ones
+            // missed, and records every attempt in the run history.
+            initializeScheduledJobDispatcher(providerRuntimeService);
 
             // Start periodic auto-archive scheduler for historical sessions
             sessionsAutoArchiveService.startScheduler();
@@ -495,6 +542,12 @@ async function startServer() {
             });
 
             activeContinuationWorker = continuationWorker;
+
+            // Reconcile the scheduled-tasks MCP bridge when the feature is on,
+            // so engines installed after the toggle still get it.
+            await scheduledJobsSettingsService.syncAgentMcpIfNeeded().catch((err) => {
+                console.warn('[ScheduledJobs] Failed to sync MCP configuration during startup:', getErrorMessage(err));
+            });
         });
 
         let activeContinuationWorker: { stop: () => void } | null = null;
@@ -512,6 +565,11 @@ async function startServer() {
                 closeScheduledMessageDispatcher();
             } catch (err) {
                 console.error('[ScheduledMessages] Error closing dispatcher during shutdown:', getErrorMessage(err));
+            }
+            try {
+                closeScheduledJobDispatcher();
+            } catch (err) {
+                console.error('[ScheduledJobs] Error closing dispatcher during shutdown:', getErrorMessage(err));
             }
             try {
                 await browserUseService.stopAllSessions();

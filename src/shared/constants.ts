@@ -254,3 +254,13 @@ export const REMARK_SKIP_CONTAINER_RE = /^(?:link|linkReference|image|imageRefer
  * panel, and the composer steps aside while one is open, as it does for a question.
  */
 export const MCP_ELICITATION_TOOL_NAME = 'McpElicitation';
+
+//----------------- SCHEDULED JOBS ------------
+
+/**
+ * Session-rotation periods (in days) offered for a scheduled task that reuses
+ * a session; `0` stands for "never rotate" and is sent to the API as `null`.
+ * Used by the scheduled-jobs edit form and the chat composer's task popover so
+ * both offer the same choices.
+ */
+export const SCHEDULED_JOB_ROTATE_AFTER_DAYS_OPTIONS = [0, 1, 3, 7, 14, 30];

@@ -17,6 +17,7 @@ import spawn from 'cross-spawn';
 import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
+import { Transform } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
@@ -318,6 +319,40 @@ export function asyncHandler(
 }
 
 // ---------------------------
+//----------------- UPLOAD STREAM LIMIT UTILITIES ------------
+/**
+ * Caps the bytes forwarded through an upload stream at `maxBytes`; anything
+ * past the cap is silently dropped. Multer configures Busboy with
+ * `fileSize + 1` (so an exactly-sized file is not falsely rejected), which
+ * lets one extra byte reach a storage engine before Multer aborts with
+ * `LIMIT_FILE_SIZE`. Inserting this transform between the incoming file
+ * stream and the sink keeps every stored byte within the route's real limit;
+ * Multer stays responsible for rejecting the oversized upload.
+ *
+ * Consumers: the image-assets upload storage, the file-tree disk upload
+ * storage, and the voice memory upload storage.
+ */
+export function createByteLimitTransform(maxBytes: number): Transform {
+  let accepted = 0;
+  return new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      const remaining = maxBytes - accepted;
+      if (remaining <= 0) {
+        callback();
+        return;
+      }
+      if (chunk.length > remaining) {
+        accepted = maxBytes;
+        callback(null, chunk.subarray(0, remaining));
+        return;
+      }
+      accepted += chunk.length;
+      callback(null, chunk);
+    },
+  });
+}
+
+// ---------------------------
 //----------------- SHARED ERROR UTILITIES ------------
 /**
  * Shared application error with HTTP status and machine-readable code metadata.
@@ -369,12 +404,51 @@ export function getGitErrorDetails(error: unknown): string {
 // ---------------------------
 //----------------- WORKSPACE PATH VALIDATION UTILITIES ------------
 /**
- * Root directory that all workspace/project paths must stay under.
+ * Resolves explicitly configured workspace roots from environment variables.
  *
- * This is resolved from `WORKSPACES_ROOT` when configured; otherwise it falls
- * back to the current user's home directory.
+ * Checks `WORKSPACES_ROOTS` (preferred) or `WORKSPACES_ROOT` (singular), split
+ * by platform delimiter (`;` on Windows, `:` elsewhere). If neither is set,
+ * returns `null`; validation then confines paths to the home directory, the
+ * documented default. Setting the variable is the opt-in for browsing and
+ * registering projects outside it (including other Windows drives).
  */
-export const WORKSPACES_ROOT = process.env.WORKSPACES_ROOT || os.homedir();
+export function getConfiguredWorkspaceRoots(): string[] | null {
+  const configured = process.env.WORKSPACES_ROOTS ?? process.env.WORKSPACES_ROOT;
+  if (configured) {
+    const roots = configured
+      .split(path.delimiter)
+      .map((root) => root.trim())
+      .filter((root) => root.length > 0);
+    if (roots.length > 0) {
+      return roots;
+    }
+  }
+  return null;
+}
+
+/**
+ * Root directories that workspace/project paths default to.
+ *
+ * When `WORKSPACES_ROOTS` or `WORKSPACES_ROOT` is configured in the environment,
+ * returns those roots. Otherwise defaults to the current user's home directory.
+ */
+export const WORKSPACES_ROOTS = getConfiguredWorkspaceRoots() ?? [os.homedir()];
+
+/**
+ * Roots a workspace path must stay inside: the configured ones, or the home
+ * directory when nothing is configured. Consumed by `validateWorkspacePath`;
+ * the composition root separately uses `getConfiguredWorkspaceRoots()` to tell
+ * an explicit multi-root setup from the confined default.
+ */
+function getEffectiveWorkspaceRoots(): string[] {
+  return getConfiguredWorkspaceRoots() ?? [os.homedir()];
+}
+
+/**
+ * Primary workspace root: the first configured root, or the home directory
+ * fallback. The folder browser opens here and `~` expands to it.
+ */
+export const WORKSPACES_ROOT = WORKSPACES_ROOTS[0] as string;
 
 /**
  * System-critical paths that must never be used as workspace roots.
@@ -594,13 +668,118 @@ export function isDefaultProjectDisplayName(
 }
 
 /**
+ * Checks whether a normalized path is a drive root (e.g. 'C:\' or 'C:') or Unix root ('/').
+ * Consumers: validateWorkspacePath and path validation tests.
+ */
+export function isDriveOrFsRoot(candidatePath: string): boolean {
+  return candidatePath === '/' || /^[a-zA-Z]:[\\/]?$/.test(candidatePath);
+}
+
+/**
+ * Checks whether a path is inside a forbidden system directory.
+ * Consumers: validateWorkspacePath to guard system-critical locations.
+ */
+export function isForbiddenSystemDirectory(candidatePath: string): { forbidden: boolean; reason?: string } {
+  const normalized = normalizeProjectPath(candidatePath);
+  if (!normalized || isDriveOrFsRoot(normalized)) {
+    return { forbidden: true, reason: 'Cannot use a drive root or filesystem root as a workspace location' };
+  }
+
+  const isWindows = process.platform === 'win32';
+  const targetCmp = isWindows ? normalized.toLowerCase() : normalized;
+
+  for (const forbiddenPath of FORBIDDEN_WORKSPACE_PATHS) {
+    const normalizedForbiddenPath = normalizeProjectPath(forbiddenPath);
+    const forbiddenCmp = isWindows ? normalizedForbiddenPath.toLowerCase() : normalizedForbiddenPath;
+
+    if (
+      targetCmp === forbiddenCmp
+      || targetCmp.startsWith(`${forbiddenCmp}${path.sep}`)
+      || (isWindows && targetCmp.startsWith(`${forbiddenCmp}/`))
+    ) {
+      // Allow specific user-writable folders under /var.
+      if (
+        normalizedForbiddenPath === '/var'
+        && (targetCmp.startsWith('/var/tmp') || targetCmp.startsWith('/var/folders'))
+      ) {
+        continue;
+      }
+
+      return {
+        forbidden: true,
+        reason: `Cannot create workspace in system directory: ${forbiddenPath}`,
+      };
+    }
+  }
+
+  // On Windows, protect system volume directories on ANY drive (e.g. E:\$RECYCLE.BIN, E:\System Volume Information)
+  if (isWindows && /^[a-zA-Z]:[\\/](\$recycle\.bin|system volume information)($|[\\/])/i.test(normalized)) {
+    return {
+      forbidden: true,
+      reason: `Cannot create workspace in system directory: ${candidatePath}`,
+    };
+  }
+
+  return { forbidden: false };
+}
+
+/**
+ * Detects accessible Windows filesystem drive letters (e.g. ['C:\\', 'D:\\', 'E:\\']).
+ *
+ * Returns an empty array on non-Windows platforms. On Windows, probes drive
+ * roots from A:\ to Z:\ to identify mounted, accessible drives.
+ * Consumers: file-tree module (browseWorkspace) for cross-drive browsing.
+ */
+let windowsDriveCache: { probedAt: number; drives: string[] } | null = null;
+const WINDOWS_DRIVE_CACHE_MS = 30_000;
+
+export async function getAvailableWindowsDrives(): Promise<string[]> {
+  if (process.platform !== 'win32') {
+    return [];
+  }
+  // A browse must not wait on up to 26 probes (disconnected network drives are
+  // slow); the drive list is stable on the timescale of a folder dialog.
+  if (windowsDriveCache && Date.now() - windowsDriveCache.probedAt < WINDOWS_DRIVE_CACHE_MS) {
+    return windowsDriveCache.drives;
+  }
+
+  const drives: string[] = [];
+  const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  for (const letter of letters) {
+    const candidateDrive = `${letter}:\\`;
+    try {
+      await access(candidateDrive);
+      drives.push(candidateDrive);
+    } catch {
+      // Drive letter not mounted or not accessible
+    }
+  }
+  windowsDriveCache = { probedAt: Date.now(), drives };
+  return drives;
+}
+
+/**
+ * Options for validating a user-supplied workspace path.
+ * Consumers: file-tree module when browsing directory trees.
+ */
+export type ValidateWorkspacePathOptions = {
+  allowDriveRoot?: boolean;
+};
+
+/**
  * Validates that a user-supplied workspace path is safe to use.
  *
  * Call this before any filesystem mutation that creates or registers projects.
- * The function resolves symlinks, enforces `WORKSPACES_ROOT` containment, and
- * blocks known system directories.
+ * Containment within the configured roots is always enforced; when neither
+ * `WORKSPACES_ROOTS` nor `WORKSPACES_ROOT` is set, the home directory is the
+ * root. Setting the variable is the opt-in for other folders or drives.
+ * Symlinks are resolved and system-critical directories are blocked.
+ * Consumers: projects and file-tree modules to ensure workspace directories are safe.
  */
-export async function validateWorkspacePath(requestedPath: string): Promise<WorkspacePathValidationResult> {
+export async function validateWorkspacePath(
+  requestedPath: string,
+  options?: ValidateWorkspacePathOptions,
+): Promise<WorkspacePathValidationResult> {
   try {
     const normalizedRequestedPath = normalizeProjectPath(requestedPath);
     if (!normalizedRequestedPath) {
@@ -613,30 +792,19 @@ export async function validateWorkspacePath(requestedPath: string): Promise<Work
     const absolutePath = path.resolve(normalizedRequestedPath);
     const normalizedPath = normalizeProjectPath(absolutePath);
 
-    if (FORBIDDEN_WORKSPACE_PATHS.includes(normalizedPath) || normalizedPath === '/') {
-      return {
-        valid: false,
-        error: 'Cannot use system-critical directories as workspace locations',
-      };
-    }
-
-    for (const forbiddenPath of FORBIDDEN_WORKSPACE_PATHS) {
-      const normalizedForbiddenPath = normalizeProjectPath(forbiddenPath);
-      if (
-        normalizedPath === normalizedForbiddenPath
-        || normalizedPath.startsWith(`${normalizedForbiddenPath}${path.sep}`)
-      ) {
-        // Allow specific user-writable folders under /var.
-        if (
-          normalizedForbiddenPath === '/var'
-          && (normalizedPath.startsWith('/var/tmp') || normalizedPath.startsWith('/var/folders'))
-        ) {
-          continue;
-        }
-
+    if (isDriveOrFsRoot(normalizedPath)) {
+      if (!options?.allowDriveRoot) {
         return {
           valid: false,
-          error: `Cannot create workspace in system directory: ${forbiddenPath}`,
+          error: 'Cannot use a drive root or filesystem root as a workspace location',
+        };
+      }
+    } else {
+      const forbiddenCheck = isForbiddenSystemDirectory(normalizedPath);
+      if (forbiddenCheck.forbidden) {
+        return {
+          valid: false,
+          error: forbiddenCheck.reason ?? 'Cannot use system-critical directories as workspace locations',
         };
       }
     }
@@ -663,15 +831,38 @@ export async function validateWorkspacePath(requestedPath: string): Promise<Work
       }
     }
 
-    const resolvedWorkspaceRoot = normalizeProjectPath(await realpath(WORKSPACES_ROOT));
-    if (
-      !resolvedPath.startsWith(`${resolvedWorkspaceRoot}${path.sep}`)
-      && resolvedPath !== resolvedWorkspaceRoot
-    ) {
+    // Confinement is always enforced: the configured roots, or the home
+    // directory when nothing is configured. Resolving the full path first also
+    // covers symlinks in intermediate components.
+    const roots = getEffectiveWorkspaceRoots();
+    const resolvedRoots = await Promise.all(roots.map(async (root) => {
+      try {
+        return normalizeProjectPath(await realpath(root));
+      } catch {
+        return normalizeProjectPath(path.resolve(root));
+      }
+    }));
+    const insideAllowedRoot = resolvedRoots.some(
+      (resolvedRoot) => resolvedPath === resolvedRoot
+        || resolvedPath.startsWith(`${resolvedRoot}${path.sep}`),
+    );
+    if (!insideAllowedRoot) {
       return {
         valid: false,
-        error: `Workspace path must be within the allowed workspace root: ${WORKSPACES_ROOT}`,
+        error: `Workspace path must be within the allowed workspace roots: ${roots.join(', ')}`,
       };
+    }
+
+    // The resolved target can itself be a forbidden directory (for example
+    // `/` reached through a symlink whose own path looked harmless).
+    if (!options?.allowDriveRoot) {
+      const resolvedForbiddenCheck = isForbiddenSystemDirectory(resolvedPath);
+      if (resolvedForbiddenCheck.forbidden) {
+        return {
+          valid: false,
+          error: resolvedForbiddenCheck.reason ?? 'Cannot use system-critical directories as workspace locations',
+        };
+      }
     }
 
     try {
@@ -680,14 +871,15 @@ export async function validateWorkspacePath(requestedPath: string): Promise<Work
       if (pathStats.isSymbolicLink()) {
         const symlinkTarget = await readlink(absolutePath);
         const resolvedSymlinkPath = path.resolve(path.dirname(absolutePath), symlinkTarget);
-        const realSymlinkPath = await realpath(resolvedSymlinkPath);
-        if (
-          !realSymlinkPath.startsWith(`${resolvedWorkspaceRoot}${path.sep}`)
-          && realSymlinkPath !== resolvedWorkspaceRoot
-        ) {
+        const realSymlinkPath = normalizeProjectPath(await realpath(resolvedSymlinkPath));
+        const symlinkInsideAllowedRoot = resolvedRoots.some(
+          (resolvedRoot) => realSymlinkPath === resolvedRoot
+            || realSymlinkPath.startsWith(`${resolvedRoot}${path.sep}`),
+        );
+        if (!symlinkInsideAllowedRoot) {
           return {
             valid: false,
-            error: 'Symlink target is outside the allowed workspace root',
+            error: 'Symlink target is outside the allowed workspace roots',
           };
         }
       }

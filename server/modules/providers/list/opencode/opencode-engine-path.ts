@@ -34,9 +34,24 @@ const PLATFORM_CANDIDATES: Partial<Record<NodeJS.Platform, string[]>> = {
     '/usr/local/bin/opencode',
   ],
   win32: [
+    path.join(process.env.APPDATA ?? path.join(os.homedir(), 'AppData', 'Roaming'), 'npm', 'opencode.cmd'),
     path.join(process.env.LOCALAPPDATA ?? path.join(os.homedir(), 'AppData', 'Local'), 'opencode', 'bin', 'opencode.exe'),
     path.join(os.homedir(), '.opencode', 'bin', 'opencode.exe'),
   ],
+};
+
+/**
+ * Maps a Windows npm shim to the native binary it wraps. `npm i -g` installs
+ * an extensionless sh script plus `opencode.cmd` next to `node_modules`, and
+ * `where opencode` lists the extensionless one first; neither can be spawned
+ * without a shell, while the `.cmd` itself just execs
+ * `node_modules/@opencode/cli/bin/opencode.exe`.
+ */
+const toWindowsEngineBinary = (filePath: string): string => {
+  if (process.platform !== 'win32' || path.extname(filePath).toLowerCase() === '.exe') {
+    return filePath;
+  }
+  return path.join(path.dirname(filePath), 'node_modules', '@opencode', 'cli', 'bin', 'opencode.exe');
 };
 
 const resolver = createCliEnginePathResolver({
@@ -44,6 +59,7 @@ const resolver = createCliEnginePathResolver({
   envVars: ['CLOUDCLI_OPENCODE_CLI'],
   whichBinary: 'opencode',
   platformCandidates: PLATFORM_CANDIDATES,
+  toEnginePath: toWindowsEngineBinary,
   isValidPath: (filePath) => {
     try {
       const stats = fs.statSync(filePath);

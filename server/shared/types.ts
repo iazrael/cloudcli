@@ -84,6 +84,7 @@ import type {
   NormalizedMessage,
   ServerEventKind,
   SessionForkAncestor,
+  ScheduledJobsChangedEvent,
   SessionRemovedEvent,
   SessionUpsertedEvent,
   SessionUpsertedProject,
@@ -107,6 +108,7 @@ export type {
   NormalizedMessage,
   ServerEventKind,
   SessionForkAncestor,
+  ScheduledJobsChangedEvent,
   SessionRemovedEvent,
   SessionUpsertedEvent,
   SessionUpsertedProject,
@@ -1364,7 +1366,10 @@ export type FileTreeWorkspaceGateway = {
    * policy. Write endpoints do not consult this.
    */
   readOnlyRoot: string | null;
-  validatePath(candidatePath: string): Promise<WorkspacePathValidationResult>;
+  validatePath(
+    candidatePath: string,
+    options?: { allowDriveRoot?: boolean },
+  ): Promise<WorkspacePathValidationResult>;
   /**
    * Resolves a path readable outside the workspace root — the system temp
    * directory and the Claude projects directory — or `null` when it is not
@@ -1429,6 +1434,10 @@ export type FileTreeServiceDependencies = {
    * linked Git worktrees without relaxing project write boundaries.
    */
   resolveWorktreeRoots?: (projectRoot: string) => Promise<string[]>;
+  /**
+   * Optional provider for available system drive roots (e.g. on Windows).
+   */
+  getAvailableDrives?: () => Promise<string[]>;
 };
 
 /**
@@ -1442,6 +1451,7 @@ export type FileTreeServices = {
   browseWorkspace(inputPath: string | null): Promise<{
     path: string;
     suggestions: Array<{ path: string; name: string; type: 'directory' }>;
+    drives?: string[];
   }>;
   createWorkspaceFolder(folderPath: string): Promise<{ success: true; path: string }>;
   readTextFile(projectId: string, filePath: string): Promise<{ content: string; path: string }>;

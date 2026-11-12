@@ -190,6 +190,72 @@ function runBuildIfNeeded(dir, packageJsonPath, onSuccess, onError) {
  * posix_spawnp on macOS/Linux and terminal-like plugins die on first use.
  * Used by the install/update chains here and by plugin-registry tests.
  */
+/**
+ * Repoints absolute symlinks/junctions under `<installed>/node_modules` after
+ * the staging directory is renamed into place.
+ *
+ * npm creates local `file:` dependencies as links on every platform; on
+ * Windows the link target is absolute, so a rename invalidates it. Only links
+ * whose target sat inside the staging directory are rewritten; registry
+ * packages and links to paths outside the plugin are left alone. Walks at most
+ * the package and scope levels, which is where npm places dependency links.
+ */
+function repairLinksAfterMove(stagingDir, installedDir) {
+  const stagingPrefix = path.resolve(stagingDir) + path.sep;
+  const installedPrefix = path.resolve(installedDir) + path.sep;
+  const nodeModulesDir = path.join(installedDir, 'node_modules');
+
+  const repairEntry = (entryPath) => {
+    let stat;
+    try {
+      stat = fs.lstatSync(entryPath);
+    } catch {
+      return;
+    }
+    if (!stat.isSymbolicLink()) return;
+    let target;
+    try {
+      target = fs.readlinkSync(entryPath);
+    } catch {
+      return;
+    }
+    const absoluteTarget = path.resolve(path.dirname(entryPath), target);
+    if (!absoluteTarget.startsWith(stagingPrefix)) return;
+    const newTarget = path.join(installedPrefix, path.relative(stagingPrefix, absoluteTarget));
+    try {
+      fs.rmSync(entryPath, { recursive: true, force: true });
+      fs.symlinkSync(
+        newTarget,
+        entryPath,
+        process.platform === 'win32' ? 'junction' : 'dir',
+      );
+    } catch (error) {
+      console.warn(`[Plugins] Could not repair local dependency link ${entryPath}:`, error.message);
+    }
+  };
+
+  const walk = (directory, depth) => {
+    let entries;
+    try {
+      entries = fs.readdirSync(directory, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const entryPath = path.join(directory, entry.name);
+      if (entry.isSymbolicLink()) {
+        repairEntry(entryPath);
+        continue;
+      }
+      if (entry.isDirectory() && depth < 2) {
+        walk(entryPath, depth + 1);
+      }
+    }
+  };
+
+  walk(nodeModulesDir, 0);
+}
+
 export function restoreNativeBinaryExecBits(pluginDir) {
   const prebuildsDir = path.join(pluginDir, 'node_modules', 'node-pty', 'prebuilds');
   if (!fs.existsSync(prebuildsDir)) return;
@@ -320,9 +386,24 @@ export function installPluginFromGit(url) {
       return reject(new Error('Invalid URL: must not start with "-"'));
     }
 
-    // Extract repo name from URL for directory name
-    const urlClean = url.replace(/\.git$/, '').replace(/\/$/, '');
-    const repoName = urlClean.split('/').pop();
+    // Extract the repository name for the directory. Git accepts both URLs and
+    // local paths (the tests install from a temp repo), so handle the URL
+    // pathname, scp-style refs and Windows drive paths alike.
+    const urlClean = url.trim();
+    let sourcePath = urlClean;
+    if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(urlClean)) {
+      try {
+        sourcePath = new URL(urlClean).pathname;
+      } catch {
+        // Keep the raw input; the name validation below rejects it.
+      }
+    }
+    const repoName = sourcePath
+      .replace(/\.git$/i, '')
+      .replace(/\\/g, '/')
+      .split('/')
+      .filter(Boolean)
+      .pop() ?? '';
 
     if (!repoName || !/^[a-zA-Z0-9_.-]+$/.test(repoName)) {
       return reject(new Error('Could not determine a valid directory name from the URL'));
@@ -350,6 +431,10 @@ export function installPluginFromGit(url) {
     const finalize = (manifest) => {
       try {
         fs.renameSync(tempDir, targetDir);
+        // npm links local `file:` dependencies with absolute paths on Windows;
+        // the rename above would leave those links pointing into the removed
+        // staging directory. Repoint them at the installed tree.
+        repairLinksAfterMove(tempDir, targetDir);
       } catch (err) {
         cleanupTemp();
         return reject(new Error(`Failed to move plugin into place: ${err.message}`));

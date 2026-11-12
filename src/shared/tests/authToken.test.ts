@@ -9,6 +9,7 @@ import {
   getStoredAuthToken,
   isAuthTokenExpired,
   storeAuthToken,
+  storeRefreshedAuthToken,
   TOKEN_EXPIRY_SKEW_MS,
 } from '@/shared/authToken';
 
@@ -131,4 +132,27 @@ test('getAuthTokenRefreshDelay: an unreadable token schedules nothing', () => {
   // null means "no refresh timer", which is distinct from 0 ("refresh now").
   assert.equal(getAuthTokenRefreshDelay('not-a-jwt'), null);
   assert.equal(getAuthTokenRefreshDelay(null), null);
+});
+
+test('storeRefreshedAuthToken: a newer live token replaces the stored one', () => {
+  localStorage.clear();
+  const now = Math.floor(Date.now() / 1000);
+  localStorage.setItem('auth-token', makeToken({ iat: now - 60, exp: now + 600 }));
+  const next = makeToken({ iat: now, exp: now + 660 });
+
+  assert.equal(storeRefreshedAuthToken(next), true);
+  assert.equal(localStorage.getItem('auth-token'), next);
+});
+
+test('storeRefreshedAuthToken: expired, older or claim-less tokens are ignored without clearing the session', () => {
+  localStorage.clear();
+  const now = Math.floor(Date.now() / 1000);
+  const current = makeToken({ iat: now, exp: now + 600 });
+  localStorage.setItem('auth-token', current);
+
+  assert.equal(storeRefreshedAuthToken(makeToken({ iat: now - 7200, exp: now - 3600 })), false);
+  assert.equal(storeRefreshedAuthToken(makeToken({ iat: now - 60, exp: now + 600 })), false);
+  assert.equal(storeRefreshedAuthToken(makeToken({ sub: 1 })), false);
+  assert.equal(storeRefreshedAuthToken('not-a-jwt'), false);
+  assert.equal(localStorage.getItem('auth-token'), current);
 });
