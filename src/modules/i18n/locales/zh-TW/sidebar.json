@@ -39,6 +39,8 @@
     "clearSelection": "清除選取",
     "deleteSelected_one": "刪除 {{count}} 個工作階段",
     "deleteSelected_other": "刪除 {{count}} 個工作階段",
+    "expandForks": "展開 {{session}} 的分支",
+    "collapseForks": "收合 {{session}} 的分支",
     "pinSession": "置頂工作階段",
     "unpinSession": "取消置頂",
     "pinned": "已置頂",

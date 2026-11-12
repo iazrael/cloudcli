@@ -39,6 +39,8 @@
     "clearSelection": "Clear",
     "deleteSelected_one": "Delete {{count}} session",
     "deleteSelected_other": "Delete {{count}} sessions",
+    "expandForks": "Expand forks of {{session}}",
+    "collapseForks": "Collapse forks of {{session}}",
     "pinSession": "Pin session",
     "unpinSession": "Unpin session",
     "pinned": "Pinned",
