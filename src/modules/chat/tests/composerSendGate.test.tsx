@@ -53,6 +53,8 @@ const renderComposer = (overrides: Partial<Props> & { attachmentBlock?: Composer
     isEditingSentMessage: false,
     onCancelEditMessage: noop,
     scheduledMessages: [],
+    scheduledJobs: [],
+    scheduledJobsEnabled: false,
     onScheduleMessage: noop,
     onCancelScheduledMessage: noop,
     onDeleteQueuedDraft: noop,
