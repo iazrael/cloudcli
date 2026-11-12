@@ -267,9 +267,9 @@ async function callTool(name: string, args: Record<string, unknown>) {
         values: Array.isArray(args.values) ? args.values.filter((value): value is string => typeof value === 'string') : [],
       }));
     case 'browser_upload_file':
-      return jsonResponse(await callBrowserUseApi(name, {
-        sessionId: readString(args.sessionId, 'sessionId'),
-        selector: readOptionalString(args.selector),
+      return mcpJson(await callBrowserUseApi(name, {
+        sessionId: readMcpString(args.sessionId, 'sessionId'),
+        selector: readMcpOptionalString(args.selector),
         paths: Array.isArray(args.paths) ? args.paths.filter((value): value is string => typeof value === 'string') : [],
       }));
     case 'browser_wait_for':
