@@ -62,7 +62,8 @@
     "newSessionEachRun": "New session each run",
     "boundSession": "Bound session",
     "boundSessionRotating_one": "Bound session · rotates every {{count}} day",
-    "boundSessionRotating_other": "Bound session · rotates every {{count}} days"
+    "boundSessionRotating_other": "Bound session · rotates every {{count}} days",
+    "permissionMode": "Permission: {{mode}}"
   },
   "status": {
     "running": "Running",

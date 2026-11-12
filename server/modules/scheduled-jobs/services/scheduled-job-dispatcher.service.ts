@@ -253,8 +253,19 @@ export async function executeScheduledJobRun(
       return;
     }
 
-    const status = result.error ? 'failed' : 'succeeded';
-    scheduledJobsDb.finishRun(runId, status, result.error);
+    // `run()` can resolve without throwing while the turn itself ended badly:
+    // the runtime reports that through `terminalStatus`. Input-acceptance
+    // engines may still resolve before a terminal state exists (`unknown`); in
+    // that case the start is what this run can record.
+    const terminalFailure = result.terminalStatus === 'failed' || result.terminalStatus === 'interrupted';
+    const status = result.error || terminalFailure ? 'failed' : 'succeeded';
+    const detail = result.error
+      ?? (result.terminalStatus === 'failed'
+        ? 'The turn failed.'
+        : result.terminalStatus === 'interrupted'
+          ? 'The turn was interrupted.'
+          : null);
+    scheduledJobsDb.finishRun(runId, status, detail);
     scheduledJobsDb.recordJobOutcome(job.id, status);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

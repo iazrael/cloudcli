@@ -59,7 +59,8 @@
     "history": "執行歷史",
     "newSessionEachRun": "每次建立新工作階段",
     "boundSession": "綁定工作階段",
-    "boundSessionRotating_other": "綁定工作階段 · 每 {{count}} 天輪替"
+    "boundSessionRotating_other": "綁定工作階段 · 每 {{count}} 天輪替",
+    "permissionMode": "權限：{{mode}}"
   },
   "status": {
     "running": "執行中",

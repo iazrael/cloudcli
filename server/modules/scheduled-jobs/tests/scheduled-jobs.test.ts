@@ -52,7 +52,7 @@ async function withIsolatedDatabase(runTest: (userId: number, projectPath: strin
 
 type RunCall = { provider: string; command: string; options: Record<string, unknown> };
 
-function createRuntime(runs: RunCall[], behaviour: 'ok' | 'throw' = 'ok') {
+function createRuntime(runs: RunCall[], behaviour: 'ok' | 'throw' | 'terminal-failed' | 'interrupted' = 'ok') {
   return {
     hasRuntime: () => true,
     run: async (provider: string, command: string, options: Record<string, unknown>) => {
@@ -60,6 +60,12 @@ function createRuntime(runs: RunCall[], behaviour: 'ok' | 'throw' = 'ok') {
         throw new Error('provider exploded');
       }
       runs.push({ provider, command, options });
+      if (behaviour === 'terminal-failed') {
+        return { terminalStatus: 'failed' as const };
+      }
+      if (behaviour === 'interrupted') {
+        return { terminalStatus: 'interrupted' as const };
+      }
     },
     abort: async () => true,
   } as never;
@@ -390,6 +396,25 @@ test('a provider failure is recorded on the run and on the job', async () => {
     assert.equal(history[0].status, 'failed');
     assert.match(history[0].error ?? '', /provider exploded/);
     assert.equal(scheduledJobsDb.getById(userId, job.id)?.last_status, 'failed');
+  });
+});
+
+test('a turn that ends failed or interrupted is recorded as failed, not succeeded', async () => {
+  await withIsolatedDatabase(async (userId) => {
+    const failedJob = createReuseJob(userId);
+    await dispatchDueScheduledJobs(createRuntime([], 'terminal-failed'), new Date(Date.now() + 120_000));
+
+    const failedRun = scheduledJobsService.listRuns(userId, failedJob.id)[0];
+    assert.equal(failedRun.status, 'failed');
+    assert.equal(failedRun.error, 'The turn failed.');
+    assert.equal(scheduledJobsDb.getById(userId, failedJob.id)?.last_status, 'failed');
+
+    const interruptedJob = createReuseJob(userId, { name: 'Interrupted run' });
+    await dispatchDueScheduledJobs(createRuntime([], 'interrupted'), new Date(Date.now() + 120_000));
+
+    const interruptedRun = scheduledJobsService.listRuns(userId, interruptedJob.id)[0];
+    assert.equal(interruptedRun.status, 'failed');
+    assert.equal(interruptedRun.error, 'The turn was interrupted.');
   });
 });
 

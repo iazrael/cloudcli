@@ -74,6 +74,11 @@ export function ScheduledJobList({
                   <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
                     {job.provider}
                   </span>
+                  {typeof job.options.permissionMode === 'string' && (
+                    <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                      {t('job.permissionMode', { mode: job.options.permissionMode })}
+                    </span>
+                  )}
                   <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
                     {job.sessionMode === 'new'
                       ? t('job.newSessionEachRun')

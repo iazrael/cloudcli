@@ -59,7 +59,8 @@
     "history": "运行历史",
     "newSessionEachRun": "每次新建会话",
     "boundSession": "绑定会话",
-    "boundSessionRotating_other": "绑定会话 · 每 {{count}} 天轮换"
+    "boundSessionRotating_other": "绑定会话 · 每 {{count}} 天轮换",
+    "permissionMode": "权限：{{mode}}"
   },
   "status": {
     "running": "运行中",

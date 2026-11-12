@@ -394,9 +394,6 @@ antigravity 的 `-p` 模式会先让模型回一轮，再生成压缩检查点�
 | opencode | `session.compaction.started/ended/failed` / `compaction` 消息 | `${压缩输入 id}_compaction` | 历史读消息的 `summary` |
 | zcode | `session.updated` 里 `operationId: cmp_…` 的进度（引擎把内部事件统一转成 `session.updated`，只能按载荷认）/ 时间线消息的 `compaction` part | `${part id}_compact` | 实时取 `querySource: compact` 的正文、历史取被引擎标成 hidden 的 `compact_summary` 消息，id `${摘要消息 id}_summary` |
 | antigravity | `step_update` 的 `checkpoint` / `CHECKPOINT` 步骤 | `msg_${会话}_${步}_compact` | 历史读步骤正文 |
-=======
-**受管 MCP（CloudCLI 自带的桥）**：`providerMcpService.addMcpServerToAllProviders` 遍历 live registry 向六家写入同一条 stdio/HTTP 条目，逐 provider 收集结果、单家失败不阻塞；`envFor(provider)` 可按引擎追加 env。两个使用者：`cloudcli-browser`（浏览器自动化，见 browser-use 模块）与 `cloudcli-scheduled-tasks`（定时任务，`envFor` 注入 `CLOUDCLI_SCHEDULED_JOBS_PROVIDER`，让桥知道自己来自哪个引擎）。两者都由 Settings 的全局开关驱动注册/注销，并在启动时 `syncAgentMcpIfNeeded()` 幂等对账，桥的 stdio 框架共用 `server/shared/mcp-stdio.ts`。
->>>>>>> 06f080ae (feat(scheduled-jobs): expose scheduled tasks to agents over MCP)
 
 ## 差异吃在适配器里，不漏给前端
 

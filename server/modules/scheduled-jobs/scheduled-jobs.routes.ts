@@ -62,6 +62,12 @@ router.get(
 router.post(
   '/mcp/sync',
   asyncHandler(async (_req: Request, res: Response) => {
+    // Align with the startup reconcile: a disabled feature must not re-register
+    // its MCP bridge, even though the bridge itself would 403.
+    if (!scheduledJobsSettingsService.isEnabled()) {
+      res.status(403).json({ success: false, error: 'Scheduled tasks are disabled in CloudCLI settings.' });
+      return;
+    }
     const registration = await scheduledJobsSettingsService.registerAgentMcp();
     res.json(createApiSuccessResponse({ registration }));
   }),

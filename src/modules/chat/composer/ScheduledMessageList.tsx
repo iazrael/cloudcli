@@ -51,6 +51,11 @@ export function ScheduledMessageList({
             schedule: tScheduled(description.key, description.params),
             when: new Date(job.nextRunAt).toLocaleString(),
           });
+        // Unattended runs cannot answer prompts, so the mode the job will run
+        // with is part of what the banner has to disclose.
+        const permissionMode = typeof job.options.permissionMode === 'string'
+          ? job.options.permissionMode
+          : null;
 
         return (
           <div
@@ -59,7 +64,10 @@ export function ScheduledMessageList({
           >
             <Repeat className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
             <div className="min-w-0 flex-1">
-              <p className="text-[11px] text-muted-foreground">{scheduleText}</p>
+              <p className="text-[11px] text-muted-foreground">
+                {scheduleText}
+                {permissionMode ? ` · ${tScheduled('job.permissionMode', { mode: permissionMode })}` : ''}
+              </p>
               <p className="mt-0.5 truncate text-foreground">{job.prompt}</p>
             </div>
             <button
