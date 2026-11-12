@@ -3,7 +3,6 @@ import path from 'node:path';
 type AppBrandingDependencies = {
   appRoot: string;
   environment: NodeJS.ProcessEnv;
-  hostname(): string;
   readFile(filePath: string): string;
   fileExists(filePath: string): boolean;
   logError(message: string, detail?: string): void;
@@ -57,11 +56,15 @@ function escapeHtmlAttribute(value: string): string {
  * serves the branded manifest at /manifest.json and injects the name into the
  * apple mobile web app title, because iOS ignores the manifest short_name when
  * a user adds the app to the home screen. The name is `CLOUDCLI_NODE_NAME`
- * when set, otherwise the machine hostname.
+ * when set, otherwise the neutral default: the manifest and the shell are
+ * served without authentication (PWA installs happen pre-auth, including over
+ * tunnels), so falling back to the machine hostname would disclose it to
+ * anyone who can reach the server. Operators who want per-node names set the
+ * variable explicitly.
  */
 export function createAppBrandingService(dependencies: AppBrandingDependencies) {
   const configuredName = dependencies.environment.CLOUDCLI_NODE_NAME?.trim();
-  const appName = configuredName || dependencies.hostname().trim() || 'CloudCLI';
+  const appName = configuredName || 'CloudCLI';
   const shortName = toShortName(appName);
 
   // Neither response is cached: this fork updates in place, and vite empties

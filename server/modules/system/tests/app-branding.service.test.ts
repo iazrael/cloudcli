@@ -29,7 +29,6 @@ function createTestContext(options: {
   manifestRelativePath?: string;
   indexHtml?: string | null;
   environment?: NodeJS.ProcessEnv;
-  hostname?: string;
 } = {}) {
   const files = new Map<string, string>();
   const manifest = options.manifest === undefined ? DEFAULT_MANIFEST : options.manifest;
@@ -47,7 +46,6 @@ function createTestContext(options: {
   const dependencies: AppBrandingDependencies = {
     appRoot: APP_ROOT,
     environment: options.environment ?? {},
-    hostname: () => options.hostname ?? '360W-PC-03',
     readFile: (filePath) => {
       const content = files.get(toRelativePath(filePath));
       if (content === undefined) {
@@ -63,15 +61,18 @@ function createTestContext(options: {
   return { dependencies, files };
 }
 
-test('defaults to the machine hostname when CLOUDCLI_NODE_NAME is unset', () => {
+test('falls back to the neutral default, never the hostname, when CLOUDCLI_NODE_NAME is unset', () => {
+  // The manifest and the shell are served without authentication (PWA installs
+  // happen pre-auth, including over tunnels), so the hostname must not leak
+  // through the name fields.
   const { dependencies } = createTestContext();
   const service = createAppBrandingService(dependencies);
 
   const manifest = JSON.parse(service.getManifestJson()) as { name: string; short_name: string };
 
-  assert.equal(service.getAppName(), '360W-PC-03');
-  assert.equal(manifest.name, '360W-PC-03');
-  assert.equal(manifest.short_name, '360W-PC-03');
+  assert.equal(service.getAppName(), 'CloudCLI');
+  assert.equal(manifest.name, 'CloudCLI');
+  assert.equal(manifest.short_name, 'CloudCLI');
 });
 
 test('uses CLOUDCLI_NODE_NAME when set', () => {
@@ -85,7 +86,9 @@ test('uses CLOUDCLI_NODE_NAME when set', () => {
 });
 
 test('strips Windows host prefixes from the short name only', () => {
-  const { dependencies } = createTestContext({ hostname: 'DESKTOP-ABC123' });
+  const { dependencies } = createTestContext({
+    environment: { CLOUDCLI_NODE_NAME: 'DESKTOP-ABC123' },
+  });
   const service = createAppBrandingService(dependencies);
 
   assert.equal(service.getAppName(), 'DESKTOP-ABC123');
@@ -118,7 +121,7 @@ test('falls back to a minimal manifest when the packaged file is missing', () =>
 
   const manifest = JSON.parse(service.getManifestJson()) as Record<string, unknown>;
 
-  assert.equal(manifest.name, '360W-PC-03');
+  assert.equal(manifest.name, 'CloudCLI');
   assert.equal(manifest.display, 'standalone');
 });
 
@@ -139,7 +142,7 @@ test('injects the app name into the apple mobile web app title', () => {
   const html = service.renderIndexHtml();
 
   assert.ok(html);
-  assert.ok(html.includes('<meta name="apple-mobile-web-app-title" content="360W-PC-03" />'));
+  assert.ok(html.includes('<meta name="apple-mobile-web-app-title" content="CloudCLI" />'));
   assert.ok(html.includes('<title>CloudCLI UI</title>'));
 });
 
@@ -176,7 +179,7 @@ test('reads the manifest and index shell fresh on every request', () => {
   files.set(INDEX_RELATIVE_PATH, DEFAULT_INDEX_HTML.replace('Claude UI', 'Rebuilt UI'));
   assert.equal(JSON.parse(service.getManifestJson()).description, 'rebuilt manifest');
   assert.ok(service.renderIndexHtml()?.includes('<title>CloudCLI UI</title>'));
-  assert.ok(service.renderIndexHtml()?.includes('content="360W-PC-03"'));
+  assert.ok(service.renderIndexHtml()?.includes('content="CloudCLI"'));
 });
 
 test('falls through to the built manifest when the source copy is unparseable', () => {

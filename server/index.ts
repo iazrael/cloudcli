@@ -121,7 +121,6 @@ const systemRoutes = createSystemModule({
 const appBranding = createAppBrandingService({
     appRoot: APP_ROOT,
     environment: process.env,
-    hostname: os.hostname,
     readFile: (filePath) => fs.readFileSync(filePath, 'utf8'),
     fileExists: (filePath) => fs.existsSync(filePath),
     logError: (message, detail) => console.error(message, detail ?? ''),
