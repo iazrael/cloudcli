@@ -534,7 +534,7 @@ export default function SidebarContent({
                       {t('archived.title', 'Archive')}
                     </h2>
                     <p className="mt-1 text-[10px] leading-none text-muted-foreground">
-                      {t('archived.restoreHint', 'Restore items whenever you need them')}
+                      {t('archived.restoreHint', 'Archiving never deletes data; restore items anytime you need them')}
                     </p>
                   </div>
                 </div>

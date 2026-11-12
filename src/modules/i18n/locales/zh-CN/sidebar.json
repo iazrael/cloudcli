@@ -193,7 +193,7 @@
   },
   "archived": {
     "title": "归档",
-    "restoreHint": "随时可以恢复这些内容",
+    "restoreHint": "归档不会删除数据，随时可以恢复",
     "loadingTitle": "归档加载中...",
     "loadingDescription": "正在获取已隐藏的工作区和会话，稍后可恢复。",
     "emptyTitle": "暂无归档内容",

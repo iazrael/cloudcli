@@ -192,7 +192,7 @@
   },
   "archived": {
     "title": "封存",
-    "restoreHint": "隨時可以還原這些內容",
+    "restoreHint": "封存不會刪除資料，隨時可以還原",
     "loadingTitle": "封存載入中...",
     "loadingDescription": "正在取得已隱藏的工作區和工作階段，稍後可還原。",
     "emptyTitle": "沒有封存內容",

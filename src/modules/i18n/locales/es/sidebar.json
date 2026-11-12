@@ -177,7 +177,7 @@
   },
   "archived": {
     "title": "Archivados",
-    "restoreHint": "Restaura elementos cuando los necesites",
+    "restoreHint": "Archivar nunca borra datos, restaura elementos cuando los necesites",
     "loadingTitle": "Cargando archivados...",
     "loadingDescription": "Obteniendo los proyectos y sesiones ocultos que puedes restaurar más tarde.",
     "emptyTitle": "No hay elementos archivados",

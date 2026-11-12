@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Archive, CheckCircle2, Loader2, Sparkles } from 'lucide-react';
+import { Archive, CheckCircle2, Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/shared/ui';
@@ -222,24 +222,6 @@ export default function SessionsSettingsTab() {
       </SettingsSection>
 
       <SessionsStorageCleanup />
-
-      {/* Info notice */}
-      <div className="rounded-xl border border-border/80 bg-muted/30 p-4">
-        <div className="flex items-start gap-3">
-          <div className="mt-0.5 flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
-            <Sparkles className="h-3.5 w-3.5" />
-          </div>
-          <div className="flex-1 text-xs leading-relaxed text-muted-foreground">
-            <span className="font-semibold text-foreground">
-              {t('sessions.notice.title', '数据安全说明：')}
-            </span>{' '}
-            {t(
-              'sessions.notice.content',
-              '归档操作只会从侧边栏列表中移出旧会话，绝不会删除您的对话历史和磁盘文件。您随时可以在侧边栏点击“归档视图”（顶部箱子图标）查看完整历史记录，或者一键将其恢复回活跃列表中。'
-            )}
-          </div>
-        </div>
-      </div>
     </div>
   );
 }

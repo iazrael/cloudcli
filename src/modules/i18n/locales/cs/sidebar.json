@@ -188,7 +188,7 @@
   },
   "archived": {
     "title": "Archiv",
-    "restoreHint": "Položky můžete kdykoli obnovit",
+    "restoreHint": "Archivace nic nemaže, položky můžete kdykoli obnovit",
     "loadingTitle": "Načítání archivu...",
     "loadingDescription": "Načítají se skryté pracovní prostory a relace, které můžete později obnovit.",
     "emptyTitle": "Žádné archivované položky",
