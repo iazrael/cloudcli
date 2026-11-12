@@ -38,7 +38,7 @@ import {
 } from './modules/auth/index.js';
 import { commandsRoutes } from './modules/commands/index.js';
 import { settingsRoutes } from './modules/settings/index.js';
-import { createSystemModule } from './modules/system/index.js';
+import { createAppBrandingService, createSystemModule } from './modules/system/index.js';
 import { createExecutionModule } from './modules/execution/index.js';
 import { createAgentModule } from './modules/agent/index.js';
 import projectModuleRoutes from './modules/projects/projects.routes.js';
@@ -117,6 +117,15 @@ const systemRoutes = createSystemModule({
     appRoot: APP_ROOT,
     installMode,
     isPlatform: IS_PLATFORM,
+});
+const appBranding = createAppBrandingService({
+    appRoot: APP_ROOT,
+    environment: process.env,
+    hostname: os.hostname,
+    readFile: (filePath) => fs.readFileSync(filePath, 'utf8'),
+    fileExists: (filePath) => fs.existsSync(filePath),
+    logError: (message, detail) => console.error(message, detail ?? ''),
+    logWarn: (message, detail) => console.warn(message, detail ?? ''),
 });
 console.log('SERVER_PORT from env:', process.env.SERVER_PORT);
 
@@ -317,6 +326,36 @@ app.use('/api/local-proxy', createLocalProxyRouter(authenticateToken));
 // its root-absolute assets on this origin, and they belong to the local service.
 app.use(localProxyAbsolutePathFallback);
 
+// Serve the branded index shell for the SPA root before static files so the
+// injected apple title is present when iOS adds the app to the home screen.
+function sendSpaIndexHtml(request: Request, response: Response) {
+    const brandedHtml = appBranding.renderIndexHtml();
+    if (brandedHtml !== null) {
+        // Set no-cache headers for HTML to prevent service worker issues
+        response.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        response.setHeader('Pragma', 'no-cache');
+        response.setHeader('Expires', '0');
+        response.type('html').send(brandedHtml);
+        return;
+    }
+
+    // In development, redirect to Vite dev server only if dist doesn't exist
+    const redirectHost = getConnectableHost(request.hostname);
+    response.redirect(`${request.protocol}://${redirectHost}:${VITE_PORT}`);
+}
+
+// Per-node PWA identity: served before the static manifest so each machine
+// installs under its own name (CLOUDCLI_NODE_NAME or the hostname).
+app.get('/manifest.json', (_request, response) => {
+    response.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    response.setHeader('Pragma', 'no-cache');
+    response.setHeader('Expires', '0');
+    response.type('application/manifest+json').send(appBranding.getManifestJson());
+});
+
+app.get('/', sendSpaIndexHtml);
+app.get('/index.html', sendSpaIndexHtml);
+
 // Serve public files (like api-docs.html)
 app.use(express.static(path.join(APP_ROOT, 'public')));
 
@@ -350,22 +389,7 @@ app.get('*', (req, res) => {
         return res.status(404).send('Not found');
     }
 
-    // Only serve index.html for HTML routes, not for static assets
-    // Static assets should already be handled by express.static middleware above
-    const indexPath = path.join(APP_ROOT, 'dist', 'index.html');
-
-    // Check if dist/index.html exists (production build available)
-    if (fs.existsSync(indexPath)) {
-        // Set no-cache headers for HTML to prevent service worker issues
-        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-        res.setHeader('Pragma', 'no-cache');
-        res.setHeader('Expires', '0');
-        res.sendFile(indexPath);
-    } else {
-        // In development, redirect to Vite dev server only if dist doesn't exist
-        const redirectHost = getConnectableHost(req.hostname);
-        res.redirect(`${req.protocol}://${redirectHost}:${VITE_PORT}`);
-    }
+    sendSpaIndexHtml(req, res);
 });
 
 // global error middleware must be last
