@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { AlertTriangle, Clock, Repeat, X } from 'lucide-react';
+import { AlertTriangle, Clock, PencilIcon, Repeat, X } from 'lucide-react';
 
 import type { ScheduledJob, ScheduledMessage } from '@/shared/types';
 import { describeSchedule } from '@/modules/scheduled-jobs';
@@ -8,6 +8,8 @@ type ScheduledMessageListProps = {
   scheduledMessages: ScheduledMessage[];
   /** Recurring jobs bound to this session, shown alongside the one-off sends. */
   scheduledJobs: ScheduledJob[];
+  /** Cancels the message and hands its text back to the caller's composer. */
+  onRecall: (message: ScheduledMessage) => void;
   onCancel: (id: string) => void;
   onDeleteJob: (id: string) => void;
 };
@@ -15,7 +17,8 @@ type ScheduledMessageListProps = {
 /**
  * Rendered by ChatComposer above the input, so a message waiting to be sent —
  * or a recurring task bound to this session — is visible where it applies, and
- * can be called off.
+ * can be called off or recalled for editing, the way the queued message card
+ * does it.
  *
  * Failed ones are shown too: a message that did not go is exactly the thing a
  * user needs to know about, and the server records why. Dismissing one goes
@@ -24,6 +27,7 @@ type ScheduledMessageListProps = {
 export function ScheduledMessageList({
   scheduledMessages,
   scheduledJobs,
+  onRecall,
   onCancel,
   onDeleteJob,
 }: ScheduledMessageListProps) {
@@ -108,6 +112,15 @@ export function ScheduledMessageList({
               </p>
               <p className="mt-0.5 truncate text-foreground">{message.content}</p>
             </div>
+            <button
+              type="button"
+              onClick={() => onRecall(message)}
+              title={t('schedule.recall')}
+              aria-label={t('schedule.recall')}
+              className="shrink-0 rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            >
+              <PencilIcon className="h-3.5 w-3.5" />
+            </button>
             <button
               type="button"
               onClick={() => onCancel(message.id)}

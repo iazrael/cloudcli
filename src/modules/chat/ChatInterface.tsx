@@ -19,7 +19,7 @@ import { useScheduledJobs } from '@/modules/scheduled-jobs';
 import { useProviderCapabilitiesMap } from '@/shared/hooks/useProviderCapabilities';
 import ChatMessagesPane from '@/modules/chat/transcript/ChatMessagesPane';
 import ProviderSelectionEmptyState from '@/modules/chat/transcript/ProviderSelectionEmptyState';
-import type { ChatMessage } from '@/shared/types';
+import type { ChatMessage, ScheduledMessage } from '@/shared/types';
 import { api } from '@/shared/api';
 import ChatComposer from '@/modules/chat/composer/ChatComposer';
 import CommandResultModal from '@/modules/chat/modals/CommandResultModal';
@@ -231,6 +231,7 @@ function ChatInterface({
     pendingSteers,
     handleSteerOutcome,
     steerFromComposer,
+    recallContentToComposer,
   } = useChatComposerState({
     selectedProject,
     selectedSession,
@@ -373,6 +374,16 @@ function ChatInterface({
     cancel: cancelScheduledMessage,
     refresh: refreshScheduledMessages,
   } = useScheduledMessages(currentSessionId || selectedSession?.id || null, subscribe);
+
+  // 撤回定时消息（排队消息的编辑按钮同款）：先让服务端取消，成功才把文本放回
+  // 输入框；失败时横幅原样保留，用户重试。定时消息不带附件，只还原文本。
+  const recallScheduledMessage = useCallback(async (message: ScheduledMessage) => {
+    if (!await cancelScheduledMessage(message.id)) {
+      addMessage({ type: 'error', content: t('schedule.recallFailed'), timestamp: new Date() });
+      return;
+    }
+    recallContentToComposer(message.content, currentSessionId || selectedSession?.id || '');
+  }, [cancelScheduledMessage, recallContentToComposer, addMessage, t, currentSessionId, selectedSession?.id]);
 
   const {
     jobs: scheduledJobs,
@@ -634,6 +645,7 @@ function ChatInterface({
           scheduledJobsEnabled={scheduledJobsEnabled}
           onScheduleMessage={handleScheduleMessage}
           onScheduleTask={handleScheduleTask}
+          onRecallScheduledMessage={recallScheduledMessage}
           onCancelScheduledMessage={cancelScheduledMessage}
           onDeleteScheduledJob={handleDeleteScheduledJob}
           supportsNativeScheduling={supportsNativeScheduling}

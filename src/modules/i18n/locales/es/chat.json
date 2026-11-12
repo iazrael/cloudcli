@@ -361,7 +361,9 @@
     "pending": "Programado para {{when}}",
     "failed": "No enviado — {{reason}}",
     "cancel": "Cancelar mensaje programado",
-    "dismiss": "Descartar el aviso de fallo"
+    "dismiss": "Descartar el aviso de fallo",
+    "recall": "Recuperar para editar",
+    "recallFailed": "No se pudo recuperar el mensaje programado. Inténtalo de nuevo."
   },
   "misc": {
     "copyToClipboard": "Copiar al portapapeles",

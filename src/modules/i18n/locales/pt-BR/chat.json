@@ -343,7 +343,9 @@
     "pending": "Agendado para {{when}}",
     "failed": "Não enviado — {{reason}}",
     "cancel": "Cancelar mensagem agendada",
-    "dismiss": "Dispensar aviso de falha"
+    "dismiss": "Dispensar aviso de falha",
+    "recall": "Recuperar para editar",
+    "recallFailed": "Não foi possível recuperar a mensagem agendada. Tente novamente."
   },
   "misc": {
     "copyToClipboard": "Copiar para a área de transferência",

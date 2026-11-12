@@ -408,7 +408,9 @@
     "pending": "{{when}} için zamanlandı",
     "failed": "Gönderilmedi — {{reason}}",
     "cancel": "Zamanlanmış mesajı iptal et",
-    "dismiss": "Hata bildirimini kapat"
+    "dismiss": "Hata bildirimini kapat",
+    "recall": "Düzenlemek için geri al",
+    "recallFailed": "Zamanlanmış mesaj geri alınamadı. Lütfen tekrar deneyin."
   },
   "misc": {
     "copyToClipboard": "Panoya kopyala",

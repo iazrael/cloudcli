@@ -311,7 +311,9 @@
     "pending": "Geplant für {{when}}",
     "failed": "Nicht gesendet – {{reason}}",
     "cancel": "Geplante Nachricht abbrechen",
-    "dismiss": "Fehlerhinweis ausblenden"
+    "dismiss": "Fehlerhinweis ausblenden",
+    "recall": "Zum Bearbeiten zurückholen",
+    "recallFailed": "Die geplante Nachricht konnte nicht zurückgeholt werden. Bitte erneut versuchen."
   },
   "sideQuestion": {
     "label": "Nebenfrage · gehört nicht zur Sitzung",

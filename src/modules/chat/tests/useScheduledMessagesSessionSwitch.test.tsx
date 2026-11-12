@@ -140,3 +140,21 @@ test('the one-argument call still works and never subscribes', async () => {
   await waitFor(() => assert.ok(list.mock.calls.length >= 1));
   assert.equal(result.current.scheduledMessages.length, 0);
 });
+
+test('cancel resolves true when the server accepts it and false when it refuses', async () => {
+  vi.spyOn(api.scheduledMessages, 'list').mockImplementation(async () => listResponse([]));
+  const cancelSpy = vi.spyOn(api.scheduledMessages, 'cancel')
+    .mockResolvedValueOnce({ ok: true } as unknown as Response)
+    .mockRejectedValueOnce(new Error('offline'));
+
+  const { result } = renderHook(({ sessionId }) => useScheduledMessages(sessionId), {
+    initialProps: { sessionId: 'session-a' },
+  });
+  await waitFor(() => assert.ok(result.current.cancel));
+
+  await act(async () => {
+    assert.equal(await result.current.cancel('sm-1'), true);
+    assert.equal(await result.current.cancel('sm-1'), false);
+  });
+  assert.equal(cancelSpy.mock.calls.length, 2);
+});

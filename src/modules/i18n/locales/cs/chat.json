@@ -364,7 +364,9 @@
     "pending": "Naplánováno na {{when}}",
     "failed": "Neodesláno – {{reason}}",
     "cancel": "Zrušit naplánovanou zprávu",
-    "dismiss": "Zavřít oznámení o chybě"
+    "dismiss": "Zavřít oznámení o chybě",
+    "recall": "Vzít zpět k úpravě",
+    "recallFailed": "Naplánovanou zprávu se nepodařilo vzít zpět. Zkuste to prosím znovu."
   },
   "misc": {
     "copyToClipboard": "Kopírovat do schránky",

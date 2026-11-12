@@ -293,7 +293,9 @@
     "pending": "Programmato per {{when}}",
     "failed": "Non inviato — {{reason}}",
     "cancel": "Annulla messaggio programmato",
-    "dismiss": "Ignora l'avviso di errore"
+    "dismiss": "Ignora l'avviso di errore",
+    "recall": "Ripristina per modificare",
+    "recallFailed": "Impossibile ripristinare il messaggio programmato. Riprova."
   },
   "modelLibrary": {
     "effortLevels": "Livelli di ragionamento",

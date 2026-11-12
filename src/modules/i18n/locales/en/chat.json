@@ -393,7 +393,9 @@
     "pending": "Scheduled for {{when}}",
     "failed": "Not sent — {{reason}}",
     "cancel": "Cancel scheduled message",
-    "dismiss": "Dismiss failure notice"
+    "dismiss": "Dismiss failure notice",
+    "recall": "Recall to edit",
+    "recallFailed": "Could not recall the scheduled message. Please try again."
   },
   "cost": {
     "readingUsage": "Reading session usage…",

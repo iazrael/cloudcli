@@ -56,6 +56,7 @@ const renderComposer = (overrides: Partial<Props> & { attachmentBlock?: Composer
     scheduledJobs: [],
     scheduledJobsEnabled: false,
     onScheduleMessage: noop,
+    onRecallScheduledMessage: noop,
     onCancelScheduledMessage: noop,
     onDeleteQueuedDraft: noop,
     attachments: [],

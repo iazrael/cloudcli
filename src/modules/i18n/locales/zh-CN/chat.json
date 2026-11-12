@@ -372,7 +372,9 @@
     "pending": "将于 {{when}} 发送",
     "failed": "未发送 — {{reason}}",
     "cancel": "取消定时消息",
-    "dismiss": "关闭失败提示"
+    "dismiss": "关闭失败提示",
+    "recall": "撤回编辑",
+    "recallFailed": "无法撤回定时消息，请重试。"
   },
   "cost": {
     "readingUsage": "正在读取会话用量…",

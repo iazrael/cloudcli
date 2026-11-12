@@ -123,6 +123,8 @@ type ChatComposerProps = {
     /** Days before the bound session is rotated; omitted never rotates. */
     rotateAfterDays?: number;
   }) => void;
+  /** Cancels a scheduled message and puts its text back into the composer. */
+  onRecallScheduledMessage: (message: ScheduledMessage) => void;
   onCancelScheduledMessage: (id: string) => void;
   onDeleteScheduledJob: (id: string) => void;
   /** Whether the current provider schedules inside its own session (hint only). */
@@ -235,6 +237,7 @@ function ChatComposer({
   scheduledJobsEnabled,
   onScheduleMessage,
   onScheduleTask,
+  onRecallScheduledMessage,
   onCancelScheduledMessage,
   onDeleteScheduledJob,
   supportsNativeScheduling,
@@ -410,6 +413,7 @@ function ChatComposer({
       <ScheduledMessageList
         scheduledMessages={scheduledMessages}
         scheduledJobs={scheduledJobs}
+        onRecall={onRecallScheduledMessage}
         onCancel={onCancelScheduledMessage}
         onDeleteJob={onDeleteScheduledJob}
       />

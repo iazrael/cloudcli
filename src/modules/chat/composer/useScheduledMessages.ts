@@ -103,12 +103,17 @@ export function useScheduledMessages(
   }, [refresh, sessionId]);
 
   const cancel = useCallback(async (id: string) => {
+    // Whether the server took it decides what a recall can do next: only a
+    // cancelled message may be put back into the composer.
     try {
       await api.scheduledMessages.cancel(id);
+      return true;
     } catch (error) {
       console.error('Failed to cancel scheduled message:', error);
+      return false;
+    } finally {
+      await refresh();
     }
-    await refresh();
   }, [refresh]);
 
   return { scheduledMessages, schedule, cancel, refresh };

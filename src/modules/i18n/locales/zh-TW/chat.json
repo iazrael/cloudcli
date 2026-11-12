@@ -391,7 +391,9 @@
     "pending": "將於 {{when}} 傳送",
     "failed": "未傳送 — {{reason}}",
     "cancel": "取消排程訊息",
-    "dismiss": "關閉失敗提示"
+    "dismiss": "關閉失敗提示",
+    "recall": "撤回編輯",
+    "recallFailed": "無法撤回排程訊息，請重試。"
   },
   "cost": {
     "readingUsage": "正在讀取會話用量…",

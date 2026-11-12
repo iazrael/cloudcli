@@ -304,7 +304,9 @@
     "pending": "{{when}}에 전송 예정",
     "failed": "전송되지 않음 — {{reason}}",
     "cancel": "예약 취소",
-    "dismiss": "실패 알림 닫기"
+    "dismiss": "실패 알림 닫기",
+    "recall": "가져와서 편집",
+    "recallFailed": "예약 메시지를 가져오지 못했습니다. 다시 시도해 주세요."
   },
   "modelLibrary": {
     "effortLevels": "추론 수준",

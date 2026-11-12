@@ -1572,6 +1572,13 @@ export function useChatComposerState({
     if (queuedDraft && await clearQueuedDraftOnServer(owner, queuedDraft) && sessionKeyRef.current === owner) setQueuedDraft(null);
   }, [clearQueuedDraftOnServer, queuedDraft]);
 
+  // 定时消息撤回编辑用：把被撤回的文本放回一个会话的输入框并聚焦，排队消息的
+  // 编辑按钮走同一条恢复路径，只是那里还带附件。
+  const recallContentToComposer = useCallback((content: string, ownerScope: string) => {
+    restoreComposerAfterFailedSubmit(content, [], ownerScope);
+    textareaRef.current?.focus();
+  }, [restoreComposerAfterFailedSubmit]);
+
   // Force send starts a new run, which the server refuses while a reply is
   // still in flight (RUN_IN_PROGRESS); only a session whose turn has ended
   // and that waits on background work alone can take one.
@@ -1937,6 +1944,8 @@ export function useChatComposerState({
     isSubmitting,
     queuedDraft,
     editQueuedDraft,
+    /** Used by ChatInterface to recall a scheduled message's text into the composer. */
+    recallContentToComposer,
     deleteQueuedDraft,
     forceSendQueuedDraft,
     canForceSendQueuedDraft,

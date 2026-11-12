@@ -324,7 +324,9 @@
     "pending": "Dijadwalkan untuk {{when}}",
     "failed": "Tidak terkirim — {{reason}}",
     "cancel": "Batalkan pesan terjadwal",
-    "dismiss": "Tutup pemberitahuan kegagalan"
+    "dismiss": "Tutup pemberitahuan kegagalan",
+    "recall": "Tarik untuk diedit",
+    "recallFailed": "Tidak dapat menarik kembali pesan terjadwal. Coba lagi."
   },
   "misc": {
     "copyToClipboard": "Salin ke clipboard",
