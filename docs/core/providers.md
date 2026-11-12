@@ -340,7 +340,9 @@ claude 直连 `/api/oauth/usage?cedar_ember=1`（本地 OAuth token + CLI User-A
 一次取回窗口和 reset 卡；直连失败时退回 Agent SDK 的 control request，由它刷新 token
 并照常返回窗口。
 opencode 打 Go 套餐的内部端点 `/zen/go/v1/usage`（官方文档未列，随 CLI 版本可能变动），
-凭证读 CLI 共享库 credential 表的令牌与工作区 id，令牌续期归 CLI 管，403/401/超时一律降级为"无配额"。
+凭证先取 CLI 共享库 `credential` 表的 `opencode-go` API key（v1 `auth.json` 仅作回退），
+再回退 `opencode` 控制台 OAuth 行（必须有工作区 id）；key 已绑定工作区，只有 OAuth 才附带 org 头。
+令牌续期归 CLI 管，403/401/超时一律降级为"无配额"。
 各家都要拉起进程或走网络，因此统一用 `createProviderQuotaCache`（TTL 两分钟）挡在前面，
 `?refresh=true` 才穿透。claude 那条路额外有一点要守住：喂给 SDK 的输入流一条消息都不产出，
 CLI 只是挂着等输入，既不会落 transcript，也不会消耗它正在汇报的额度。

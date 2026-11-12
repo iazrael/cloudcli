@@ -18,8 +18,8 @@
 
 数据源为 opencode 未公开文档的内部接口，依据 opencode CLI 源码 `packages/core/src/usage-limits.ts`（仓库 anomalyco/opencode，2026-11 已本机实测可用）：
 
-1. **凭证**：读 opencode 共享库 `~/.local/share/opencode/opencode.db` 的 `credential` 表，取 `integration_id='opencode'` 且 `active=1` 的最新行，`value` JSON 为 `{type, access?, key?, metadata:{orgID?, orgName?, server?}}`。只读连接；orgID 缺失视为不可查，返回 null。
-2. **请求**：`GET {console origin}/zen/go/v1/usage`，头部 `Authorization: Bearer <token>` + `x-opencode-org-id: <orgID>`。console origin 默认 `https://opencode.ai`（server 字段默认 `https://opencode.ai/console`，取 origin）。
+1. **凭证**：读 opencode 共享库 `~/.local/share/opencode/opencode.db` 的 `credential` 表，`value` JSON 为 `{type, access?, key?, metadata:{orgID?, orgName?, server?}}`。只读连接。解析顺序见下方「回归修复」：`opencode-go` API key → `opencode` 控制台 OAuth（必须有 orgID）→ v1 `auth.json` 的 `opencode-go.key`。
+2. **请求**：`GET {console origin}/zen/go/v1/usage`，头部 `Authorization: Bearer <token>`；只有拿到 orgID 时才附带 `x-opencode-org-id`。console origin 默认 `https://opencode.ai`（server 字段默认 `https://opencode.ai/console`，取 origin）。
 3. **归一化**：单组 "OpenCode Go"，三个桶 rolling→`5h`、weekly→`weekly`、monthly→`monthly`；`remainingFraction = (100 - percent)/100`，`status === 'rate-limited'` 时强制 0；`resetsAt` 转 ISO。`partitioning: 'bucket'`（单组，前端按唯一组处理）。
 4. **降级**：403（工作区未订阅 Go）、401（OAuth token 过期）、超时（10s）、网络错误、载荷不可读 → 全部返回 null，前端显示"没有可显示的配额数据"并带提示文案。token 过期不自动续期（续期归 opencode CLI 管）；用户在 CLI 里用过一次后凭证刷新即自愈。
 5. **缓存**：`createProviderQuotaCache`，TTL 120s 对齐 claude/codex/antigravity，`?refresh=true` 穿透。
@@ -30,6 +30,18 @@ fetch 与凭证读取都做成可注入依赖，供单测替换。
 
 - 定向单测 `server/modules/providers/tests/opencode-quota.test.ts`（node:test，红 → 绿）：凭证缺失/无 orgID、403、401、超时、正常载荷三桶归一化、rate-limited 置零、缓存与 refresh 穿透。
 - 本机实跑：起 dev 服务后 `curl /api/providers/quota?provider=opencode` 返回真实额度。
+
+## 回归修复（2026-11-12）
+
+2026-11-09 的改版（`e7d936c8`）把凭证收窄到 `integration_id='opencode'` 的控制台 OAuth 行并要求 `metadata.orgID`。但 Go 订阅最常见的形态是 `integration_id='opencode-go'` 的 API key 行（`value={type:'key', key:'oc_sk_…'}`，`metadata` 为空），这类工作区因此恒返回 null，配额面板只剩"没有可显示的配额数据"。
+
+修正凭证解析顺序，请求路径与归一化不变：
+
+1. v2 `opencode.db` 的 `opencode-go` 行（key）；
+2. v2 `opencode.db` 的 `opencode` 行（`key` 可直接用；仅 `access` 的 OAuth 行必须带 orgID）；
+3. v1 `auth.json` 的 `opencode-go.key`。
+
+`oc_sk_` key 已绑定工作区，`/zen/go/v1/usage` 实测无需 org 头（随便填一个错误 org 反而 400），所以只在拿到 orgID 时才发送 `x-opencode-org-id`。验证：定向单测覆盖两种行形、优先级、auth.json 回退，并用真实 key 请求该端点返回 200。
 
 ## 风险
 

@@ -15,6 +15,23 @@ import path from 'node:path';
 
 import Database, { type Database as SqliteDatabase } from 'better-sqlite3';
 
+/** The shared OpenCode data directory (`auth.json`, `opencode.db`, model caches). */
+function getOpenCodeDataDirectory(): string {
+  return path.join(os.homedir(), '.local', 'share', 'opencode');
+}
+
+/**
+ * Resolves the legacy v1 credential file.
+ *
+ * v1 OpenCode kept every connected provider credential — including the
+ * `opencode-go` subscription API key — in one `auth.json` under its data
+ * directory; v2 moved them to the `credential` table, so this file is only
+ * the fallback. Consumed by the opencode quota provider.
+ */
+export function getOpenCodeAuthPath(): string {
+  return path.join(getOpenCodeDataDirectory(), 'auth.json');
+}
+
 /**
  * Resolves the OpenCode SQLite session database path.
  *
@@ -26,7 +43,7 @@ import Database, { type Database as SqliteDatabase } from 'better-sqlite3';
  * Consumers: opencode models, sessions, and session synchronizer providers.
  */
 export function getOpenCodeDatabasePath(): string {
-  return path.join(os.homedir(), '.local', 'share', 'opencode', 'opencode.db');
+  return path.join(getOpenCodeDataDirectory(), 'opencode.db');
 }
 
 /**

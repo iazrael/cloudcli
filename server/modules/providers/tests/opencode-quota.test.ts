@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
+import path from 'node:path';
 import test, { afterEach, beforeEach, describe } from 'node:test';
 
 import Database from 'better-sqlite3';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
-import path from 'node:path';
 
 import {
   clearOpenCodeQuotaCache,
@@ -116,7 +116,7 @@ describe('OpenCode Quota Provider', () => {
     assert.equal(requests[0].headers['x-opencode-org-id'], 'org_test1234');
   });
 
-  test('returns null without a credential or without a workspace id', async () => {
+  test('returns null without a credential but accepts a Go API key with no workspace id', async () => {
     const { fetchFn, requests } = createRouteFetch({ '/zen/go/v1/usage': goUsagePayload });
 
     const noCredential = await fetchOpenCodeQuota({}, {
@@ -125,13 +125,15 @@ describe('OpenCode Quota Provider', () => {
     });
     assert.equal(noCredential, null);
 
-    const noOrg = await fetchOpenCodeQuota({}, {
-      readCredential: async () => ({ ...credential, orgId: '' }),
+    const keyOnly = await fetchOpenCodeQuota({ forceRefresh: true }, {
+      readCredential: async () => ({ ...credential, token: 'oc_sk_test', orgId: '', orgName: undefined }),
       fetch: fetchFn,
     });
-    assert.equal(noOrg, null);
-
-    assert.equal(requests.length, 0);
+    assert.ok(keyOnly);
+    assert.equal(keyOnly.groups[0].name, 'OpenCode Go');
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].headers.authorization, 'Bearer oc_sk_test');
+    assert.equal(requests[0].headers['x-opencode-org-id'], undefined);
   });
 
   test('degrades to null on 403, 401, transport errors, and unreadable payloads', async () => {
@@ -214,6 +216,65 @@ describe('OpenCode Quota Provider', () => {
       assert.equal(requests[0].headers['x-opencode-org-id'], 'org_from_db');
     } finally {
       db?.close();
+      (os as any).homedir = originalHomedir;
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('prefers the opencode-go API key row over a newer console OAuth row', async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-quota-db-'));
+    const originalHomedir = os.homedir;
+    (os as any).homedir = () => tempRoot;
+    let db: Database.Database | undefined;
+    try {
+      const dataDir = path.join(tempRoot, '.local', 'share', 'opencode');
+      await mkdir(dataDir, { recursive: true });
+      db = new Database(path.join(dataDir, 'opencode.db'));
+      db.exec('CREATE TABLE credential (id TEXT PRIMARY KEY, integration_id TEXT, label TEXT, value TEXT, active INTEGER, time_created INTEGER, time_updated INTEGER)');
+      const insert = db.prepare('INSERT INTO credential (id, integration_id, label, value, active, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?, ?)');
+      insert.run('cred_go', 'opencode-go', 'OpenCode Go', JSON.stringify({ type: 'key', key: 'oc_sk_db' }), 1, 1, 2);
+      // A newer console OAuth row must not shadow the Go API key.
+      insert.run('cred_console', 'opencode', 'Gogogo', JSON.stringify({
+        type: 'oauth',
+        access: 'console-token',
+        metadata: { orgID: 'org_console', orgName: 'Gogogo' },
+      }), 1, 1, 99);
+
+      const { fetchFn, requests } = createRouteFetch({ '/zen/go/v1/usage': goUsagePayload });
+      const result = await fetchOpenCodeQuota({}, { fetch: fetchFn });
+
+      assert.ok(result);
+      assert.equal(result.groups[0].name, 'OpenCode Go');
+      assert.equal(requests.length, 1);
+      assert.equal(requests[0].headers.authorization, 'Bearer oc_sk_db');
+      assert.equal(requests[0].headers['x-opencode-org-id'], undefined);
+    } finally {
+      db?.close();
+      (os as any).homedir = originalHomedir;
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('falls back to the v1 auth.json Go key when the database is absent', async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-quota-v1-'));
+    const originalHomedir = os.homedir;
+    (os as any).homedir = () => tempRoot;
+    try {
+      const dataDir = path.join(tempRoot, '.local', 'share', 'opencode');
+      await mkdir(dataDir, { recursive: true });
+      await writeFile(
+        path.join(dataDir, 'auth.json'),
+        JSON.stringify({ 'opencode-go': { type: 'api', key: 'oc_sk_v1' } }),
+      );
+
+      const { fetchFn, requests } = createRouteFetch({ '/zen/go/v1/usage': goUsagePayload });
+      const result = await fetchOpenCodeQuota({}, { fetch: fetchFn });
+
+      assert.ok(result);
+      assert.equal(requests.length, 1);
+      assert.equal(requests[0].headers.authorization, 'Bearer oc_sk_v1');
+      assert.equal(requests[0].headers['x-opencode-org-id'], undefined);
+    } finally {
       (os as any).homedir = originalHomedir;
       await rm(tempRoot, { recursive: true, force: true });
     }
