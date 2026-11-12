@@ -16,6 +16,8 @@ test('history reader resumes the requested thread and reads every full page with
     options = suppliedOptions;
     return {
       close: () => { closed = true; },
+      addNotificationListener: () => () => undefined,
+      addExitListener: () => () => undefined,
       call: async (method, params) => {
         calls.push({ method, params: params as Record<string, unknown> });
         if (method === 'thread/resume') return { thread: { id: 'thread-history' } };
@@ -48,6 +50,8 @@ test('history reader lists a thread another process holds instead of taking it o
   const calls: Array<{ method: string; params: any }> = [];
   codexAppServerTransport.open = async () => ({
     close: () => {},
+    addNotificationListener: () => () => undefined,
+    addExitListener: () => () => undefined,
     call: async (method, params) => {
       calls.push({ method, params: params as Record<string, unknown> });
       if (method === 'thread/resume') {

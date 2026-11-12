@@ -89,7 +89,7 @@ import type {
   ProviderRuntimeContext,
   ProviderRuntimeWriter,
 } from '@/shared/index.js';
-import type { ActiveBackgroundTask, BackgroundTaskSummary, NormalizedMessage, SessionBackgroundWork } from '@/shared/types.js';
+import type { ActiveBackgroundTask, BackgroundTaskSummary, NormalizedMessage, SessionBackgroundWork, SideQuestionOutcome, SideQuestionRequest, SideQuestionSink } from '@/shared/types.js';
 
 const TASK_MCP_NAME = CODEX_TASK_MCP_NAME;
 const TASK_API_URL_ENV = 'CLOUDCLI_TASK_API_URL';
@@ -1960,9 +1960,47 @@ async function abortCodexSession(sessionId: string): Promise<boolean> {
  * Declaring `permissions` is also what turns `supportsPermissionRequests` on
  * for Codex in the capability catalog.
  */
+
+/**
+ * Answers one side question on `request.providerSessionId` through
+ * `codexAppServer.askSideQuestion` (an ephemeral, read-only fork — see its
+ * doc comment), without touching the parent thread or `activeCodexSessions`
+ * (upstream #1673).
+ *
+ * Never throws: a missing provider session (no prior turn to fork from, or a
+ * resume id not yet captured) and any rejection from the app-server both
+ * resolve as an error outcome, as `SideQuestionRuntime` requires.
+ */
+async function askCodexSideQuestion(
+  request: SideQuestionRequest,
+  sink: SideQuestionSink,
+): Promise<SideQuestionOutcome> {
+  if (!request.providerSessionId) {
+    return { status: 'error', error: 'This Codex session has no provider thread to ask a side question on yet.', answer: '' };
+  }
+
+  let answer = '';
+  try {
+    const text = await codexAppServer.askSideQuestion({
+      threadId: request.providerSessionId,
+      cwd: request.projectPath || '',
+      model: request.model || '',
+      question: request.question,
+      signal: request.signal,
+    }, (delta) => {
+      answer += delta;
+      sink.delta(delta);
+    });
+    return { status: 'done', answer: text };
+  } catch (error) {
+    return { status: 'error', error: error instanceof Error ? error.message : String(error), answer };
+  }
+}
+
 export const codexRuntime = {
   run: queryCodex,
   abort: abortCodexSession,
+  askSideQuestion: askCodexSideQuestion,
   permissions: {
     /**
      * Answers one approval. The gateway fans a decision out to every
