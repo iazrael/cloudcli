@@ -4,7 +4,7 @@ import path from 'node:path';
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { sessionSynchronizerService } from '@/modules/providers/index.js';
 import { WS_OPEN_STATE, connectedClients } from '@/modules/websocket/index.js';
-import type { RealtimeClientConnection } from '@/shared/types.js';
+import type { RealtimeClientConnection, SessionForkAncestor } from '@/shared/types.js';
 import { AppError, isSystemTemporaryWorkspacePath } from '@/shared/utils.js';
 
 type SessionSummary = {
@@ -19,6 +19,10 @@ type SessionSummary = {
   worktreeBranch: string | null;
   /** True when the user pinned the session; the page already lists pinned rows first. */
   isPinned: boolean;
+  /** Canonical app id of the fork source; null for unrelated sessions. */
+  forkedFromSessionId: string | null;
+  /** Ancestor context for the Projects tree only; excluded from pagination. */
+  forkAncestors: SessionForkAncestor[];
 };
 
 type SessionRepositoryRow = {
@@ -30,6 +34,7 @@ type SessionRepositoryRow = {
   worktree_path?: string | null;
   worktree_branch?: string | null;
   isPinned?: number;
+  forked_from_session_id?: string | null;
 };
 
 type ProjectRepositoryRow = {
@@ -147,6 +152,8 @@ function mapSessionRowToSummary(row: SessionRepositoryRow): SessionSummary {
     worktreePath: row.worktree_path ?? null,
     worktreeBranch: row.worktree_branch ?? null,
     isPinned: Boolean(row.isPinned),
+    forkedFromSessionId: row.forked_from_session_id ?? null,
+    forkAncestors: row.forked_from_session_id ? sessionsDb.getForkAncestors(row.session_id) : [],
   };
 }
 

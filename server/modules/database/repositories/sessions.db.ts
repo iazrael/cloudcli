@@ -1,6 +1,6 @@
 import { getConnection } from '@/modules/database/connection.js';
 import { projectsDb } from '@/modules/database/repositories/projects.db.js';
-import type { SessionWorktreeInfo } from '@/shared/types.js';
+import type { SessionForkAncestor, SessionWorktreeInfo } from '@/shared/types.js';
 import { isDefaultProjectDisplayName, normalizeProjectPath } from '@/shared/utils.js';
 
 type SessionRow = {
@@ -911,6 +911,36 @@ export const sessionsDb = {
          WHERE forked_from_session_id IS NOT NULL`,
       )
       .all() as { session_id: string; forked_from_session_id: string }[];
+  },
+
+  /**
+   * Projects and WebSocket summaries use this context to connect a paginated
+   * fork to its parents without adding those parents to the page itself.
+   * UNION deduplicates rows even if damaged metadata contains a cycle. Stop
+   * at archived, missing, cross-project or cross-provider parents.
+   */
+  getForkAncestors(sessionId: string): SessionForkAncestor[] {
+    const rows = getConnection().prepare(
+      `WITH RECURSIVE fork_ancestors AS (
+         SELECT * FROM sessions WHERE session_id = ? AND isArchived = 0
+         UNION
+         SELECT parent.* FROM sessions AS parent
+         JOIN fork_ancestors AS child
+           ON parent.session_id = child.forked_from_session_id
+          AND parent.project_path = child.project_path
+          AND parent.provider = child.provider
+         WHERE parent.isArchived = 0
+       )
+       SELECT ${SESSION_ROW_COLUMNS} FROM fork_ancestors WHERE session_id <> ?`
+    ).all(sessionId, sessionId) as SessionRow[];
+
+    return normalizeSessionRows(rows).map((row) => ({
+      id: row.session_id,
+      provider: row.provider as SessionForkAncestor['provider'],
+      summary: row.custom_name || '',
+      lastActivity: row.updated_at ?? row.created_at ?? new Date().toISOString(),
+      forkedFromSessionId: row.forked_from_session_id,
+    }));
   },
 
   /**

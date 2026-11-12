@@ -32,6 +32,8 @@ function seedFork(id: string, parent: string, projectPath = PROJECT_PATH, provid
     provider,
     projectPath,
     customName: id,
+    // Fork seeds name their rows here, so lock them the way user renames are.
+    nameLocked: true,
     providerSessionId: `native-${id}`,
     jsonlPath: `/transcripts/${id}.jsonl`,
     forkedFromSessionId: parent,

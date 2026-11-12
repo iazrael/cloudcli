@@ -54,6 +54,8 @@ async function buildSessionUpsertedEvent(
       worktreePath: row.worktree_path,
       worktreeBranch: row.worktree_branch,
       isPinned: Boolean(row.isPinned),
+      forkedFromSessionId: row.forked_from_session_id ?? null,
+      forkAncestors: row.forked_from_session_id ? sessionsDb.getForkAncestors(row.session_id) : [],
     },
     project: project
       ? {
