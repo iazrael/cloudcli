@@ -1,6 +1,6 @@
 # 追问（side questions，上游 #1673+#1767）
 
-状态：方案就绪，阶段 A 进行中
+状态：阶段 A 服务端完成（f4e33071 + 55af6fdc，2026-11-12：地基+全链路接线，测试 service 17/routes 7/claude 18/capabilities 3 全绿，tsc 0）；阶段 B 客户端待做；C/D 待对账。注：上游 claude 还有"活 stdin 原生旁路+回退"快路径，本批只接只读 fork 路径，真机嫌慢再补原生快路径；websocket 侧 chat-side-question.test（498 行）与 provider-runtime-side-question.test（375 行）未回植，阶段 B 收尾时补。坑记录：①shell cwd 会漂进主仓——git checkout/重定向类命令不受主仓直改拦截，这轮回植曾整批落错仓（已迁移还原），命令前必须 pwd 确认；②cp 迁移时按版本覆盖会丢掉另一侧的编辑（chatEvents union 一度被覆盖，靠 grep 'side_question' 抓回）。
 
 基准：2.19.0 / 2026-11-12，上游 `dcc0bfbc`（#1673）+ `fe5b2e71`（#1767），共 76 文件 +1.14 万行（含 i18n 与测试）
 
