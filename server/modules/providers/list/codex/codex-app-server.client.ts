@@ -123,6 +123,7 @@ export async function openCodexAppServer(
   const child = spawn(process.execPath, [launcher, 'app-server'], {
     env: { ...(options.inheritEnv === false ? {} : process.env), ...options.env },
     stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,
   });
 
   // The server logs sandbox and skill warnings to stderr on every start. They

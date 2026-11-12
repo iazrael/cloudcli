@@ -86,6 +86,7 @@ const header = (activeTab: AppTab) => (
       selectedProject={PROJECT}
       selectedSession={null}
       shouldShowBrowserTab={false}
+      shouldShowScheduledTab={false}
       shouldShowShellTab={false}
       isMobile={false}
       onMenuClick={() => undefined}

@@ -50,7 +50,7 @@ i18n
     debug: false,
 
     // Namespaces - load only what's needed
-    ns: ['common', 'settings', 'auth', 'sidebar', 'chat', 'codeEditor', 'git'],
+    ns: ['common', 'settings', 'auth', 'sidebar', 'chat', 'codeEditor', 'git', 'scheduled'],
     defaultNS: 'common',
 
     // Key separator for nested keys (default: '.')

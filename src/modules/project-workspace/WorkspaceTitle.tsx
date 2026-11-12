@@ -31,6 +31,10 @@ function getTabTitle(activeTab: AppTab, t: (key: string) => string, pluginDispla
     return t('tabs.browser');
   }
 
+  if (activeTab === 'scheduled') {
+    return t('tabs.scheduled');
+  }
+
   return t('misc.projectFallback');
 }
 

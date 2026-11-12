@@ -852,6 +852,7 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
         cwd,
         stdio: ['pipe', 'pipe', 'pipe'],
         env: { ...process.env },
+        windowsHide: true,
       });
 
       activeProcesses.set(processKey, agyProcess);

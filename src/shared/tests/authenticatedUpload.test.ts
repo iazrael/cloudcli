@@ -39,7 +39,10 @@ const load = async () => {
 const authToken = () => import('@/shared/authToken');
 const liveToken = (name: string) => {
   const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
-  return `${encode({ alg: 'HS256', typ: 'JWT' })}.${encode({ name, exp: Math.floor(Date.now() / 1000) + 3600 })}.signature`;
+  const now = Math.floor(Date.now() / 1000);
+  // `iat` is required by the guarded refreshed-token store; `exp` stays relative
+  // so the fixture cannot silently expire as the calendar moves.
+  return `${encode({ alg: 'HS256', typ: 'JWT' })}.${encode({ name, iat: now, exp: now + 3600 })}.signature`;
 };
 
 describe('authenticatedUpload', () => {
