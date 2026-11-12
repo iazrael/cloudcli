@@ -103,11 +103,15 @@ function getConfiguredExtraReadRoots(): string[] {
     .filter(Boolean);
 
   return configuredRoots.filter((rootPath) => {
-    if (path.isAbsolute(rootPath)) {
-      return true;
+    if (!path.isAbsolute(rootPath)) {
+      console.warn(`[file-tree] Ignoring non-absolute CLOUDCLI_EXTRA_READ_ROOTS entry: ${rootPath}`);
+      return false;
     }
-    console.warn(`[file-tree] Ignoring non-absolute CLOUDCLI_EXTRA_READ_ROOTS entry: ${rootPath}`);
-    return false;
+    if (path.parse(rootPath).root === rootPath) {
+      console.warn(`[file-tree] Ignoring filesystem/drive-root CLOUDCLI_EXTRA_READ_ROOTS entry: ${rootPath}`);
+      return false;
+    }
+    return true;
   });
 }
 
