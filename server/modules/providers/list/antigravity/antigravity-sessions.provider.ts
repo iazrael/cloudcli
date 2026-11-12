@@ -419,15 +419,69 @@ function splitTopLevelProtobufFields(buffer: Buffer): AntigravityProtobufField[]
 }
 
 /**
+ * Reads a length-delimited protobuf field's payload, or null when the bytes do
+ * not start with a wire-type-2 field. Used to compare a summary record's
+ * session id exactly rather than by substring.
+ */
+function readLengthDelimitedPayload(bytes: Buffer): Buffer | null {
+  try {
+    const key = readProtobufVarint(bytes, 0);
+    if (key.value % 8 !== 2) {
+      return null;
+    }
+    const length = readProtobufVarint(bytes, key.next);
+    return bytes.subarray(length.next, length.next + length.value);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether a top-level summary record is the one for `sessionId`.
+ *
+ * A real `jetbox_summaries_proto.pb` is a flat sequence of repeated top-level
+ * field 1 records (confirmed against an agy 2026-10 file: `0a <len>` per
+ * record), and each record starts with field 1 = the conversation UUID
+ * (`0a 24 <36-byte id>`, followed by field 2 = the summary payload). Comparing
+ * that exact field prevents deleting an unrelated record that merely embeds the
+ * id in a parent/child link or in "resumed from …" text. A record whose shape
+ * does not match is kept, never pruned.
+ */
+function summaryRecordMatchesSessionId(record: Buffer, ids: ReadonlySet<string>): boolean {
+  const payload = readLengthDelimitedPayload(record);
+  if (!payload) {
+    return false;
+  }
+
+  let nested: AntigravityProtobufField[];
+  try {
+    nested = splitTopLevelProtobufFields(payload);
+  } catch {
+    return false;
+  }
+
+  const idField = nested.find((field) => field.fieldNumber === 1 && field.wireType === 2);
+  if (!idField) {
+    return false;
+  }
+  const recordId = readLengthDelimitedPayload(idField.bytes);
+  if (!recordId) {
+    return false;
+  }
+  return ids.has(recordId.toString('utf8'));
+}
+
+/**
  * Removes the given conversations from Antigravity's durable summary store
  * (`jetbox_summaries_proto.pb`).
  *
  * `conversation_summaries.db` is only a cache: on every `agy` startup the
  * engine rebuilds it from this protobuf, so deleting a row from the database
  * alone lets a hard-deleted session reappear on the next run. Each top-level
- * `field 1` record is one conversation; a schema-agnostic walk drops the
- * records that carry the ids and rewrites the rest. Any parse failure leaves
- * the file untouched.
+ * field 1 record is one conversation, matched by its exact session-id field and
+ * rewritten without the removed records. The original file is copied to
+ * `<file>.cloudcli-bak` before the rewrite, and any parse or write failure
+ * leaves the live file untouched and logs a warning.
  *
  * Exported for tests only.
  */
@@ -439,7 +493,8 @@ export function pruneAntigravitySummaryRecords(filePath: string, ids: ReadonlySe
   let fields: AntigravityProtobufField[];
   try {
     fields = splitTopLevelProtobufFields(fs.readFileSync(filePath));
-  } catch {
+  } catch (error) {
+    console.warn('[AntigravitySessions] Could not parse jetbox_summaries_proto.pb; leaving it untouched:', error);
     return false;
   }
 
@@ -447,13 +502,7 @@ export function pruneAntigravitySummaryRecords(filePath: string, ids: ReadonlySe
     if (field.fieldNumber !== 1 || field.wireType !== 2) {
       return true;
     }
-    const text = field.bytes.toString('latin1');
-    for (const id of ids) {
-      if (text.includes(id)) {
-        return false;
-      }
-    }
-    return true;
+    return !summaryRecordMatchesSessionId(field.bytes, ids);
   });
 
   if (kept.length === fields.length) {
@@ -461,9 +510,22 @@ export function pruneAntigravitySummaryRecords(filePath: string, ids: ReadonlySe
   }
 
   const temporaryPath = `${filePath}.cloudcli-tmp`;
-  fs.writeFileSync(temporaryPath, Buffer.concat(kept.map((field) => field.bytes)));
-  fs.renameSync(temporaryPath, filePath);
-  return true;
+  try {
+    // Cheap insurance: this file is the engine's durable store, so keep the
+    // pre-rewrite bytes next to it for manual recovery.
+    fs.copyFileSync(filePath, `${filePath}.cloudcli-bak`);
+    fs.writeFileSync(temporaryPath, Buffer.concat(kept.map((field) => field.bytes)));
+    fs.renameSync(temporaryPath, filePath);
+    return true;
+  } catch (error) {
+    console.warn('[AntigravitySessions] Failed to rewrite jetbox_summaries_proto.pb; leaving it untouched:', error);
+    try {
+      fs.rmSync(temporaryPath, { force: true });
+    } catch {
+      // Best-effort cleanup; the original file was never replaced.
+    }
+    return false;
+  }
 }
 
 /**
@@ -480,7 +542,8 @@ export function pruneAntigravityConversationPointers(filePath: string, ids: Read
   let parsed: unknown;
   try {
     parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-  } catch {
+  } catch (error) {
+    console.warn('[AntigravitySessions] Could not parse cache/last_conversations.json; leaving it untouched:', error);
     return false;
   }
 

@@ -13,6 +13,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import {
+  AntigravitySessionsProvider,
   pruneAntigravityConversationPointers,
   pruneAntigravitySummaryRecords,
 } from '@/modules/providers/list/antigravity/antigravity-sessions.provider.js';
@@ -99,6 +100,66 @@ test('pruning a summary record drops only the matching conversation', async () =
     assert.ok(text.includes(keepId));
     assert.equal(text.includes(dropId), false);
   } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('a record that merely mentions the id in another field is kept', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'antigravity-pb-mention-'));
+  try {
+    const filePath = path.join(dir, 'jetbox_summaries_proto.pb');
+    const dropId = '197c5eb5-4626-478c-a002-693bed71c98a';
+    const keepId = 'd1dc89e8-2b6a-4e3a-b5a9-c9132a6a49e5';
+    // A parent/child record whose payload quotes the deleted id must not be
+    // pruned: only the record whose own id field matches is the deleted one.
+    const mentionRecord = encodeField(1, Buffer.concat([
+      conversationRecord(keepId),
+      encodeField(2, Buffer.from(`resumed from ${dropId}`, 'utf8')),
+    ]));
+    await writeFile(filePath, Buffer.concat([
+      encodeField(1, mentionRecord),
+      encodeField(1, conversationRecord(dropId)),
+    ]));
+
+    assert.equal(pruneAntigravitySummaryRecords(filePath, new Set([dropId])), true);
+
+    const rewritten = await readFile(filePath);
+    assert.equal(topLevelFieldNumbers(rewritten).length, 1);
+    const text = rewritten.toString('latin1');
+    assert.ok(text.includes(keepId));
+    assert.ok(text.includes(`resumed from ${dropId}`));
+    // The durable store's pre-rewrite bytes stay next to it for recovery.
+    assert.deepEqual(await readFile(`${filePath}.cloudcli-bak`), Buffer.concat([
+      encodeField(1, mentionRecord),
+      encodeField(1, conversationRecord(dropId)),
+    ]));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('cleanupSession prunes the durable summary store end to end', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'antigravity-cleanup-'));
+  const previousRoot = process.env.CLOUDCLI_ANTIGRAVITY_DATA_DIR;
+  process.env.CLOUDCLI_ANTIGRAVITY_DATA_DIR = dir;
+  try {
+    const dropId = '197c5eb5-4626-478c-a002-693bed71c98a';
+    const keepId = 'd1dc89e8-2b6a-4e3a-b5a9-c9132a6a49e5';
+    const filePath = path.join(dir, 'jetbox_summaries_proto.pb');
+    await writeFile(filePath, Buffer.concat([
+      encodeField(1, conversationRecord(dropId)),
+      encodeField(1, conversationRecord(keepId)),
+    ]));
+
+    const removed = await new AntigravitySessionsProvider().cleanupSession(dropId);
+
+    assert.equal(removed, true);
+    const text = (await readFile(filePath)).toString('latin1');
+    assert.equal(text.includes(dropId), false);
+    assert.ok(text.includes(keepId));
+  } finally {
+    if (previousRoot === undefined) delete process.env.CLOUDCLI_ANTIGRAVITY_DATA_DIR;
+    else process.env.CLOUDCLI_ANTIGRAVITY_DATA_DIR = previousRoot;
     await rm(dir, { recursive: true, force: true });
   }
 });

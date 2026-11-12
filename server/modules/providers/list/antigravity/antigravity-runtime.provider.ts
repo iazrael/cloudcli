@@ -643,10 +643,6 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
             return;
           }
 
-          // Context occupancy comes from step_update usage only: each one
-          // reports a single model call, i.e. the live context size. The
-          // result event's usage sums every call of the turn and would
-          // overstate the context (easily past 100%) in agentic loops.
           const stepUpdateRecord = readObjectRecord(rawRecord?.step_update);
           if (stepUpdateRecord) {
             const startedAgents = extractAntigravitySubagents(stepUpdateRecord);
