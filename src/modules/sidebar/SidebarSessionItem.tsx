@@ -429,17 +429,13 @@ function SidebarSessionItem({
                   </span>
                 </button>
 
-                {!isProcessing && (onArchiveSession || onDeleteSession) && (
+                {!isProcessing && onArchiveSession && (
                   <button
                     type="button"
                     onClick={() => {
                       setMobileOptionsOpen(false);
-                      // 与桌面菜单同语义:归档立即软删入回收站;无归档回调时退回确认流。
-                      if (onArchiveSession) {
-                        onArchiveSession(session.id);
-                      } else {
-                        onDeleteSession?.(session.id, sessionView.sessionName);
-                      }
+                      // 与桌面菜单同语义:归档立即软删入回收站,不经过删除确认流。
+                      onArchiveSession(session.id);
                     }}
                     className="flex min-h-12 w-full items-center gap-3 rounded-xl border border-border bg-muted/35 px-4 py-3 text-left text-foreground transition-colors active:bg-muted"
                   >
