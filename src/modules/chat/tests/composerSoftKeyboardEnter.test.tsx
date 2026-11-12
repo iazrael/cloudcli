@@ -5,6 +5,7 @@ import type { KeyboardEvent } from 'react';
 import { afterEach, beforeEach, test, vi } from 'vitest';
 
 import { useChatComposerState } from '@/modules/chat/hooks/useChatComposerState';
+import type * as ApiModule from '@/shared/api';
 import { resetChatDrafts } from '@/shared/chatDrafts';
 import type { PermissionMode, Project, ProjectSession } from '@/shared/types';
 
@@ -26,7 +27,7 @@ const PROJECT: Project = {
 const SESSION: ProjectSession = { id: 'session-send' };
 
 vi.mock('@/shared/api', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/shared/api')>();
+  const actual = await importOriginal<typeof ApiModule>();
   const okJson = (data: unknown) => Promise.resolve({ ok: true, json: async () => data });
   return {
     ...actual,
