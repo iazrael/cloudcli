@@ -91,7 +91,7 @@ const BASELINE: Record<string, Omit<ProviderCapabilities, 'provider'>> = {
     supportsFiles: true,
     supportsAbort: true,
     supportsSteering: false,
-    supportsSideQuestions: false,
+    supportsSideQuestions: true,
     // `app-server` asks for sandbox escalations as JSON-RPC requests and
     // blocks the turn until one is answered, so they reach the same approval
     // card Claude's `canUseTool` callback raises.
