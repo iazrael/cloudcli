@@ -71,6 +71,7 @@ function ChatInterface({
     setProviderModel,
     supportsMessageEditing,
     supportsSteering,
+    supportsSideQuestions,
     supportsSessionForking,
     currentProviderEffort,
     currentProviderEffortOptions,
@@ -232,6 +233,7 @@ function ChatInterface({
     handleSteerOutcome,
     steerFromComposer,
     recallContentToComposer,
+    askSideQuestionFromComposer,
   } = useChatComposerState({
     selectedProject,
     selectedSession,
@@ -243,6 +245,7 @@ function ChatInterface({
     currentProviderEffort,
     isLoading: isProcessing,
     supportsSteering,
+    supportsSideQuestions,
     processingSessions,
     canAbortSession,
     tokenBudget,
@@ -663,6 +666,9 @@ function ChatInterface({
           supportsSteering={supportsSteering}
           pendingSteers={pendingSteers}
           onSteerFromComposer={supportsSteering ? steerFromComposer : undefined}
+          supportsSideQuestions={supportsSideQuestions}
+          onAskSideQuestion={supportsSideQuestions ? askSideQuestionFromComposer : undefined}
+          sideQuestionSessionId={currentSessionId}
         />
         </div>
       </div>

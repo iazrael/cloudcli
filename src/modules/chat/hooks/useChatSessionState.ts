@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { MutableRefObject } from 'react';
+import { useTranslation } from 'react-i18next';
 
 import type { MarkSessionIdle, SessionActivityMap } from '@/shared/types';
 import type { SessionSlot, SessionStore, NormalizedMessage } from '@/modules/chat/hooks/useSessionStore';
@@ -8,6 +9,8 @@ import type { Project, ProjectSession, LLMProvider } from '@/shared/types';
 import { authenticatedFetch } from '@/shared/api';
 import type { ChatMessage } from '@/shared/types';
 import { createMessageHistoryRefreshCoordinator } from '@/modules/chat/utils/messageHistoryRefreshCoordinator';
+import { mergeSideQuestions } from '@/modules/chat/utils/sideQuestions';
+import { useSideQuestions } from '@/modules/chat/hooks/useSideQuestions';
 import type { DiffCalculator } from '@/shared/types';
 import { createCachedDiffCalculator } from '@/modules/chat/utils/messageTransforms';
 
@@ -118,6 +121,7 @@ export function useChatSessionState({
   sessionStore,
   showThinking,
 }: UseChatSessionStateArgs) {
+  const { t } = useTranslation('chat');
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(selectedSession?.id || null);
   const [isLoadingSessionMessages, setIsLoadingSessionMessages] = useState(false);
   /**
@@ -339,15 +343,26 @@ export function useChatSessionState({
     if (viewHiddenCount > 0) setViewHiddenCount(0);
   }
 
+  const sideQuestions = useSideQuestions(activeSessionId);
   const chatMessages = useMemo(() => {
-    const all = normalizedToChatMessages(storeMessages, { holdOrphanedLiveRows: isProcessing });
+    let all = normalizedToChatMessages(storeMessages, { holdOrphanedLiveRows: isProcessing });
+    // Side questions splice into the transcript where they were asked, as
+    // one question/answer pair each. A pair older than the oldest loaded
+    // row is left out while older pages remain, so it does not jump and
+    // move again once they arrive.
+    if (sideQuestions.length > 0) {
+      all = mergeSideQuestions(all, sideQuestions, {
+        hasOlder: hasMoreMessages,
+        failedText: t('sideQuestion.failed', { defaultValue: 'The side question failed.' }),
+      });
+    }
     // Show pending user message when no session data exists yet (new session, pre-backend-response)
     if (pendingUserMessage && all.length === 0) {
       return [pendingUserMessage];
     }
     if (viewHiddenCount > 0 && viewHiddenCount < all.length) return all.slice(0, -viewHiddenCount);
     return all;
-  }, [storeMessages, viewHiddenCount, pendingUserMessage, isProcessing]);
+  }, [storeMessages, viewHiddenCount, pendingUserMessage, isProcessing, sideQuestions, hasMoreMessages, t]);
 
   /* ---------------------------------------------------------------- */
   /*  addMessage / clearMessages / rewindMessages                     */

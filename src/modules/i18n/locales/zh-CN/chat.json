@@ -341,6 +341,14 @@
     "permissionCycleHint": "在输入框中按 Tab 切换模式",
     "permissionTriggerLabel": "{{mode}}：{{heading}}"
   },
+  "sideQuestion": {
+    "label": "旁路提问 · 不进入会话",
+    "pending": "正在旁路作答",
+    "failed": "旁路提问失败了。",
+    "dismiss": "移除",
+    "unsupported": "该引擎不支持旁路提问。",
+    "noSession": "旁路提问需要一个已有的会话；这个会话还没有开始。"
+  },
   "export": {
     "trigger": "导出对话",
     "heading": "导出为",
@@ -356,7 +364,8 @@
     "json": {
       "label": "JSON (.json)",
       "description": "全部消息原样输出，供工具使用。"
-    }
+    },
+    "includeSideQuestions": "同时导出旁路提问"
   },
   "schedule": {
     "trigger": "定时发送这条消息",

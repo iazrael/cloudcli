@@ -16,6 +16,7 @@ import type {
   ScheduledJobsChangedEvent,
   SessionRemovedEvent,
   SessionUpsertedEvent,
+  SideQuestionEvent,
 } from './chatEvents.js';
 
 /**
@@ -120,6 +121,7 @@ export type ServerEvent =
   | ProtocolErrorEvent
   | QueuedMessageDispatchedEvent
   | ScheduledMessagesChangedEvent
+  | SideQuestionEvent
   | WebsocketReconnectedEvent;
 
 /** Shared transport budgets used by the gateway replay log and client gap buffer. */

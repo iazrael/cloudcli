@@ -1,4 +1,6 @@
+import { useState } from 'react';
 import { Download, FileJson, FileText, Stethoscope, type LucideIcon } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 import type { ChatMessage, DiffLine } from '@/shared/types';
 import { ActionMenu, type ActionMenuItem } from '@/shared/ui/ActionMenu';
@@ -28,6 +30,12 @@ const FORMAT_ICONS: Record<(typeof EXPORT_FORMATS)[number]['id'], LucideIcon> = 
  * containing blocks quietly break that trick).
  */
 export default function ChatExportMenu({ messages, sessionTitle, provider, sessionId, createDiff }: ChatExportMenuProps) {
+  const { t } = useTranslation('chat');
+  // Whether the side-question asides go into the file (upstream #1673). Off
+  // by default, so a plain export matches what the session itself saw; the
+  // operator opts in from this option.
+  const [includeSideQuestions, setIncludeSideQuestions] = useState(false);
+
   if (messages.length === 0) {
     return null;
   }
@@ -40,6 +48,7 @@ export default function ChatExportMenu({ messages, sessionTitle, provider, sessi
           sessionTitle: sessionTitle || 'chat',
           provider: provider || 'claude',
           createDiff,
+          includeSideQuestions,
         });
       } else {
         await downloadTranscriptExport(format, {
@@ -47,6 +56,7 @@ export default function ChatExportMenu({ messages, sessionTitle, provider, sessi
           sessionTitle: sessionTitle || 'chat',
           provider: provider || 'claude',
           createDiff,
+          includeSideQuestions,
         });
       }
     } catch (error) {
@@ -84,7 +94,25 @@ export default function ChatExportMenu({ messages, sessionTitle, provider, sessi
       variant="outline"
       size="sm"
       triggerClassName="h-8 w-8 rounded-lg border-border/50 p-0 text-muted-foreground hover:text-foreground"
-      header={<div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground">Export as:</div>}
+      header={
+        <div className="space-y-1.5 border-b border-border px-3 py-2">
+          <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground">Export as:</div>
+          {/*
+            The side-question asides are not part of the session, so the file
+            leaves them out unless this stays on. It is drawn as a checkbox
+            (not a menu item) so it does not close the menu when toggled.
+          */}
+          <label className="flex cursor-pointer select-none items-center gap-2 rounded-md px-1 py-0.5 text-xs text-muted-foreground hover:text-foreground">
+            <input
+              type="checkbox"
+              className="h-3.5 w-3.5 accent-primary"
+              checked={includeSideQuestions}
+              onChange={(event) => setIncludeSideQuestions(event.target.checked)}
+            />
+            {t('export.includeSideQuestions', { defaultValue: 'Include side questions' })}
+          </label>
+        </div>
+      }
     />
   );
 }

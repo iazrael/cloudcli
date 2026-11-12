@@ -3,8 +3,9 @@ import { useTranslation } from 'react-i18next';
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
 
 import type { ServerEvent } from '@/shared/context/WebSocketContext';
-import type { SteerOutcome } from '@/shared/types';
+import type { SteerOutcome, SideQuestionEvent } from '@/shared/types';
 import { showCompletionTitleIndicator } from '@/shared/utils';
+import { sideQuestionStore } from '@/modules/chat/hooks/useSideQuestions';
 import { playChatCompletionSound, playNotificationSound } from '@/modules/chat/utils/notificationSound';
 import type { MarkSessionIdle, MarkSessionProcessing, SessionActivityMap, PendingPermissionRequest, ProjectSession, LLMProvider } from '@/shared/types';
 import type { ServerEventDirective } from '@/modules/chat/utils/sessionTimelineStore';
@@ -163,6 +164,14 @@ export function useChatRealtimeHandlers({
           liveFrame.id,
           'delivered',
         );
+      }
+
+      // A side question never touches the session's transcript: it goes to
+      // the side-question store, for whichever session it names, and never
+      // falls through to the transcript handling below.
+      if (msg.kind === 'side_question') {
+        sideQuestionStore.applyEvent(msg as unknown as SideQuestionEvent);
+        return;
       }
 
       // Sidebar/global events — owned by useProjectsState; queued-message

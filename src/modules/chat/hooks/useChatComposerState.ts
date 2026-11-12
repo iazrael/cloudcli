@@ -12,6 +12,8 @@ import type {
 import { useDropzone } from 'react-dropzone';
 import { useTranslation } from 'react-i18next';
 
+import { useAskSideQuestion } from '@/modules/chat/hooks/useSideQuestions';
+
 import { api, ApiRequestError, authenticatedFetch } from '@/shared/api';
 import { MAX_ATTACHMENT_COUNT } from '@/shared/constants';
 import { createClientRequestId, isEnginePromptCommand, isImageAttachment } from '@/shared/utils';
@@ -84,6 +86,8 @@ type UseChatComposerStateArgs = {
   hasActiveBackgroundTasks?: boolean;
   /** From the capability matrix: whether the provider can take a message into a running turn (`chat.steer`). Gates the composer's Steer affordance. */
   supportsSteering?: boolean;
+  /** From the capability matrix: whether a side question can be asked beside this session (`chat.side_question`). Gates the composer's side-question affordance. */
+  supportsSideQuestions?: boolean;
   processingSessions?: SessionActivityMap;
   canAbortSession: boolean;
   tokenBudget: Record<string, unknown> | null;
@@ -413,6 +417,7 @@ export function useChatComposerState({
   backgroundTasks = [],
   hasActiveBackgroundTasks = false,
   supportsSteering = false,
+  supportsSideQuestions = false,
   processingSessions,
   canAbortSession,
   tokenBudget,
@@ -1189,6 +1194,20 @@ export function useChatComposerState({
       // immediately and the button stops looking dead. A queued flush carries
       // its own copy of the message and must leave the composer alone — the
       // user may already be typing the next one.
+      // `/btw <question>` never becomes a turn: checked before the queue take
+      // and the composer clear below, so a refusal (unsupported provider, a
+      // brand-new chat with no session yet) leaves the typed text and any
+      // attachments exactly as they were — and the raw `/btw …` text is never
+      // sent as a turn or queued. A queued re-dispatch never carries this
+      // prefix, so it is skipped.
+      if (!queuedSubmission && !submitOptions?.skipCommandInterception) {
+        const btwMatch = currentInput.trim().match(/^\/btw(?:\s+([\s\S]*))?$/i);
+        if (btwMatch) {
+          askSideQuestionFromComposer(sessionKey, btwMatch[1] ?? '');
+          return true;
+        }
+      }
+
       let takenAttachments: UploadedComposerAttachment[] = [];
       if (!queuedSubmission) {
         takenAttachments = attachmentQueue.take(submitScope)
@@ -1197,6 +1216,7 @@ export function useChatComposerState({
       }
 
       try {
+
         // Intercept slash commands only when "/" is the first input character.
         // Also accept exact "help" as a convenience alias for users who expect CLI-style help.
         // Pure local commands (built-in modals, help, etc.) execute immediately without queueing.
@@ -1720,8 +1740,68 @@ export function useChatComposerState({
     [handleCommandInputChange, resetCommandMenuState, setCursorPosition, updateInput],
   );
 
+  // Also ends edit mode, matching `cancelEditMessage`: a side question asked
+  // while editing a sent message must not leave `editingAnchorId` set over
+  // the now-empty composer, which previously turned the next plain send into
+  // a `chat.edit-send` that replaced the edited turn and everything after it.
+  const clearComposerAfterSideQuestion = useCallback(() => {
+    updateInput('');
+    setEditingAnchorId(null);
+    resetCommandMenuState();
+    setIsTextareaExpanded(false);
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+    }
+  }, [resetCommandMenuState, setEditingAnchorId, updateInput]);
+
+  const askSideQuestion = useAskSideQuestion(sendMessage);
+
+  /**
+   * Asks the current draft as a side question and, when the frame went out,
+   * empties the composer (edit mode included). Refusals — an unsupported
+   * provider, a session that does not exist yet — land as timeline errors so
+   * they read where the user is looking; nothing typed is lost.
+   */
+  const askSideQuestionFromComposer = useCallback(
+    (sessionId: string | null, text: string) => {
+      if (!supportsSideQuestions) {
+        addMessage({
+          type: 'error',
+          content: t('sideQuestion.unsupported'),
+          timestamp: Date.now(),
+        });
+        return;
+      }
+      if (!sessionId) {
+        addMessage({
+          type: 'error',
+          content: t('sideQuestion.noSession'),
+          timestamp: Date.now(),
+        });
+        return;
+      }
+      if (askSideQuestion(sessionId, text, { model: currentProviderModel }, isConnected)) {
+        clearComposerAfterSideQuestion();
+      }
+    },
+    [addMessage, askSideQuestion, clearComposerAfterSideQuestion, currentProviderModel, isConnected, supportsSideQuestions, t],
+  );
+
   const handleKeyDown = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
+      // Option/Alt+Enter asks a side question in every state (loading,
+      // background, idle) and even with the command menu or file-mention
+      // dropdown open, so this has to run ahead of
+      // `handleCommandMenuKeyDown`/`handleFileMentionsKeyDown` below: both
+      // consume a plain Enter to select their highlighted entry and never
+      // check altKey, so they would otherwise run the highlighted command
+      // or mention instead of asking the side question.
+      if (event.key === 'Enter' && event.altKey && !event.shiftKey && !event.ctrlKey && !event.metaKey) {
+        event.preventDefault();
+        askSideQuestionFromComposer(sessionKey, inputValueRef.current);
+        return;
+      }
+
       if (handleCommandMenuKeyDown(event)) {
         return;
       }
@@ -1764,6 +1844,7 @@ export function useChatComposerState({
       }
     },
     [
+      askSideQuestionFromComposer,
       cyclePermissionMode,
       handleCommandMenuKeyDown,
       handleFileMentionsKeyDown,
@@ -1909,6 +1990,7 @@ export function useChatComposerState({
     [],
   );
 
+
   return {
     input,
     setInput: updateInput,
@@ -1950,6 +2032,7 @@ export function useChatComposerState({
     forceSendQueuedDraft,
     canForceSendQueuedDraft,
     steerFromComposer,
+    askSideQuestionFromComposer,
     backgroundSendPrompt,
     resolveBackgroundSendPrompt,
     pendingSteers: visiblePendingSteers,

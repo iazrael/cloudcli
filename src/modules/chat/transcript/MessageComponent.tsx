@@ -1,8 +1,9 @@
-import { memo, useMemo, useRef } from 'react';
-import { ChevronDownIcon, GitBranchIcon, PencilIcon } from 'lucide-react';
+import { memo, useCallback, useMemo, useRef } from 'react';
+import { Bot, ChevronDownIcon, GitBranchIcon, PencilIcon, XIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import LLMProviderLogo from '@/shared/ui/LLMProviderLogo';
+import { Shimmer } from '@/shared/ui/Shimmer';
 import { getProviderDisplayName } from '@/shared/providerDisplay';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/shared/ui/Collapsible';
 import type {
@@ -15,6 +16,7 @@ import { formatUsageLimitText } from '@/modules/chat/utils/chatFormatting';
 import { parseErrorCardContent } from '@/modules/chat/utils/errorCardContent';
 import { canonicalToolName, getToolConfig, isCommandTool, SubagentPanel, ToolRenderer, ToolErrorDisplay, WorkflowPanel, shouldHideToolResult } from '@/modules/chat/tools';
 import { useIsExportingTranscript } from '@/modules/chat/context/TranscriptRenderContext';
+import { useDismissSideQuestion } from '@/modules/chat/hooks/useSideQuestions';
 import { Reasoning, ReasoningTrigger, ReasoningContent } from '@/shared/ui/ReasoningFork';
 import ChatMessageImages from '@/modules/chat/transcript/ChatMessageImages';
 import ChatMessageFiles from '@/modules/chat/transcript/ChatMessageFiles';
@@ -58,15 +60,41 @@ type InteractiveOption = {
 
 const COPY_HIDDEN_TOOL_NAMES = new Set(['Bash', 'Edit', 'Write']);
 
+/** Used by MessageComponent's side-question header, to dismiss the whole question/answer pair. */
+function SideQuestionDismissButton({ label, onDismiss }: { label: string; onDismiss: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onDismiss}
+      title={label}
+      aria-label={label}
+      className="rounded p-1 text-muted-foreground opacity-70 transition-opacity hover:bg-muted hover:opacity-100"
+    >
+      <XIcon className="h-3.5 w-3.5" />
+    </button>
+  );
+}
+
 const MessageComponent = memo(({ message, prevMessage, turnAnchorMessage, isTurnFinalAssistant = true, createDiff, onFileOpen, showRawParameters, showThinking, isThinkingStreaming, selectedProject, provider, onEditMessage, onForkFromMessage }: MessageComponentProps) => {
   const { t } = useTranslation('chat');
   // Folds (thinking, compaction summary) render as native <details> here so
   // they stay expandable in the statically rendered exported document.
   const isExporting = useIsExportingTranscript();
-  const isGrouped = prevMessage && prevMessage.type === message.type &&
+  // A side question never groups with its neighbours: it is drawn as its own
+  // tinted aside regardless of what came before or after it.
+  const isGrouped = Boolean(prevMessage) && !message.sideQuestion && !prevMessage?.sideQuestion && prevMessage?.type === message.type &&
     ((prevMessage.type === 'assistant') ||
       (prevMessage.type === 'user') ||
       (prevMessage.type === 'error'));
+  const dismissSideQuestion = useDismissSideQuestion();
+  const handleDismissSideQuestion = useCallback(() => {
+    if (!message.sideQuestion) {
+      return;
+    }
+    dismissSideQuestion(message.sideQuestion.sessionId, message.sideQuestion.sideQuestionId).catch((error: unknown) => {
+      console.error('Failed to dismiss side question:', error);
+    });
+  }, [dismissSideQuestion, message.sideQuestion]);
   const messageRef = useRef<HTMLDivElement | null>(null);
   const userCopyContent = String(message.content || '');
   // No provider-specific shaping here: Codex's `<proposed_plan>` envelope is
@@ -91,6 +119,58 @@ const MessageComponent = memo(({ message, prevMessage, turnAnchorMessage, isTurn
 
 
   const formattedTime = useMemo(() => new Date(message.timestamp).toLocaleTimeString(), [message.timestamp]);
+
+  if (message.sideQuestion) {
+    // A side question is one aside drawn as two rows: the question row is its
+    // top half, the answer row its bottom half, joined by the rail and tint
+    // (the pane drops the gap between them). Who said what is told apart the
+    // way the session's own turns are: the asker's bubble on the right, the
+    // agent's plain text on the left. It never had edit, fork or grouping
+    // affordances, because the session itself never saw it.
+    const isAnswerRow = message.type === 'assistant';
+    const isPendingAnswer = isAnswerRow && message.sideQuestion.status === 'running' && !String(message.content || '').trim();
+    const railClassName = 'border-l-2 border-l-purple-500 bg-purple-500/5 px-3 dark:border-l-purple-400 dark:bg-purple-400/10';
+    return (
+      <div
+        className="chat-message side-question w-full px-3 sm:px-0"
+      >
+        {isAnswerRow ? (
+          <div className={`${railClassName} rounded-b-lg pb-2 pt-1.5`}>
+            <div dir="auto" className="text-sm">
+              {isPendingAnswer ? (
+                <Shimmer>{t('sideQuestion.pending')}</Shimmer>
+              ) : (
+                <Markdown className="prose prose-sm prose-gray max-w-none font-serif dark:prose-invert">
+                  {formattedMessageContent}
+                </Markdown>
+              )}
+            </div>
+            <div className="mt-1 text-xs text-muted-foreground">{formattedTime}</div>
+          </div>
+        ) : (
+          <div className={`${railClassName} rounded-t-lg pb-1.5 pt-2`}>
+            <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <Bot className="h-3.5 w-3.5 flex-shrink-0 text-purple-500 dark:text-purple-400" />
+              <span className="min-w-0 flex-1 truncate">{t('sideQuestion.label')}</span>
+              {!isExporting && (
+                <SideQuestionDismissButton label={t('sideQuestion.dismiss')} onDismiss={handleDismissSideQuestion} />
+              )}
+            </div>
+            <div className="mt-1.5 flex justify-end">
+              <div
+                dir="auto"
+                className="max-w-[85%] break-words rounded-2xl rounded-br-md border border-border bg-muted px-3 py-2 font-serif text-sm text-foreground shadow-sm dark:bg-gray-800"
+              >
+                <Markdown breaks className="prose prose-sm max-w-none font-serif dark:prose-invert">
+                  {message.content}
+                </Markdown>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
   const shouldHideThinkingMessage = Boolean(message.isThinking && !showThinking);
 
   if (shouldHideThinkingMessage) {

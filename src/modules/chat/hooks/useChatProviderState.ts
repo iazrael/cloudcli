@@ -687,6 +687,10 @@ export function useChatProviderState({
   // the primary providers (claude, codex) implement both.
   const supportsMessageEditing = providerCapabilities?.[provider]?.supportsMessageEditing ?? true;
   const supportsSteering = providerCapabilities?.[provider]?.supportsSteering ?? false;
+  // Side questions default to false, unlike the gates above: asking one
+  // spawns a provider process, so the button only appears once the server
+  // matrix confirms the runtime can take it.
+  const supportsSideQuestions = providerCapabilities?.[provider]?.supportsSideQuestions ?? false;
   const supportsSessionForking = providerCapabilities?.[provider]?.supportsSessionForking ?? true;
 
   const applyProviderCatalog = useCallback((
@@ -830,6 +834,7 @@ export function useChatProviderState({
     setProvider,
     supportsMessageEditing,
     supportsSteering,
+    supportsSideQuestions,
     supportsSessionForking,
     providerModels,
     setProviderModel,

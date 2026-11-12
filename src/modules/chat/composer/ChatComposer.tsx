@@ -10,7 +10,7 @@ import type {
   RefObject,
   TouchEvent,
 } from 'react';
-import { PaperclipIcon, MessageSquareIcon, MessageSquarePlusIcon, XIcon, Loader2, ArrowUpIcon, PencilIcon } from 'lucide-react';
+import { PaperclipIcon, MessageSquareIcon, MessageSquarePlusIcon, XIcon, Loader2, ArrowUpIcon, PencilIcon, CircleHelpIcon } from 'lucide-react';
 
 import { useVoiceInput } from '@/modules/chat/hooks/useVoiceInput';
 import { useVoiceAvailable } from '@/modules/chat/hooks/useVoiceAvailable';
@@ -179,6 +179,12 @@ type ChatComposerProps = {
   supportsSteering?: boolean;
   /** Sends the current draft into the running turn (chat.steer) instead of queueing it. */
   onSteerFromComposer?: () => void;
+  /** Whether a question can be asked beside this session on a read-only fork; gates the composer's side-question button. */
+  supportsSideQuestions?: boolean;
+  /** Asks the current draft as a side question (chat.side_question); refuses with a timeline error when unsupported. */
+  onAskSideQuestion?: (sessionId: string | null, text: string) => void;
+  /** The session a side question would be asked beside; null hides the button. */
+  sideQuestionSessionId?: string | null;
   /** Messages sent into the running turn that the agent has not read yet, each shown as a card above the composer until its echo lands in the transcript. */
   pendingSteers?: PendingSteer[];
 }
@@ -284,6 +290,9 @@ function ChatComposer({
   supportsSteering = false,
   pendingSteers = NO_PENDING_STEERS,
   onSteerFromComposer,
+  supportsSideQuestions = false,
+  onAskSideQuestion,
+  sideQuestionSessionId = null,
 }: ChatComposerProps) {
   const { t } = useTranslation('chat');
   const fileDropdownRef = useRef<HTMLDivElement | null>(null);
@@ -362,6 +371,10 @@ function ChatComposer({
   // A reply is streaming and the provider can take a message into it: the
   // composer offers Steer beside the queueing send button (upstream #1760).
   const canSteerRunningTurn = supportsSteering && isReplyInFlight && hasDraftContent && !hasPendingPermissions;
+  // A side question is worth its button whenever the fork path exists and
+  // there is something to ask about — it does not need a running turn.
+  const canAskSideQuestion = supportsSideQuestions && hasDraftContent && !hasPendingPermissions
+    && Boolean(sideQuestionSessionId) && Boolean(onAskSideQuestion);
   const submitHint = canQueueDraft
     ? hasQueuedDraft
       ? sendByCtrlEnter
@@ -659,6 +672,22 @@ function ChatComposer({
                 className="h-10 w-10 sm:h-10 sm:w-10"
               >
                 <MessageSquarePlusIcon className="h-4 w-4" />
+              </PromptInputButton>
+            )}
+
+            {canAskSideQuestion && (
+              <PromptInputButton
+                tooltip={{ content: t('sideQuestion.label', { defaultValue: 'Side question · not part of the session' }) }}
+                onClick={(e: MouseEvent<HTMLButtonElement>) => {
+                  e.preventDefault();
+                  onAskSideQuestion?.(sideQuestionSessionId, input);
+                }}
+                disabled={isSubmitting || Boolean(attachmentBlock)}
+                aria-label={t('sideQuestion.label', { defaultValue: 'Side question · not part of the session' })}
+                title={t('sideQuestion.label', { defaultValue: 'Side question · not part of the session' })}
+                className="h-10 w-10 sm:h-10 sm:w-10"
+              >
+                <CircleHelpIcon className="h-4 w-4" />
               </PromptInputButton>
             )}
 

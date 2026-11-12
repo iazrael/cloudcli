@@ -40,7 +40,18 @@ export type TranscriptExportInput = {
   provider: LLMProvider | string;
   selectedProject?: Project | null;
   createDiff: (oldStr: string, newStr: string) => DiffLine[];
+  /**
+   * Keep side question asides in the file (upstream #1673). Off by default:
+   * an aside is not part of the session, so a default export matches what
+   * the session itself saw, and the operator opts in from the export menu.
+   */
+  includeSideQuestions?: boolean;
 };
+
+/** True when the export should drop the side question aside rows and the rows that pair with them. */
+function isSideQuestionRow(message: ChatMessage): boolean {
+  return Boolean(message.sideQuestion);
+}
 
 const EXPORT_EXTENSIONS: Record<TranscriptExportFormat, string> = {
   html: 'html',
@@ -74,16 +85,20 @@ export async function buildTranscriptExport(
   input: TranscriptExportInput,
   exportedAt: Date,
 ): Promise<string> {
+  const messages = input.includeSideQuestions
+    ? input.messages
+    : input.messages.filter((message) => !isSideQuestionRow(message));
+
   if (format === 'json') {
-    const references = collectStoredOutputAssets(JSON.stringify(input.messages));
+    const references = collectStoredOutputAssets(JSON.stringify(messages));
     const assets = await api.assets.embedForExport(references);
     return `${JSON.stringify(
       {
         title: input.sessionTitle,
         provider: input.provider,
         exportedAt: exportedAt.toISOString(),
-        messageCount: input.messages.length,
-        messages: input.messages,
+        messageCount: messages.length,
+        messages,
         ...(references.length > 0 ? { assets } : {}),
       },
       null,
@@ -93,7 +108,7 @@ export async function buildTranscriptExport(
 
   if (format === 'markdown') {
     return buildTranscriptMarkdown({
-      messages: input.messages,
+      messages,
       sessionTitle: input.sessionTitle,
       provider: input.provider,
       exportedAt,
@@ -102,7 +117,7 @@ export async function buildTranscriptExport(
   }
 
   return buildTranscriptHtml({
-    messages: input.messages,
+    messages,
     createDiff: input.createDiff,
     provider: input.provider,
     selectedProject: input.selectedProject,

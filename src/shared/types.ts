@@ -81,6 +81,9 @@ export type {
   SessionRemovedEvent,
   SessionUpsertedEvent,
   SessionUpsertedProject,
+  SideQuestion,
+  SideQuestionEvent,
+  SideQuestionStatus,
   SubagentActivity,
   SubagentInfo,
   TaskUsage,
@@ -602,6 +605,13 @@ export type ChatMessage = {
    * a memory-derived claim stays traceable.
    */
   memoryCitations?: MemoryCitation[];
+  /**
+   * Set on the two rows spliced in for one side question (upstream #1673):
+   * the question row and its answer row carry the same marker, so the
+   * transcript draws them as one tinted aside and never groups them with the
+   * session's own rows. Absent on every row the session itself owns.
+   */
+  sideQuestion?: { sideQuestionId: string; sessionId: string; status: string };
 }
 
 /** The user's locally persisted Claude preferences (default permission mode and allowed/disallowed tool lists, plus project sort order) read from and written back to browser storage. */

@@ -360,6 +360,14 @@
     "permissionCycleHint": "在輸入框中按 Tab 切換模式",
     "permissionTriggerLabel": "{{mode}}：{{heading}}"
   },
+  "sideQuestion": {
+    "label": "旁路提問 · 不進入工作階段",
+    "pending": "正在旁路作答",
+    "failed": "旁路提問失敗了。",
+    "dismiss": "移除",
+    "unsupported": "此引擎不支援旁路提問。",
+    "noSession": "旁路提問需要一個已有對話；這個對話還沒開始。"
+  },
   "export": {
     "trigger": "匯出對話",
     "heading": "匯出為",
@@ -375,7 +383,8 @@
     "json": {
       "label": "JSON (.json)",
       "description": "全部訊息原樣輸出，供工具使用。"
-    }
+    },
+    "includeSideQuestions": "同時匯出旁路提問"
   },
   "schedule": {
     "trigger": "排程這則訊息",

@@ -87,6 +87,13 @@ export type ProviderCapabilities = {
    */
   supportsSteering: boolean;
   /**
+   * Whether a question can be asked on the side while a session is active
+   * (`chat.side_question`, upstream #1673), answered by a read-only fork of
+   * the provider's own session. False only for providers with no headless
+   * read-only fork path.
+   */
+  supportsSideQuestions: boolean;
+  /**
    * Whether the `/compact` chat command summarizes the conversation and frees
    * up the engine's context window. The composer offers the command only when
    * this is true.
