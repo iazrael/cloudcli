@@ -48,6 +48,9 @@ export function createMediaRouter(service: ReturnType<typeof createImageMediaSer
       response.setHeader('Content-Security-Policy', "sandbox; default-src 'none'; style-src 'unsafe-inline'");
       response.setHeader('Referrer-Policy', 'no-referrer');
       // 附件也能经文件编辑修改：允许与票据窗口等长的私有缓存，到期后用 ETag 再验证，最迟一个窗口内刷新。
+      // The global /api no-store middleware sets Pragma too; clear it so the
+      // media route's own Cache-Control is the only caching directive.
+      response.removeHeader('Pragma');
       response.setHeader('Cache-Control', `private, max-age=${IMAGE_CACHE_SECONDS}`);
       response.setHeader('ETag', file.etag);
       if (request.fresh) { response.status(304).end(); return; }

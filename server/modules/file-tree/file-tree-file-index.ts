@@ -1,5 +1,6 @@
-import { spawn } from 'node:child_process';
 import path from 'node:path';
+
+import spawn from 'cross-spawn';
 
 import type { FileTreeFileIndexer } from '@/shared/types.js';
 
@@ -53,8 +54,16 @@ export function createRipgrepFileIndexer(
           child.kill();
         }, timeoutMs);
 
-        child.stdout.setEncoding('utf8');
-        child.stdout.on('data', (chunk: string) => {
+        const stdout = child.stdout;
+        const stderrStream = child.stderr;
+        if (!stdout || !stderrStream) {
+          clearTimeout(timer);
+          reject(new Error('The file indexer could not capture the listing output.'));
+          return;
+        }
+
+        stdout.setEncoding('utf8');
+        stdout.on('data', (chunk: string) => {
           if (incomplete) return;
           const parts = (pending + chunk).split('\0');
           pending = parts.pop() ?? '';
@@ -67,8 +76,8 @@ export function createRipgrepFileIndexer(
             files.push(path.sep === '/' ? part : part.split(path.sep).join('/'));
           }
         });
-        child.stderr.setEncoding('utf8');
-        child.stderr.on('data', (chunk: string) => {
+        stderrStream.setEncoding('utf8');
+        stderrStream.on('data', (chunk: string) => {
           if (stderr.length < MAXIMUM_CAPTURED_STDERR_BYTES) {
             stderr += chunk.slice(0, MAXIMUM_CAPTURED_STDERR_BYTES - stderr.length);
           }

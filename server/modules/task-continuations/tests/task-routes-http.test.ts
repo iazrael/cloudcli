@@ -14,6 +14,7 @@ import { runTaskContinuationsMcp } from '@/modules/task-continuations/cli/task-c
 import { handleTaskRegisterRequest } from '@/modules/task-continuations/task-continuations.service.js';
 
 import { createTestUserToken } from './helpers/user-token.js';
+import { isCodexCommandSandboxAvailable } from './helpers/codex-sandbox-availability.js';
 
 async function callMcpTool(name: string, args: Record<string, unknown>, env: NodeJS.ProcessEnv, id = 1): Promise<any> {
   const stdin = new PassThrough();
@@ -645,7 +646,11 @@ test('stdio MCP sends the configured global API key through the protected task A
   }
 });
 
-test('stdio MCP registers a real sandbox worker and returns its output through task status', async () => {
+test('stdio MCP registers a real sandbox worker and returns its output through task status', async (t) => {
+  if (!await isCodexCommandSandboxAvailable()) {
+    t.skip('Codex command sandbox is unavailable on this machine; see the helper for the Windows requirements.');
+    return;
+  }
   const previousDatabasePath = process.env.DATABASE_PATH;
   const previousJwtSecret = process.env.JWT_SECRET;
   const previousApiKey = process.env.API_KEY;
@@ -797,6 +802,8 @@ test('stdio MCP registers a real sandbox worker and returns its output through t
     else process.env.API_KEY = previousApiKey;
     if (previousTasksDirectory === undefined) delete process.env.CLOUDCLI_TASKS_DIR;
     else process.env.CLOUDCLI_TASKS_DIR = previousTasksDirectory;
-    await fs.rm(temporaryDirectory, { recursive: true, force: true });
+    // The spawned worker and its Codex runner release their temp files a moment
+    // after exit on Windows, so the cleanup retries instead of failing EBUSY.
+    await fs.rm(temporaryDirectory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

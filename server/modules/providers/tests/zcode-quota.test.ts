@@ -42,6 +42,19 @@ const authenticatedCredentials = {
   method: 'BigModel OAuth',
 };
 
+/** bigmodel prints card expiry in local `YYYY-MM-DD HH:mm:ss`, zone-less. */
+const formatZCodeTimestamp = (at: Date): string => {
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`
+    + ` ${pad(at.getHours())}:${pad(at.getMinutes())}:${pad(at.getSeconds())}`;
+};
+
+// The available card's expiry is kept relative to the run clock: a literal date
+// silently expires (spend picks only unexpired cards) and turns every consume
+// test into a failure once the calendar passes it.
+const availableCardExpiryText = formatZCodeTimestamp(new Date(Date.now() + 90 * 60 * 1000));
+const availableCardExpiryIso = new Date(availableCardExpiryText.replace(' ', 'T')).toISOString();
+
 const resetListResponse = {
   code: 200,
   msg: '操作成功',
@@ -51,7 +64,7 @@ const resetListResponse = {
     targetType: 'PERSONAL',
     lastFiveHourResetTime: '2026-09-22 23:49:58',
     fiveHourResets: [
-      { recordId: 606262, grantType: 'DIRECT', expireTime: '2099-10-18 18:50:54', available: true },
+      { recordId: 606262, grantType: 'DIRECT', expireTime: availableCardExpiryText, available: true },
       { recordId: 758489, grantType: 'DIRECT', expireTime: '2026-09-20 18:06:38', available: false },
     ],
     weekResets: [],
@@ -417,7 +430,7 @@ describe('ZCode Credentials & Quota Provider', () => {
           resetType: '5h',
           grantType: 'DIRECT',
           available: true,
-          expireTime: new Date('2099-10-18T18:50:54').toISOString(),
+          expireTime: availableCardExpiryIso,
         },
         {
           id: '758489',

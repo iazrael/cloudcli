@@ -2,7 +2,7 @@ import type { ImageMediaRequest, PathExistenceRequest } from '@/shared/types';
 import {
   expireAuthSession,
   getStoredAuthToken,
-  storeAuthToken,
+  storeRefreshedAuthToken,
 } from '@/shared/authToken';
 import { collectStoredOutputAssets, IS_PLATFORM } from '@/shared/utils';
 import { readVoiceConfig, voiceConfigHeaders } from '@/shared/voiceConfig';
@@ -48,7 +48,7 @@ export const authenticatedFetch = (
   }).then((response) => {
     const refreshedToken = response.headers.get('X-Refreshed-Token');
     if (refreshedToken) {
-      storeAuthToken(refreshedToken);
+      storeRefreshedAuthToken(refreshedToken);
     }
     // Belt and braces for any path that still reaches a cached response: only a
     // real rejection ends the session. Note that a revalidated response surfaces
@@ -98,7 +98,7 @@ export const authenticatedUpload = (
     settle();
     const refreshedToken = xhr.getResponseHeader('X-Refreshed-Token');
     if (refreshedToken) {
-      storeAuthToken(refreshedToken);
+      storeRefreshedAuthToken(refreshedToken);
     }
     if (xhr.status === 401 && xhr.getResponseHeader('X-Auth-Error')) {
       expireAuthSession();

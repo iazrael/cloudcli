@@ -184,6 +184,17 @@ function parseShellMessage(rawMessage: RawData): ShellIncomingMessage | null {
 const SAFE_SESSION_ID_PATTERN = /^[a-zA-Z0-9_.\-:]+$/;
 
 /**
+ * Runs `fallback` when `primary` exits non-zero. Windows PTYs are wrapped in
+ * Windows PowerShell 5.1, which has no `||`, so the fallback is spelled per
+ * platform. Consumed by the resume builders in SHELL_PROVIDER_CLI.
+ */
+function withExitFallback(primary: string, fallback: string): string {
+  return os.platform() === 'win32'
+    ? `${primary}; if ($LASTEXITCODE -ne 0) { ${fallback} }`
+    : `${primary} || ${fallback}`;
+}
+
+/**
  * Interactive CLI integration per provider for the standalone shell: the
  * display name shown in the welcome banner, the command that launches a
  * fresh interactive CLI, and (when the CLI supports resuming) a builder that
@@ -200,14 +211,12 @@ const SAFE_SESSION_ID_PATTERN = /^[a-zA-Z0-9_.\-:]+$/;
 const SHELL_PROVIDER_CLI: Record<string, {
   name: string;
   launch: string;
-  resume?: (resumeSessionId: string) => string;
+  resume?: (resumeSessionId: string, extraArgs: string) => string;
 }> = {
   claude: {
     name: 'Claude',
     launch: 'claude',
-    resume: (id) => os.platform() === 'win32'
-      ? `claude --resume "${id}"; if ($LASTEXITCODE -ne 0) { claude }`
-      : `claude --resume "${id}" || claude`,
+    resume: (id, extraArgs) => withExitFallback(`claude --resume "${id}"${extraArgs}`, `claude${extraArgs}`),
   },
   cursor: {
     name: 'Cursor',
@@ -217,9 +226,7 @@ const SHELL_PROVIDER_CLI: Record<string, {
   codex: {
     name: 'Codex',
     launch: 'codex',
-    resume: (id) => os.platform() === 'win32'
-      ? `codex resume "${id}"; if ($LASTEXITCODE -ne 0) { codex }`
-      : `codex resume "${id}" || codex`,
+    resume: (id) => withExitFallback(`codex resume "${id}"`, 'codex'),
   },
   opencode: {
     name: 'OpenCode',
@@ -308,7 +315,7 @@ function buildShellCommand(
   if (provider !== 'claude') {
     // Non-Claude CLIs have no theme flag to honor; launch as before.
     if (resumeSessionId && integration.resume) {
-      return otherProgram(integration.resume(resumeSessionId));
+      return otherProgram(integration.resume(resumeSessionId, ''));
     }
     return otherProgram(initialCommand || integration.launch);
   }

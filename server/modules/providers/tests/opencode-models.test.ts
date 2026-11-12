@@ -36,7 +36,7 @@ const withOpenCodeHome = async (
 ): Promise<void> => {
   const homeDir = await mkdtemp(path.join(os.tmpdir(), 'opencode-catalog-'));
   const originalHomedir = os.homedir;
-  const envKeys = [...OPENCODE_ENV_KEYS, 'CLOUDCLI_OPENCODE_CLI'];
+  const envKeys = [...OPENCODE_ENV_KEYS, 'CLOUDCLI_OPENCODE_CLI', 'NODE_OPTIONS', 'FAKE_OPENCODE_OUTPUT'];
   const originalEnv = envKeys.map((key) => [key, process.env[key]] as const);
 
   (os as any).homedir = () => homeDir;
@@ -66,8 +66,27 @@ const withOpenCodeHome = async (
 
 /** Installs a fake `opencode` executable whose stdout stands in for `opencode models`. */
 const writeFakeOpenCodeCli = async (homeDir: string, stdout: string): Promise<string> => {
-  const cliPath = path.join(homeDir, 'fake-opencode');
   const heredocBody = stdout.endsWith('\n') ? stdout : `${stdout}\n`;
+  if (process.platform === 'win32') {
+    // Windows has no POSIX shell to run the shebang stub, and Node refuses to
+    // execFile a `.cmd` shim outright (EINVAL since the 2024 spawn hardening).
+    // Run the real `node` executable instead with a `--require` preload that
+    // prints the fixture and exits before node looks at the `models` argument.
+    const outputPath = path.join(homeDir, 'fake-opencode-output.txt');
+    const hookPath = path.join(homeDir, 'fake-opencode-hook.cjs');
+    await writeFile(outputPath, heredocBody, 'utf8');
+    await writeFile(
+      hookPath,
+      'process.stdout.write(require(\'node:fs\').readFileSync(process.env.FAKE_OPENCODE_OUTPUT, \'utf8\'));\nprocess.exit(0);\n',
+      'utf8',
+    );
+    process.env.FAKE_OPENCODE_OUTPUT = outputPath;
+    // NODE_OPTIONS treats backslashes as escapes, so the preload path must use
+    // forward slashes.
+    process.env.NODE_OPTIONS = `--require "${hookPath.replace(/\\/g, '/')}"`;
+    return process.execPath;
+  }
+  const cliPath = path.join(homeDir, 'fake-opencode');
   await writeFile(cliPath, `#!/bin/sh\ncat <<'EOF'\n${heredocBody}EOF\n`, 'utf8');
   await chmod(cliPath, 0o755);
   return cliPath;
@@ -282,27 +301,23 @@ test('OpenCode reads display names and effort variants from the cached catalog',
 test('OpenCode does not run `opencode models` again for every turn', async () => {
   // Every turn reads the catalog before it starts, and the CLI query takes a
   // second or more; within the fresh window the catalog comes from memory.
-  await withOpenCodeHome(
-    async (homeDir) => {
-      const cliPath = path.join(homeDir, 'fake-opencode');
-      await writeFile(
-        cliPath,
-        `#!/bin/sh\necho run >> '${path.join(homeDir, 'runs')}'\necho opencode/beam-free\n`,
-        'utf8',
-      );
-      await chmod(cliPath, 0o755);
-      process.env.CLOUDCLI_OPENCODE_CLI = cliPath;
-    },
-    async (adapter) => {
-      const first = await adapter.getSupportedModels();
-      const second = await adapter.getSupportedModels();
-      await adapter.getCurrentActiveModel();
+  // The loader is injected so the cache is exercised without a CLI process.
+  let reads = 0;
+  const cliCatalog = {
+    OPTIONS: [{ value: 'opencode/beam-free', label: 'Beam Free' }],
+    DEFAULT: 'opencode/beam-free',
+  };
+  const models = new OpenCodeProviderModels(async () => {
+    reads += 1;
+    return { models: cliCatalog, fromCli: true };
+  });
 
-      assert.deepEqual(second, first);
-      const runs = (await readFile(path.join(os.homedir(), 'runs'), 'utf8')).trim().split('\n');
-      assert.equal(runs.length, 1);
-    },
-  );
+  const first = await models.getSupportedModels();
+  const second = await models.getSupportedModels();
+  await models.getCurrentActiveModel();
+
+  assert.deepEqual(second, first);
+  assert.equal(reads, 1);
 });
 
 test('OpenCode lists only the models the CLI reports for the account', async () => {

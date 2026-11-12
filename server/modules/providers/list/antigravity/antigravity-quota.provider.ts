@@ -63,6 +63,7 @@ const defaultDependencies: AntigravityQuotaDependencies = {
       timeout: 10_000,
       encoding: 'utf8',
       env: { ...process.env },
+      windowsHide: true,
     });
   },
   now: () => Date.now(),

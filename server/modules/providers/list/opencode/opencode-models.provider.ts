@@ -13,7 +13,6 @@ import type {
   ProviderModelOption,
   ProviderModelsDefinition,
 } from '@/shared/types.js';
-import type { StaleWhileRefreshValue } from '@/shared/utils.js';
 import {
   buildDefaultProviderCurrentActiveModel,
   createStaleWhileRefreshValue,
@@ -21,6 +20,7 @@ import {
   readObjectRecord,
   readOptionalString,
   stripAnsiSequences,
+  type StaleWhileRefreshValue,
 } from '@/shared/utils.js';
 
 import {
@@ -368,6 +368,8 @@ const readOpenCodeCliModelIds = async (): Promise<string[]> => {
   try {
     const { stdout } = await execFileAsync(executable, ['models'], {
       timeout: OPENCODE_MODELS_PROBE_TIMEOUT_MS,
+      // Otherwise the probe flashes a console window on Windows.
+      windowsHide: true,
     });
 
     const modelIds: string[] = [];
@@ -424,8 +426,11 @@ const parseOpenCodeSessionModelValue = (rawModel: unknown): string | null => {
   return modelId;
 };
 
+/** One catalog read: the account catalog when the CLI answered, else the anchor fallback. */
+type OpenCodeCatalogLoad = { models: ProviderModelsDefinition; fromCli: boolean };
+
 /** Reads the account-scoped catalog, or the anchor fallback when the CLI reports nothing. */
-const loadOpenCodeCatalog = async (): Promise<{ models: ProviderModelsDefinition; fromCli: boolean }> => {
+const loadOpenCodeCatalog = async (): Promise<OpenCodeCatalogLoad> => {
   // `opencode models` reports exactly the models the logged-in account can
   // route — narrower and fresher than the anchor catalog, which only
   // covers the fallback path (CLI missing, failing, or answering empty).
@@ -449,14 +454,18 @@ export class OpenCodeProviderModels implements IProviderModels {
    * connected to the account shows up soon; the anchor fallback for ten
    * seconds, so a CLI that was briefly unavailable is asked again quickly.
    */
-  private readonly catalog: StaleWhileRefreshValue<{ models: ProviderModelsDefinition; fromCli: boolean }> =
-    createStaleWhileRefreshValue({
-      load: loadOpenCodeCatalog,
+  private readonly catalog: StaleWhileRefreshValue<OpenCodeCatalogLoad>;
+
+  /** @param load Catalog reader; defaults to the real `opencode models` probe. */
+  constructor(load: () => Promise<OpenCodeCatalogLoad> = loadOpenCodeCatalog) {
+    this.catalog = createStaleWhileRefreshValue<OpenCodeCatalogLoad>({
+      load,
       ttlMs: (loaded) => (loaded.fromCli ? 60_000 : 10_000),
       // The load falls back instead of rejecting; this only covers a bug in it.
       failureRetryMs: 10_000,
       onRefreshError: (error) => console.error('[OpenCode] Model catalog refresh failed:', error),
     });
+  }
 
   async getSupportedModels(): Promise<ProviderModelsDefinition> {
     return (await this.catalog.get()).models;
