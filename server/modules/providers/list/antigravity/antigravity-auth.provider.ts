@@ -10,7 +10,7 @@
 import fs from 'node:fs';
 
 import type { IProviderAuth } from '@/shared/interfaces.js';
-import type { ProviderAuthStatus, ProviderQuotaData } from '@/shared/types.js';
+import type { CliVersionProbe, ProviderAuthStatus, ProviderQuotaData } from '@/shared/types.js';
 import { extractEmailFromJwt } from '@/shared/utils.js';
 
 import { hasStoredAntigravityCredential } from './antigravity-credential-store.js';
@@ -173,6 +173,22 @@ function isCredentialValid(credential: AntigravityTokenInfo): boolean {
 
 export class AntigravityProviderAuth implements IProviderAuth {
   /**
+   * CLI version card probe (GET /providers/cli/status). The engine resolver
+   * already knows installation and version, so no extra subprocess runs here;
+   * the eager background probe makes the version null for the first moments
+   * after startup.
+   *
+   * Consumer: provider-cli.service.
+   */
+  checkInstalled(): CliVersionProbe {
+    const enginePath = tryResolveEnginePath();
+    if (!enginePath) {
+      return { installed: false, exitCode: null, version: null };
+    }
+    return { installed: true, exitCode: 0, version: getEngineVersion() };
+  }
+
+  /**
    * Returns Antigravity CLI installation and authentication status.
    * Never throws errors for uninstalled/unauthenticated states.
    */
@@ -199,6 +215,7 @@ export class AntigravityProviderAuth implements IProviderAuth {
     return {
       installed: true,
       provider: 'antigravity',
+      installedVersion: version,
       authenticated,
       email: authenticated ? credential?.email ?? null : null,
       method: authenticated ? (version ? `Google Antigravity CLI ${version}` : 'Google OAuth') : null,

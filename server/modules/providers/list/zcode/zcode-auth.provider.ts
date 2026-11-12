@@ -1,5 +1,6 @@
 import type { IProviderAuth } from '@/shared/interfaces.js';
 import type {
+  CliVersionProbe,
   ProviderAuthStatus,
   ProviderQuotaData,
   ProviderQuotaResetConsumeInput,
@@ -23,6 +24,22 @@ export class ZCodeProviderAuth implements IProviderAuth {
    * `node <engine-path> login` guide the frontend login modal should run.
    * Never throws for uninstalled/unauthenticated states per contract.
    */
+  /**
+   * CLI version card probe (GET /providers/cli/status). The engine resolver
+   * already knows installation and version, so no extra subprocess runs here;
+   * the eager background probe makes the version null for the first moments
+   * after startup.
+   *
+   * Consumer: provider-cli.service.
+   */
+  checkInstalled(): CliVersionProbe {
+    const enginePath = tryResolveEnginePath();
+    if (!enginePath) {
+      return { installed: false, exitCode: null, version: null };
+    }
+    return { installed: true, exitCode: 0, version: getEngineVersion() };
+  }
+
   async getStatus(): Promise<ProviderAuthStatus> {
     const enginePath = tryResolveEnginePath();
 
@@ -42,6 +59,7 @@ export class ZCodeProviderAuth implements IProviderAuth {
     return {
       installed: true,
       provider: 'zcode',
+      installedVersion: getEngineVersion(),
       authenticated: credentials.authenticated,
       email: credentials.email,
       method: credentials.authenticated

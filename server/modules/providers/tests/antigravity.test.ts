@@ -21,7 +21,7 @@ import {
   hasWindowsCredentialManagerCredential,
 } from '../list/antigravity/antigravity-credential-store.js';
 import { getAntigravitySummariesDbPath } from '../list/antigravity/antigravity-data-root.js';
-import { clearEnginePathCache } from '../list/antigravity/antigravity-engine-path.js';
+import { clearEnginePathCache, getEngineVersion } from '../list/antigravity/antigravity-engine-path.js';
 import {
   ANTIGRAVITY_BUILTIN_MODELS,
   AntigravityProviderModels,
@@ -91,6 +91,36 @@ test('AntigravityProviderAuth reports valid status object without throwing', asy
   assert.equal(typeof status.installed, 'boolean');
   assert.equal(typeof status.authenticated, 'boolean');
   assert.equal(status.loginCommand, 'agy');
+});
+
+test('AntigravityProviderAuth.checkInstalled feeds the settings CLI version card', async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-cli-version-'));
+  const restoreAgyPath = withEnvValue('CLOUDCLI_AGY_PATH', path.join(tempRoot, 'agy'));
+  await fs.writeFile(path.join(tempRoot, 'agy'), '#!/bin/sh\necho "0.42.0"\n', { mode: 0o755 });
+  clearEnginePathCache();
+  try {
+    const auth = new AntigravityProviderAuth();
+
+    // The first resolve schedules the eager `agy --version` probe in the
+    // background, so wait for its answer before asserting.
+    auth.checkInstalled();
+    let version: string | null = null;
+    for (let i = 0; i < 200 && !version; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      version = getEngineVersion();
+    }
+    assert.equal(version, '0.42.0');
+
+    assert.deepEqual(auth.checkInstalled(), { installed: true, exitCode: 0, version: '0.42.0' });
+
+    const status = await auth.getStatus();
+    assert.equal(status.installed, true);
+    assert.equal(status.installedVersion, '0.42.0');
+  } finally {
+    restoreAgyPath();
+    clearEnginePathCache();
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
 });
 
 test('AntigravityProviderAuth only reports authenticated with an OAuth token file', async () => {

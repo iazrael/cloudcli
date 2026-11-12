@@ -6,7 +6,7 @@ import test from 'node:test';
 
 import { ZCodeProviderAuth } from '@/modules/providers/list/zcode/zcode-auth.provider.js';
 import { encryptZCodeCredentialValue } from '@/modules/providers/list/zcode/zcode-credentials.js';
-import { clearEnginePathCache } from '@/modules/providers/list/zcode/zcode-engine-path.js';
+import { clearEnginePathCache, getEngineVersion } from '@/modules/providers/list/zcode/zcode-engine-path.js';
 
 /**
  * Isolates engine resolution (temp engine file) and credential storage
@@ -66,6 +66,35 @@ test('getStatus reports authenticated when OAuth credentials exist', async () =>
     assert.equal(status.method, 'Z.AI OAuth');
     assert.equal(status.error, undefined);
     assert.equal(status.loginCommand, `node ${enginePath} login`);
+  });
+});
+
+/**
+ * The version probe runs eagerly in the background after the first resolve,
+ * so the answer lands a tick later; wait for it before asserting.
+ */
+const waitForEngineVersion = async (): Promise<string | null> => {
+  let version: string | null = null;
+  for (let i = 0; i < 200 && !version; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    version = getEngineVersion();
+  }
+  return version;
+};
+
+test('checkInstalled feeds the settings CLI version card', async () => {
+  await withZCodeAuthFixtures(async (_storageDir, enginePath) => {
+    // The resolver probes `node <engine> --version`; answer it.
+    await writeFile(enginePath, '#!/usr/bin/env node\nif (process.argv[2] === "--version") process.stdout.write("1.9.3\\n");\n', 'utf8');
+    const auth = new ZCodeProviderAuth();
+
+    auth.checkInstalled();
+    assert.equal(await waitForEngineVersion(), '1.9.3');
+    assert.deepEqual(auth.checkInstalled(), { installed: true, exitCode: 0, version: '1.9.3' });
+
+    const status = await auth.getStatus();
+    assert.equal(status.installed, true);
+    assert.equal(status.installedVersion, '1.9.3');
   });
 });
 
