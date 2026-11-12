@@ -83,6 +83,7 @@ const rowProps = (
   onProjectSelect: noop,
   onSessionSelect: noop,
   onDeleteSession: noop,
+    onArchiveSession: () => undefined,
   onForkSession: noop,
   isSelecting: false,
   isChecked: false,

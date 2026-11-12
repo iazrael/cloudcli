@@ -55,7 +55,8 @@
     "copyIdLoading": "Loading {{provider}} session ID…",
     "copyIdCopied": "{{provider}} session ID copied",
     "copyIdFailed": "Couldn't copy {{provider}} session ID",
-    "copyIdUnavailable": "{{provider}} session ID unavailable"
+    "copyIdUnavailable": "{{provider}} session ID unavailable",
+    "archiveSession": "Archive session"
   },
   "tooltips": {
     "viewEnvironments": "View Environments",

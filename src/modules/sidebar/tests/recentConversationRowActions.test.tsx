@@ -52,6 +52,7 @@ const makeActions = (overrides: Partial<SessionRowActions> = {}): SessionRowActi
   onCancelEditingSession: noop,
   onSaveEditingSession: noop,
   onDeleteSession: noop,
+    onArchiveSession: () => undefined,
   ...overrides,
 });
 

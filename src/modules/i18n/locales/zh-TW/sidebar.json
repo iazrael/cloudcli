@@ -55,7 +55,8 @@
     "copyIdLoading": "正在取得 {{provider}} 工作階段 ID…",
     "copyIdCopied": "已複製 {{provider}} 工作階段 ID",
     "copyIdFailed": "無法複製 {{provider}} 工作階段 ID",
-    "copyIdUnavailable": "{{provider}} 工作階段 ID 無法使用"
+    "copyIdUnavailable": "{{provider}} 工作階段 ID 無法使用",
+    "archiveSession": "歸檔會話"
   },
   "tooltips": {
     "viewEnvironments": "查看環境",

@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { Check, Edit2, GitBranch, MoreHorizontal, Pin, PinOff, Trash2, X } from 'lucide-react';
+import { Archive, Check, Edit2, GitBranch, MoreHorizontal, Pin, PinOff, Trash2, X } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
 import { ActionMenu } from '@/shared/ui';
@@ -29,8 +29,10 @@ type SessionOptionsProps = {
   onDeleteSession: (sessionId: string, sessionTitle: string) => void;
   /** Bound by the caller, which owns the session object the fork needs. */
   onFork?: () => void;
-  /** Withheld where the row has nowhere to send a delete. */
+  /** Withheld where the row has nowhere to send an archive or delete. */
   canDelete?: boolean;
+  /** Archives the session right away; it stays restorable from the archive list. */
+  onArchiveSession: (sessionId: string) => void;
   isPinned?: boolean;
   /** Pins or unpins the session; the menu item is withheld without it. */
   onSetPinned?: (sessionId: string, isPinned: boolean) => void;
@@ -62,6 +64,7 @@ export default function SessionOptions({
   onDeleteSession,
   onFork,
   canDelete = true,
+  onArchiveSession,
   isPinned = false,
   onSetPinned,
   className,
@@ -203,11 +206,15 @@ export default function SessionOptions({
               onSelect: onFork,
             }] : []),
             ...(canDelete && !isProcessing ? [{
+              key: 'archive',
+              label: t('sessions.archiveSession'),
+              icon: Archive,
+              onSelect: () => onArchiveSession(sessionId),
+            }, {
               key: 'delete',
-              label: t('sessions.archiveOrDelete'),
+              label: t('sessions.deleteSession'),
               icon: Trash2,
               isDanger: true,
-              showDividerBefore: true,
               onSelect: () => onDeleteSession(sessionId, sessionName),
             }] : []),
           ]}

@@ -32,6 +32,8 @@ type SidebarSessionItemProps = {
   onProjectSelect: (project: Project) => void;
   onSessionSelect: (session: SessionWithProvider, projectName: string) => void;
   onDeleteSession: (sessionId: string, sessionTitle: string) => void;
+  /** Archives the session right away; it stays restorable from the archive list. */
+  onArchiveSession: (sessionId: string) => void;
   /** Branches this session into an independent one; absent when its provider cannot. */
   onForkSession?: (session: SessionWithProvider) => void;
   onSetSessionPinned?: (sessionId: string, isPinned: boolean) => void;
@@ -62,6 +64,7 @@ function SidebarSessionItem({
   onProjectSelect,
   onSessionSelect,
   onDeleteSession,
+  onArchiveSession,
   onForkSession,
   onSetSessionPinned,
   isSelecting,
@@ -581,6 +584,7 @@ function SidebarSessionItem({
             onCancelEditingSession={onCancelEditingSession}
             onSaveEditingSession={onSaveEditingSession}
             onDeleteSession={onDeleteSession}
+            onArchiveSession={onArchiveSession}
             onFork={onForkSession ? () => onForkSession(session) : undefined}
             isPinned={isPinned}
             onSetPinned={onSetSessionPinned}

@@ -226,6 +226,7 @@ export default function SidebarRecentConversations({
                 onCancelEditingSession={sessionActions.onCancelEditingSession}
                 onSaveEditingSession={sessionActions.onSaveEditingSession}
                 onDeleteSession={sessionActions.onDeleteSession}
+          onArchiveSession={sessionActions.onArchiveSession}
                 // The fork path reads only the id, provider and owning project,
                 // which is all a recents row knows about the session.
                 onFork={sessionActions.onForkSession

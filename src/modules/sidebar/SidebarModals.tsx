@@ -23,6 +23,8 @@ type SidebarModalsProps = {
   onConfirmDeleteProject: (deleteData?: boolean) => void;
   /** Deletes the pending session permanently; archiving has its own menu item. */
   onConfirmDeleteSession: () => void;
+  /** Archives the pending session right away (soft delete). */
+  onArchiveSession: (sessionId: string) => void;
   /** Archives or permanently deletes every session of the pending bulk selection. */
   onConfirmDeleteSessions: (hardDelete?: boolean) => void;
   showVersionModal: boolean;
@@ -61,6 +63,7 @@ export default function SidebarModals({
   onCancelDeletion,
   onConfirmDeleteProject,
   onConfirmDeleteSession,
+  onArchiveSession,
   onConfirmDeleteSessions,
   showVersionModal,
   onCloseVersionModal,

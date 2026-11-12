@@ -932,6 +932,34 @@ export function useSidebarController({
     [],
   );
 
+  // 归档 = 同一端点的软删(isArchived=1);行可从归档列表恢复,不需要确认。
+  const archiveSession = useCallback(async (sessionId: string) => {
+    try {
+      const response = await api.deleteSession(sessionId, false);
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('[Sidebar] Failed to archive session:', {
+          status: response.status,
+          error: errorText,
+        });
+        alert(t('messages.deleteSessionFailed'));
+        return;
+      }
+      onSessionDelete?.(sessionId);
+      setRecentConversations((previous) => {
+        const remaining = previous.filter((conversation) => conversation.sessionId !== sessionId);
+        if (remaining.length !== previous.length) {
+          setRecentConversationsTotal((total) => Math.max(0, total - 1));
+        }
+        return remaining;
+      });
+      await fetchArchivedSessions();
+    } catch (error) {
+      console.error('[Sidebar] Error archiving session:', error);
+      alert(t('messages.deleteSessionError'));
+    }
+  }, [fetchArchivedSessions, onSessionDelete, t]);
+
   const confirmDeleteSession = useCallback(async (hardDelete = false) => {
     if (pendingDeletion?.kind !== 'session') {
       return;
@@ -1403,6 +1431,7 @@ export function useSidebarController({
     saveProjectName,
     showDeleteSessionConfirmation,
     confirmDeleteSession,
+    archiveSession,
     sessionSelection,
     setProjectSessionSelection,
     toggleSessionSelected,

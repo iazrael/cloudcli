@@ -60,6 +60,8 @@ const NOW = new Date('2026-08-21T10:00:00.000Z');
 // Rebuilding them per render here would test the harness, not the component.
 const NO_SESSION_IDS: ReadonlySet<string> = new Set<string>();
 
+const ARCHIVE_NOOP = () => undefined;
+
 const listProps = (
   activeRename: ActiveSidebarRename | null,
   sessionSelection: SidebarSessionSelection | null = null,
@@ -92,6 +94,7 @@ const listProps = (
   onDeleteProject: noop,
   onSessionSelect: noop,
   onDeleteSession: noop,
+    onArchiveSession: ARCHIVE_NOOP,
   onNewSession: noop,
   onStartEditingSession: noop,
   onCancelEditingSession: noop,
@@ -246,6 +249,7 @@ const sessionsProps = (
   onProjectSelect: noop,
   onSessionSelect: noop,
   onDeleteSession: noop,
+    onArchiveSession: ARCHIVE_NOOP,
   onLoadMoreSessions: noop,
   onNewSession: noop,
   selectedSessionIds,

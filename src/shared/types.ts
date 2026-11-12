@@ -1525,6 +1525,8 @@ export type SessionRowActions = {
   onCancelEditingSession: () => void;
   onSaveEditingSession: (projectId: string, sessionId: string, summary: string, provider: LLMProvider) => void;
   onDeleteSession: (sessionId: string, sessionTitle: string) => void;
+  /** Archives the session right away; it stays restorable from the archive list. */
+  onArchiveSession: (sessionId: string) => void;
   /** Branches a session into an independent one. Rows hide it for providers that cannot. */
   onForkSession?: (session: SessionWithProvider) => void;
   /** Pins or unpins a session; pinned sessions sit at the top of every sidebar list. */
