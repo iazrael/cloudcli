@@ -51,9 +51,16 @@ export const providerMcpService = {
 
   /**
    * Adds one HTTP/stdio MCP server to every provider.
+   *
+   * `envFor` lets a managed server carry per-provider context — the scheduled-
+   * tasks bridge uses it to tell each engine's copy which provider its calls
+   * come from — and is merged over the shared `env` per provider.
    */
   async addMcpServerToAllProviders(
-    input: Omit<UpsertProviderMcpServerInput, 'scope'> & { scope?: Exclude<McpScope, 'local'> },
+    input: Omit<UpsertProviderMcpServerInput, 'scope'> & {
+      scope?: Exclude<McpScope, 'local'>;
+      envFor?: (provider: LLMProvider) => Record<string, string>;
+    },
   ): Promise<Array<{ provider: LLMProvider; created: boolean; error?: string }>> {
     if (input.transport !== 'stdio' && input.transport !== 'http') {
       throw new AppError('Global MCP add supports only "stdio" and "http".', {
@@ -62,12 +69,17 @@ export const providerMcpService = {
       });
     }
 
+    const { envFor, ...serverInput } = input;
     const scope = input.scope ?? 'project';
     const results: Array<{ provider: LLMProvider; created: boolean; error?: string }> = [];
     const providers = providerRegistry.listProviders();
     for (const provider of providers) {
       try {
-        await provider.mcp.upsertServer({ ...input, scope });
+        await provider.mcp.upsertServer({
+          ...serverInput,
+          scope,
+          env: { ...(serverInput.env ?? {}), ...(envFor?.(provider.id) ?? {}) },
+        });
         results.push({ provider: provider.id, created: true });
       } catch (error) {
         results.push({

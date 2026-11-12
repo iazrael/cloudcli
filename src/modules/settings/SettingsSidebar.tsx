@@ -1,4 +1,4 @@
-import { Bell, Bot, GitBranch, Info, Key, MessageSquare, Mic, MonitorPlay, Palette, Puzzle, Stethoscope } from 'lucide-react';
+import { Bell, Bot, Clock, GitBranch, Info, Key, MessageSquare, Mic, MonitorPlay, Palette, Puzzle, Stethoscope } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { cn } from '@/shared/utils';
@@ -25,6 +25,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'api', labelKey: 'mainTabs.apiTokens', fallback: 'API & Tokens', icon: Key },
   { id: 'voice', labelKey: 'mainTabs.voice', fallback: 'Voice', icon: Mic },
   { id: 'browser', labelKey: 'mainTabs.browser', fallback: 'Browser', icon: MonitorPlay },
+  { id: 'scheduled', labelKey: 'mainTabs.scheduled', fallback: 'Scheduled tasks', icon: Clock },
   { id: 'plugins', labelKey: 'mainTabs.plugins', fallback: 'Plugins', icon: Puzzle },
   { id: 'notifications', labelKey: 'mainTabs.notifications', fallback: 'Notifications', icon: Bell },
   { id: 'diagnostics', labelKey: 'mainTabs.diagnostics', fallback: 'Diagnostics', icon: Stethoscope },

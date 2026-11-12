@@ -15,6 +15,7 @@ type WorkspaceHeaderProps = {
   selectedProject: Project;
   selectedSession: ProjectSession | null;
   shouldShowBrowserTab: boolean;
+  shouldShowScheduledTab: boolean;
   shouldShowShellTab: boolean;
   isMobile: boolean;
   onMenuClick: () => void;
@@ -29,6 +30,7 @@ export default function WorkspaceHeader({
   selectedProject,
   selectedSession,
   shouldShowBrowserTab,
+  shouldShowScheduledTab,
   shouldShowShellTab,
   isMobile,
   onMenuClick,
@@ -126,6 +128,7 @@ export default function WorkspaceHeader({
                 activeTab={activeTab}
                 setActiveTab={setActiveTab}
                 shouldShowBrowserTab={shouldShowBrowserTab}
+                shouldShowScheduledTab={shouldShowScheduledTab}
                 shouldShowShellTab={shouldShowShellTab}
               />
             </div>

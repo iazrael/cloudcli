@@ -57,6 +57,13 @@ import {
     initializeScheduledMessageDispatcher,
     scheduledMessagesRoutes,
 } from './modules/scheduled-messages/index.js';
+import {
+    closeScheduledJobDispatcher,
+    initializeScheduledJobDispatcher,
+    scheduledJobsMcpRoutes,
+    scheduledJobsRoutes,
+    scheduledJobsSettingsService,
+} from './modules/scheduled-jobs/index.js';
 import { assetsRoutes } from './modules/assets/index.js';
 import { mediaRoutes } from './modules/media/index.js';
 import { fileTreeRoutes } from './modules/file-tree/index.js';
@@ -202,6 +209,15 @@ createWebSocketServer(server, {
 });
 
 app.use(cors({ exposedHeaders: ['X-Refreshed-Token', 'X-Auth-Error'] }));
+// API responses are per-user and may carry X-Refreshed-Token. Never let the
+// browser cache or revalidate them: a 304 hands fetch the cached 200's headers,
+// replaying a long-expired refreshed token over a fresh login.
+app.set('etag', false);
+app.use('/api', (_req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Pragma', 'no-cache');
+    next();
+});
 app.use(express.json({
     limit: '50mb',
     type: (req) => {
@@ -292,6 +308,10 @@ app.use('/api/browser-use', authenticateToken, browserUseRoutes);
 app.use('/api/providers', authenticateToken, providerRoutes);
 app.use('/api/scheduled-messages', authenticateToken, scheduledMessagesRoutes);
 app.use('/api/tasks', taskContinuationsRouter);
+app.use('/api/scheduled-jobs', authenticateToken, scheduledJobsRoutes);
+
+// Scheduled Tasks MCP bridge API (local token protected)
+app.use('/api/scheduled-jobs-mcp', scheduledJobsMcpRoutes);
 
 // Agent API Routes (uses API key authentication)
 app.use('/api/agent', agentRoutes);
@@ -496,6 +516,9 @@ async function startServer() {
             // Sends anything that came due while the server was not running,
             // then keeps polling.
             initializeScheduledMessageDispatcher(providerRuntimeService);
+            // Recurring jobs: fires their next occurrence, marks stale ones
+            // missed, and records every attempt in the run history.
+            initializeScheduledJobDispatcher(providerRuntimeService);
 
             // Start periodic auto-archive scheduler for historical sessions
             sessionsAutoArchiveService.startScheduler();
@@ -519,6 +542,12 @@ async function startServer() {
             });
 
             activeContinuationWorker = continuationWorker;
+
+            // Reconcile the scheduled-tasks MCP bridge when the feature is on,
+            // so engines installed after the toggle still get it.
+            await scheduledJobsSettingsService.syncAgentMcpIfNeeded().catch((err) => {
+                console.warn('[ScheduledJobs] Failed to sync MCP configuration during startup:', getErrorMessage(err));
+            });
         });
 
         let activeContinuationWorker: { stop: () => void } | null = null;
@@ -536,6 +565,11 @@ async function startServer() {
                 closeScheduledMessageDispatcher();
             } catch (err) {
                 console.error('[ScheduledMessages] Error closing dispatcher during shutdown:', getErrorMessage(err));
+            }
+            try {
+                closeScheduledJobDispatcher();
+            } catch (err) {
+                console.error('[ScheduledJobs] Error closing dispatcher during shutdown:', getErrorMessage(err));
             }
             try {
                 await browserUseService.stopAllSessions();

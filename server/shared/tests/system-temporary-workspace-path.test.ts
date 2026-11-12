@@ -8,6 +8,12 @@ import { isSystemTemporaryWorkspacePath } from '@/shared/utils.js';
 
 test('isSystemTemporaryWorkspacePath rejects the temporary-directory roots themselves', () => {
   assert.equal(isSystemTemporaryWorkspacePath(os.tmpdir()), true);
+  if (process.platform === 'win32') {
+    // The POSIX staging roots are not part of a Windows root list; only the OS
+    // temporary directory is.
+    assert.equal(isSystemTemporaryWorkspacePath('/tmp'), false);
+    return;
+  }
   assert.equal(isSystemTemporaryWorkspacePath('/tmp'), true);
   // Trailing separators must not break the match.
   assert.equal(isSystemTemporaryWorkspacePath('/tmp/'), true);
@@ -20,8 +26,10 @@ test('isSystemTemporaryWorkspacePath rejects directories nested inside a tempora
   // workspace, and those cluttered the project list.
   assert.equal(isSystemTemporaryWorkspacePath(path.join(os.tmpdir(), 'task-review-X3ZEvD')), true);
   assert.equal(isSystemTemporaryWorkspacePath(path.join(os.tmpdir(), 'a', 'b', 'c')), true);
-  assert.equal(isSystemTemporaryWorkspacePath('/tmp/some-scratch'), true);
-  assert.equal(isSystemTemporaryWorkspacePath('/private/tmp/some-scratch'), true);
+  if (process.platform !== 'win32') {
+    assert.equal(isSystemTemporaryWorkspacePath('/tmp/some-scratch'), true);
+    assert.equal(isSystemTemporaryWorkspacePath('/private/tmp/some-scratch'), true);
+  }
 });
 
 test('isSystemTemporaryWorkspacePath matches the /private alias of the temporary root', { skip: process.platform !== 'darwin' }, () => {

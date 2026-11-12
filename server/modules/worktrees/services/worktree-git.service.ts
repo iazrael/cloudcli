@@ -11,7 +11,7 @@ import { AppError, normalizeProjectPath } from '@/shared/utils.js';
  */
 export function runGitCommand(args: string[], cwd: string): Promise<GitCommandResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn('git', args, { cwd, shell: false });
+    const child = spawn('git', args, { cwd, shell: false, windowsHide: true });
 
     let stdout = '';
     let stderr = '';

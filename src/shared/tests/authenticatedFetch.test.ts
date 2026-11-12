@@ -226,3 +226,33 @@ test('an ordinary response leaves the stored token alone', async () => {
 
   assert.equal(localStorage.getItem('auth-token'), token);
 });
+
+test('an expired refreshed token replayed from a 304 never replaces the fresh one', async () => {
+  // A revalidated 304 hands fetch the cached 200's headers, including a
+  // refreshed token issued long before the current login.
+  const fresh = liveToken();
+  localStorage.setItem('auth-token', fresh);
+  let expiries = 0;
+  const onExpired = () => {
+    expiries += 1;
+  };
+  window.addEventListener(AUTH_SESSION_EXPIRED_EVENT, onExpired);
+  respondWith({ 'X-Refreshed-Token': expiredToken() });
+
+  await (await loadFetch(false))('/api/user/onboarding-status');
+
+  window.removeEventListener(AUTH_SESSION_EXPIRED_EVENT, onExpired);
+  assert.equal(localStorage.getItem('auth-token'), fresh);
+  assert.equal(expiries, 0);
+});
+
+test('an older but unexpired refreshed token never replaces a newer one', async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const fresh = makeToken({ iat: now, exp: now + 600 });
+  localStorage.setItem('auth-token', fresh);
+  respondWith({ 'X-Refreshed-Token': makeToken({ iat: now - 300, exp: now + 300 }) });
+
+  await (await loadFetch(false))('/api/projects');
+
+  assert.equal(localStorage.getItem('auth-token'), fresh);
+});

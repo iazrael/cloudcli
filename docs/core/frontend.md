@@ -35,6 +35,8 @@ React 18 + TypeScript + Vite 7（`vite.config.js`，别名 `@` → `src/`，`@sh
 前后端共用的 `NormalizedMessage` 是聊天时间线的 wire contract；provider 给出的跨路行身份和历史正文完整度必须由 WebSocket 与历史接口原样传入 `SessionTimelineStore`，不能在视图模型层重新生成。身份的分段与对账规则见 [chat.md](./chat.md)。本地图片的签名申请与字节加载分离，机制见下文“图片直连与缓存”。
 
 `WebSocketContext` 只分发当前 socket 的回调，已被替换连接的迟到正文、打开和错误回调不能改变新连接。连接建立后，聊天接收器主动订阅已有会话，先通过确认建立网关代次，再让带代次的事件进入时间线。`SessionTimelineStore` 的连续应用游标与确认水位分开；有界缺口缓存、逐事件状态和指令执行、历史恢复基线见 [chat.md](./chat.md)。接收器不另建去重账。历史恢复失败提示使用 `chat.replay.recoveryFailed` 文案，简体、繁体和英文登记在各语言的 `chat.json`，其他语言沿现有英文回退。提示复用错误卡，不增加持久化消息；恢复成功后移除。
+composer 的定时卡片同样不走 Context，也不是实时状态：`useScheduledJobs` / `useScheduledMessages` 都是普通拉取，只在创建、删除、切换会话，以及**所在会话的 run 结束时**（`isProcessing` 落沿）重新拉取——仅一次任务跑完已自停用、定时消息已发出，都要靠这次刷新才会从输入框上方消失。
+
 
 ## Provider 相关前端（零分支原则）
 
@@ -158,7 +160,7 @@ MCP 服务器表单按 `useProviderMcpCapabilities()` 渲染。首屏与请求�
 
 ## i18n
 
-- 目录 `src/modules/i18n/`：15 种语言目录，命名空间按文件存在（7 种：auth/chat/codeEditor/common/git/settings/sidebar），覆盖面以 `src/modules/i18n/locales/` 现状为准；语言清单在 `languages.ts`。
+- 目录 `src/modules/i18n/`：15 种语言目录，命名空间按文件存在（8 种：auth/chat/codeEditor/common/git/scheduled/settings/sidebar），覆盖面以 `src/modules/i18n/locales/` 现状为准；语言清单在 `languages.ts`。`scheduled` 目前只有 en / zh-CN / zh-TW 三份，其余语言整包回退英文。
 - **翻译按语言懒加载**：`resources.ts` 用 `import.meta.glob` 动态引用全部 JSON，Vite 按 `vite.config.js` 的 `locale-<lang>` 规则切成每语言一个懒 chunk；启动只加载当前语言 + en（`initI18n`，在 `main.tsx` 首帧渲染前完成），切换语言走 `switchLanguage`（先载 bundle 再 `changeLanguage`），跨设备偏好同步同样走它。bundle 加载失败降级为显示 key，不阻塞启动。
 - 新增用户可见文案必须走 i18n key；**en / zh-CN / zh-TW 三份必须给全**，其余语言可暂缺（回退英文）——这是当前维护约定。
 
@@ -175,7 +177,7 @@ MCP 服务器表单按 `useProviderMcpCapabilities()` 渲染。首屏与请求�
 | --- | --- |
 | 新增聊天 UI 块 | 遵守行身份/两种更新形态；数据进 `SessionTimelineStore`，不建平行 state；`MessageComponent` / `ToolRenderer` 已 memo，别破坏输入身份。`ChatMessage.type` 是 `user\|assistant\|error` 三值联合（无索引签名），新 assistant 子形态走 `is*` 旗标 + convertRow + MessageComponent 分支 |
 | 新增全局 Context | 挂到 `App.tsx` 并更新本文表格；能进 store 的别开新 Context |
-| 新增设置分区 | `src/modules/settings/`（各分区独立组件），文案走 i18n 三语言 |
+| 新增设置分区 | `src/modules/settings/`（各分区独立组件），文案走 i18n 三语言。全局功能开关（Browser、定时任务）都在这里：保存后广播一个 `*SettingsChanged` window 事件，工作区 Tab 与 composer 入口用对应 hook 监听，不轮询 |
 | 新增面板/标签页 | `src/modules/project-workspace/`（Shell 布局 + 标签页） |
 | 引入新依赖 | 先确认不破坏性能守则（全量 Prism、per-frame setState、CV:auto 都是禁区） |
 

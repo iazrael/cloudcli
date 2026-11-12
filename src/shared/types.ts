@@ -77,6 +77,7 @@ export type {
   MemoryCitation,
   MessageKind,
   ServerEventKind,
+  ScheduledJobsChangedEvent,
   SessionRemovedEvent,
   SessionUpsertedEvent,
   SessionUpsertedProject,
@@ -182,7 +183,7 @@ export type ProviderModelActions = {
 //----------------- PROJECTS AND SESSIONS ------------
 
 /** Identifies the workspace pane the user is looking at; plugin panes are namespaced by plugin id. */
-export type AppTab = 'chat' | 'files' | 'shell' | 'git' | 'browser' | `plugin:${string}`;
+export type AppTab = 'chat' | 'files' | 'shell' | 'git' | 'browser' | 'scheduled' | `plugin:${string}`;
 
 /** A message queued to be sent to a session at a future time. */
 export type ScheduledMessage = {
@@ -196,6 +197,58 @@ export type ScheduledMessage = {
   /** Why it did not go, when `status` is `failed`. */
   failureReason: string | null;
   createdAt: string;
+};
+
+/** How a scheduled job's last finished run ended. */
+export type ScheduledJobStatus = 'succeeded' | 'failed' | 'skipped' | 'missed';
+
+/**
+ * A prompt the server fires on a schedule: recurring on a cron expression, or
+ * a one-off at `runAt`.
+ *
+ * `sessionMode` decides where each occurrence runs: `reuse` sends it into the
+ * bound conversation, `new` creates a fresh session per run so a daily job's
+ * context never accumulates. A `reuse` job with `rotateAfterDays` moves to a
+ * fresh session (archiving the old one) once its bound session is that many
+ * days old, so it keeps one live conversation that stays fast to open. A
+ * one-off disables itself once it has fired, so it drops out of the composer
+ * banner and reads as completed.
+ */
+export type ScheduledJob = {
+  id: string;
+  name: string;
+  provider: LLMProvider;
+  projectPath: string;
+  sessionId: string | null;
+  sessionMode: 'reuse' | 'new';
+  /** `reuse` only: days a bound session lives before runs move to a fresh one; `null` never rotates. */
+  rotateAfterDays: number | null;
+  prompt: string;
+  options: Record<string, unknown>;
+  /** Standard five-field cron expression, evaluated in `timezone`. */
+  cronExpression: string;
+  /** IANA zone the expression is read in, captured from the creating client. */
+  timezone: string;
+  /** ISO instant of a one-off task; `null` for a recurring job. */
+  runAt: string | null;
+  enabled: boolean;
+  nextRunAt: string;
+  lastRunAt: string | null;
+  lastStatus: ScheduledJobStatus | null;
+  createdAt: string;
+};
+
+/** One attempt of a scheduled job, shown in the job's run history. */
+export type ScheduledJobRun = {
+  id: string;
+  jobId: string;
+  /** The session the occurrence ran in; for `new` jobs, the one it created. */
+  sessionId: string | null;
+  trigger: 'schedule' | 'manual';
+  status: 'running' | ScheduledJobStatus;
+  error: string | null;
+  startedAt: string;
+  finishedAt: string | null;
 };
 
 /** A single conversation inside a project, as returned by the sessions API and rendered in the sidebar and chat. */
@@ -1299,7 +1352,7 @@ export type AgentContext = {
 };
 
 /** Identifier of a top-level section in the settings dialog; use it whenever a tab is stored, compared or requested so deep links, the sidebar and the command palette all agree on the same set of names. */
-export type SettingsMainTab = 'agents' | 'sessions' | 'appearance' | 'git' | 'api' | 'voice' | 'browser' | 'notifications' | 'plugins' | 'diagnostics' | 'about';
+export type SettingsMainTab = 'agents' | 'sessions' | 'appearance' | 'git' | 'api' | 'voice' | 'browser' | 'scheduled' | 'notifications' | 'plugins' | 'diagnostics' | 'about';
 
 /** The coding-agent CLI a settings screen is configuring, aliasing LLMProvider so agent-scoped settings read as being about an agent rather than a chat model. */
 export type AgentProvider = LLMProvider;
@@ -1701,6 +1754,8 @@ export type ChatInterfaceProps = {
   sendByCtrlEnter?: boolean;
   externalMessageUpdate?: number;
   newSessionTrigger?: number;
+  /** Whether the scheduled-tasks feature is on; gates the composer's repeat entry. */
+  scheduledJobsEnabled?: boolean;
 }
 
 export type Provider = LLMProvider;

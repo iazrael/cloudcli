@@ -86,7 +86,7 @@ const probeSpawnAsync: ProbeSpawn = (command, args, { timeoutMs }) =>
     }, timeoutMs);
 
     try {
-      childProcess = spawn(command, args, { stdio: 'ignore' });
+      childProcess = spawn(command, args, { stdio: 'ignore', windowsHide: true });
     } catch (error) {
       clearTimeout(timeout);
       settled = true;

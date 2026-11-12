@@ -14,10 +14,13 @@ export function createAssetsRouter(options: Parameters<typeof createUploadReplay
   const router = express.Router();
   const replay = createUploadReplayService<ReturnType<typeof buildStoredAttachmentRecords>>(options);
 
-  const storage = createAttachmentUploadStorage();
+  // Each Multer instance gets a storage bound to its own byte limit: Multer
+  // configures Busboy with `fileSize + 1`, so the storage must stop one byte earlier.
+  const imageUploadLimit = 5 * 1024 * 1024;
+  const attachmentUploadLimit = 10 * 1024 * 1024;
 
   const upload = multer({
-    storage,
+    storage: createAttachmentUploadStorage(imageUploadLimit),
     fileFilter: (req, file, cb) => {
       if (isAllowedImageMimeType(file.mimetype)) {
         cb(null, true);
@@ -26,15 +29,15 @@ export function createAssetsRouter(options: Parameters<typeof createUploadReplay
       }
     },
     limits: {
-      fileSize: 5 * 1024 * 1024, // 5MB
+      fileSize: imageUploadLimit, // 5MB
       files: 5,
     },
   });
 
   const attachmentUpload = multer({
-    storage,
+    storage: createAttachmentUploadStorage(attachmentUploadLimit),
     limits: {
-      fileSize: 10 * 1024 * 1024,
+      fileSize: attachmentUploadLimit, // 10MB
       files: 10,
     },
   });
