@@ -193,6 +193,15 @@ createWebSocketServer(server, {
 });
 
 app.use(cors({ exposedHeaders: ['X-Refreshed-Token', 'X-Auth-Error'] }));
+// API responses are per-user and may carry X-Refreshed-Token. Never let the
+// browser cache or revalidate them: a 304 hands fetch the cached 200's headers,
+// replaying a long-expired refreshed token over a fresh login.
+app.set('etag', false);
+app.use('/api', (_req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Pragma', 'no-cache');
+    next();
+});
 app.use(express.json({
     limit: '50mb',
     type: (req) => {
