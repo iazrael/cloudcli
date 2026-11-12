@@ -27,7 +27,7 @@
 | --- | --- | --- |
 | claude runtime（SDK 直用） | fork claude TS runtime 同样基于 SDK | 回植 `claude-side-question.provider.ts` 基本原样，接进 `SideQuestionRuntime` |
 | codex app-server client | fork 有同名 client（SDK 0.166.0） | 阶段 C 对账移植 |
-| opencode side-question-forks | fork opencode 是 v2 client-mode 重写（裁决 Q1） | 阶段 D 评估 fork serve 会话是否可 fork；不可行则本批不接 opencode 追问（能力位关闭），文档记录 |
+| opencode side-question-forks | fork opencode 是 v2 client-mode 重写（裁决 Q1）：`opencode serve` HTTP API（v2.0.31 实测），无 SDK 依赖，HTTP 面无 fork 路由 | **不接（2026-11-13 评估定案）**。上游实现依赖 `@opencode-ai/sdk` 的 `session.fork`/`session.promptAsync`/`event.subscribe`，fork 的 v2 HTTP 面（session 创建/prompt/interrupt/权限回复）没有 fork 端点；为追问引入整套 SDK 违背 Q1 裁决。能力位自动关（runtime 无 `askSideQuestion` → `supportsSideQuestions: false`）。升级路径：v2 HTTP 面将来若暴露 fork 路由，按 claude/codex 同款契约补一个 ask 实现即可，客户端/网关零改动 |
 | composer 发送菜单入口 | fork 无发送菜单（steer 已用原生按钮先例） | 客户端入口改在 fork composer 加"追问"按钮（isReplyInFlight 时可见），不走 ComposerSendMenu |
 | BackgroundSendDialog 侧问分支 | fork 已屏蔽该弹窗 | 相关测试不回植，入口逻辑并进 fork composer |
 | LazyMessageRow/MessageComponent | fork 时间线同名文件存在 | 回植侧问卡渲染块，按 fork 组件结构适配 |
@@ -37,7 +37,7 @@
 - **阶段 A 服务端地基**：`SideQuestion`/`SideQuestionEvent`/store/service 类型与实现回植 → `chat.side_question` 网关帧（fork 网关模式）→ REST 端点 → 能力位 → claude side-question provider 回植（含 #1767 reasoning 防渗）→ 服务端测试（service/routes/websocket/claude provider 四组）。
 - **阶段 B 客户端**：类型与 api → `useSideQuestions` + store + realtime → composer 追问按钮（fork 式）→ `MessageComponent` 侧问卡 → 导出 → 编辑模式清除边界 → i18n en/zh-CN/zh-TW → 客户端测试。
 - **阶段 C codex**：fork codex runtime 接 `askSideQuestion` + 测试。
-- **阶段 D opencode**：评估 client-mode 可行性，接或不接写回本文档。
+- **阶段 D opencode**：评估完成，**不接**（结论见上表；codex 已于阶段 C 接入）。
 - 收尾：全量回归 + worktree:merge。
 
 ## 验证标准
