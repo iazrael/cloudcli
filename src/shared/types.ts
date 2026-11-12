@@ -228,6 +228,11 @@ export type ProjectSession = {
   // Tags the session with the owning project's DB `projectId` so UI handlers
   // (session switching, sidebar focus, etc.) can match against selectedProject.
   __projectId?: string;
+  // Canonical app id of the fork source; absent/null for unrelated sessions.
+  forkedFromSessionId?: string | null;
+  // Ancestor context for the Projects tree only; excluded from pagination and
+  // the Conversations feed (upstream #1621).
+  forkAncestors?: ProjectSession[];
   [key: string]: unknown;
 }
 

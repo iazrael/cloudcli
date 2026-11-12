@@ -110,20 +110,24 @@ test.each<LLMProvider>(['claude', 'codex'])('mobile offers a fork for a supporte
 });
 
 test('mobile offers archive and delete as separate actions', async () => {
+  const onArchiveSession = vi.fn();
   const onDeleteSession = vi.fn();
-  const { unmount } = render(<SidebarSessionItem {...rowProps({ onDeleteSession })} />);
+  const { unmount } = render(<SidebarSessionItem {...rowProps({ onArchiveSession, onDeleteSession })} />);
   let sheet = await openOptions();
 
-  // 归档按钮走同一回调(fork 的软/硬删由确认弹层区分),但按钮是独立的。
+  // Archive goes straight to the soft-archive callback, matching the desktop
+  // menu; Delete keeps its own path into the caller's confirmation flow.
   fireEvent.click(sheet.getByRole('button', { name: 'Archive session' }));
-  assert.deepEqual(onDeleteSession.mock.calls, [[SESSION.id, 'Session one']]);
+  assert.deepEqual(onArchiveSession.mock.calls, [[SESSION.id]]);
+  assert.equal(onDeleteSession.mock.calls.length, 0);
   assert.equal(screen.queryByRole('dialog'), null);
   unmount();
 
-  onDeleteSession.mockClear();
-  render(<SidebarSessionItem {...rowProps({ onDeleteSession })} />);
+  onArchiveSession.mockClear();
+  render(<SidebarSessionItem {...rowProps({ onArchiveSession, onDeleteSession })} />);
   sheet = await openOptions();
   fireEvent.click(sheet.getByRole('button', { name: 'Delete session' }));
+  assert.equal(onArchiveSession.mock.calls.length, 0);
   assert.deepEqual(onDeleteSession.mock.calls, [[SESSION.id, 'Session one']]);
 });
 
