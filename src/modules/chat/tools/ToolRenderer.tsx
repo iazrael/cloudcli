@@ -18,6 +18,7 @@ import { ToolStatusBadge } from '@/modules/chat/tools/ToolStatusBadge';
 import { DiffStatsBadge } from '@/modules/chat/tools/DiffStatsBadge';
 import { parseToolPayload, summarizeDiff } from '@/modules/chat/utils/messageTransforms';
 import { getToolDisplayCategory, isCommandTool, isEditTool, pickCommandField, unwrapNestedCommand } from '@/modules/chat/tools/toolTaxonomy';
+import { foldAnswersIntoQuestionInput } from '@/modules/chat/tools/utils/questionAnswers';
 
 type ToolRendererProps = {
   toolName: string;
@@ -87,6 +88,18 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
   const parsedData = useMemo(
     () => parseToolPayload(mode === 'input' ? toolInput : toolResult),
     [mode, toolInput, toolResult],
+  );
+
+  // The engine states the user's AskUserQuestion picks in the result's
+  // acknowledgement prose; the structured answers only land when the transcript
+  // is persisted. History rows arrive pre-folded, so only a live turn's card
+  // hits the fold — without it the card shows Skipped for the whole run even
+  // though the answer went through.
+  const questionInput = useMemo(
+    () => (displayConfig?.contentType === 'question-answer'
+      ? foldAnswersIntoQuestionInput(parsedData, toolResult)
+      : parsedData),
+    [displayConfig?.contentType, parsedData, toolResult],
   );
 
   // Only derive and show status badge on input renders
@@ -201,8 +214,10 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
 
   if (displayConfig.type === 'collapsible') {
     const execHint = getMcpExecHint(toolName);
+    // The question card's title and content both read the answers, which the
+    // fold above derives from the live result.
     let title = typeof displayConfig.title === 'function'
-      ? displayConfig.title(parsedData)
+      ? displayConfig.title(questionInput)
       : displayConfig.title || 'Details';
 
     // An MCP script runner leads with the code it is about to execute — the
@@ -224,7 +239,7 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
       ? displayConfig.defaultOpen
       : false;
 
-    const contentProps = displayConfig.getContentProps?.(parsedData, {
+    const contentProps = displayConfig.getContentProps?.(questionInput, {
       selectedProject,
       createDiff,
       onFileOpen

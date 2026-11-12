@@ -234,6 +234,8 @@ flowchart LR
 
 **工具卡：先 id，再原生 call id，最后才是指纹兜底。** 引擎在两路用同一 id 命名的调用由上面的 id 判重直接解决（codex 现在属于这一类：两路都读同一个 ThreadItem，`exec-<uuid>` 两边同值）；两路行 id 不同但原生 call id 相同的走 `toolIdentity.ts` 的精确匹配。两者都没有的引擎才落到"规范工具名 + 完整参数指纹"的一对一认领，且**只在已证明的同一回合内**生效：回合证明来自乐观行的已证明配对或非空 `transcriptAnchorId`，证明不了就两张卡都留着（宁可重复一张卡，不可吞掉用户真跑过的命令）。Edit/Write 的指纹包含修改内容；仅当实时 Edit/Write 的两侧 diff 都未到达、历史端有完整 diff 时，才按路径与顺序一对一认领。
 
+**提问卡的选择在渲染层兜底折叠。** 用户对 `AskUserQuestion` 的选择，服务端只在历史读取时由 `prepareTranscriptMessages` 从结果确认句折进调用的 `input.answers`（见 [providers.md](./providers.md)）；直播回合内结构化记录还没落盘，结果只有确认句，卡片读不到折入的答案会错显成 Skipped。因此 ToolRenderer 渲染提问卡（`contentType: 'question-answer'`）时做同一折叠兜底：结果已附到卡上且 `input.answers` 为空时，按 `toolUseResult.answers` → 结果 JSON → 确认句（`User has answered your questions: "问题"="回答".` / `Your questions have been answered: "问题"="回答".`）的顺序折出答案，按问题文本对齐；引擎写"用户未回答"的结果句不含确认措辞，折不出答案，卡片照常显示 Skipped。折叠只改渲染入参，不动时间线数据。
+
 **已知缺口（不伪造，写在这里）**：zcode 的 thinking 行两路 id 不同（实时是开段事件的 `${id}_reasoning`，落盘是 `(message_id, part_id)`），目前仍靠 `sessionThinkingRows.ts` 的整段正文相等来判重。要彻底收口需要引擎在 reasoning 事件上带出 part id——它的 `tool_result` 事件已经带了 `resultPartId`，文本与推理事件没有对应字段。zcode 的 assistant **正文**不受此影响：两路都发布 `zcode-message:<message_id>` 作为 `providerRowKey`，走身份对账。
 
 **压缩行在转换之后统一折叠。** 各引擎的压缩行（带 `compact`）与摘要行（`isCompactSummary`）见 [providers.md](./providers.md)。
