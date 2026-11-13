@@ -10,7 +10,7 @@ import type {
   RefObject,
   TouchEvent,
 } from 'react';
-import { PaperclipIcon, MessageSquareIcon, MessageSquarePlusIcon, XIcon, Loader2, ArrowUpIcon, PencilIcon, CircleHelpIcon } from 'lucide-react';
+import { PaperclipIcon, MessageSquareIcon, MessageSquarePlusIcon, MessagesSquareIcon, XIcon, Loader2, ArrowUpIcon, PencilIcon } from 'lucide-react';
 
 import { useVoiceInput } from '@/modules/chat/hooks/useVoiceInput';
 import { useVoiceAvailable } from '@/modules/chat/hooks/useVoiceAvailable';
@@ -687,7 +687,7 @@ function ChatComposer({
                 title={t('sideQuestion.label', { defaultValue: 'Side question · not part of the session' })}
                 className="h-10 w-10 sm:h-10 sm:w-10"
               >
-                <CircleHelpIcon className="h-4 w-4" />
+                <MessagesSquareIcon className="h-4 w-4" />
               </PromptInputButton>
             )}
 
