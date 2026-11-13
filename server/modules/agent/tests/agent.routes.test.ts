@@ -281,6 +281,89 @@ test('Agent route starts opencode on the catalog default when the request names 
   assert.deepEqual(opencodeCalls.map((call) => call.model), ['opencode-catalog-default']);
 });
 
+/**
+ * Drives one `stream: false` request whose provider emits the given frames,
+ * and returns the JSON body. Frames are handed to the run writer the route
+ * injects, which serializes every one of them the way the gateway does.
+ */
+async function collectFrames(
+  provider: 'claude' | 'opencode',
+  frames: Record<string, unknown>[],
+): Promise<{ status: number; body: { messages?: Record<string, unknown>[] } }> {
+  const emit = (async (_prompt: string, _options: unknown, writer: { send(data: unknown): void }) => {
+    for (const frame of frames) {
+      writer.send(frame);
+    }
+  }) as unknown as AgentDependencies['queryOpenCode'];
+  let status = 0;
+  let body: { messages?: Record<string, unknown>[] } = {};
+
+  await withAgentServer(createDependencies({
+    fileSystem: { access: async () => undefined } as unknown as AgentDependencies['fileSystem'],
+    models: {
+      getProviderModels: async () => ({ OPTIONS: [], DEFAULT: 'catalog-default' }),
+    } as unknown as AgentDependencies['models'],
+    queryClaude: emit as unknown as AgentDependencies['queryClaude'],
+    queryOpenCode: emit,
+  }), async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/agent`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ projectPath: '/home/test/project', message: 'Run', provider, stream: false }),
+    });
+    status = response.status;
+    body = await response.json() as typeof body;
+  });
+
+  return { status, body };
+}
+
+test('Agent route assembles a reply streamed as deltas into one text message', async () => {
+  const { status, body } = await collectFrames('opencode', [
+    { kind: 'thinking', provider: 'opencode', sessionId: 'app-session-1', content: 'thinking' },
+    { kind: 'stream_delta', id: 'row-1', provider: 'opencode', sessionId: 'app-session-1', content: '你好' },
+    { kind: 'stream_delta', id: 'row-1', provider: 'opencode', sessionId: 'app-session-1', content: '，世界' },
+    { kind: 'stream_end', provider: 'opencode', sessionId: 'app-session-1' },
+    { kind: 'complete', provider: 'opencode', success: true },
+  ]);
+
+  assert.equal(status, 200);
+  assert.deepEqual(body.messages, [{
+    id: 'row-1',
+    sessionId: 'app-session-1',
+    provider: 'opencode',
+    kind: 'text',
+    role: 'assistant',
+    content: '你好，世界',
+  }]);
+});
+
+test('Agent route keeps whole text frames instead of doubling a provider that also streams', async () => {
+  // Codex and Claude send both: deltas while the model talks, then the
+  // completed message. Only the completed message is the reply.
+  const { status, body } = await collectFrames('claude', [
+    { kind: 'stream_delta', role: 'assistant', provider: 'claude', content: 'done' },
+    { kind: 'text', role: 'assistant', provider: 'claude', content: 'done' },
+  ]);
+
+  assert.equal(status, 200);
+  assert.deepEqual(body.messages, [
+    { kind: 'text', role: 'assistant', provider: 'claude', content: 'done' },
+  ]);
+});
+
+test('Agent route leaves user echoes and subagent speech out of the reply', async () => {
+  const { status, body } = await collectFrames('opencode', [
+    { kind: 'stream_delta', role: 'assistant', provider: 'opencode', content: 'parent ' },
+    { kind: 'stream_delta', role: 'assistant', provider: 'opencode', parentToolUseId: 'tool-1', content: 'child' },
+    { kind: 'stream_delta', role: 'user', provider: 'opencode', content: 'echo' },
+    // No stream_end: an aborted run still has the reply it produced.
+  ]);
+
+  assert.equal(status, 200);
+  assert.deepEqual(body.messages?.map((message) => message.content), ['parent ']);
+});
+
 test('Agent route starts codex on the catalog default when the request names no model', async () => {
   const codexCalls: { model?: string }[] = [];
 

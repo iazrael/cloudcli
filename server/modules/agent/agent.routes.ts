@@ -536,11 +536,16 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
    * memory until the run ends.
    */
   class ResponseCollector {
-    constructor() {
-      this.messages = [];
-    }
-
     readyState = 1;
+
+    /** Every frame the run sent, in order. */
+    messages = [];
+
+    /** The reply a provider is still streaming as deltas, or null. */
+    pendingText = null;
+
+    /** Replies assembled from deltas, read only when no whole `text` frame came. */
+    streamedReplies = [];
 
     send(data) {
       // The run's events arrive as JSON strings; the route's own as objects.
@@ -553,6 +558,7 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
           // Not JSON, keep as is
         }
       }
+      this.collectStreamedText(record);
       this.messages.push(record);
     }
 
@@ -565,13 +571,70 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
     }
 
     /**
-     * The assistant's replies, as the normalized `text` events the run
-     * produced. (Earlier versions filtered a `claude-response` shape no
-     * runtime has emitted since the providers were unified, so this was
-     * always empty.)
+     * The assistant's replies, as normalized `text` events.
+     *
+     * Claude, Cursor and Codex send each reply as one `text` frame, which is
+     * returned unchanged. OpenCode streams its reply as `stream_delta` frames
+     * closed by `stream_end`, with no `role` and no whole-message frame; those
+     * deltas are assembled into the same `text` shape here. A provider that
+     * sends both wins with its own frames, so nothing is reported twice.
      */
     getAssistantMessages() {
-      return this.messages.filter((msg) => msg && msg.kind === 'text' && msg.role === 'assistant');
+      // A run that ends mid-stream (abort, crash) still has a reply worth
+      // returning, so an open block is closed before the choice below.
+      this.closeStreamedText();
+      const direct = this.messages.filter((msg) => msg && msg.kind === 'text' && msg.role === 'assistant');
+      return direct.length > 0 ? direct : this.streamedReplies;
+    }
+
+    /** Opens or grows the reply a provider streams as `stream_delta` frames. */
+    collectStreamedText(record) {
+      if (!record || typeof record !== 'object') {
+        return;
+      }
+      if (record.kind === 'stream_end') {
+        this.closeStreamedText();
+        return;
+      }
+      // A user echo and a subagent's own words are not this run's reply.
+      if (record.kind !== 'stream_delta' || record.role === 'user' || record.parentToolUseId) {
+        return;
+      }
+      const delta = typeof record.content === 'string'
+        ? record.content
+        : (typeof record.text === 'string' ? record.text : '');
+      if (!delta) {
+        return;
+      }
+      if (this.pendingText) {
+        this.pendingText.content += delta;
+        return;
+      }
+      this.pendingText = {
+        id: record.id,
+        sessionId: record.sessionId,
+        provider: record.provider,
+        timestamp: record.timestamp,
+        content: delta,
+      };
+    }
+
+    /** Turns the open reply into the `text` frame the whole-message providers send. */
+    closeStreamedText() {
+      const open = this.pendingText;
+      this.pendingText = null;
+      if (!open || !open.content) {
+        return;
+      }
+      this.streamedReplies.push({
+        ...(open.id ? { id: open.id } : {}),
+        sessionId: open.sessionId ?? null,
+        ...(open.timestamp ? { timestamp: open.timestamp } : {}),
+        provider: open.provider,
+        kind: 'text',
+        role: 'assistant',
+        content: open.content,
+      });
     }
 
     /**
@@ -818,7 +881,9 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
    *     success: true,          // false, with aborted: true, when a tab aborted the run
    *     sessionId: "session-123",          // the app session id; pass it back as `sessionId` to continue
    *     providerSessionId: "native-id",    // the provider's own id, for tooling that drives the CLI directly
-   *     messages: [...],        // The assistant's replies: the run's normalized `text` events
+   *     messages: [...],        // The assistant's replies: the run's normalized `text` events.
+   *                             // A provider that streams its reply as `stream_delta` frames
+   *                             // (OpenCode) is assembled into the same `text` shape.
    *     tokens: {
    *       inputTokens: 150,
    *       outputTokens: 50,

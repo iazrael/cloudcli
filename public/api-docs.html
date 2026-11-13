@@ -598,6 +598,7 @@
 
                             <h4>Response (Non-Streaming)</h4>
                             <p>JSON object containing session details, assistant messages only (filtered), and token usage summary. Content-Type: <code>application/json</code></p>
+                            <p>Each entry in <code>messages</code> is a normalized <code>text</code> event from the run. Providers that stream their reply as deltas (OpenCode) are assembled into one such event, so the response carries the reply either way.</p>
 
                             <h4>Error Response</h4>
                             <p>Returns error details with appropriate HTTP status code.</p>
@@ -676,22 +677,12 @@ data: {"type":"done"}</code></pre>
 <pre><code class="language-json">{
   "success": true,
   "sessionId": "abc123",
+  "providerSessionId": "ses_9f2c...",
   "messages": [
     {
-      "type": "assistant",
-      "message": {
-        "role": "assistant",
-        "content": [
-          {
-            "type": "text",
-            "text": "I've completed the task..."
-          }
-        ],
-        "usage": {
-          "input_tokens": 150,
-          "output_tokens": 50
-        }
-      }
+      "kind": "text",
+      "role": "assistant",
+      "content": "I've completed the task..."
     }
   ],
   "tokens": {
