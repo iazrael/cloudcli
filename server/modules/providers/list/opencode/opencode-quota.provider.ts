@@ -18,10 +18,15 @@
  * @module opencode-quota.provider
  */
 
+import { readFile } from 'node:fs/promises';
+
 import Database from 'better-sqlite3';
 
-import { getOpenCodeDatabasePath } from '@/modules/providers/list/opencode/opencode-data-root.js';
-import type { ProviderQuotaBucket, ProviderQuotaData } from '@/shared/types.js';
+import {
+  getOpenCodeAuthPath,
+  getOpenCodeDatabasePath,
+} from '@/modules/providers/list/opencode/opencode-data-root.js';
+import type { AnyRecord, ProviderQuotaBucket, ProviderQuotaData } from '@/shared/types.js';
 import {
   createProviderQuotaCache,
   readJsonRecord,
@@ -31,6 +36,10 @@ import {
 
 export type OpenCodeQuotaCredential = {
   token: string;
+  /**
+   * Workspace id. Go API keys already identify their workspace and leave this
+   * empty; only console OAuth credentials need it to scope the usage query.
+   */
   orgId: string;
   orgName?: string;
   /** The console server's origin, e.g. `https://opencode.ai`. */
@@ -45,6 +54,8 @@ export type OpenCodeQuotaDependencies = {
 
 const DEFAULT_CONSOLE_SERVER = 'https://opencode.ai/console';
 const GO_USAGE_PATH = '/zen/go/v1/usage';
+const GO_INTEGRATION_ID = 'opencode-go';
+const CONSOLE_INTEGRATION_ID = 'opencode';
 
 const REQUEST_TIMEOUT_MS = 10_000;
 const CACHE_TTL_MS = 120_000;
@@ -152,17 +163,23 @@ export async function fetchOpenCodeQuota(
     async () => {
       try {
         const credential = await deps.readCredential();
-        if (!credential || !credential.orgId) {
+        if (!credential) {
           return null;
+        }
+
+        const headers: Record<string, string> = {
+          Authorization: `Bearer ${credential.token}`,
+          Accept: 'application/json',
+        };
+        // A Go API key already names its workspace; the endpoint rejects a
+        // mismatched org header, so only console OAuth credentials carry one.
+        if (credential.orgId) {
+          headers['x-opencode-org-id'] = credential.orgId;
         }
 
         const response = await deps.fetch(`${credential.origin}${GO_USAGE_PATH}`, {
           method: 'GET',
-          headers: {
-            Authorization: `Bearer ${credential.token}`,
-            'x-opencode-org-id': credential.orgId,
-            Accept: 'application/json',
-          },
+          headers,
           signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
         });
         if (!response.ok) {
@@ -188,16 +205,58 @@ type RawCredentialValue = {
   metadata?: unknown;
 };
 
+/** Resolves the console origin, defaulting when `metadata.server` is absent. */
+function resolveOrigin(metadata: AnyRecord | null): string {
+  const server = readOptionalString(metadata?.server) ?? DEFAULT_CONSOLE_SERVER;
+  try {
+    return new URL(server).origin;
+  } catch {
+    return new URL(DEFAULT_CONSOLE_SERVER).origin;
+  }
+}
+
 /**
- * Reads the active OpenCode Console credential from the CLI's shared SQLite
- * database — the same table `opencode-auth.provider.ts` reads for login
- * status, but with the token and workspace metadata the quota call needs.
- *
- * Returns null when the database is absent, unreadable, or the newest active
- * row carries no usable token; a read-only connection never blocks against
- * the CLI's WAL writes.
+ * Decodes one credential row. A `key` token (the Go plan's `oc_sk_…` API key)
+ * already names its workspace and is usable on its own; an OAuth `access`
+ * token needs the workspace id that scopes the usage query, so rows without
+ * one are skipped.
  */
-async function readActiveCredential(): Promise<OpenCodeQuotaCredential | null> {
+function decodeCredential(value: RawCredentialValue): OpenCodeQuotaCredential | null {
+  const key = readOptionalString(value.key);
+  const access = readOptionalString(value.access);
+  const token = key ?? access;
+  if (!token) {
+    return null;
+  }
+
+  const metadata = readObjectRecord(value.metadata);
+  const orgId = readOptionalString(metadata?.orgID) ?? '';
+  if (!key && !orgId) {
+    return null;
+  }
+
+  return {
+    token,
+    orgId,
+    orgName: readOptionalString(metadata?.orgName),
+    origin: resolveOrigin(metadata),
+  };
+}
+
+/**
+ * Reads the CLI's credential rows from its shared SQLite database — the same
+ * table `opencode-auth.provider.ts` reads for login status.
+ *
+ * Go API keys live under `opencode-go`; console OAuth logins live under
+ * `opencode` and carry the workspace id in `metadata.orgID`. The API key is
+ * preferred because that is the credential a Go subscription writes, and it
+ * is the one the usage endpoint accepts on its own.
+ *
+ * Returns null when the database is absent, unreadable, or neither row
+ * carries a usable token; a read-only connection never blocks against the
+ * CLI's WAL writes.
+ */
+function readDatabaseCredential(): OpenCodeQuotaCredential | null {
   let db: Database.Database;
   try {
     db = new Database(getOpenCodeDatabasePath(), { readonly: true, fileMustExist: true });
@@ -206,40 +265,55 @@ async function readActiveCredential(): Promise<OpenCodeQuotaCredential | null> {
   }
 
   try {
-    const row = db.prepare(
-      'SELECT value FROM credential WHERE integration_id = \'opencode\' AND active = 1 ORDER BY time_updated DESC, time_created DESC LIMIT 1',
-    ).get() as { value?: unknown } | undefined;
-
-    // The CLI stores the credential value as a JSON-encoded string.
-    const value = readJsonRecord(row?.value) as RawCredentialValue | null;
-    if (!value) {
-      return null;
+    const selectLatest = db.prepare(
+      'SELECT value FROM credential WHERE integration_id = ? AND active = 1 ORDER BY time_updated DESC, time_created DESC LIMIT 1',
+    );
+    for (const integrationId of [GO_INTEGRATION_ID, CONSOLE_INTEGRATION_ID]) {
+      const row = selectLatest.get(integrationId) as { value?: unknown } | undefined;
+      // The CLI stores the credential value as a JSON-encoded string.
+      const value = readJsonRecord(row?.value) as RawCredentialValue | null;
+      if (!value) {
+        continue;
+      }
+      const credential = decodeCredential(value);
+      if (credential) {
+        return credential;
+      }
     }
-
-    const token = readOptionalString(value.access) ?? readOptionalString(value.key);
-    const metadata = readObjectRecord(value.metadata);
-    const orgId = readOptionalString(metadata?.orgID);
-    if (!token || !orgId) {
-      return null;
-    }
-
-    const server = readOptionalString(metadata?.server) ?? DEFAULT_CONSOLE_SERVER;
-    let origin: string;
-    try {
-      origin = new URL(server).origin;
-    } catch {
-      origin = new URL(DEFAULT_CONSOLE_SERVER).origin;
-    }
-
-    return {
-      token,
-      orgId,
-      orgName: readOptionalString(metadata?.orgName),
-      origin,
-    };
+    return null;
   } catch {
     return null;
   } finally {
     db.close();
   }
+}
+
+/**
+ * Reads the v1-era `opencode-go.key` from `auth.json`. v2 moved credentials
+ * into the database, so this only serves layouts the CLI has not migrated.
+ */
+async function readLegacyCredential(): Promise<OpenCodeQuotaCredential | null> {
+  try {
+    const auth = readObjectRecord(JSON.parse(await readFile(getOpenCodeAuthPath(), 'utf8')));
+    const goCredential = readObjectRecord(auth?.[GO_INTEGRATION_ID]);
+    const token = readOptionalString(goCredential?.key) ?? readOptionalString(goCredential?.access);
+    if (!token) {
+      return null;
+    }
+    return {
+      token,
+      orgId: '',
+      origin: new URL(DEFAULT_CONSOLE_SERVER).origin,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolves the credential the Go usage call should use: the v2 database
+ * first (API key, then console OAuth), falling back to the v1 auth file.
+ */
+async function readActiveCredential(): Promise<OpenCodeQuotaCredential | null> {
+  return readDatabaseCredential() ?? readLegacyCredential();
 }
