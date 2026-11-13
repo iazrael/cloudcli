@@ -973,7 +973,10 @@ export function useSidebarController({
     }
   }, [fetchArchivedSessions, onSessionDelete, t]);
 
-  const confirmDeleteSession = useCallback(async (hardDelete = false) => {
+  // Only the dialog's "delete permanently" button calls this; archiving has its
+  // own action. It takes no argument so a button's click event can never be
+  // read as the hard-delete flag (it once reached the server as `force=[object Object]`).
+  const confirmDeleteSession = useCallback(async () => {
     if (pendingDeletion?.kind !== 'session') {
       return;
     }
@@ -982,7 +985,7 @@ export function useSidebarController({
     setPendingDeletion(null);
 
     try {
-      const response = await api.deleteSession(sessionId, hardDelete);
+      const response = await api.deleteSession(sessionId, true);
 
       if (response.ok) {
         onSessionDelete?.(sessionId);
