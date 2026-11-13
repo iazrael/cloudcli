@@ -44,7 +44,7 @@ const authStatus = (installed: boolean): ProviderAuthStatus => ({
   loading: false,
 });
 
-const renderPermissionsTab = (provider: AgentProvider, allowedTools: string[] = []) => {
+const renderPermissionsTab = (provider: AgentProvider, allowedTools: string[] = [], tabName = 'Permissions') => {
   const providerAuthStatus = Object.fromEntries(
     PROVIDERS.map((candidate) => [candidate, authStatus(candidate === provider)]),
   ) as Record<AgentProvider, ProviderAuthStatus>;
@@ -71,7 +71,7 @@ const renderPermissionsTab = (provider: AgentProvider, allowedTools: string[] = 
     />,
   );
 
-  fireEvent.click(screen.getByRole('tab', { name: 'Permissions' }));
+  fireEvent.click(screen.getByRole('tab', { name: tabName }));
 
   return {
     pane: screen.getByTestId('agent-category-content'),
@@ -107,4 +107,15 @@ test('a saved legacy Task rule counts as the Agent preset already being added', 
   const preset = within(without.pane).getByRole('button', { name: 'Agent' }) as HTMLButtonElement;
   assert.equal(preset.disabled, false);
   without.unmount();
+});
+
+test('opencode exposes the shared skills tab with the skills panel', () => {
+  const { pane, unmount } = renderPermissionsTab('opencode', [], 'Shared Skills');
+  // The pane heading interpolates the provider name, so this fails both when
+  // the panel is missing and when another provider's panel renders instead.
+  assert.ok(
+    (pane.textContent ?? '').includes('Manage OpenCode skills'),
+    'opencode 的技能标签没有渲染技能面板',
+  );
+  unmount();
 });

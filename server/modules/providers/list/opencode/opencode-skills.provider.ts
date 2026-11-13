@@ -53,6 +53,19 @@ export class OpenCodeSkillsProvider extends SkillsProvider {
     return sources;
   }
 
+  /**
+   * Managed uploads target OpenCode's own canonical user skill directory —
+   * the first user-scope directory this provider's discovery reads — so the
+   * CLI picks installed skills up directly.
+   */
+  protected async getGlobalSkillSource(): Promise<ProviderSkillSource> {
+    return {
+      scope: 'user',
+      rootDir: path.join(os.homedir(), ...OPENCODE_USER_SKILL_DIRS[0]),
+      commandPrefix: '/',
+    };
+  }
+
   private getProjectSearchRoots(workspacePath: string, repoRoot: string | null): string[] {
     const roots: string[] = [];
     const normalizedWorkspacePath = path.resolve(workspacePath);

@@ -4,6 +4,8 @@
     "account": "帳戶",
     "permissions": "權限",
     "mcpServers": "MCP 伺服器",
+    "skills": "技能",
+    "sharedSkills": "共享技能",
     "appearance": "外觀"
   },
   "account": {

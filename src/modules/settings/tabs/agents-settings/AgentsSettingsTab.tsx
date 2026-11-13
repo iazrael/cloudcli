@@ -45,11 +45,12 @@ export default function AgentsSettingsTab({
 }: AgentsSettingsTabProps) {
   const [selectedAgent, setSelectedAgent] = useState<AgentProvider>('claude');
   const [selectedCategory, setSelectedCategory] = useState<AgentCategory>('account');
-  const visibleCategories = useMemo<AgentCategory[]>(() => (
-    selectedAgent === 'opencode'
-      ? ['account', 'permissions', 'mcp']
-      : ['account', 'permissions', 'mcp', 'skills']
-  ), [selectedAgent]);
+  // Every provider exposes the same categories; opencode's skills pane is the
+  // shared-folder variant, so the tab is labelled "Shared Skills" for it.
+  const visibleCategories = useMemo<AgentCategory[]>(
+    () => ['account', 'permissions', 'mcp', 'skills'],
+    [],
+  );
 
   const allAgents: AgentProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'zcode', 'antigravity'];
 

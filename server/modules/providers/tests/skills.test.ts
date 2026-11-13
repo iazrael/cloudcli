@@ -802,26 +802,49 @@ test('providerSkillsService adds global skills for claude, codex, and cursor', {
 });
 
 /**
- * OpenCode reuses other providers' skill folders, so it should not accept
- * direct skill writes through the managed provider endpoint.
+ * OpenCode's managed global skill source is its own canonical user directory
+ * (`~/.config/opencode/skills`) — the first user-scope directory its skill
+ * discovery reads — so uploads there are picked up by the CLI directly.
  */
-test('providerSkillsService rejects managed skill creation for opencode', { concurrency: false }, async () => {
-  await assert.rejects(
-    providerSkillsService.addProviderSkills('opencode', {
+test('providerSkillsService installs and removes opencode global skills', { concurrency: false }, async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'llm-skills-opencode-create-'));
+  const restoreHomeDir = patchHomeDir(tempRoot);
+
+  try {
+    const createdSkills = await providerSkillsService.addProviderSkills('opencode', {
       entries: [
         {
           directoryName: 'opencode-global-dir',
-          content: '---\nname: opencode-global\ndescription: Unsupported skill\n---\n\nOpenCode body.\n',
+          content: '---\nname: opencode-global\ndescription: OpenCode global skill\n---\n\nOpenCode body.\n',
         },
       ],
-    }),
-    /does not support managed global skills/i,
-  );
+    });
+    const createdSkill = createdSkills[0];
+    assert.ok(createdSkill);
+    assert.equal(createdSkill.command, '/opencode-global');
+    assert.equal(
+      createdSkill.sourcePath.endsWith(path.join('.config', 'opencode', 'skills', 'opencode-global-dir', 'SKILL.md')),
+      true,
+    );
+    assert.match(await fs.readFile(createdSkill.sourcePath, 'utf8'), /OpenCode body\./);
 
-  await assert.rejects(
-    providerSkillsService.removeProviderSkill('opencode', {
+    const listedSkills = await providerSkillsService.listProviderSkills('opencode');
+    assert.equal(listedSkills.some((skill) => skill.name === 'opencode-global'), true);
+
+    const removedSkill = await providerSkillsService.removeProviderSkill('opencode', {
       directoryName: 'opencode-global-dir',
-    }),
-    /does not support managed global skills/i,
-  );
+    });
+    assert.equal(removedSkill.removed, true);
+    assert.equal(removedSkill.provider, 'opencode');
+    assert.equal(removedSkill.directoryName, 'opencode-global-dir');
+    await assert.rejects(fs.stat(createdSkill.sourcePath), { code: 'ENOENT' });
+
+    const removedMissingSkill = await providerSkillsService.removeProviderSkill('opencode', {
+      directoryName: 'opencode-global-dir',
+    });
+    assert.equal(removedMissingSkill.removed, false);
+  } finally {
+    restoreHomeDir();
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
 });
