@@ -316,6 +316,8 @@ test('ANTIGRAVITY_BUILTIN_MODELS collapses multi-tier families and keeps fixed m
   const values = ANTIGRAVITY_BUILTIN_MODELS.OPTIONS.map((option) => option.value);
   for (const expected of [
     'gemini-4-argon',
+    'gemini-4-hydrogen',
+    'gemini-pro-orchestrator-g1-pro',
     'gemini-3.8-flash',
     'claude-opus-5-5',
     'claude-sonnet-5-5',
@@ -326,7 +328,7 @@ test('ANTIGRAVITY_BUILTIN_MODELS collapses multi-tier families and keeps fixed m
   // Multi-tier families collapse to base ids; the single-variant gpt-oss
   // row keeps its real agy id.
   assert.equal(
-    values.filter((value) => value !== 'gpt-oss-120b-medium' && /-(low|medium|high)$/?.test(value)).length,
+    values.filter((value) => value !== 'gpt-oss-120b-medium' && /-(low|medium|high|xhigh|max)$/?.test(value)).length,
     0,
     `no suffixed ids may survive: ${JSON.stringify(values)}`,
   );
@@ -337,6 +339,12 @@ test('ANTIGRAVITY_BUILTIN_MODELS collapses multi-tier families and keeps fixed m
   assert.equal(argon?.effort?.encoding, 'model-suffix');
   assert.deepEqual(argon?.effort?.values.map((v) => v.value), ['low', 'medium', 'high']);
   assert.equal(argon?.effort?.default, 'high');
+
+  const hydrogen = ANTIGRAVITY_BUILTIN_MODELS.OPTIONS.find((o) => o.value === 'gemini-4-hydrogen');
+  assert.equal(hydrogen?.label, 'Gemini 4 Hydrogen');
+  assert.equal(hydrogen?.effort?.encoding, 'model-suffix');
+  assert.deepEqual(hydrogen?.effort?.values.map((v) => v.value), ['low', 'medium', 'high', 'xhigh']);
+  assert.equal(hydrogen?.effort?.default, 'high');
 
   // Claude tiers became adjustable in the current agy catalog, unlike
   // older releases where sonnet was a passthrough.
@@ -352,6 +360,11 @@ test('ANTIGRAVITY_BUILTIN_MODELS collapses multi-tier families and keeps fixed m
 
 test('dedupeAntigravityVariantModels merges CLI variant rows into base models', () => {
   const options = dedupeAntigravityVariantModels([
+    { value: 'gemini-4-hydrogen-high', label: 'Gemini 4 Hydrogen (High)' },
+    { value: 'gemini-4-hydrogen-xhigh', label: 'Gemini 4 Hydrogen (XHigh)' },
+    { value: 'gemini-4-hydrogen-medium', label: 'Gemini 4 Hydrogen (Medium)' },
+    { value: 'gemini-4-hydrogen-low', label: 'Gemini 4 Hydrogen (Low)' },
+    { value: 'gemini-3.8-flash-max', label: 'Gemini 3.8 Flash (Max)' },
     { value: 'gemini-3.8-flash-high', label: 'Gemini 3.8 Flash (High)' },
     { value: 'gemini-3.8-flash-medium', label: 'Gemini 3.8 Flash (Medium)' },
     { value: 'gemini-3.8-flash-low', label: 'Gemini 3.8 Flash (Low)' },
@@ -363,27 +376,36 @@ test('dedupeAntigravityVariantModels merges CLI variant rows into base models', 
   // their original ids, interleaved in first-appearance order.
   assert.deepEqual(
     options.map((option) => option.value),
-    ['gemini-3.8-flash', 'claude-sonnet-4-6', 'gpt-oss-120b-medium'],
+    ['gemini-4-hydrogen', 'gemini-3.8-flash', 'claude-sonnet-4-6', 'gpt-oss-120b-medium'],
   );
 
-  const flash = options[0];
+  const hydrogen = options[0];
+  assert.equal(hydrogen?.label, 'Gemini 4 Hydrogen');
+  assert.equal(hydrogen?.effort?.encoding, 'model-suffix');
+  assert.deepEqual(hydrogen?.effort?.values.map((v) => v.value), ['low', 'medium', 'high', 'xhigh']);
+  assert.equal(hydrogen?.effort?.default, 'high');
+
+  const flash = options[1];
   assert.equal(flash?.label, 'Gemini 3.8 Flash');
   assert.equal(flash?.effort?.encoding, 'model-suffix');
-  assert.deepEqual(flash?.effort?.values.map((v) => v.value), [...ANTIGRAVITY_EFFORT_TIERS]);
+  assert.deepEqual(flash?.effort?.values.map((v) => v.value), ['low', 'medium', 'high', 'max']);
+  assert.deepEqual([...ANTIGRAVITY_EFFORT_TIERS], ['low', 'medium', 'high', 'xhigh', 'max']);
   assert.equal(flash?.effort?.default, 'high');
 
   // Fixed-tier and passthrough models keep their original row with no
   // effort config, so the WebUI hides their Reasoning menu.
-  const claude = options[1];
+  const claude = options[2];
   assert.equal(claude?.label, 'Claude Sonnet 4.6 (Thinking)');
   assert.equal(claude?.effort, undefined);
-  const gptOss = options[2];
+  const gptOss = options[3];
   assert.equal(gptOss?.label, 'GPT-OSS 120B (Medium)');
   assert.equal(gptOss?.effort, undefined);
 });
 
 test('stripEffortTierFromLabel only removes tier qualifiers', () => {
   assert.equal(stripEffortTierFromLabel('Gemini 3.8 Flash (High)'), 'Gemini 3.8 Flash');
+  assert.equal(stripEffortTierFromLabel('Gemini 4 Hydrogen (XHigh)'), 'Gemini 4 Hydrogen');
+  assert.equal(stripEffortTierFromLabel('Gemini 4 Hydrogen (Max)'), 'Gemini 4 Hydrogen');
   assert.equal(stripEffortTierFromLabel('Claude Sonnet 4.6 (Thinking)'), 'Claude Sonnet 4.6 (Thinking)');
   assert.equal(stripEffortTierFromLabel('GPT-OSS 120B'), 'GPT-OSS 120B');
 });
@@ -395,6 +417,15 @@ test('resolveAntigravityModelArgs maps catalog selections onto agy arguments', (
     effort: {
       default: 'high',
       values: [{ value: 'low' }, { value: 'medium' }, { value: 'high' }],
+      encoding: 'model-suffix',
+    },
+  };
+  const hydrogenOption: ProviderModelOption = {
+    value: 'gemini-4-hydrogen',
+    label: 'Gemini 4 Hydrogen',
+    effort: {
+      default: 'high',
+      values: [{ value: 'low' }, { value: 'medium' }, { value: 'high' }, { value: 'xhigh' }, { value: 'max' }],
       encoding: 'model-suffix',
     },
   };
@@ -414,6 +445,14 @@ test('resolveAntigravityModelArgs maps catalog selections onto agy arguments', (
   assert.deepEqual(
     resolveAntigravityModelArgs('gemini-3.7-flash', 'medium', flashOption),
     { model: 'gemini-3.7-flash-medium' },
+  );
+  assert.deepEqual(
+    resolveAntigravityModelArgs('gemini-4-hydrogen', 'xhigh', hydrogenOption),
+    { model: 'gemini-4-hydrogen-xhigh' },
+  );
+  assert.deepEqual(
+    resolveAntigravityModelArgs('gemini-4-hydrogen', 'max', hydrogenOption),
+    { model: 'gemini-4-hydrogen-max' },
   );
   // 'default' (or absent) resolves through the family default tier.
   assert.deepEqual(
@@ -466,6 +505,9 @@ test('resolveAntigravityModelArgs maps catalog selections onto agy arguments', (
 
 test('findCatalogOptionForModelString resolves ids, suffixed ids, and display labels', () => {
   const options = dedupeAntigravityVariantModels([
+    { value: 'gemini-4-hydrogen-high', label: 'Gemini 4 Hydrogen (High)' },
+    { value: 'gemini-4-hydrogen-xhigh', label: 'Gemini 4 Hydrogen (XHigh)' },
+    { value: 'gemini-4-hydrogen-max', label: 'Gemini 4 Hydrogen (Max)' },
     { value: 'gemini-3.8-flash-high', label: 'Gemini 3.8 Flash (High)' },
     { value: 'gemini-3.8-flash-medium', label: 'Gemini 3.8 Flash (Medium)' },
     { value: 'gemini-3.8-flash-low', label: 'Gemini 3.8 Flash (Low)' },
@@ -473,15 +515,19 @@ test('findCatalogOptionForModelString resolves ids, suffixed ids, and display la
     { value: 'gpt-oss-120b-medium', label: 'GPT-OSS 120B (Medium)' },
   ]);
   const flash = options.find((option) => option.value === 'gemini-3.8-flash');
+  const hydrogen = options.find((option) => option.value === 'gemini-4-hydrogen');
 
   // Exact catalog id.
   assert.deepEqual(findCatalogOptionForModelString('gemini-3.8-flash', options), { option: flash, labelTier: null });
   // Legacy suffixed id reduces to its base family.
   assert.deepEqual(findCatalogOptionForModelString('gemini-3.8-flash-low', options), { option: flash, labelTier: null });
+  assert.deepEqual(findCatalogOptionForModelString('gemini-4-hydrogen-xhigh', options), { option: hydrogen, labelTier: null });
   // Display label with a tier qualifier — the form agy's own picker writes
   // into settings.json and the form that poisons session rows. The label's
   // tier rides along as recorded user intent.
   assert.deepEqual(findCatalogOptionForModelString('Gemini 3.8 Flash (Medium)', options), { option: flash, labelTier: 'medium' });
+  assert.deepEqual(findCatalogOptionForModelString('Gemini 4 Hydrogen (XHigh)', options), { option: hydrogen, labelTier: 'xhigh' });
+  assert.deepEqual(findCatalogOptionForModelString('Gemini 4 Hydrogen (Max)', options), { option: hydrogen, labelTier: 'max' });
   // Bare display label.
   assert.deepEqual(findCatalogOptionForModelString('Gemini 3.8 Flash', options), { option: flash, labelTier: null });
   // Fixed-tier and passthrough rows match on their verbatim label.

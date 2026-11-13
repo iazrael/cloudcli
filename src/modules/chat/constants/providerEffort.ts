@@ -10,7 +10,7 @@ export const FALLBACK_PROVIDER_EFFORT_VALUES: Partial<Record<LLMProvider, readon
   codex: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
   opencode: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
   zcode: ['high', 'low', 'max'],
-  antigravity: ['low', 'medium', 'high'],
+  antigravity: ['low', 'medium', 'high', 'xhigh', 'max'],
 };
 
 export const toProviderEffortOptions = (

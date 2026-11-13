@@ -150,7 +150,7 @@ export const PROVIDER_CATALOG = {
     supportsFiles: true,
     supportsAbort: true,
     supportsEffort: true,
-    effortLevels: ['low', 'medium', 'high'],
+    effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
     supportsCompaction: true,
     supportsNativeScheduling: false,
   },

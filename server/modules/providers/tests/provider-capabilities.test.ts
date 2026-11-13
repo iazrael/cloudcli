@@ -191,7 +191,7 @@ const BASELINE: Record<string, Omit<ProviderCapabilities, 'provider'>> = {
     supportsQuotaReset: false,
     supportsEffort: true,
     // Runtime levels; a custom model may only declare from this list.
-    effortLevels: ['low', 'medium', 'high'],
+    effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
     supportsMessageEditing: false,
     supportsSessionForking: false,
     supportsCompaction: true,

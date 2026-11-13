@@ -17,8 +17,8 @@
 
 import type { ProviderModelOption } from '@/shared/types.js';
 
-/** Effort tiers agy appends to model ids, in display order. */
-export const ANTIGRAVITY_EFFORT_TIERS = ['low', 'medium', 'high'] as const;
+/** Effort tiers agy appends to model ids, in display order (weakest first). */
+export const ANTIGRAVITY_EFFORT_TIERS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 
 /**
  * Standard reasoning effort descriptions shared by all antigravity models.
@@ -27,6 +27,8 @@ const EFFORT_DESCRIPTIONS: Record<string, string> = {
   low: 'Faster, less detailed reasoning',
   medium: 'Balanced reasoning for most tasks',
   high: 'Maximum depth reasoning for complex tasks',
+  xhigh: 'Extra high depth reasoning for the hardest tasks',
+  max: 'Unbounded reasoning depth for exhaustive analysis',
 };
 
 /** One `<modelId> <Label>` row as printed by `agy models`. */
@@ -45,8 +47,8 @@ type AntigravityVariantFamily = {
   default: string;
 };
 
-const EFFORT_SUFFIX_PATTERN = /-(low|medium|high)$/;
-const LABEL_TIER_PATTERN = /\s*\((?:High|Medium|Low)\)\s*$/;
+const EFFORT_SUFFIX_PATTERN = /-(low|medium|high|xhigh|max)$/;
+const LABEL_TIER_PATTERN = /\s*\((XHigh|Max|High|Medium|Low)\)\s*$/;
 
 /**
  * Splits a trailing effort tier off a model id.
@@ -237,7 +239,7 @@ export function findCatalogOptionForModelString(
     return null;
   }
 
-  const labelTier = trimmed.match(/\s*\((High|Medium|Low)\)$/)?.[1]?.toLowerCase() ?? null;
+  const labelTier = trimmed.match(LABEL_TIER_PATTERN)?.[1]?.toLowerCase() ?? null;
 
   const byValue = options.find((option) => option.value === trimmed);
   if (byValue) {
