@@ -10,6 +10,17 @@ export { providerRuntimeService } from './services/provider-runtime.service.js';
 export { providerModelsService } from './services/provider-models.service.js';
 export { providerTokenUsageService } from './services/provider-token-usage.service.js';
 
+// providerCapabilitiesService: used by the Websocket chat service to resolve
+// the active session provider's capabilities.
+export { providerCapabilitiesService } from './services/provider-capabilities.service.js';
+
+// sideQuestionsService and MAX_CONCURRENT_SIDE_QUESTIONS_PER_SESSION: used by
+// the Websocket chat service to answer side questions on the live session.
+export {
+  sideQuestionsService,
+  MAX_CONCURRENT_SIDE_QUESTIONS_PER_SESSION,
+} from './services/side-questions.service.js';
+
 // executeCodexSandboxCommand: the task-continuations worker uses Codex's
 // independent command/exec endpoint while keeping the original sandbox.
 export { executeCodexSandboxCommand } from './list/codex/codex-runtime.provider.js';

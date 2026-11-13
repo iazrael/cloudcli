@@ -6,9 +6,13 @@ import type { WebSocket } from 'ws';
 import { isValidReplaySeq, isValidStreamEpoch } from '../../../../shared/protocol/frameNarrowing.js';
 
 import { sessionsDb } from '@/modules/database/index.js';
-import { providerModelsService, sessionsService } from '@/modules/providers/index.js';
-import { sideQuestionsService, MAX_CONCURRENT_SIDE_QUESTIONS_PER_SESSION } from '@/modules/providers/services/side-questions.service.js';
-import { providerCapabilitiesService } from '@/modules/providers/services/provider-capabilities.service.js';
+import {
+  MAX_CONCURRENT_SIDE_QUESTIONS_PER_SESSION,
+  providerCapabilitiesService,
+  providerModelsService,
+  sessionsService,
+  sideQuestionsService,
+} from '@/modules/providers/index.js';
 import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
 import { connectedClients, WS_OPEN_STATE } from '@/modules/websocket/services/websocket-state.service.js';
 import {
