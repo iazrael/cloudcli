@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
 import { api } from '@/shared/api';
 import { useProviderCapabilitiesMap } from '@/shared/hooks/useProviderCapabilities';
@@ -41,6 +42,20 @@ type UseProjectSlashCommandsResult = {
 const COMPACT_COMMAND: SlashCommand = {
   name: '/compact',
   description: 'Summarize the conversation to free up the context window',
+  namespace: 'builtin',
+  type: 'engine',
+  metadata: { type: 'engine' },
+};
+
+/**
+ * `/btw`, offered to providers whose runtime answers side questions. Selecting
+ * it only fills the input (`type: 'engine'` routes through
+ * `insertCommandIntoInput`); what the user types after it is intercepted by
+ * the composer's submit as a side question, never a turn.
+ */
+const BTW_COMMAND: SlashCommand = {
+  name: '/btw',
+  description: 'Side question · not part of the session',
   namespace: 'builtin',
   type: 'engine',
   metadata: { type: 'engine' },
@@ -169,16 +184,29 @@ export function useProjectSlashCommands(
 
   const { capabilities } = useProviderCapabilitiesMap();
   const supportsCompaction = Boolean(capabilities?.[provider]?.supportsCompaction);
+  const supportsSideQuestions = Boolean(capabilities?.[provider]?.supportsSideQuestions);
+  const { t } = useTranslation('chat');
   // Engine commands sit right after the built-ins. A command of the same name
   // the project or user defined keeps the name, as it did before.
   const commandsWithEngine = useMemo(() => {
-    if (!supportsCompaction || commands.length === 0
-      || commands.some((command) => command.name === COMPACT_COMMAND.name)) {
-      return commands;
+    let result = commands;
+    if (supportsCompaction && result.length > 0
+      && !result.some((command) => command.name === COMPACT_COMMAND.name)) {
+      const builtInCount = result.filter((command) => command.type === 'built-in').length;
+      result = [...result.slice(0, builtInCount), COMPACT_COMMAND, ...result.slice(builtInCount)];
     }
-    const builtInCount = commands.filter((command) => command.type === 'built-in').length;
-    return [...commands.slice(0, builtInCount), COMPACT_COMMAND, ...commands.slice(builtInCount)];
-  }, [commands, supportsCompaction]);
+    // `/btw` routes to the side-question path before the in-flight queue, so
+    // the menu hints at it exactly when the provider can actually answer one
+    // (upstream #1673). Inserted after `/compact`, before skills and custom
+    // commands.
+    if (supportsSideQuestions && !result.some((command) => command.name === BTW_COMMAND.name)) {
+      const builtInCount = result.filter((command) => command.type === 'built-in').length;
+      result = [...result.slice(0, builtInCount),
+        { ...BTW_COMMAND, description: t('sideQuestion.label', { defaultValue: BTW_COMMAND.description }) },
+        ...result.slice(builtInCount)];
+    }
+    return result;
+  }, [commands, supportsCompaction, supportsSideQuestions, t]);
 
   return { commands: commandsWithEngine, isLoading, error };
 }
