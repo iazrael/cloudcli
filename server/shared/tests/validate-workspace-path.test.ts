@@ -8,6 +8,7 @@ import {
   getAvailableWindowsDrives,
   isDriveOrFsRoot,
   isForbiddenSystemDirectory,
+  resolvePathUnderRoots,
   validateWorkspacePath,
 } from '@/shared/utils.js';
 
@@ -86,11 +87,40 @@ test('validateWorkspacePath treats WORKSPACES_ROOTS as the multi-root opt-in', a
   }
 });
 
+test('validateWorkspacePath allows descendants of a configured drive or filesystem root', async () => {
+  const previousRoots = process.env.WORKSPACES_ROOTS;
+  const previousRoot = process.env.WORKSPACES_ROOT;
+  // A filesystem root keeps its trailing separator (`C:\` or `/`); this used
+  // to make the containment check compare children against `C:\\` or `//`.
+  const fsRoot = path.parse(os.homedir()).root;
+
+  try {
+    delete process.env.WORKSPACES_ROOT;
+    process.env.WORKSPACES_ROOTS = fsRoot;
+
+    const result = await validateWorkspacePath(os.homedir());
+    assert.equal(result.valid, true, result.error);
+  } finally {
+    delete process.env.WORKSPACES_ROOTS;
+    if (previousRoots !== undefined) process.env.WORKSPACES_ROOTS = previousRoots;
+    if (previousRoot !== undefined) process.env.WORKSPACES_ROOT = previousRoot;
+  }
+});
+
+test('resolvePathUnderRoots resolves descendants of a drive or filesystem root', async () => {
+  const fsRoot = path.parse(os.homedir()).root;
+  const resolved = await resolvePathUnderRoots(os.homedir(), [fsRoot]);
+  assert.ok(resolved, 'the home directory should resolve under its filesystem root');
+});
+
 test('validateWorkspacePath enforces configured workspace roots when set', async () => {
   const previousRoots = process.env.WORKSPACES_ROOTS;
   const previousRoot = process.env.WORKSPACES_ROOT;
 
   try {
+    // WORKSPACES_ROOTS wins over WORKSPACES_ROOT, so clear any value inherited
+    // from the developer's environment before exercising the singular root.
+    delete process.env.WORKSPACES_ROOTS;
     const fakeRoot = path.join(os.tmpdir(), 'allowed-root');
     process.env.WORKSPACES_ROOT = fakeRoot;
 
