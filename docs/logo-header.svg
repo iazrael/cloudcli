@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="64" viewBox="0 0 320 64" fill="none">
+  <rect x="0.5" y="0.5" width="319" height="63" rx="14" fill="#18181b" stroke="#3f3f46" />
+  <g transform="translate(12, 12) scale(1.25)">
+    <rect width="32" height="32" rx="8" fill="#2563eb" />
+    <path
+      d="M8 9C8 8.44772 8.44772 8 9 8H23C23.5523 8 24 8.44772 24 9V18C24 18.5523 23.5523 19 23 19H12L8 23V9Z"
+      stroke="#ffffff"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      fill="none"
+    />
+  </g>
+  <text
+    x="66"
+    y="30"
+    fill="#f8fafc"
+    font-family="ui-sans-serif, system-ui, -apple-system, sans-serif"
+    font-size="21"
+    font-weight="700"
+    letter-spacing="-0.3"
+  >CloudCLI</text>
+  <text
+    x="66"
+    y="48"
+    fill="#94a3b8"
+    font-family="ui-sans-serif, system-ui, -apple-system, PingFang SC, Microsoft YaHei, sans-serif"
+    font-size="12"
+    font-weight="500"
+  >多引擎 AI 编码控制台</text>
+</svg>
