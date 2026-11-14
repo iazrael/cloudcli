@@ -134,7 +134,8 @@ const BASELINE: Record<string, Omit<ProviderCapabilities, 'provider'>> = {
     // Runtime levels; a custom model may only declare from this list.
     effortLevels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'thinking'],
     supportsMessageEditing: false,
-    supportsSessionForking: false,
+    // POST /api/session/:id/fork; the fork facet rides the service client.
+    supportsSessionForking: true,
     supportsCompaction: true,
     supportsNativeScheduling: false,
     mcp: {
@@ -164,10 +165,11 @@ const BASELINE: Record<string, Omit<ProviderCapabilities, 'provider'>> = {
     supportsEffort: true,
     // Runtime levels; a custom model may only declare from this list.
     effortLevels: ['low', 'high', 'max'],
-    // No resolveEditAnchor/fork facets: transcripts are append-only for this
-    // provider today.
+    // No resolveEditAnchor facet: transcripts are append-only for this
+    // provider today, so editing stays unavailable even though forking
+    // (session/fork over the app-server, after a resume) works.
     supportsMessageEditing: false,
-    supportsSessionForking: false,
+    supportsSessionForking: true,
     supportsCompaction: true,
     supportsNativeScheduling: false,
     mcp: {

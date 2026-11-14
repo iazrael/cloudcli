@@ -1197,3 +1197,69 @@ test('an agent part is an @-mention of an agent, not a spawned one, and draws no
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+test('v2 history anchors user prompts at the last message of their turn', { concurrency: false }, async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-v2-anchor-'));
+  const restoreHomeDir = patchHomeDir(tempRoot);
+
+  try {
+    const dataDir = path.join(tempRoot, '.local', 'share', 'opencode');
+    await mkdir(dataDir, { recursive: true });
+    const db = new Database(path.join(dataDir, 'opencode.db'));
+    try {
+      db.exec(`
+        CREATE TABLE session_v2 (
+          id text PRIMARY KEY,
+          project_id text NOT NULL,
+          slug text NOT NULL,
+          directory text NOT NULL,
+          title text,
+          version text NOT NULL,
+          tokens_input integer DEFAULT 0 NOT NULL,
+          tokens_output integer DEFAULT 0 NOT NULL,
+          tokens_reasoning integer DEFAULT 0 NOT NULL,
+          tokens_cache_read integer DEFAULT 0 NOT NULL,
+          tokens_cache_write integer DEFAULT 0 NOT NULL,
+          time_created integer NOT NULL,
+          time_updated integer NOT NULL
+        );
+        CREATE TABLE session_message (
+          id text PRIMARY KEY,
+          session_id text NOT NULL,
+          type text NOT NULL,
+          seq integer NOT NULL,
+          time_created integer NOT NULL,
+          time_updated integer NOT NULL,
+          data text NOT NULL
+        );
+        INSERT INTO session_v2 (
+          id, project_id, slug, directory, title, version,
+          tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write,
+          time_created, time_updated
+        ) VALUES (
+          'ses_v2_anchor', 'proj_1', 'v2-anchor', '/tmp/proj', 'V2 anchor', '2.2.7',
+          0, 0, 0, 0, 0, 1000, 3000
+        );
+        INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data) VALUES
+          ('msg_u1', 'ses_v2_anchor', 'user', 1, 1000, 1000, '{"time":{"created":1000},"text":"First","files":[],"agents":[]}'),
+          ('msg_a1', 'ses_v2_anchor', 'assistant', 2, 1100, 1200, '{"time":{"created":1100},"content":[{"type":"text","text":"first done"}]}'),
+          ('msg_u2', 'ses_v2_anchor', 'user', 3, 2000, 2000, '{"time":{"created":2000},"text":"Second","files":[],"agents":[]}');
+      `);
+    } finally {
+      db.close();
+    }
+
+    const provider = new OpenCodeSessionsProvider();
+    const history = await provider.fetchHistory('ses_v2_anchor');
+
+    // Turn one ends at its assistant reply, so forking from the first prompt
+    // keeps the prompt *and* the answer; the still-unanswered second prompt
+    // ends at itself.
+    const userRows = history.messages.filter((message) => message.role === 'user');
+    assert.equal(userRows[0]?.transcriptAnchorId, 'msg_a1');
+    assert.equal(userRows[1]?.transcriptAnchorId, 'msg_u2');
+  } finally {
+    restoreHomeDir();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});

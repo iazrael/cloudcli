@@ -19,6 +19,7 @@
 import { AbstractProvider } from '@/modules/providers/shared/base/abstract.provider.js';
 import type {
   IProviderAuth,
+  IProviderFork,
   IProviderModels,
   IProviderRuntime,
   IProviderSessionSynchronizer,
@@ -28,6 +29,7 @@ import type {
 
 import { ZCodeProviderAuth } from './zcode-auth.provider.js';
 import { ZCodeProviderModels } from './zcode-models.provider.js';
+import { ZCodeForkProvider } from './zcode-fork.provider.js';
 import { ZCodeMcpProvider } from './zcode-mcp.provider.js';
 import { ZCodeSkillsProvider } from './zcode-skills.provider.js';
 import { ZCodeSessionsProvider } from './zcode-sessions.provider.js';
@@ -52,6 +54,8 @@ export class ZCodeProvider extends AbstractProvider {
   readonly skills: IProviderSkills = new ZCodeSkillsProvider();
   readonly sessions: IProviderSessions = new ZCodeSessionsProvider();
   readonly sessionSynchronizer: IProviderSessionSynchronizer = new ZCodeSessionSynchronizer();
+  /** `session/fork` over the shared app-server; makes "fork session" available. */
+  readonly fork: IProviderFork = new ZCodeForkProvider();
 
   constructor() {
     super('zcode');

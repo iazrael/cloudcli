@@ -1,6 +1,6 @@
 # Provider 架构与接入指南
 
-> 基准：2.13.0 / 2026-10-24
+> 基准：2.22.0 / 2026-11-15
 > **核心文档**：改动 `server/modules/providers/**` 或 `server/shared/{types,interfaces}.ts` 时**必须同步更新本文**。
 > 普通 bug 修复不动架构的不需要更新（提交时走 `--no-verify`，见 `AGENTS.md`）。
 > 引用一律给"文件路径 + 符号名"，不用行号。
@@ -291,6 +291,8 @@ opencode 的自动命名由引擎自己做，CloudCLI 只负责不挡路。引�
 | opencode | `~/.local/share/opencode` | `opencode.db`（共享 SQLite，`jsonl_path` 存 null） |
 | zcode | `~/.zcode`（`zcode-data-root.ts`） | 引擎自有会话存储 |
 | antigravity | `~/.gemini/antigravity-cli`（`antigravity-data-root.ts`） | brain 文档在 `~/.gemini/antigravity/brain`（只读暴露给 file-tree） |
+
+**fork 的两种存储形态决定读法**（`fork` 切面在即能力在，缺省即无 fork 入口）。codex 与 opencode 的 fork 是真复制：新会话名下就有全部行，读法与普通会话无异；opencode 的切点参数 `before` 是排除语义，facet 负责换算成"锚点后一条消息"。zcode 的 fork 是引用：`session/fork` 的新会话在 `session` 表以 `parent_id` 链回父会话，自身只存 fork 之后的行和一条 fork 通知（截断边界记在通知的 `forkContext.targetMessageId`），引擎自己的 `session/messages` RPC 同样不解析链——所以 `fetchHistory` 必须沿 `parent_id` 递归拼接祖先行、按边界（含边界消息）截断再接上自己的行（`selectResolvedHistoryRows`）。fork 前会话须先 `session/resume` 激活；运行中的回合被引擎拒绝。两家历史读取都为真实 user 提示发射 `transcriptAnchorId`（= 该回合最后一条消息的引擎 id），fork 入口据此保住提示与其回答；antigravity 的 `/fork` 被引擎挡在交互模式内，无头不可用。
 
 ## 会话存储清理
 

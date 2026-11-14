@@ -117,12 +117,47 @@ const readPersistedNoticesFromDatabase = (providerSessionId: string): OpenCodeBa
  * Consumers: `opencode.provider.ts` (module-level singleton via
  * `opencodeRuntime`) and the runtime tests (own supervisor + fake service).
  */
+/**
+ * A live OpenCode service client for callers outside a chat run, or null when
+ * the production runtime has not produced one yet. Set by the singleton
+ * factory below (test-built runtimes never touch it) and read by the fork
+ * facet, which must reuse the running service rather than start a second one.
+ */
+let productionClientGetter: (() => OpenCodeApiClient | null) | null = null;
+let productionEndpointEnsurer: (() => Promise<OpenCodeServiceEndpoint>) | null = null;
+let productionClientFactory: ((endpoint: OpenCodeServiceEndpoint) => OpenCodeApiClient) | null = null;
+
+/**
+ * Returns the production runtime's service client, booting the service for it
+ * if no run has created one yet.
+ *
+ * Consumer: the opencode fork facet (the only non-run caller of the service).
+ */
+export async function ensureOpenCodeClient(): Promise<OpenCodeApiClient> {
+  const existing = productionClientGetter?.();
+  if (existing) {
+    return existing;
+  }
+  if (!productionEndpointEnsurer || !productionClientFactory) {
+    throw new Error('OpenCode service is not available');
+  }
+  return productionClientFactory(await productionEndpointEnsurer());
+}
+
 export function createOpenCodeRuntime(dependencies: RuntimeDependencies = {}): IProviderRuntime {
   const supervisor = dependencies.supervisor ?? new OpenCodeServiceSupervisor();
   const createClient = dependencies.createClient ?? ((endpoint) => new OpenCodeApiClient(endpoint));
   const abortSettleGraceMs = dependencies.abortSettleGraceMs ?? 5_000;
   const backgroundWork = dependencies.backgroundWork ?? opencodeBackgroundWork;
   const readPersistedNotices = dependencies.readPersistedNotices ?? readPersistedNoticesFromDatabase;
+  // Only the singleton runtime publishes its client; test-built runtimes with
+  // injected supervisors and fake services must not leak into it.
+  const isProductionRuntime = !dependencies.supervisor && !dependencies.createClient;
+  if (isProductionRuntime) {
+    productionClientGetter = () => client;
+    productionEndpointEnsurer = () => supervisor.ensureEndpoint();
+    productionClientFactory = createClient;
+  }
 
   // Reconnects only boot the service while a run is in flight (runs create
   // their registry entry before awaiting the stream); with nobody chatting a

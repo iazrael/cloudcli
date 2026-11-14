@@ -282,6 +282,57 @@ export class OpenCodeApiClient {
     };
   }
 
+  /**
+   * `GET /api/session/:id/message` — the session's messages in transcript
+   * order. Only ids matter for the fork translation, but the read returns the
+   * full rows; the sort mirrors the engine's chronological reply so the
+   * neighbor lookup behind an anchor cut is the true next message.
+   */
+  async listSessionMessages(sessionId: string): Promise<Array<{ id: string }>> {
+    const result = await this.request<{ data?: unknown }>(
+      'GET',
+      `/api/session/${encodeURIComponent(sessionId)}/message`,
+    );
+    const rows = Array.isArray(result?.data) ? result.data : [];
+    const messages = rows
+      .filter((row): row is Record<string, unknown> =>
+        typeof row === 'object' && row !== null && typeof (row as Record<string, unknown>).id === 'string')
+      .map((row) => {
+        const record = row as Record<string, unknown>;
+        const time = (record.time ?? {}) as Record<string, unknown>;
+        const created = typeof time.created === 'number' ? time.created : 0;
+        return { id: record.id as string, created };
+      });
+    messages.sort((left, right) => left.created - right.created);
+    return messages.map(({ id }) => ({ id }));
+  }
+
+  /**
+   * `POST /api/session/:id/fork` — copies the session into a new child one.
+   * `before` is the message the copy stops AT (exclusive of it); omitting it
+   * copies the whole conversation. The engine refuses an empty session.
+   */
+  async forkSession(sessionId: string, input: { before?: string } = {}): Promise<{ id: string; title?: string }> {
+    const body: Record<string, unknown> = {};
+    if (input.before) {
+      body.before = input.before;
+    }
+    const result = await this.request<{ data?: Record<string, unknown> }>(
+      'POST',
+      `/api/session/${encodeURIComponent(sessionId)}/fork`,
+      body,
+    );
+    const data = result?.data ?? {};
+    const id = typeof data.id === 'string' ? data.id : '';
+    if (!id) {
+      throw new OpenCodeApiError('POST', `/api/session/${encodeURIComponent(sessionId)}/fork`, 200, 'response carried no forked session id');
+    }
+    return {
+      id,
+      title: typeof data.title === 'string' ? data.title : undefined,
+    };
+  }
+
   private async request<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {
     const response = await this.fetchImpl(`${this.endpoint.url}${path}`, {
       method,

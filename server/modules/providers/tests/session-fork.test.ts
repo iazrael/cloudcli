@@ -149,6 +149,24 @@ test('a session with no transcript yet cannot be forked', async () => {
   });
 });
 
+test('a session without a transcript file can still fork through its provider', async () => {
+  await withForkableClaude(async ({ calls, directory }) => {
+    // ZCode and OpenCode sessions carry no `jsonl_path` at all — their engines
+    // keep conversations in their own stores — and they fork all the same.
+    // Only "never produced a provider session" remains unforkable.
+    const now = new Date().toISOString();
+    sessionsDb.createSession(SOURCE_ID, 'claude', directory, 'Engine-stored session', now, now, '');
+    sessionsDb.assignProviderSessionId(SOURCE_ID, 'native-source');
+
+    const result = await sessionsService.forkSessionById(SOURCE_ID);
+
+    assert.equal(calls.length, 1);
+    const forked = sessionsDb.getSessionById(result.sessionId);
+    assert.equal(forked?.provider_session_id, 'native-fork');
+    assert.equal(forked?.forked_from_session_id, SOURCE_ID);
+  });
+});
+
 test('a provider without the capability is refused rather than silently ignored', async () => {
   await withForkableClaude(
     async ({ directory }) => {

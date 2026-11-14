@@ -332,6 +332,121 @@ function isEngineHiddenUserMessage(messageInfo: Record<string, unknown> | null):
 }
 
 /**
+ * Depth cap for the fork parent chain a transcript is resolved through.
+ * Forks chain by reference (`session.parent_id`), and a fork of a fork nests
+ * one more hop; real conversations never get near this, so hitting it means
+ * the chain is corrupt and the walk stops rather than looping forever.
+ */
+const ZCODE_FORK_CHAIN_DEPTH_LIMIT = 16;
+
+/**
+ * The session a fork chains to, or null for a root session (or a database
+ * whose schema predates fork chaining — the fixture tables have no `session`
+ * table at all).
+ */
+function readZCodeParentSessionId(db: Database.Database, sessionId: string): string | null {
+  try {
+    const row = db.prepare('SELECT parent_id FROM session WHERE id = ?').get(sessionId) as { parent_id?: unknown } | undefined;
+    const parentId = readOptionalString(row?.parent_id);
+    return parentId && parentId !== sessionId ? parentId : null;
+  } catch {
+    // No `session` table: the database only carries message/part rows.
+    return null;
+  }
+}
+
+/**
+ * The engine message a fork's inherited prefix ends at, read from the fork's
+ * own notice rows (`metadata.forkContext.targetMessageId`, with the live
+ * reminders' `forkOrigin` as the older spelling). Null when this session has
+ * no fork linkage — its rows are the whole story.
+ */
+function readZCodeForkBoundaryMessageId(rows: Iterable<ZCodeHistoryRow>): string | null {
+  for (const row of rows) {
+    const info = compactProviderPayload(readJsonRecord(row.message_data));
+    const metadata = readObjectRecord(info?.metadata);
+    const forkContext = readObjectRecord(metadata?.forkContext);
+    const boundary = readOptionalString(forkContext?.targetMessageId);
+    if (boundary) {
+      return boundary;
+    }
+    const runtimeMessage = readObjectRecord(metadata?.runtimeMessage);
+    const forkOrigin = readObjectRecord(runtimeMessage?.forkOrigin) ?? readObjectRecord(metadata?.forkOrigin);
+    const origin = readOptionalString(forkOrigin?.messageId);
+    if (origin) {
+      return origin;
+    }
+  }
+  return null;
+}
+
+/**
+ * The rows inherited from a parent up to and including the boundary message.
+ * The boundary addresses an engine message; every row of that message (all
+ * its parts) stays. A boundary the transcript does not contain keeps the
+ * whole parent — displaying nothing because a cut drifted would be worse
+ * than displaying everything.
+ */
+function cutZCodeRowsAtMessage(rows: ZCodeHistoryRow[], boundaryMessageId: string): ZCodeHistoryRow[] {
+  const orderedMessageIds: string[] = [];
+  const messageIndexOf = new Map<string, number>();
+  for (const row of rows) {
+    if (!messageIndexOf.has(row.message_id)) {
+      messageIndexOf.set(row.message_id, orderedMessageIds.length);
+      orderedMessageIds.push(row.message_id);
+    }
+  }
+  const boundaryIndex = messageIndexOf.get(boundaryMessageId);
+  if (boundaryIndex === undefined) {
+    return rows;
+  }
+  return rows.filter((row) => (messageIndexOf.get(row.message_id) ?? Number.MAX_SAFE_INTEGER) <= boundaryIndex);
+}
+
+/**
+ * For every visible user prompt, the engine message that closes its turn —
+ * the prompt itself when nothing answered it yet, otherwise the last message
+ * before the next prompt. Fork entries anchor there, so both entry points
+ * (the prompt's own row and the turn-final assistant row) cut at the same
+ * place and keep the prompt together with the answer it got. Hidden
+ * injections do not take part: they render nothing and cutting at one would
+ * fork inside engine bookkeeping.
+ */
+function buildZCodeTurnAnchors(rows: ZCodeHistoryRow[]): Map<string, string> {
+  const anchors = new Map<string, string>();
+  const turnMessageIds: string[] = [];
+  const visibleUserAt = new Map<string, boolean>();
+  for (const row of rows) {
+    if (visibleUserAt.has(row.message_id)) {
+      continue;
+    }
+    const info = compactProviderPayload(readJsonRecord(row.message_data));
+    const role = readOptionalString(info?.role);
+    const isTurnMessage = role === 'assistant'
+      || (role === 'user' && !isEngineHiddenUserMessage(info));
+    if (isTurnMessage) {
+      turnMessageIds.push(row.message_id);
+      visibleUserAt.set(row.message_id, role === 'user');
+    }
+  }
+  let spanStart = -1;
+  for (let index = 0; index <= turnMessageIds.length; index += 1) {
+    const startsTurn = index < turnMessageIds.length && visibleUserAt.get(turnMessageIds[index]) === true;
+    if (!startsTurn) {
+      continue;
+    }
+    if (spanStart >= 0) {
+      anchors.set(turnMessageIds[spanStart], turnMessageIds[index - 1]);
+    }
+    spanStart = index;
+  }
+  if (spanStart >= 0) {
+    anchors.set(turnMessageIds[spanStart], turnMessageIds[turnMessageIds.length - 1]);
+  }
+  return anchors;
+}
+
+/**
  * Aggregate token usage from all messages in a session.
  */
 function aggregateZCodeSessionTokenUsage(
@@ -570,9 +685,10 @@ export class ZCodeSessionsProvider implements IProviderSessions {
     }
 
     try {
-      const rows = this.selectHistoryRows(db, providerSessionId);
+      const rows = this.selectResolvedHistoryRows(db, providerSessionId);
+      const turnAnchors = buildZCodeTurnAnchors(rows);
 
-      const normalized = this.normalizeHistoryRows(rows, sessionId);
+      const normalized = this.normalizeHistoryRows(rows, sessionId, turnAnchors);
       await this.attachSubagents(db, normalized, providerSessionId);
       const tokenUsage = aggregateZCodeSessionTokenUsage(db, providerSessionId);
 
@@ -634,6 +750,37 @@ export class ZCodeSessionsProvider implements IProviderSessions {
   }
 
   /**
+   * One session's rows with an inherited fork prefix spliced in.
+   *
+   * ZCode forks by reference: the fork's own table only carries its
+   * post-fork rows plus a fork notice, and the shared history lives on the
+   * parent the `session.parent_id` chain points at. This walk concatenates
+   * the chain root-first, cutting each parent at the boundary its child's
+   * fork notice names.
+   */
+  private selectResolvedHistoryRows(
+    db: Database.Database,
+    providerSessionId: string,
+    seen: Set<string> = new Set(),
+    depth = 0,
+  ): ZCodeHistoryRow[] {
+    if (seen.has(providerSessionId) || depth > ZCODE_FORK_CHAIN_DEPTH_LIMIT) {
+      return [];
+    }
+    seen.add(providerSessionId);
+
+    const ownRows = Array.from(this.selectHistoryRows(db, providerSessionId));
+    const parentId = readZCodeParentSessionId(db, providerSessionId);
+    if (!parentId) {
+      return ownRows;
+    }
+    const parentRows = this.selectResolvedHistoryRows(db, parentId, seen, depth + 1);
+    const boundary = readZCodeForkBoundaryMessageId(ownRows);
+    const inherited = boundary ? cutZCodeRowsAtMessage(parentRows, boundary) : parentRows;
+    return [...inherited, ...ownRows];
+  }
+
+  /**
    * The agent's own work as a subagent timeline: the text, reasoning and tool
    * calls of its child session, read with the same normalizer as the parent's
    * history. A child session the database does not hold yields an empty list.
@@ -668,7 +815,11 @@ export class ZCodeSessionsProvider implements IProviderSessions {
    * per the Phase 0.3 SQLite schema. Applies suffix to fragment IDs for
    * uniqueness per §5.1 of the plan.
    */
-  private normalizeHistoryRows(rows: Iterable<ZCodeHistoryRow>, sessionId: string): NormalizedMessage[] {
+  private normalizeHistoryRows(
+    rows: Iterable<ZCodeHistoryRow>,
+    sessionId: string,
+    turnAnchors: Map<string, string> = new Map(),
+  ): NormalizedMessage[] {
     const normalized: NormalizedMessage[] = [];
     const emittedMessageErrors = new Set<string>();
     const emittedUserTexts = new Set<string>();
@@ -747,6 +898,7 @@ export class ZCodeSessionsProvider implements IProviderSessions {
           const content = extractText(messageInfo?.text ?? messageInfo?.input ?? messageInfo?.content);
           if (content.trim()) {
             emittedUserTexts.add(row.message_id);
+            const turnAnchor = turnAnchors.get(row.message_id);
             normalized.push(createNormalizedMessage({
               id: `${row.message_id}_text`,
               sessionId,
@@ -755,6 +907,9 @@ export class ZCodeSessionsProvider implements IProviderSessions {
               kind: 'text',
               role: 'user',
               content,
+              // The turn's last engine message, so "fork from here" keeps the
+              // prompt and the answer it got.
+              ...(turnAnchor ? { transcriptAnchorId: turnAnchor } : {}),
             }));
           }
         }
@@ -781,6 +936,7 @@ export class ZCodeSessionsProvider implements IProviderSessions {
         const content = extractText(partData);
 
         if (content.trim()) {
+          const turnAnchor = messageRole === 'user' ? turnAnchors.get(row.message_id) : undefined;
           normalized.push(createNormalizedMessage({
             id: baseId,
             sessionId,
@@ -793,7 +949,9 @@ export class ZCodeSessionsProvider implements IProviderSessions {
             // the message id — so the message id is the only identity the
             // two paths share. Without it the streamed reply and this row
             // are two rows nothing but their text could relate.
-            ...(messageRole === 'user' ? {} : { providerRowKey: buildZCodeTextRowKey(row.message_id) }),
+            ...(messageRole === 'user'
+              ? { ...(turnAnchor ? { transcriptAnchorId: turnAnchor } : {}) }
+              : { providerRowKey: buildZCodeTextRowKey(row.message_id) }),
           }));
           textRowIndexByMessageId.set(row.message_id, normalized.length - 1);
         }

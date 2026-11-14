@@ -90,6 +90,13 @@ type OpenCodeHistoryContext = {
    * the child sessions' contexts, so it is keyed by session.
    */
   backgroundOutcomes?: Map<string, OpenCodeSessionBackgroundRecord>;
+  /**
+   * For each user prompt, the engine message that closes its turn (v2 layout
+   * only; v1 sessions predate forking and stay anchor-less). The id a fork
+   * entry cuts at — the prompt's own row and its turn-final assistant row
+   * share it.
+   */
+  turnAnchors?: Map<string, string>;
 };
 
 /**
@@ -209,6 +216,46 @@ const readOpenCodeSessionColumnTokenUsage = (
   db: Database.Database,
   sessionId: string,
 ): AnyRecord | undefined => buildTokenUsage(readOpenCodeSessionTokenTotals(db, sessionId) ?? undefined);
+
+/**
+ * For every user prompt of a v2 transcript, the engine message that closes
+ * its turn — the prompt itself when nothing answered it yet, otherwise the
+ * last message before the next prompt. Fork entries anchor there, so both
+ * entry points (the prompt's own row and the turn-final assistant row) cut at
+ * the same place and keep the prompt together with the answer it got.
+ * Compaction boundaries and synthetic notices never start or extend a turn.
+ */
+function buildOpenCodeTurnAnchors(rows: Iterable<OpenCodeHistoryRow>): Map<string, string> {
+  const anchors = new Map<string, string>();
+  const turnMessageIds: string[] = [];
+  const userAt = new Map<string, boolean>();
+  for (const row of rows) {
+    if (userAt.has(row.message_id)) {
+      continue;
+    }
+    const info = compactProviderPayload(readJsonRecord(row.message_data));
+    const role = readOptionalString(info?.role);
+    if (role === 'user' || role === 'assistant') {
+      turnMessageIds.push(row.message_id);
+      userAt.set(row.message_id, role === 'user');
+    }
+  }
+  let spanStart = -1;
+  for (let index = 0; index <= turnMessageIds.length; index += 1) {
+    const startsTurn = index < turnMessageIds.length && userAt.get(turnMessageIds[index]) === true;
+    if (!startsTurn) {
+      continue;
+    }
+    if (spanStart >= 0) {
+      anchors.set(turnMessageIds[spanStart], turnMessageIds[index - 1]);
+    }
+    spanStart = index;
+  }
+  if (spanStart >= 0) {
+    anchors.set(turnMessageIds[spanStart], turnMessageIds[turnMessageIds.length - 1]);
+  }
+  return anchors;
+}
 
 /**
  * Flattens v2 `session_message` rows into the (message, part) row shape the
@@ -732,11 +779,14 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
       // v2 keeps the per-session token totals on the session row; the v1
       // layout aggregates them from per-message rows instead.
       const rows = layout === 'session_message'
-        ? flattenOpenCodeV2HistoryRows(db, providerSessionId)
+        ? [...flattenOpenCodeV2HistoryRows(db, providerSessionId)]
         : this.readV1HistoryRows(db, providerSessionId);
       const tokenUsage = layout === 'session_message'
         ? buildTokenUsage(readOpenCodeSessionTokenTotals(db, providerSessionId) ?? undefined)
         : aggregateOpenCodeSessionTokenUsage(db, providerSessionId);
+      const turnAnchors = layout === 'session_message'
+        ? buildOpenCodeTurnAnchors(rows)
+        : new Map<string, string>();
 
       const normalizedOffset = Math.max(0, offset);
       const normalizedLimit = limit === null ? null : Math.max(0, limit);
@@ -744,7 +794,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
       const window: NormalizedMessage[] = [];
       let total = 0;
       let head = 0;
-      for (const message of this.normalizeHistoryRows(rows, sessionId, { db, layout, providerSessionId, backgroundOutcomes: new Map() })) {
+      for (const message of this.normalizeHistoryRows(rows, sessionId, { db, layout, providerSessionId, backgroundOutcomes: new Map(), turnAnchors })) {
         total += 1;
         if (capacity === 0) continue;
         if (window.length < capacity) window.push(message);
@@ -852,6 +902,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
           || parsedImages.attachments.length > 0
           || parsedFiles.attachments.length > 0
         ) {
+          const turnAnchor = messageRole === 'user' ? context.turnAnchors?.get(row.message_id) : undefined;
           yield createNormalizedMessage({
             id: baseId,
             sessionId,
@@ -862,6 +913,9 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
             content: parsedFiles.text,
             images: parsedImages.attachments.length > 0 ? parsedImages.attachments : undefined,
             files: parsedFiles.attachments.length > 0 ? parsedFiles.attachments : undefined,
+            // The turn's last engine message, so "fork from here" keeps the
+            // prompt and the answer it got.
+            ...(turnAnchor ? { transcriptAnchorId: turnAnchor } : {}),
           });
         }
         continue;

@@ -1541,3 +1541,65 @@ test('live native output matches the persisted result after refresh', async () =
     assert.equal(live[0]?.content, stored?.toolResult?.content);
   });
 });
+
+test('fetchHistory anchors real user prompts at the last message of their turn', async () => {
+  await withZCodeStorage(async (storageDir) => {
+    await createFixtureDatabase(storageDir, 'sess_anchor');
+
+    const provider = new ZCodeSessionsProvider();
+    const result = await provider.fetchHistory('sess_anchor');
+
+    // Turn one: the prompt got no assistant reply, so the turn ends at the
+    // prompt itself. Turn two: `msg_user2` closes at `msg_asst`, so forking
+    // from either entry keeps the prompt *and* the answer it got.
+    assert.equal(result.messages[0]?.role, 'user');
+    assert.equal(result.messages[0]?.transcriptAnchorId, 'msg_user');
+    assert.equal(result.messages[1]?.role, 'user');
+    assert.equal(result.messages[1]?.transcriptAnchorId, 'msg_asst');
+  });
+});
+
+test('fetchHistory resolves a forked session through its parent chain', async () => {
+  await withZCodeStorage(async (storageDir) => {
+    await createFixtureDatabase(storageDir, 'sess_parent');
+
+    // A fork does not copy rows: it chains to the parent (`session.parent_id`)
+    // and carries only its own injections plus a fork notice naming the cut.
+    // Reading it means splicing the parent's rows up to that boundary in.
+    const dbDir = path.join(storageDir, 'cli', 'db');
+    const db = new Database(path.join(dbDir, 'db.sqlite'));
+    try {
+      db.exec('CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT)');
+      db.prepare('INSERT INTO session (id, parent_id) VALUES (?, ?)')
+        .run('sess_parent', null);
+      db.prepare('INSERT INTO session (id, parent_id) VALUES (?, ?)')
+        .run('sess_fork', 'sess_parent');
+      db.prepare(
+        'INSERT INTO message (id, session_id, time_created, time_updated, data, sequence) VALUES (?, ?, ?, ?, ?, ?)',
+      ).run(
+        'msg_fork_notice',
+        'sess_fork',
+        3000,
+        3000,
+        JSON.stringify({
+          role: 'user',
+          metadata: { forkContext: { kind: 'session_fork', parentSessionId: 'sess_parent', targetMessageId: 'msg_user2' } },
+          semantics: { origin: 'agent_runtime', kind: 'fork_notice', uiVisibility: 'hidden' },
+        }),
+        0,
+      );
+    } finally {
+      db.close();
+    }
+
+    const provider = new ZCodeSessionsProvider();
+    const result = await provider.fetchHistory('sess_fork');
+
+    // The boundary names `msg_user2`, so the branch keeps both prompts and
+    // drops the answer that came after them; the fork notice itself stays
+    // hidden behind its own semantics.
+    assert.deepEqual(result.messages.map((message) => message.content),
+      ['List the files', 'Second question']);
+    assert.equal(result.messages.some((message) => message.kind === 'tool_use'), false);
+  });
+});
