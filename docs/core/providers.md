@@ -344,7 +344,10 @@ opencode 的自动命名由引擎自己做，CloudCLI 只负责不挡路。引�
 成功码，zcode 适配器先验信封再解析，任何一层拒绝一律降级为"无配额"。ZCode MCP 调用次数单独走
 zcode 网关 `zcode.z.ai/api/v1/mcp/usage`（信封 `code: 0`），鉴权是双头——`Authorization: Bearer
 <zcodejwttoken>` + `X-Bigmodel-Authorization: Bearer <编码套餐凭据>`；monitor 的 TIME_LIMIT 桶是
-工具调用次数（老套餐无周限额，不显示周行）。
+工具调用次数（老套餐无周限额，不显示周行）。体验套餐余额单独成组走
+`zcode.z.ai/api/v1/zcode-plan/billing/balance?app_version=<桌面版号>`（信封 `code: 0`，
+鉴权 `Authorization: Bearer <zcodejwttoken>`，且网关**必须**带 `X-Device-Mid` 设备 UUID 头——
+来自 `onboarding-record.json`，缺了报 3001 parameter error），额度耗尽也照常成组显示。
 claude 直连 `/api/oauth/usage?cedar_ember=1`（本地 OAuth token + CLI User-Agent + 代理），
 一次取回窗口和 reset 卡；直连失败时退回 Agent SDK 的 control request，由它刷新 token
 并照常返回窗口。

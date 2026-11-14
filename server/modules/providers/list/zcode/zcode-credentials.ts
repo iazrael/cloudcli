@@ -481,6 +481,8 @@ export type ZCodeCodingPlanQuotaContext = {
   apiKey: string;
   /** Start-plan zcode JWT (`Authorization: Bearer` for the zcode.z.ai gateway). */
   zcodeJwtToken: string | null;
+  /** Device UUID from the onboarding record; the zcode gateway requires it as `X-Device-Mid`. */
+  deviceMid: string | null;
   /** Plan/provider family (`bigmodel`, `zai`, or legacy `bigmodel-*-coding-plan`). */
   planFamily: string;
   /** `org-…` organization id from the paired project key location, if stored. */
@@ -573,6 +575,18 @@ export async function readZCodeCodingPlanQuotaContext(
   const locations = new Map<string, { organizationId: string | null; projectId: string | null }>();
   let zcodeJwtToken: string | null = null;
 
+  // The gateway requires the device UUID as `X-Device-Mid`; the onboarding
+  // record is the plain-JSON file the desktop login writes it to.
+  let deviceMid: string | null = null;
+  try {
+    const onboarding = readObjectRecord(JSON.parse(
+      await readFile(path.join(storageDir, 'v2', 'onboarding-record.json'), 'utf8'),
+    ));
+    deviceMid = readOptionalString(onboarding?.deviceMid) ?? null;
+  } catch {
+    deviceMid = null;
+  }
+
   for (const [key, value] of Object.entries(rawMap)) {
     if (typeof value !== 'string') {
       continue;
@@ -625,6 +639,7 @@ export async function readZCodeCodingPlanQuotaContext(
     return {
       apiKey,
       zcodeJwtToken,
+      deviceMid,
       planFamily,
       organizationId: location?.organizationId ?? null,
       projectId: location?.projectId ?? null,

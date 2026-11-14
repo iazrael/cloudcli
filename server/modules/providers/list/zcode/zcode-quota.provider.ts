@@ -34,16 +34,22 @@ import {
 } from '@/shared/utils.js';
 
 import { readZCodeCodingPlanQuotaContext, type ZCodeCodingPlanQuotaContext } from './zcode-credentials.js';
+import { readZCodeAppVersion, tryResolveEnginePath } from './zcode-engine-path.js';
 
 export type ZCodeQuotaDependencies = {
   fetch: typeof globalThis.fetch;
   readQuotaContext: typeof readZCodeCodingPlanQuotaContext;
+  readAppVersion: () => string;
   now: () => number;
 };
 
 const DEFAULT_DEPENDENCIES: ZCodeQuotaDependencies = {
   fetch: globalThis.fetch,
   readQuotaContext: () => readZCodeCodingPlanQuotaContext(),
+  readAppVersion: () => {
+    const enginePath = tryResolveEnginePath();
+    return (enginePath ? readZCodeAppVersion(enginePath) : null) ?? FALLBACK_APP_VERSION;
+  },
   now: () => Date.now(),
 };
 
@@ -52,6 +58,9 @@ const ZAI_QUOTA_URL = 'https://api.z.ai/api/monitor/usage/quota/limit';
 // The ZCode MCP call quota lives on the zcode gateway, not on the bigmodel
 // monitor, and its envelope answers `code: 0` instead of `code: 200`.
 const ZCODE_MCP_USAGE_URL = 'https://zcode.z.ai/api/v1/mcp/usage';
+const ZCODE_PLAN_BALANCE_URL = 'https://zcode.z.ai/api/v1/zcode-plan/billing/balance';
+// The gateway validates the value loosely; the desktop app's own version passes.
+const FALLBACK_APP_VERSION = '3.18.2';
 // Reset-card ("用量重置额度") endpoints behind the coding-plan console; only the
 // personal plan segment is wired up — team accounts need org/project ids.
 const BIGMODEL_RESET_LIST_URL = 'https://bigmodel.cn/api/biz/customer-package-reset/list';
@@ -252,10 +261,11 @@ export async function fetchZCodeQuota(
       }
 
       try {
-        const [limitsResult, resetResult, mcpResult] = await Promise.allSettled([
+        const [limitsResult, resetResult, mcpResult, startPlanResult] = await Promise.allSettled([
           readLimitsPayload(deps, context),
           readResetCreditsQuietly(deps, context),
           readMcpUsageBucket(deps, context),
+          readStartPlanBalanceGroup(deps, context),
         ]);
 
         if (limitsResult.status === 'rejected') {
@@ -275,6 +285,11 @@ export async function fetchZCodeQuota(
         // Same for the ZCode MCP call quota: its failure only drops that bucket.
         if (mcpResult.status === 'fulfilled' && mcpResult.value) {
           normalized.groups[0].buckets.push(mcpResult.value);
+        }
+        // The start plan balance becomes its own group — an exhausted trial
+        // allowance (remaining 0) is still worth showing.
+        if (startPlanResult.status === 'fulfilled' && startPlanResult.value) {
+          normalized.groups.push(startPlanResult.value);
         }
         return resetCredits ? { ...normalized, resetCredits } : normalized;
       } catch {
@@ -337,6 +352,90 @@ async function readMcpUsageBucket(
     window: 'daily',
     remainingFraction: Math.max(0, Math.min(1, remaining / limit)),
     resetTime,
+  };
+}
+
+/** One `balances[]` entry of the zcode start plan billing payload. */
+type RawZCodePlanBalance = {
+  bucket_id?: unknown;
+  show_name?: unknown;
+  total_units?: unknown;
+  used_units?: unknown;
+  remaining_units?: unknown;
+  expires_at?: unknown;
+};
+
+/**
+ * Reads the start plan balance from the zcode gateway into its own quota
+ * group: the trial allowance can sit at zero and still be worth showing, so
+ * the group appears whenever the gateway answers, exhausted or not. Auth is
+ * the start-plan zcode JWT as Bearer; the gateway also requires the device
+ * UUID (`X-Device-Mid`) and an `app_version` query parameter.
+ */
+async function readStartPlanBalanceGroup(
+  deps: ZCodeQuotaDependencies,
+  context: ZCodeCodingPlanQuotaContext,
+): Promise<ProviderQuotaGroup | null> {
+  if (!context.zcodeJwtToken || !context.deviceMid) {
+    return null;
+  }
+
+  const url = `${ZCODE_PLAN_BALANCE_URL}?app_version=${encodeURIComponent(deps.readAppVersion())}`;
+  const response = await deps.fetch(url, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${context.zcodeJwtToken}`,
+      'X-Device-Mid': context.deviceMid,
+      Accept: 'application/json',
+    },
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+  if (!response.ok) {
+    throw new Error(`Start plan balance endpoint returned HTTP ${response.status}`);
+  }
+
+  const record = readObjectRecord(await response.json());
+  const code = Number(record?.code);
+  if (!record || code !== 0) {
+    const message = readOptionalString(record?.msg) ?? 'unknown gateway error';
+    throw new Error(`Start plan balance endpoint rejected the request (code ${Number.isFinite(code) ? code : 'n/a'}): ${message}`);
+  }
+
+  const data = readObjectRecord(record.data);
+  const balances = Array.isArray(data?.balances) ? data.balances : [];
+
+  const buckets = balances
+    .map((entry): ProviderQuotaBucket | null => {
+      const balance = readObjectRecord(entry) as RawZCodePlanBalance | null;
+      if (!balance) {
+        return null;
+      }
+      const total = Number(balance.total_units);
+      const remaining = Number(balance.remaining_units);
+      if (!Number.isFinite(total) || total <= 0) {
+        return null;
+      }
+      const name = readOptionalString(balance.show_name) ?? 'Start Plan Balance';
+      const cappedRemaining = Number.isFinite(remaining) ? Math.max(0, Math.min(remaining, total)) : 0;
+      return {
+        id: `zcode-start-plan-${readOptionalString(balance.bucket_id) ?? name}`,
+        name,
+        description: `${cappedRemaining} of ${total} tokens remaining`,
+        window: 'total',
+        remainingFraction: Math.max(0, Math.min(1, cappedRemaining / total)),
+        resetTime: toSafeIsoDate(Number(balance.expires_at) * 1000),
+      };
+    })
+    .filter((bucket): bucket is ProviderQuotaBucket => bucket !== null);
+
+  if (buckets.length === 0) {
+    return null;
+  }
+
+  return {
+    name: 'ZCode Start Plan',
+    description: 'ZCode start plan balance',
+    buckets,
   };
 }
 

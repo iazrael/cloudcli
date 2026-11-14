@@ -47,6 +47,7 @@ function createRouteFetch(routes: Record<string, unknown>) {
 const quotaContext: ZCodeCodingPlanQuotaContext = {
   apiKey: 'test-api-key-id.test-api-key-secret',
   zcodeJwtToken: 'test-zcode-jwt',
+  deviceMid: 'test-device-mid',
   planFamily: 'bigmodel-team-coding-plan',
   organizationId: 'org-test-org',
   projectId: 'proj_test_project',
@@ -61,6 +62,38 @@ const mcpUsageResponse = {
     next_refresh_at: 1794672000,
     level: 'lite',
     total_usage: { used: 0, limit: 1000, remaining: 1000 },
+  },
+};
+
+/** Captured from the live zcode.z.ai billing/balance endpoint (2026-11-14). */
+const startPlanBalanceResponse = {
+  code: 0,
+  msg: '',
+  data: {
+    server_time: 1794646295,
+    plans: [{
+      user_plan_id: 'upl_1',
+      plan_id: 'zcode-v3-start-plan',
+      name: 'ZCODE WEEKEND BUILD',
+      status: 'active',
+      ends_at: 1794790800,
+    }],
+    balances: [{
+      bucket_id: 'bucket_1',
+      user_plan_id: 'upl_1',
+      plan_id: 'zcode-v3-start-plan',
+      entitlement_id: 'ent_1',
+      show_name: 'GLM-5.3-Flash',
+      unit_type: 'token',
+      total_units: 500000000,
+      used_units: 500000000,
+      remaining_units: 0,
+      available_units: 0,
+      period: 'one_time',
+      period_start: 1794574894,
+      period_end: 1794790800,
+      expires_at: 1794790800,
+    }],
   },
 };
 
@@ -325,6 +358,7 @@ describe('ZCode Credentials & Quota Provider', () => {
     await fs.mkdir(v2Dir, { recursive: true });
     const osKey = randomBytes(32);
     await fs.writeFile(path.join(v2Dir, 'credential-secret'), osKey.toString('base64url'), { mode: 0o600 });
+    await fs.writeFile(path.join(v2Dir, 'onboarding-record.json'), JSON.stringify({ deviceMid: 'mid-123' }), 'utf8');
 
     const locationKey = (customerId: string) => `project-key-location:v1:${encodeURIComponent(JSON.stringify([
       'https://bigmodel.cn', 'bigmodel', customerId, null, 1, 'non-team',
@@ -350,6 +384,7 @@ describe('ZCode Credentials & Quota Provider', () => {
     assert.deepEqual(context, {
       apiKey: 'mock-api-key',
       zcodeJwtToken: 'mock-zcode-jwt',
+      deviceMid: 'mid-123',
       planFamily: 'bigmodel-team-coding-plan',
       organizationId: 'org-64D269e45DDa468e9B98462EB4f4B79D',
       projectId: 'proj_b0c1234',
@@ -361,6 +396,7 @@ describe('ZCode Credentials & Quota Provider', () => {
     await fs.mkdir(v2Dir, { recursive: true });
     const osKey = randomBytes(32);
     await fs.writeFile(path.join(v2Dir, 'credential-secret'), osKey.toString('base64url'), { mode: 0o600 });
+    await fs.writeFile(path.join(v2Dir, 'onboarding-record.json'), JSON.stringify({ deviceMid: 'mid-123' }), 'utf8');
 
     const locationKey = (customerId: string) => `project-key-location:v1:${encodeURIComponent(JSON.stringify([
       'https://bigmodel.cn', 'bigmodel', customerId, null, 1, 'non-team',
@@ -397,6 +433,7 @@ describe('ZCode Credentials & Quota Provider', () => {
     assert.deepEqual(context, {
       apiKey: 'linked-bigmodel-jwt',
       zcodeJwtToken: 'mock-zcode-jwt',
+      deviceMid: 'mid-123',
       planFamily: 'bigmodel',
       organizationId: 'org-64D269e45DDa468e9B98462EB4f4B79D',
       projectId: 'proj_b0c1234',
@@ -447,6 +484,7 @@ describe('ZCode Credentials & Quota Provider', () => {
     assert.deepEqual(await readZCodeCodingPlanQuotaContext(tempDir), {
       apiKey: 'direct-bigmodel-jwt',
       zcodeJwtToken: null,
+      deviceMid: null,
       planFamily: 'bigmodel',
       organizationId: 'org-bm',
       projectId: 'proj-bm',
@@ -465,6 +503,7 @@ describe('ZCode Credentials & Quota Provider', () => {
     assert.deepEqual(await readZCodeCodingPlanQuotaContext(tempDir), {
       apiKey: 'direct-zai-jwt',
       zcodeJwtToken: null,
+      deviceMid: null,
       planFamily: 'zai',
       organizationId: 'org-zai',
       projectId: 'proj-zai',
@@ -487,6 +526,7 @@ describe('ZCode Credentials & Quota Provider', () => {
     assert.deepEqual(context, {
       apiKey: 'solo-api-key',
       zcodeJwtToken: 'solo-zcode-jwt',
+      deviceMid: null,
       planFamily: 'bigmodel-individual-coding-plan',
       organizationId: null,
       projectId: null,
@@ -513,12 +553,14 @@ describe('ZCode Credentials & Quota Provider', () => {
     const { fetchFn, requests } = createRouteFetch({
       '/api/monitor/usage/quota/limit': liveQuotaResponse,
       '/api/v1/mcp/usage': mcpUsageResponse,
+      '/api/v1/zcode-plan/billing/balance': startPlanBalanceResponse,
       '/api/biz/customer-package-reset/list': { code: 200, success: true, data: { fiveHourResets: [], weekResets: [] } },
     });
 
     const quota = await fetchZCodeQuota({ forceRefresh: true }, {
       fetch: fetchFn,
       readQuotaContext: async () => quotaContext,
+      readAppVersion: () => '3.18.2',
       now: () => 1_000,
     });
 
@@ -535,7 +577,6 @@ describe('ZCode Credentials & Quota Provider', () => {
     );
     assert.equal(requests[0].url.includes('type='), false, 'the type query param breaks the limits read');
 
-    assert.equal(quota.groups.length, 1);
     const group = quota.groups[0];
     assert.equal(group.name, 'ZCode (LITE)');
     assert.equal(group.buckets.length, 3);
@@ -559,6 +600,41 @@ describe('ZCode Credentials & Quota Provider', () => {
     assert.equal(mcpBucket.name, 'ZCode MCP Calls');
     assert.equal(mcpBucket.remainingFraction, 1);
     assert.equal(mcpBucket.resetTime, new Date(1794672000 * 1000).toISOString());
+
+    assert.equal(quota.groups.length, 2, 'the start plan balance becomes its own group');
+    const startPlanGroup = quota.groups[1];
+    assert.equal(startPlanGroup.name, 'ZCode Start Plan');
+    const startPlanBucket = startPlanGroup.buckets.find((b) => b.name === 'GLM-5.3-Flash');
+    assert.ok(startPlanBucket);
+    assert.equal(startPlanBucket.remainingFraction, 0);
+    assert.equal(startPlanBucket.resetTime, new Date(1794790800 * 1000).toISOString());
+
+    const balanceRequest = requests.find((request) => request.url.includes('/api/v1/zcode-plan/billing/balance'));
+    assert.ok(balanceRequest);
+    assert.equal(balanceRequest.headers.Authorization, `Bearer ${quotaContext.zcodeJwtToken}`);
+    assert.equal(balanceRequest.headers['X-Device-Mid'], quotaContext.deviceMid);
+    assert.ok(balanceRequest.url.includes('app_version=3.18.2'));
+  });
+
+  test('keeps the quota payload when the start plan balance read fails', async () => {
+    const failingBalanceFetch = (async (url: string | URL | Request) => {
+      if (String(url).includes('/api/v1/zcode-plan/billing/balance')) {
+        return { ok: true, json: async () => ({ code: 3001, msg: 'parameter error' }) } as Response;
+      }
+      if (String(url).includes('/api/biz/customer-package-reset/list')) {
+        return { ok: true, json: async () => ({ code: 200, success: true, data: { fiveHourResets: [], weekResets: [] } }) } as Response;
+      }
+      return { ok: true, json: async () => liveQuotaResponse } as Response;
+    }) as typeof globalThis.fetch;
+
+    const quota = await fetchZCodeQuota({ forceRefresh: true }, {
+      fetch: failingBalanceFetch,
+      readQuotaContext: async () => quotaContext,
+      readAppVersion: () => '3.18.2',
+      now: () => 1_000,
+    });
+    assert.ok(quota);
+    assert.equal(quota.groups.length, 1, 'a failing balance read only drops its group');
   });
 
   test('keeps the quota payload when the mcp usage read fails', async () => {
@@ -636,21 +712,22 @@ describe('ZCode Credentials & Quota Provider', () => {
     const deps = {
       fetch: mockFetch,
       readQuotaContext: async () => quotaContext,
+      readAppVersion: () => '3.18.2',
       now: () => 1000,
     };
 
-    // First call fetches — one request each for the limits, the reset cards, and mcp usage
+    // First call fetches — limits, reset cards, mcp usage, and the start plan balance
     await fetchZCodeQuota({}, deps);
-    assert.equal(fetchCount, 3);
+    assert.equal(fetchCount, 4);
 
     // Call within TTL returns cached without fetch
     const cached = await fetchZCodeQuota({}, { ...deps, now: () => 10_000 });
     assert.ok(cached);
-    assert.equal(fetchCount, 3);
+    assert.equal(fetchCount, 4);
 
     // Call with forceRefresh fetches regardless of cache
     await fetchZCodeQuota({ forceRefresh: true }, { ...deps, now: () => 20_000 });
-    assert.equal(fetchCount, 6);
+    assert.equal(fetchCount, 8);
   });
 
   test('gracefully degrades to null on HTTP error or network failure', async () => {
