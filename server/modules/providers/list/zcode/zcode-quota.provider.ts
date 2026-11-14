@@ -2,7 +2,11 @@
  * ZCode Quota and Rate Limit Provider
  *
  * Fetches account-level quota status (5-hour rolling token limits and cycle limits)
- * from BigModel / Z.AI monitoring endpoints using the decrypted OAuth token.
+ * from BigModel / Z.AI monitoring endpoints, authenticating with the coding-plan
+ * api-key plus the optional `org-…`/`proj_…` scoping headers (the OAuth Bearer
+ * tokens the endpoints used to accept were retired by the 2026-11 ZCode desktop
+ * upgrade). The provider-side rejection arrives as HTTP 200 with a non-200 body
+ * `code`, so the body envelope is always verified before normalization.
  *
  * Consumers:
  * - `ZCodeProviderAuth.getQuota` in `zcode-auth.provider.ts`
@@ -29,17 +33,17 @@ import {
   readOptionalString,
 } from '@/shared/utils.js';
 
-import { readDecryptedZCodeCredentials } from './zcode-credentials.js';
+import { readZCodeCodingPlanQuotaContext, type ZCodeCodingPlanQuotaContext } from './zcode-credentials.js';
 
 export type ZCodeQuotaDependencies = {
   fetch: typeof globalThis.fetch;
-  readCredentials: typeof readDecryptedZCodeCredentials;
+  readQuotaContext: typeof readZCodeCodingPlanQuotaContext;
   now: () => number;
 };
 
 const DEFAULT_DEPENDENCIES: ZCodeQuotaDependencies = {
   fetch: globalThis.fetch,
-  readCredentials: readDecryptedZCodeCredentials,
+  readQuotaContext: () => readZCodeCodingPlanQuotaContext(),
   now: () => Date.now(),
 };
 
@@ -60,6 +64,25 @@ const quotaCache = createProviderQuotaCache<ProviderQuotaData>(CACHE_TTL_MS);
  */
 export function clearZCodeQuotaCache(): void {
   quotaCache.reset();
+}
+
+/**
+ * Builds the coding-plan auth headers: the raw api-key in `authorization`
+ * (no Bearer prefix, matching the desktop client) plus the org/project scoping
+ * headers when the account has a stored key location. Sending a *wrong*
+ * scoping header empties the payload, so absent ids are omitted entirely.
+ */
+function buildQuotaAuthHeaders(context: ZCodeCodingPlanQuotaContext): Record<string, string> {
+  return {
+    authorization: context.apiKey,
+    ...(context.organizationId ? { 'bigmodel-organization': context.organizationId } : {}),
+    ...(context.projectId ? { 'bigmodel-project': context.projectId } : {}),
+  };
+}
+
+/** Chooses the quota host from the plan family (`zai-*` plans live on api.z.ai). */
+function resolveQuotaUrl(planFamily: string): string {
+  return planFamily.startsWith('zai') ? ZAI_QUOTA_URL : BIGMODEL_QUOTA_URL;
 }
 
 type RawZCodeLimit = {
@@ -147,7 +170,7 @@ function normalizeQuotaLimit(limit: RawZCodeLimit): ProviderQuotaBucket | null {
  */
 function normalizeQuotaPayload(
   payload: unknown,
-  providerFamily: 'bigmodel' | 'zai',
+  planFamily: string,
   nowTimestamp: number,
 ): ProviderQuotaData | null {
   const record = readObjectRecord(payload);
@@ -176,7 +199,7 @@ function normalizeQuotaPayload(
 
   const group: ProviderQuotaGroup = {
     name: groupName,
-    description: providerFamily === 'zai' ? 'Z.AI Coding Plan account quota' : 'BigModel Coding Plan account quota',
+    description: planFamily.startsWith('zai') ? 'Z.AI Coding Plan account quota' : 'BigModel Coding Plan account quota',
     buckets,
   };
 
@@ -186,6 +209,24 @@ function normalizeQuotaPayload(
     // One family (GLM), split by allowance rather than by model family.
     partitioning: 'bucket',
   };
+}
+
+/**
+ * Verifies the bigmodel envelope: the monitor endpoints answer HTTP 200 even
+ * for auth failures, with the verdict in the body (`code`/`success`). Throws
+ * so the caller degrades to "no quota" instead of parsing an error as data.
+ */
+function assertQuotaSuccessPayload(payload: unknown): void {
+  const record = readObjectRecord(payload);
+  if (!record) {
+    throw new Error('Quota endpoint returned a non-object payload.');
+  }
+  const code = Number(record.code);
+  if (record.success === true && code === 200) {
+    return;
+  }
+  const message = readOptionalString(record.msg) ?? 'unknown provider error';
+  throw new Error(`Quota endpoint rejected the request (code ${Number.isFinite(code) ? code : 'n/a'}): ${message}`);
 }
 
 /**
@@ -202,29 +243,24 @@ export async function fetchZCodeQuota(
   return quotaCache.get(
     options,
     async () => {
-      const credentials = await deps.readCredentials();
-      if (!credentials.authenticated || !credentials.accessToken) {
+      const context = await deps.readQuotaContext();
+      if (!context) {
         return null;
       }
 
-      const targetUrl = credentials.providerFamily === 'zai' ? ZAI_QUOTA_URL : BIGMODEL_QUOTA_URL;
-
       try {
         const [limitsResult, resetResult] = await Promise.allSettled([
-          readLimitsPayload(deps, credentials.providerFamily, credentials.accessToken),
-          readResetCreditsQuietly(deps, credentials.accessToken),
+          readLimitsPayload(deps, context),
+          readResetCreditsQuietly(deps, context),
         ]);
 
         if (limitsResult.status === 'rejected') {
-          // Fail closed: network timeouts or errors degrade gracefully to null
+          // Fail closed: network timeouts, HTTP errors, or provider-side
+          // envelope rejections degrade gracefully to null
           return null;
         }
 
-        const normalized = normalizeQuotaPayload(
-          limitsResult.value,
-          credentials.providerFamily,
-          deps.now(),
-        );
+        const normalized = normalizeQuotaPayload(limitsResult.value, context.planFamily, deps.now());
         if (!normalized) {
           return null;
         }
@@ -242,25 +278,25 @@ export async function fetchZCodeQuota(
 }
 
 /**
- * Reads the raw limits payload from the family-matched quota endpoint.
- * Rejects on transport errors and non-OK statuses so the caller can decide
- * between "no quota" and "quota unavailable".
+ * Reads the raw limits payload from the plan family's quota endpoint.
+ * Rejects on transport errors, non-OK statuses, and provider-side envelope
+ * rejections so the caller can decide between "no quota" and "quota unavailable".
  */
 async function readLimitsPayload(
   deps: ZCodeQuotaDependencies,
-  providerFamily: 'bigmodel' | 'zai',
-  accessToken: string,
+  context: ZCodeCodingPlanQuotaContext,
 ): Promise<unknown> {
-  const targetUrl = providerFamily === 'zai' ? ZAI_QUOTA_URL : BIGMODEL_QUOTA_URL;
-  const response = await deps.fetch(targetUrl, {
+  const response = await deps.fetch(resolveQuotaUrl(context.planFamily), {
     method: 'GET',
-    headers: { Authorization: `Bearer ${accessToken}` },
+    headers: buildQuotaAuthHeaders(context),
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   if (!response.ok) {
     throw new Error(`Quota endpoint returned HTTP ${response.status}`);
   }
-  return response.json();
+  const payload = await response.json();
+  assertQuotaSuccessPayload(payload);
+  return payload;
 }
 
 /**
@@ -272,10 +308,10 @@ async function readLimitsPayload(
  */
 async function readResetCreditsQuietly(
   deps: ZCodeQuotaDependencies,
-  accessToken: string,
+  context: ZCodeCodingPlanQuotaContext,
 ): Promise<ProviderQuotaResetCredits | undefined> {
   try {
-    const credits = await fetchZCodeResetCreditList(deps, accessToken);
+    const credits = await fetchZCodeResetCreditList(deps, context);
     return credits.length > 0 ? { credits } : undefined;
   } catch {
     return undefined;
@@ -308,13 +344,13 @@ function normalizeZCodeTimestamp(value: string): string {
 
 async function fetchZCodeResetCreditList(
   deps: ZCodeQuotaDependencies,
-  accessToken: string,
+  context: ZCodeCodingPlanQuotaContext,
 ): Promise<ProviderQuotaResetCredit[]> {
   const response = await deps.fetch(
     `${BIGMODEL_RESET_LIST_URL}?targetType=${RESET_TARGET_TYPE}`,
     {
       method: 'GET',
-      headers: { Authorization: `Bearer ${accessToken}` },
+      headers: buildQuotaAuthHeaders(context),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     },
   );
@@ -324,7 +360,12 @@ async function fetchZCodeResetCreditList(
     throw new Error(`Reset card endpoint returned HTTP ${response.status}`);
   }
 
-  const payload = readObjectRecord(await response.json());
+  const json = await response.json();
+  // The biz endpoints share the monitor envelope shape (HTTP 200 + body
+  // verdict); without this check an auth rejection parses as an empty card
+  // list and a spend attempt misreads "cannot read the cards" as "no cards".
+  assertQuotaSuccessPayload(json);
+  const payload = readObjectRecord(json);
   const data = readObjectRecord(payload?.data);
   const sections: Array<[string, ProviderQuotaResetCredit['resetType']]> = [
     ['fiveHourResets', '5h'],
@@ -377,14 +418,14 @@ export async function consumeZCodeQuotaReset(
 ): Promise<ProviderQuotaResetConsumeResult> {
   const deps = { ...DEFAULT_DEPENDENCIES, ...dependencyOverrides };
 
-  const credentials = await deps.readCredentials();
-  if (!credentials.authenticated || !credentials.accessToken) {
+  const context = await deps.readQuotaContext();
+  if (!context) {
     return { ok: false, code: 'notAuthenticated', message: 'ZCode is not authenticated.' };
   }
 
   let credits: ProviderQuotaResetCredit[];
   try {
-    credits = await fetchZCodeResetCreditList(deps, credentials.accessToken);
+    credits = await fetchZCodeResetCreditList(deps, context);
   } catch (error) {
     return {
       ok: false,
@@ -402,7 +443,7 @@ export async function consumeZCodeQuotaReset(
     const response = await deps.fetch(BIGMODEL_RESET_USE_URL, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${credentials.accessToken}`,
+        ...buildQuotaAuthHeaders(context),
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({

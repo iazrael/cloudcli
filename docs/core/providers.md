@@ -335,7 +335,11 @@ opencode 的自动命名由引擎自己做，CloudCLI 只负责不挡路。引�
 “周配额（所有模型）”，与 Claude 官方 `/usage` 的 `Current week (all models)` / `Current week (Fable)` 对齐。
 
 **配额的数据源各家不同，但都收在 auth 切面背后**：codex 起一次 `app-server` 走
-`account/rateLimits/read`，zcode 直接打 BigModel / Z.AI 的 HTTP 端点，
+`account/rateLimits/read`，zcode 直接打 BigModel / Z.AI 的 HTTP 端点，鉴权用编码套餐
+API Key（`authorization` 头，无 Bearer 前缀）加可选的 `bigmodel-organization` /
+`bigmodel-project` 作用域头（org/proj id 配对自 `project-key-location` 凭据项；
+带错作用域头会掏空返回，缺失就整头不发）；监控端点对鉴权失败回 HTTP 200 + body 非
+成功码，zcode 适配器先验信封再解析，任何一层拒绝一律降级为"无配额"。
 claude 直连 `/api/oauth/usage?cedar_ember=1`（本地 OAuth token + CLI User-Agent + 代理），
 一次取回窗口和 reset 卡；直连失败时退回 Agent SDK 的 control request，由它刷新 token
 并照常返回窗口。
@@ -346,6 +350,13 @@ opencode 打 Go 套餐的内部端点 `/zen/go/v1/usage`（官方文档未列，
 各家都要拉起进程或走网络，因此统一用 `createProviderQuotaCache`（TTL 两分钟）挡在前面，
 `?refresh=true` 才穿透。claude 那条路额外有一点要守住：喂给 SDK 的输入流一条消息都不产出，
 CLI 只是挂着等输入，既不会落 transcript，也不会消耗它正在汇报的额度。
+
+**zcode 凭据解密**：`~/.zcode/v2/credentials.json` 的值有 `enc:v1`（key 可由主机环境或
+`ZCODE_CREDENTIAL_SECRET` 推导）与 `enc:v2` 两代——`enc:v2:<来源>:<sha256指纹24位>:<载荷>`，
+随机 32 字节 key 存 macOS 钥匙串（服务名 `ZCode Credential Encryption`），指纹用于验钥。
+无 GUI 的服务端读不到钥匙串，改读凭据旁的 `credential-secret` 落钥文件：在 GUI 会话跑
+`scripts/zcode-stage-credential-key.mjs` 生成，桌面端重新登录后 key 可能轮换，需重跑。
+多份编码套餐 api-key 并存时不自动挑选（读错账号比没有配额更糟）。
 
 **重置卡（banked reset）随配额载荷搭车**：`ProviderQuotaData.resetCredits` 由各配额适配器
 在读取时顺带解析（`POST /providers/quota/reset` 花卡）。调用方传的只是 `resetType`，

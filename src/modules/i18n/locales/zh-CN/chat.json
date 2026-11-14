@@ -423,7 +423,8 @@
     "emptyQuotaHint": {
       "claude": "API Key、Bedrock、Vertex 登录没有 claude.ai 订阅限额",
       "codex": "API Key 登录通常不会提供 ChatGPT 账号的 5 小时和周限额",
-      "opencode": "未开通 OpenCode Go 套餐，或 CLI 未登录到 Go 工作区"
+      "opencode": "未开通 OpenCode Go 套餐，或 CLI 未登录到 Go 工作区",
+      "zcode": "读不到 ZCode 账号配额：通常是桌面端登录后凭据密钥未同步，运行一次 scripts/zcode-stage-credential-key.mjs 即可恢复"
     },
     "resetCardTitle": "用量重置卡",
     "resetCardHint": "使用后立即补满对应额度，无需等待刷新窗口",

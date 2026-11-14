@@ -435,7 +435,8 @@
     "emptyQuotaHint": {
       "claude": "API Key、Bedrock、Vertex 登入沒有 claude.ai 訂閱限額",
       "codex": "API Key 登入通常不會提供 5 小時和週限額",
-      "opencode": "未開通 OpenCode Go 套餐，或 CLI 未登入到 Go 工作區"
+      "opencode": "未開通 OpenCode Go 套餐，或 CLI 未登入到 Go 工作區",
+      "zcode": "讀不到 ZCode 帳號配額：通常是桌面端登入後憑據金鑰未同步，執行一次 scripts/zcode-stage-credential-key.mjs 即可恢復"
     },
     "resetCardTitle": "用量重置卡",
     "resetCardHint": "使用後立即補滿對應額度，無需等待刷新視窗",

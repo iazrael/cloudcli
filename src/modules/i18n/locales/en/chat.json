@@ -435,7 +435,8 @@
     "emptyQuotaHint": {
       "claude": "API key, Bedrock and Vertex logins have no claude.ai subscription limits",
       "codex": "API Key logins typically do not report 5-hour or weekly account limits",
-      "opencode": "No OpenCode Go subscription, or the CLI isn't signed in to a Go workspace"
+      "opencode": "No OpenCode Go subscription, or the CLI isn't signed in to a Go workspace",
+      "zcode": "ZCode account quota is unavailable — usually the credential key from the desktop login is not staged yet; run scripts/zcode-stage-credential-key.mjs once"
     },
     "resetCardTitle": "Usage reset cards",
     "resetCardHint": "Spending a card refills the covered allowance immediately — no waiting for the window to roll over.",
