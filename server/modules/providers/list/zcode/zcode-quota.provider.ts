@@ -346,9 +346,9 @@ async function readMcpUsageBucket(
   const resetTime = toSafeIsoDate(Number(data?.next_refresh_at) * 1000);
 
   return {
-    id: 'zcode-mcp-calls',
-    name: 'ZCode MCP Calls',
-    description: `${used} of ${limit} calls used`,
+    id: 'zcode-mcp-usage',
+    name: 'ZCode MCP',
+    description: `${remaining} of ${limit} calls remaining`,
     window: 'daily',
     remainingFraction: Math.max(0, Math.min(1, remaining / limit)),
     resetTime,
@@ -362,6 +362,7 @@ type RawZCodePlanBalance = {
   total_units?: unknown;
   used_units?: unknown;
   remaining_units?: unknown;
+  period?: unknown;
   expires_at?: unknown;
 };
 
@@ -417,11 +418,13 @@ async function readStartPlanBalanceGroup(
       }
       const name = readOptionalString(balance.show_name) ?? 'Start Plan Balance';
       const cappedRemaining = Number.isFinite(remaining) ? Math.max(0, Math.min(remaining, total)) : 0;
+      const period = readOptionalString(balance.period);
       return {
         id: `zcode-start-plan-${readOptionalString(balance.bucket_id) ?? name}`,
         name,
         description: `${cappedRemaining} of ${total} tokens remaining`,
-        window: 'total',
+        // one_time grants carry an expiry date, not a recurring reset window.
+        window: period === 'one_time' ? 'onetime' : 'total',
         remainingFraction: Math.max(0, Math.min(1, cappedRemaining / total)),
         resetTime: toSafeIsoDate(Number(balance.expires_at) * 1000),
       };

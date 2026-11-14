@@ -448,24 +448,25 @@ function ModelsContent({
   );
 }
 
-function formatRemainingCountdown(t: TFunction, resetTime?: string): string {
+function formatRemainingCountdown(t: TFunction, resetTime?: string, expires = false): string {
   if (!resetTime) return '';
   const resetMs = new Date(resetTime).getTime();
   if (!Number.isFinite(resetMs)) return '';
   const diffMs = resetMs - Date.now();
-  if (diffMs <= 0) return t('cost.resetSoon', { defaultValue: '即将重置' });
+  if (diffMs <= 0) return t(expires ? 'cost.expireSoon' : 'cost.resetSoon', { defaultValue: '即将重置' });
   const totalMinutes = Math.floor(diffMs / 60_000);
   const days = Math.floor(totalMinutes / (60 * 24));
   const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
   const minutes = totalMinutes % 60;
 
+  // one_time 额度带的是到期时间而非刷新窗口,动词要区分。
   if (days > 0) {
-    return t('cost.resetDaysHours', { days, hours, defaultValue: `${days} 天 ${hours} 小时后重置` });
+    return t(expires ? 'cost.expireDaysHours' : 'cost.resetDaysHours', { days, hours, defaultValue: `${days} 天 ${hours} 小时后${expires ? '到期' : '重置'}` });
   }
   if (hours > 0) {
-    return t('cost.resetHoursMinutes', { hours, minutes, defaultValue: `${hours} 小时 ${minutes} 分钟后重置` });
+    return t(expires ? 'cost.expireHoursMinutes' : 'cost.resetHoursMinutes', { hours, minutes, defaultValue: `${hours} 小时 ${minutes} 分钟后${expires ? '到期' : '重置'}` });
   }
-  return t('cost.resetMinutes', { minutes: Math.max(1, minutes), defaultValue: `${Math.max(1, minutes)} 分钟后重置` });
+  return t(expires ? 'cost.expireMinutes' : 'cost.resetMinutes', { minutes: Math.max(1, minutes), defaultValue: `${Math.max(1, minutes)} 分钟后${expires ? '到期' : '重置'}` });
 }
 
 function getQuotaTone(remainingFraction: number) {
@@ -645,7 +646,8 @@ function QuotaGroupCard({
             const tone = getQuotaTone(bucket.remainingFraction);
             const isFiveHour = bucket.window === '5h' || bucket.id.includes('5h');
             const isWeekly = bucket.window === 'weekly' || bucket.id.includes('weekly');
-            const countdown = formatRemainingCountdown(t, bucket.resetTime);
+            const isOnetime = bucket.window === 'onetime';
+            const countdown = formatRemainingCountdown(t, bucket.resetTime, isOnetime);
             const Icon = isFiveHour ? Clock : isWeekly ? Calendar : Timer;
             const limitTitle = resolveBucketTitle(bucket, t, hasScopedWeekly);
             const limitDesc = resolveBucketDescription(bucket, t);

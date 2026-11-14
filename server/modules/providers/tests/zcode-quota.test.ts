@@ -595,9 +595,10 @@ describe('ZCode Credentials & Quota Provider', () => {
     assert.equal(mcpRequest.headers.Authorization, `Bearer ${quotaContext.zcodeJwtToken}`);
     assert.equal(mcpRequest.headers['X-Bigmodel-Authorization'], `Bearer ${quotaContext.apiKey}`);
 
-    const mcpBucket = group.buckets.find((b) => b.id === 'zcode-mcp-calls');
+    const mcpBucket = group.buckets.find((b) => b.id === 'zcode-mcp-usage');
     assert.ok(mcpBucket);
-    assert.equal(mcpBucket.name, 'ZCode MCP Calls');
+    assert.equal(mcpBucket.name, 'ZCode MCP');
+    assert.equal(mcpBucket.description, '1000 of 1000 calls remaining');
     assert.equal(mcpBucket.remainingFraction, 1);
     assert.equal(mcpBucket.resetTime, new Date(1794672000 * 1000).toISOString());
 
@@ -607,6 +608,7 @@ describe('ZCode Credentials & Quota Provider', () => {
     const startPlanBucket = startPlanGroup.buckets.find((b) => b.name === 'GLM-5.3-Flash');
     assert.ok(startPlanBucket);
     assert.equal(startPlanBucket.remainingFraction, 0);
+    assert.equal(startPlanBucket.window, 'onetime', 'one_time grants expire instead of resetting');
     assert.equal(startPlanBucket.resetTime, new Date(1794790800 * 1000).toISOString());
 
     const balanceRequest = requests.find((request) => request.url.includes('/api/v1/zcode-plan/billing/balance'));

@@ -420,6 +420,10 @@
     "resetDaysHours": "{{days}} 天 {{hours}} 小时后重置",
     "resetHoursMinutes": "{{hours}} 小时 {{minutes}} 分钟后重置",
     "resetMinutes": "{{minutes}} 分钟后重置",
+    "expireSoon": "即将到期",
+    "expireDaysHours": "{{days}} 天 {{hours}} 小时后到期",
+    "expireHoursMinutes": "{{hours}} 小时 {{minutes}} 分钟后到期",
+    "expireMinutes": "{{minutes}} 分钟后到期",
     "emptyQuotaHint": {
       "claude": "API Key、Bedrock、Vertex 登录没有 claude.ai 订阅限额",
       "codex": "API Key 登录通常不会提供 ChatGPT 账号的 5 小时和周限额",
