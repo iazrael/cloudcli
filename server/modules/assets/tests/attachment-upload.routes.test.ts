@@ -170,6 +170,20 @@ test('uploaded files remain downloadable and missing or invalid filenames return
   });
 });
 
+test('non-ASCII upload filenames keep their original characters', async () => {
+  await withUploads(async (url) => {
+    const name = '中文测试-清理方案.txt';
+    const body = new FormData();
+    body.append('files', new Blob(['hello'], { type: 'text/plain' }), name);
+    const response = await fetch(`${url}/api/assets/files`, { method: 'POST', body });
+    assert.equal(response.status, 200);
+    const record = await response.json() as { attachments: Array<{ name: string; path: string }> };
+    assert.equal(record.attachments[0].name, name);
+    const download = await fetch(`${url}/api/assets/files/${path.basename(record.attachments[0].path)}`);
+    assert.equal(download.status, 200);
+  });
+});
+
 test('legacy SVG images download as attachments', async () => {
   await withUploads(async (url) => {
     const body = new FormData();

@@ -62,6 +62,10 @@ export async function ensureImageAssetsDir(): Promise<string> {
  * replay slot as well as disk resources.
  */
 export function createAttachmentUploadStorage(maxBytes = Number.POSITIVE_INFINITY): multer.StorageEngine {
+  // Write streams still open per file, so `_removeFile` can wait for the
+  // descriptor to close before unlinking (Windows refuses to unlink an open file).
+  const openStreams = new WeakMap<Express.Multer.File, fsSync.WriteStream>();
+
   return {
     _handleFile(req, file, callback) {
       let output: fsSync.WriteStream | undefined;
@@ -107,7 +111,15 @@ export function createAttachmentUploadStorage(maxBytes = Number.POSITIVE_INFINIT
         if (req.aborted) { onAbort(); return; }
         const filename = `${randomUUID()}-${file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
         filePath = path.join(destination, filename);
+        // Multer only cleans up files that expose `path` before the write
+        // finishes (its own disk storage sets it here too), and a client that
+        // disconnects makes it respond without waiting for this storage's own
+        // cleanup. Publishing the path early lets its abort path unlink the
+        // partial file before the request settles.
+        file.path = filePath;
         output = fsSync.createWriteStream(filePath);
+        openStreams.set(file, output);
+        output.once('close', () => openStreams.delete(file));
         output.once('error', fail);
         output.once('finish', () => {
           if (finished) return;
@@ -120,10 +132,24 @@ export function createAttachmentUploadStorage(maxBytes = Number.POSITIVE_INFINIT
       }, (error: unknown) => fail(error instanceof Error ? error : new Error(String(error))));
     },
     _removeFile(_req, file, callback) {
+      const filePath = file.path;
       // After a size limit Multer can pass a failed file without storage metadata.
       // The failure path already removed its partial file before invoking callback.
-      if (!file.path) { callback(null); return; }
-      fsSync.unlink(file.path, (error) => callback(error?.code === 'ENOENT' ? null : error));
+      if (!filePath) { callback(null); return; }
+      delete (file as { path?: string }).path;
+      const unlink = () => fsSync.unlink(filePath, (error) => callback(error?.code === 'ENOENT' ? null : error));
+      const output = openStreams.get(file);
+      if (!output || output.closed) { unlink(); return; }
+      // The descriptor is still open: wait for it to be released, whichever
+      // way it goes, then unlink.
+      const onReleased = () => {
+        output.removeListener('close', onReleased);
+        output.removeListener('error', onReleased);
+        unlink();
+      };
+      output.once('close', onReleased);
+      output.once('error', onReleased);
+      output.destroy();
     },
   };
 }

@@ -19,8 +19,13 @@ export function createAssetsRouter(options: Parameters<typeof createUploadReplay
   const imageUploadLimit = 5 * 1024 * 1024;
   const attachmentUploadLimit = 10 * 1024 * 1024;
 
+  // Browsers send multipart filenames as raw UTF-8 bytes (WHATWG form
+  // submission); Busboy's own default decodes them as latin1, which turns every
+  // Chinese or accented name into mojibake. Both instances below opt into UTF-8
+  // so `file.originalname` is the name the user actually picked.
   const upload = multer({
     storage: createAttachmentUploadStorage(imageUploadLimit),
+    defParamCharset: 'utf8',
     fileFilter: (req, file, cb) => {
       if (isAllowedImageMimeType(file.mimetype)) {
         cb(null, true);
@@ -36,6 +41,7 @@ export function createAssetsRouter(options: Parameters<typeof createUploadReplay
 
   const attachmentUpload = multer({
     storage: createAttachmentUploadStorage(attachmentUploadLimit),
+    defParamCharset: 'utf8',
     limits: {
       fileSize: attachmentUploadLimit, // 10MB
       files: 10,

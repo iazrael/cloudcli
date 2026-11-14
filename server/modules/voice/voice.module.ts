@@ -86,6 +86,8 @@ const VOICE_UPLOAD_MAXIMUM_SIZE_BYTES = 25 * 1024 * 1024;
 
 const audioUpload = multer({
   storage: createBoundedMemoryStorage(VOICE_UPLOAD_MAXIMUM_SIZE_BYTES),
+  // Keep every Multer instance on the same filename charset; see assets.routes.ts.
+  defParamCharset: 'utf8',
   limits: { fileSize: VOICE_UPLOAD_MAXIMUM_SIZE_BYTES },
 });
 

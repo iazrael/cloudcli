@@ -295,6 +295,9 @@ export function createBoundedDiskStorage(maxBytes: number): multer.StorageEngine
 
 const fileUploadMiddleware = multer({
   storage: createBoundedDiskStorage(MAXIMUM_UPLOAD_SIZE_BYTES),
+  // Browsers send multipart filenames as raw UTF-8 bytes; Busboy's default is
+  // latin1, which mojibakes every non-ASCII name that reaches `originalname`.
+  defParamCharset: 'utf8',
   limits: {
     fileSize: MAXIMUM_UPLOAD_SIZE_BYTES,
     files: MAXIMUM_UPLOAD_FILE_COUNT,

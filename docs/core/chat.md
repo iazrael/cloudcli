@@ -66,6 +66,8 @@ stateDiagram-v2
 
 聊天通过 `src/shared/api.ts` 的 `uploadChatAttachments` 上传文件，功能模块只编排重试。请求头 `X-Upload-Request-Id` 表示一次上传；服务端在边界校验标识，首次结果是该标识对应的权威结果，同一标识不得用于另一批文件。`/api/assets/files` 与兼容图片入口 `/api/assets/images` 共享去重机制，但互不复用结果。不带标识的旧客户端按独立请求处理。
 
+浏览器按 HTML 规范把 multipart 的 `filename` 参数写成 UTF-8 原始字节，服务端所有 Multer 实例都显式用 `defParamCharset: 'utf8'` 解码，中文等非 ASCII 文件名原样保留。落盘文件名仍是 UUID 前缀加 ASCII 白名单字符，原名只作显示名和 provider 提示里的附件名。
+
 ```mermaid
 flowchart TD
   A[已鉴权上传请求] --> B{同用户、同入口、同标识有记录?}
