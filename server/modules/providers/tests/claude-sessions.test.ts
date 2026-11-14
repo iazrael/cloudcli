@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -2290,6 +2290,50 @@ test('synchronizeFile uses ai-title from JSONL when no DB custom_name exists', {
       assert.ok(result, 'synchronizeFile should return a session id');
       const session = sessionsDb.getSessionById(result!);
       assert.equal(session?.custom_name, 'AI generated title');
+    });
+  } finally {
+    restoreHomeDir();
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('synchronizeFile keeps an archived session archived when the CLI appends exit metadata', { concurrency: false }, async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'claude-sync-archive-'));
+  const workspacePath = await createWorkspaceFixture();
+  const restoreHomeDir = patchHomeDir(tmp);
+
+  try {
+    await mkdir(path.join(tmp, '.claude'), { recursive: true });
+    const transcriptPath = await writeSessionJsonl(workspacePath, 'test-session-1.jsonl', []);
+
+    await withIsolatedDatabase(async () => {
+      const synchronizer = new ClaudeSessionSynchronizer();
+      const sessionId = await synchronizer.synchronizeFile(transcriptPath);
+      assert.ok(sessionId);
+      assert.equal(sessionsDb.getSessionById(sessionId!)?.updated_at, '2026-07-10T00:00:00.000Z');
+      sessionsDb.updateSessionIsArchived(sessionId!, true);
+
+      // A CLI closed by the archive writes untimestamped records on exit: the
+      // file changes, but nothing happened in the conversation.
+      await appendFile(transcriptPath, [
+        JSON.stringify({ type: 'session-owner', sessionId: 'test-session-1' }),
+        JSON.stringify({ type: 'cost-state', sessionId: 'test-session-1', totalCostUSD: 0.1 }),
+        '',
+      ].join('\n'), 'utf8');
+      await synchronizer.synchronizeFile(transcriptPath);
+      assert.equal(sessionsDb.getSessionById(sessionId!)?.isArchived, 1);
+
+      // A real new turn (the session resumed elsewhere) still brings it back.
+      await appendFile(transcriptPath, JSON.stringify({
+        type: 'user',
+        message: { role: 'user', content: 'again' },
+        uuid: 'msg-9',
+        timestamp: '2026-07-11T00:00:00.000Z',
+        cwd: workspacePath,
+        sessionId: 'test-session-1',
+      }) + '\n', 'utf8');
+      await synchronizer.synchronizeFile(transcriptPath);
+      assert.equal(sessionsDb.getSessionById(sessionId!)?.isArchived, 0);
     });
   } finally {
     restoreHomeDir();

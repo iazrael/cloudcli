@@ -21,6 +21,13 @@ type ParsedSession = {
   sessionId: string;
   projectPath: string;
   sessionName?: string;
+  /** Latest record timestamp in the transcript; undefined when none carries one. */
+  lastActivityAt?: string;
+};
+
+type TranscriptScan = {
+  title?: DerivedSessionTitle;
+  lastActivityAt?: string;
 };
 
 /**
@@ -89,7 +96,7 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
         placement.projectPath,
         parsed.sessionName,
         timestamps.createdAt,
-        timestamps.updatedAt,
+        parsed.lastActivityAt ?? timestamps.updatedAt,
         filePath,
         placement.worktree
       );
@@ -118,13 +125,17 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
 
     const timestamps = await readFileTimestamps(filePath);
     const placement = await applySessionWorktreePlacement(parsed.projectPath);
+    // The last real record, not the file's mtime, is the session's activity
+    // time: a CLI that exits after an archive appends untimestamped metadata
+    // (`cost-state`, `session-owner`), and an mtime bump would read as new
+    // activity and unarchive the row.
     return sessionsDb.createSession(
       parsed.sessionId,
       this.provider,
       placement.projectPath,
       parsed.sessionName,
       timestamps.createdAt,
-      timestamps.updatedAt,
+      parsed.lastActivityAt ?? timestamps.updatedAt,
       filePath,
       placement.worktree
     );
@@ -166,7 +177,8 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
     // then `ai-title`); those generated titles are followed on every rescan.
     // `last-prompt` rotates every turn and history.jsonl holds raw prompts, so
     // both only fill a nameless row and never drift an existing name.
-    const extractedTitle = await this.extractSessionTitle(filePath, parsed.sessionId);
+    const scan = await this.scanTranscript(filePath, parsed.sessionId);
+    const extractedTitle = scan.title;
     const generated = extractedTitle?.generated ?? false;
     let derivedName = extractedTitle?.name;
     if (!derivedName && !generated) {
@@ -187,6 +199,7 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
     return {
       ...parsed,
       sessionName: normalizeSessionName(resolvedName ?? undefined, 'Untitled Claude Session'),
+      lastActivityAt: scan.lastActivityAt,
     };
   }
 
@@ -201,12 +214,16 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
    * The flag reports whether the winner is engine-generated naming
    * (`custom-title`/`ai-title`) or merely the rotating last prompt.
    *
-   * Returns undefined on a missing or unreadable file so sync can continue.
+   * The same pass records the latest `timestamp` among the session's records
+   * as its last activity. Only conversation records carry one; the metadata a
+   * CLI appends when it exits does not, so it never counts as activity.
+   *
+   * Returns an empty scan on a missing or unreadable file so sync can continue.
    */
-  private async extractSessionTitle(
+  private async scanTranscript(
     filePath: string,
     sessionId: string
-  ): Promise<DerivedSessionTitle | undefined> {
+  ): Promise<TranscriptScan> {
     try {
       const content = await readFile(filePath, 'utf8');
       const lines = content.split(/\r?\n/);
@@ -214,6 +231,7 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
       let foundCustomTitle: string | undefined;
       let foundAiTitle: string | undefined;
       let foundLastPrompt: string | undefined;
+      let lastActivityMs = Number.NEGATIVE_INFINITY;
 
       for (let index = 0; index < lines.length; index += 1) {
         const line = lines[index]?.trim();
@@ -236,6 +254,13 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
           continue;
         }
 
+        if (typeof data.timestamp === 'string') {
+          const recordMs = Date.parse(data.timestamp);
+          if (Number.isFinite(recordMs) && recordMs > lastActivityMs) {
+            lastActivityMs = recordMs;
+          }
+        }
+
         if (eventType === 'custom-title') {
           const title = typeof data.customTitle === 'string' ? data.customTitle : undefined;
           if (title?.trim()) {
@@ -254,20 +279,22 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
         }
       }
 
+      const lastActivityAt = Number.isFinite(lastActivityMs)
+        ? new Date(lastActivityMs).toISOString()
+        : undefined;
+      let title: DerivedSessionTitle | undefined;
       if (foundCustomTitle) {
-        return { name: foundCustomTitle, generated: true };
+        title = { name: foundCustomTitle, generated: true };
+      } else if (foundAiTitle) {
+        title = { name: foundAiTitle, generated: true };
+      } else if (foundLastPrompt) {
+        title = { name: foundLastPrompt, generated: false };
       }
-      if (foundAiTitle) {
-        return { name: foundAiTitle, generated: true };
-      }
-      if (foundLastPrompt) {
-        return { name: foundLastPrompt, generated: false };
-      }
-      return undefined;
+      return { title, lastActivityAt };
     } catch {
       // Ignore missing/unreadable files so sync can continue.
     }
 
-    return undefined;
+    return {};
   }
 }
