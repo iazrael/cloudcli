@@ -35,6 +35,8 @@ import type {
   ProviderRuntimeContext,
   ProviderRuntimeWriter,
   SessionBackgroundWork,
+  SideQuestionRequest,
+  SideQuestionSink,
 } from '@/shared/types.js';
 import {
   createCompleteMessage,
@@ -55,6 +57,7 @@ import {
   parseOpenCodeModelRef,
   type OpenCodeServiceEndpoint,
 } from './opencode-api.client.js';
+import { askOpenCodeSideQuestion } from './opencode-side-question.js';
 import {
   opencodeBackgroundWork,
   readBackgroundNotice,
@@ -572,6 +575,13 @@ export function createOpenCodeRuntime(dependencies: RuntimeDependencies = {}): I
     run,
     abort,
     stopBackgroundTask,
+    /**
+     * Answers one side question on an ephemeral, read-only fork of the
+     * session (see `opencode-side-question.ts`). Never rejects; a session
+     * that has never run resolves as an error outcome.
+     */
+    askSideQuestion: (request: SideQuestionRequest, sink: SideQuestionSink) =>
+      askOpenCodeSideQuestion(request, sink),
     listBackgroundWork(): SessionBackgroundWork[] {
       return [
         ...backgroundWork.list(),

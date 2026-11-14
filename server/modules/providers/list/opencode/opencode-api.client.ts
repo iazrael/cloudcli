@@ -252,6 +252,15 @@ export class OpenCodeApiClient {
   }
 
   /**
+   * `DELETE /api/session/:id` — removes the session and its children. The
+   * side question uses it to take its ephemeral fork back off disk once the
+   * answer is in, so the engine store never keeps a copy of the conversation.
+   */
+  async deleteSession(sessionId: string): Promise<void> {
+    await this.request('DELETE', `/api/session/${encodeURIComponent(sessionId)}`);
+  }
+
+  /**
    * `GET /api/session/:id` — the session row. `outcome` and `time.idle` are
    * set once a run has finished (the runtime uses them to reconcile a run
    * whose terminal event was missed during a stream drop); `tokens` are the

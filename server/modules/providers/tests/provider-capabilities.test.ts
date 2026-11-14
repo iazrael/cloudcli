@@ -122,7 +122,9 @@ const BASELINE: Record<string, Omit<ProviderCapabilities, 'provider'>> = {
     supportsFiles: true,
     supportsAbort: true,
     supportsSteering: false,
-    supportsSideQuestions: false,
+    // The runtime answers on an ephemeral, read-only fork of the session
+    // (opencode-side-question.ts), taken back off disk once it is done.
+    supportsSideQuestions: true,
     // The runtime mounts the permissions facet: permission asks and question
     // forms surface as cards answered through the service API.
     supportsPermissionRequests: true,
