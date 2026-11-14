@@ -58,4 +58,23 @@ test('resolveIsActiveQuotaGroup identifies active session group accurately', () 
 
   const codexLunaReserveGroup = { name: 'gpt-reserve', description: 'gpt-5.6-luna only' };
   assert.equal(resolveIsActiveQuotaGroup('gpt-5.6-luna', codexLunaReserveGroup, 2, 'bucket'), true);
+
+  // 4. ZCode 把一个账号拆成多个限额组:编码套餐池、app 级 MCP 额度、体验套餐。
+  //    模型 id 的套餐段决定归属;裸模型名默认落在编码套餐池,
+  //    MCP 与体验套餐是平台赠予,永远不会是"当前会话模型组"。
+  const zcodeLite = { name: 'ZCode (LITE)', description: 'BigModel Coding Plan account quota' };
+  const zcodeMcp = { name: 'ZCode MCP', description: 'ZCode app MCP call allowance' };
+  const zcodeStartPlan = { name: 'ZCode Start Plan', description: 'ZCode start plan balance' };
+
+  assert.equal(resolveIsActiveQuotaGroup('account:bigmodel-individual-coding-plan/glm-5.3-flash', zcodeLite, 3, 'bucket'), true);
+  assert.equal(resolveIsActiveQuotaGroup('account:bigmodel-individual-coding-plan/glm-5.3-flash', zcodeMcp, 3, 'bucket'), false);
+  assert.equal(resolveIsActiveQuotaGroup('account:bigmodel-individual-coding-plan/glm-5.3-flash', zcodeStartPlan, 3, 'bucket'), false);
+
+  assert.equal(resolveIsActiveQuotaGroup('glm-5.3-flash', zcodeLite, 3, 'bucket'), true);
+  assert.equal(resolveIsActiveQuotaGroup('glm-5.3-flash', zcodeMcp, 3, 'bucket'), false);
+  assert.equal(resolveIsActiveQuotaGroup('glm-5.3-flash', zcodeStartPlan, 3, 'bucket'), false);
+
+  assert.equal(resolveIsActiveQuotaGroup('account:bigmodel-start-plan/glm-5.3-flash', zcodeLite, 3, 'bucket'), false);
+  assert.equal(resolveIsActiveQuotaGroup('account:bigmodel-start-plan/glm-5.3-flash', zcodeMcp, 3, 'bucket'), false);
+  assert.equal(resolveIsActiveQuotaGroup('account:bigmodel-start-plan/glm-5.3-flash', zcodeStartPlan, 3, 'bucket'), true);
 });

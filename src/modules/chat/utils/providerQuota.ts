@@ -69,6 +69,17 @@ export function resolveIsActiveQuotaGroup(
     return Boolean(normalizedModel) && groupText.includes(normalizedModel);
   }
 
+  // ZCode splits one account into scoped allowances — the coding plan pool,
+  // the app-level MCP allowance, and the start plan trial. The model id's
+  // plan segment decides; without one the coding plan pool is the session's,
+  // and neither app-level allowance ever is.
+  if (bucketPartitioned && groupText.includes('zcode')) {
+    if (normalizedModel.includes('start-plan')) {
+      return groupText.includes('start plan');
+    }
+    return !groupText.includes('mcp') && !groupText.includes('start plan');
+  }
+
   const familyMatch = matchesFamily(groupText, normalizedModel);
   if (familyMatch !== null) {
     if (familyMatch) {
