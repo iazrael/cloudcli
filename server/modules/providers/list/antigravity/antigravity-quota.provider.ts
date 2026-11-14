@@ -56,11 +56,24 @@ type AntigravityQuotaDependencies = {
   now: () => number;
 };
 
+/**
+ * Wall-clock ceiling for the `agy /usage` subprocess.
+ *
+ * A healthy `agy /usage` on agy 1.5.9 (2026-11-14 build) takes ~8-11s — the CLI
+ * refreshes its token and round-trips the backend on every call — so the
+ * previous 10s ceiling intermittently killed healthy runs; the catch block then
+ * mapped that to null and the Token Usage modal showed "no quota data". 30s
+ * leaves headroom for the slow runs without hanging a manual refresh.
+ *
+ * Consumers: tests pin this lower bound (antigravity-quota.test.ts).
+ */
+export const ANTIGRAVITY_QUOTA_COMMAND_TIMEOUT_MS = 30_000;
+
 const defaultDependencies: AntigravityQuotaDependencies = {
   resolveEnginePath: tryResolveEnginePath,
   runCommand: async (executablePath, args) => {
     return execFileAsync(executablePath, args, {
-      timeout: 10_000,
+      timeout: ANTIGRAVITY_QUOTA_COMMAND_TIMEOUT_MS,
       encoding: 'utf8',
       env: { ...process.env },
       windowsHide: true,

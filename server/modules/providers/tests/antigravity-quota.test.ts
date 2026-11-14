@@ -10,6 +10,7 @@ import test from 'node:test';
 import type { IProvider } from '@/shared/interfaces.js';
 
 import {
+  ANTIGRAVITY_QUOTA_COMMAND_TIMEOUT_MS,
   fetchAntigravityQuota,
   resetAntigravityQuotaCache,
 } from '../list/antigravity/antigravity-quota.provider.js';
@@ -185,4 +186,11 @@ test('providerTokenUsageService routes getProviderQuota correctly by provider', 
 
   const claudeQuota = await service.getProviderQuota('claude');
   assert.equal(claudeQuota, null);
+});
+
+test('quota command timeout leaves headroom for slow agy /usage runs', () => {
+  // agy 1.5.9 (2026-11-14 build) needs ~8-11s for a healthy `agy /usage`
+  // (token refresh + backend round trip), so a 10s ceiling intermittently
+  // killed healthy calls and surfaced as an empty quota card in the UI.
+  assert.ok(ANTIGRAVITY_QUOTA_COMMAND_TIMEOUT_MS >= 30_000);
 });
