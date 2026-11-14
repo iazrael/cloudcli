@@ -477,9 +477,9 @@ export async function readDecryptedZCodeCredentials(
 
 /** One resolved coding-plan account the quota endpoints authenticate with. */
 export type ZCodeCodingPlanQuotaContext = {
-  /** Raw coding-plan api-key value (`authorization` header, no Bearer prefix). */
+  /** Raw coding-plan credential (`authorization` header, no Bearer prefix). */
   apiKey: string;
-  /** Plan segment of the credential key, e.g. `bigmodel-team-coding-plan`. */
+  /** Plan/provider family (`bigmodel`, `zai`, or legacy `bigmodel-*-coding-plan`). */
   planFamily: string;
   /** `org-…` organization id from the paired project key location, if stored. */
   organizationId: string | null;
@@ -487,14 +487,60 @@ export type ZCodeCodingPlanQuotaContext = {
   projectId: string | null;
 };
 
+/** Extracts `user_id` or `id` as a string from a decrypted `oauth:*:user_info` JSON blob. */
+function readUserInfoId(rawUserInfo: string | null | undefined): string | null {
+  if (!rawUserInfo) {
+    return null;
+  }
+  try {
+    const parsed = readObjectRecord(JSON.parse(rawUserInfo));
+    const candidate = parsed?.user_id ?? parsed?.id;
+    if (typeof candidate === 'number' && Number.isFinite(candidate)) {
+      return String(candidate);
+    }
+    return readOptionalString(candidate) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Parses `oauth:linked_bigmodel` and verifies its `userId` against the active profile id when present. */
+function parseLinkedBigModelCredential(
+  rawLinked: string | null | undefined,
+  expectedUserId: string | null,
+): { customerId: string; accessToken: string } | null {
+  if (!rawLinked) {
+    return null;
+  }
+  try {
+    const parsed = readObjectRecord(JSON.parse(rawLinked));
+    const userId = readOptionalString(parsed?.userId);
+    const customerId = readOptionalString(parsed?.customerId);
+    const accessToken = readOptionalString(parsed?.accessToken);
+    if (!customerId || !accessToken) {
+      return null;
+    }
+    if (expectedUserId && userId && userId !== expectedUserId) {
+      return null;
+    }
+    return { customerId, accessToken };
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Resolves the coding-plan quota auth context: pairs the single stored
- * coding-plan api-key credential with its project key location entry (which
- * carries the `org-…`/`proj_…` ids the usage endpoints scope responses by).
+ * Resolves the coding-plan quota auth context: prefers the active OAuth
+ * session's quota credential (`oauth:linked_bigmodel` for `zai_cn` login, or
+ * direct `oauth:bigmodel:access_token` / `oauth:zai:access_token`), paired by
+ * `customerId` with its `project-key-location:v1:*` entry (`org-…`/`proj_…`
+ * scoping headers). Falls back to the legacy single stored coding-plan
+ * `api-key` entry only when no OAuth quota credential is stored (ZCode 3.18.2+
+ * rotates coding-plan keys without updating legacy `account-provider:*:api-key`
+ * rows).
  *
- * Returns null — rather than guessing — when no api-key is stored or several
- * accounts coexist: charging or reading the wrong subscription is worse than
- * showing no quota.
+ * Returns null — rather than guessing — when no valid credential is stored or
+ * several legacy coding-plan accounts coexist.
  *
  * Consumer: fetchZCodeQuota / consumeZCodeQuotaReset in `zcode-quota.provider.ts`.
  */
@@ -511,6 +557,15 @@ export async function readZCodeCodingPlanQuotaContext(
   } catch {
     return null;
   }
+
+  const readOAuthField = async (key: string): Promise<string | null> => {
+    const rawValue = rawMap[key];
+    if (typeof rawValue !== 'string') {
+      return null;
+    }
+    const decrypted = await decryptCredentialEntry(rawValue, storageDir, env, overrides);
+    return readOptionalString(decrypted) ?? null;
+  };
 
   const apiKeyEntries: Array<{ planFamily: string; customerId: string; apiKey: string }> = [];
   const locations = new Map<string, { organizationId: string | null; projectId: string | null }>();
@@ -554,18 +609,61 @@ export async function readZCodeCodingPlanQuotaContext(
     }
   }
 
+  const activeProvider = await readOAuthField('oauth:active_provider');
+  const buildContext = (apiKey: string, planFamily: string, customerId: string | null): ZCodeCodingPlanQuotaContext => {
+    const location = customerId ? locations.get(customerId) ?? null : null;
+    return {
+      apiKey,
+      planFamily,
+      organizationId: location?.organizationId ?? null,
+      projectId: location?.projectId ?? null,
+    };
+  };
+
+  if (activeProvider === 'zai') {
+    const zaiToken = await readOAuthField('oauth:zai:access_token');
+    if (zaiToken) {
+      const customerId = readUserInfoId(await readOAuthField('oauth:zai:user_info'));
+      return buildContext(zaiToken, 'zai', customerId);
+    }
+  } else {
+    if (activeProvider === 'bigmodel') {
+      const bigmodelToken = await readOAuthField('oauth:bigmodel:access_token');
+      if (bigmodelToken) {
+        const customerId = readUserInfoId(await readOAuthField('oauth:bigmodel:user_info'));
+        return buildContext(bigmodelToken, 'bigmodel', customerId);
+      }
+    }
+
+    const activeUserInfo = (await readOAuthField('oauth:zai_cn:user_info'))
+      ?? (await readOAuthField('oauth:bigmodel:user_info'));
+    const linked = parseLinkedBigModelCredential(
+      await readOAuthField('oauth:linked_bigmodel'),
+      readUserInfoId(activeUserInfo),
+    );
+    if (linked) {
+      return buildContext(linked.accessToken, 'bigmodel', linked.customerId);
+    }
+
+    const bigmodelToken = await readOAuthField('oauth:bigmodel:access_token');
+    if (bigmodelToken) {
+      const customerId = readUserInfoId(await readOAuthField('oauth:bigmodel:user_info'));
+      return buildContext(bigmodelToken, 'bigmodel', customerId);
+    }
+
+    const zaiToken = await readOAuthField('oauth:zai:access_token');
+    if (zaiToken) {
+      const customerId = readUserInfoId(await readOAuthField('oauth:zai:user_info'));
+      return buildContext(zaiToken, 'zai', customerId);
+    }
+  }
+
   if (apiKeyEntries.length !== 1) {
     return null;
   }
 
   const entry = apiKeyEntries[0];
-  const location = locations.get(entry.customerId) ?? null;
-  return {
-    apiKey: entry.apiKey,
-    planFamily: entry.planFamily,
-    organizationId: location?.organizationId ?? null,
-    projectId: location?.projectId ?? null,
-  };
+  return buildContext(entry.apiKey, entry.planFamily, entry.customerId);
 }
 
 /** Reads one selected credential, rejecting missing or undecryptable values. */

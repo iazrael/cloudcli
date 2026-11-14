@@ -341,6 +341,117 @@ describe('ZCode Credentials & Quota Provider', () => {
     });
   });
 
+  test('prefers oauth:linked_bigmodel over stale coding-plan api-key and pairs project key location by customerId', async () => {
+    const v2Dir = path.join(tempDir, 'v2');
+    await fs.mkdir(v2Dir, { recursive: true });
+    const osKey = randomBytes(32);
+    await fs.writeFile(path.join(v2Dir, 'credential-secret'), osKey.toString('base64url'), { mode: 0o600 });
+
+    const locationKey = (customerId: string) => `project-key-location:v1:${encodeURIComponent(JSON.stringify([
+      'https://bigmodel.cn', 'bigmodel', customerId, null, 1, 'non-team',
+    ]))}`;
+    const rawCredentials = {
+      // Stale v1/v2 coding-plan api-key left behind after ZCode 3.18.2 rotated keys.
+      'account-provider:coding-plan:account:bigmodel-team-coding-plan:account:72411768202983769:api-key':
+        encryptZCodeCredentialValueV2('stale-revoked-api-key', osKey, 'os'),
+      'oauth:active_provider': encryptZCodeCredentialValueV2('zai_cn', osKey, 'os'),
+      'oauth:zai_cn:access_token': encryptZCodeCredentialValueV2('zai-cn-account-center-token', osKey, 'os'),
+      'oauth:zai_cn:user_info': encryptZCodeCredentialValueV2(JSON.stringify({
+        user_id: '72411768202983769',
+        name: '旅行者5354',
+      }), osKey, 'os'),
+      'oauth:linked_bigmodel': encryptZCodeCredentialValueV2(JSON.stringify({
+        userId: '72411768202983769',
+        customerId: '72411768202983769',
+        accessToken: 'linked-bigmodel-jwt',
+      }), osKey, 'os'),
+      [locationKey('85731712029074995')]: encryptZCodeCredentialValueV2(JSON.stringify({
+        organizationId: 'org-other',
+        projectId: 'proj_other',
+      }), osKey, 'os'),
+      [locationKey('72411768202983769')]: encryptZCodeCredentialValueV2(JSON.stringify({
+        organizationId: 'org-64D269e45DDa468e9B98462EB4f4B79D',
+        projectId: 'proj_b0c1234',
+        apiKeyId: '6ebe819bf88b41949a9ec2cf2acc9749',
+      }), osKey, 'os'),
+    };
+    await fs.writeFile(path.join(v2Dir, 'credentials.json'), JSON.stringify(rawCredentials), 'utf8');
+
+    const context = await readZCodeCodingPlanQuotaContext(tempDir);
+    assert.deepEqual(context, {
+      apiKey: 'linked-bigmodel-jwt',
+      planFamily: 'bigmodel',
+      organizationId: 'org-64D269e45DDa468e9B98462EB4f4B79D',
+      projectId: 'proj_b0c1234',
+    });
+  });
+
+  test('rejects oauth:linked_bigmodel when userId mismatches active user_info', async () => {
+    const v2Dir = path.join(tempDir, 'v2');
+    await fs.mkdir(v2Dir, { recursive: true });
+    const osKey = randomBytes(32);
+    await fs.writeFile(path.join(v2Dir, 'credential-secret'), osKey.toString('base64url'), { mode: 0o600 });
+
+    const rawCredentials = {
+      'oauth:active_provider': encryptZCodeCredentialValueV2('zai_cn', osKey, 'os'),
+      'oauth:zai_cn:user_info': encryptZCodeCredentialValueV2(JSON.stringify({
+        user_id: '999999999',
+      }), osKey, 'os'),
+      'oauth:linked_bigmodel': encryptZCodeCredentialValueV2(JSON.stringify({
+        userId: '72411768202983769',
+        customerId: '72411768202983769',
+        accessToken: 'mismatched-linked-bigmodel-jwt',
+      }), osKey, 'os'),
+    };
+    await fs.writeFile(path.join(v2Dir, 'credentials.json'), JSON.stringify(rawCredentials), 'utf8');
+
+    assert.equal(await readZCodeCodingPlanQuotaContext(tempDir), null);
+  });
+
+  test('resolves direct bigmodel and zai OAuth session tokens with paired project key locations', async () => {
+    const v2Dir = path.join(tempDir, 'v2');
+    await fs.mkdir(v2Dir, { recursive: true });
+    const osKey = randomBytes(32);
+    await fs.writeFile(path.join(v2Dir, 'credential-secret'), osKey.toString('base64url'), { mode: 0o600 });
+
+    const locationKey = (host: string, family: string, customerId: string) =>
+      `project-key-location:v1:${encodeURIComponent(JSON.stringify([host, family, customerId, null, 1, 'non-team']))}`;
+
+    await fs.writeFile(path.join(v2Dir, 'credentials.json'), JSON.stringify({
+      'oauth:active_provider': encryptZCodeCredentialValueV2('bigmodel', osKey, 'os'),
+      'oauth:bigmodel:access_token': encryptZCodeCredentialValueV2('direct-bigmodel-jwt', osKey, 'os'),
+      'oauth:bigmodel:user_info': encryptZCodeCredentialValueV2(JSON.stringify({ id: '72411768202983769' }), osKey, 'os'),
+      [locationKey('https://bigmodel.cn', 'bigmodel', '72411768202983769')]: encryptZCodeCredentialValueV2(JSON.stringify({
+        organizationId: 'org-bm',
+        projectId: 'proj-bm',
+      }), osKey, 'os'),
+    }), 'utf8');
+
+    assert.deepEqual(await readZCodeCodingPlanQuotaContext(tempDir), {
+      apiKey: 'direct-bigmodel-jwt',
+      planFamily: 'bigmodel',
+      organizationId: 'org-bm',
+      projectId: 'proj-bm',
+    });
+
+    await fs.writeFile(path.join(v2Dir, 'credentials.json'), JSON.stringify({
+      'oauth:active_provider': encryptZCodeCredentialValueV2('zai', osKey, 'os'),
+      'oauth:zai:access_token': encryptZCodeCredentialValueV2('direct-zai-jwt', osKey, 'os'),
+      'oauth:zai:user_info': encryptZCodeCredentialValueV2(JSON.stringify({ user_id: '555' }), osKey, 'os'),
+      [locationKey('https://api.z.ai', 'zai', '555')]: encryptZCodeCredentialValueV2(JSON.stringify({
+        organizationId: 'org-zai',
+        projectId: 'proj-zai',
+      }), osKey, 'os'),
+    }), 'utf8');
+
+    assert.deepEqual(await readZCodeCodingPlanQuotaContext(tempDir), {
+      apiKey: 'direct-zai-jwt',
+      planFamily: 'zai',
+      organizationId: 'org-zai',
+      projectId: 'proj-zai',
+    });
+  });
+
   test('returns a context without organization when no key location entry exists', async () => {
     const v2Dir = path.join(tempDir, 'v2');
     await fs.mkdir(v2Dir, { recursive: true });
