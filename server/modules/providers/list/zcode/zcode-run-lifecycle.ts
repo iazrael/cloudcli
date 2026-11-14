@@ -31,7 +31,8 @@ import type { ProviderPermissionDecision, ProviderRuntimeWriter } from '@/shared
 import { createNormalizedMessage, generateMessageId, readJsonRecord, readObjectRecord, readOptionalString } from '@/shared/utils.js';
 
 import type { ProtocolServerRequest } from './zcode-codec.js';
-import { readDecryptedZCodeIndividualPlanApiKey, readDecryptedZCodeJwtToken } from './zcode-credentials.js';
+import { readDecryptedZCodeIndividualPlanApiKey, readDecryptedZCodeJwtToken, readZCodeIndividualPlanAuthContext } from './zcode-credentials.js';
+import { resolveZCodeIndividualPlanRequestAuth } from './zcode-account-auth.js';
 import { ZCODE_INDIVIDUAL_PLAN_PROVIDER_ID, ZCODE_START_PLAN_PROVIDER_ID } from './zcode-models.provider.js';
 import { defaultServerRequestHandler } from './zcode-request-router.js';
 import type { ServerRequestAnswer } from './zcode-request-router.js';
@@ -474,6 +475,15 @@ export class ZCodeRunLifecycle {
     if (request.method === 'interaction/requestProviderRuntimeHeaders') {
       const params = request.params ?? {};
       const providerId = readOptionalString(params.providerId);
+      const individual = providerId === ZCODE_INDIVIDUAL_PLAN_PROVIDER_ID ? readZCodeIndividualPlanAuthContext() : null;
+      if (providerId === ZCODE_INDIVIDUAL_PLAN_PROVIDER_ID
+          && ((individual && individual.kind !== 'legacy')
+            || params.expectedAccountScope !== undefined || params.rejectedProjectTokenFingerprint !== undefined)) {
+        return resolveZCodeIndividualPlanRequestAuth(params).then(
+          (requestAuth) => ({ result: { headersApplied: true, requestAuth } }),
+          (error: Error) => ({ result: { headersApplied: false, errorMessage: error.message } }),
+        );
+      }
       if (providerId === ZCODE_START_PLAN_PROVIDER_ID || providerId === ZCODE_INDIVIDUAL_PLAN_PROVIDER_ID) {
         const apiKey = providerId === ZCODE_START_PLAN_PROVIDER_ID
           ? readDecryptedZCodeJwtToken() : readDecryptedZCodeIndividualPlanApiKey();

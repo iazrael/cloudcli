@@ -32,6 +32,7 @@ import path from 'node:path';
 import { readObjectRecord, readOptionalString } from '@/shared/utils.js';
 
 import { getZCodeStorageDir } from './zcode-data-root.js';
+import { readZCodeAppVersion, tryResolveEnginePath } from './zcode-engine-path.js';
 
 const CIPHER_PREFIX = 'enc:v1:';
 const CIPHER_V2_PREFIX = 'enc:v2:';
@@ -789,4 +790,90 @@ export function readDecryptedZCodeJwtToken(
   env: NodeJS.ProcessEnv = process.env,
 ): string | null {
   return readDecryptedCredential((rawMap) => readOptionalString(rawMap.zcodejwttoken) ?? null, storageDir, env);
+}
+
+/**
+ * Consumers: model selection, account config sync and the runtime auth bridge.
+ * Modern login material takes precedence over legacy Keys, including when it
+ * is incomplete: callers must then refuse auth rather than select another account.
+ * Only the current BigModel account's saved non-team coding project is accepted.
+ */
+export function readZCodeIndividualPlanAuthContext():
+  | { kind: 'legacy'; apiKey: string }
+  | { kind: 'unavailable'; error: string }
+  | { kind: 'project'; loginToken: string; accountId: string; organizationId: string; projectId: string; apiKeyId: string }
+  | null {
+  const storageDir = getZCodeStorageDir();
+  let rawMap: Record<string, unknown>;
+  try {
+    rawMap = readObjectRecord(JSON.parse(fsSync.readFileSync(path.join(storageDir, 'v2', 'credentials.json'), 'utf8'))) ?? {};
+  } catch {
+    return null;
+  }
+  const read = (key: string): string | null => {
+    const raw = rawMap[key];
+    return typeof raw === 'string' ? decryptCredentialEntrySync(raw, storageDir, process.env) : null;
+  };
+  const activeProvider = read('oauth:active_provider');
+  const unavailable = { kind: 'unavailable' as const, error: 'ZCode personal project credentials are missing, ambiguous or do not match the active account. Open the personal model in ZCode desktop and sign in again.' };
+  let hasModernLogin = 'oauth:linked_bigmodel' in rawMap || activeProvider === 'zai_cn'
+    || 'oauth:zai_cn:access_token' in rawMap || 'oauth:zai_cn:user_info' in rawMap
+    || Object.keys(rawMap).some((key) => key.startsWith('project-key-location:v1:'));
+  // BigModel OAuth predates project tokens. Only newer desktop versions require
+  // project auth when no explicit modern storage marker has been written yet.
+  if (!hasModernLogin && 'oauth:bigmodel:access_token' in rawMap) {
+    const enginePath = tryResolveEnginePath();
+    const version = enginePath ? readZCodeAppVersion(enginePath)?.match(/^(\d+)\.(\d+)\.(\d+)/) : null;
+    if (version) {
+      const [major, minor, patch] = version.slice(1).map(Number);
+      hasModernLogin = major > 3 || (major === 3 && (minor > 18 || (minor === 18 && patch >= 2)));
+    }
+  }
+  if (!hasModernLogin) {
+    const apiKey = readDecryptedZCodeIndividualPlanApiKey();
+    if ('oauth:bigmodel:access_token' in rawMap) {
+      const currentId = readUserInfoId(read('oauth:bigmodel:user_info'));
+      if (activeProvider !== 'bigmodel' || !read('oauth:bigmodel:access_token') || !currentId
+          || !Object.keys(rawMap).includes(`account-provider:coding-plan:account:bigmodel-individual-coding-plan:account:${currentId}:api-key`)) return unavailable;
+    }
+    return apiKey ? { kind: 'legacy', apiKey } : null;
+  }
+  let accountId: string | null = null;
+  let loginToken: string | null = null;
+  if (activeProvider === 'bigmodel') {
+    accountId = readUserInfoId(read('oauth:bigmodel:user_info'));
+    loginToken = read('oauth:bigmodel:access_token');
+  } else if (activeProvider === 'zai_cn') {
+    const profileId = readUserInfoId(read('oauth:zai_cn:user_info'));
+    const rawLinked = read('oauth:linked_bigmodel');
+    const linked = parseLinkedBigModelCredential(rawLinked, profileId);
+    let linkedUserId: string | null = null;
+    try { linkedUserId = readOptionalString(readObjectRecord(JSON.parse(rawLinked ?? 'null'))?.userId) ?? null; }
+    catch { return unavailable; }
+    if (!profileId || !linked || linkedUserId !== profileId) return unavailable;
+    accountId = linked.customerId;
+    loginToken = linked.accessToken;
+  }
+  if (!accountId || !loginToken) return unavailable;
+  const locations: Array<{ organizationId: string; projectId: string; apiKeyId: string }> = [];
+  for (const key of Object.keys(rawMap)) {
+    if (!key.startsWith('project-key-location:v1:')) continue;
+    try {
+      const selector = JSON.parse(decodeURIComponent(key.slice('project-key-location:v1:'.length)));
+      if (!Array.isArray(selector) || selector.length !== 6
+          || selector[0] !== 'https://bigmodel.cn' || selector[1] !== 'bigmodel'
+          || selector[2] !== accountId || selector[3] !== null
+          || selector[4] !== 1 || selector[5] !== 'non-team') continue;
+      const location = readObjectRecord(JSON.parse(read(key) ?? 'null'));
+      const organizationId = readOptionalString(location?.organizationId);
+      const projectId = readOptionalString(location?.projectId);
+      const apiKeyId = readOptionalString(location?.apiKeyId);
+      if (organizationId && projectId && apiKeyId) locations.push({ organizationId, projectId, apiKeyId });
+    } catch {
+      // Unreadable location metadata cannot authorize a project.
+    }
+  }
+  return locations.length === 1
+    ? { kind: 'project', loginToken, accountId, ...locations[0] }
+    : unavailable;
 }

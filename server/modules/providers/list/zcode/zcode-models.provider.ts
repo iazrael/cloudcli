@@ -18,7 +18,7 @@ import {
   readTrimmedStringRecord,
 } from '@/shared/utils.js';
 
-import { readDecryptedZCodeIndividualPlanApiKey, readDecryptedZCodeJwtToken } from './zcode-credentials.js';
+import { readZCodeIndividualPlanAuthContext, readDecryptedZCodeJwtToken } from './zcode-credentials.js';
 import { getZCodeDatabasePath, getZCodeStorageDir } from './zcode-data-root.js';
 import { resolveZCodeProviderApiType } from './zcode-provider-config.js';
 
@@ -309,7 +309,7 @@ export function resolveZCodeModelRef(
   const slashIndex = trimmed.indexOf('/');
   const requestedProviderId = slashIndex >= 0 ? trimmed.slice(0, slashIndex).trim() : undefined;
   const requestedModelId = slashIndex >= 0 ? trimmed.slice(slashIndex + 1).trim() : trimmed;
-  const hasIndividualKey = Boolean(readDecryptedZCodeIndividualPlanApiKey());
+  const hasIndividualKey = Boolean(readZCodeIndividualPlanAuthContext());
   const nativePersonalId = hasIndividualKey && ZCODE_PERSONAL_MODELS_WHITELIST.has(requestedModelId)
     ? ZCODE_INDIVIDUAL_PLAN_PROVIDER_ID : null;
 
@@ -419,9 +419,12 @@ export function buildZCodeSendModelParams(
 
   if (explicitSelection.providerId === ZCODE_START_PLAN_PROVIDER_ID
       || explicitSelection.providerId === ZCODE_INDIVIDUAL_PLAN_PROVIDER_ID) {
+    const individual = explicitSelection.providerId === ZCODE_INDIVIDUAL_PLAN_PROVIDER_ID
+      ? readZCodeIndividualPlanAuthContext() : null;
+    if (individual?.kind === 'unavailable') throw new Error(individual.error);
     const apiKey = explicitSelection.providerId === ZCODE_START_PLAN_PROVIDER_ID
-      ? readDecryptedZCodeJwtToken() : readDecryptedZCodeIndividualPlanApiKey();
-    if (!apiKey) {
+      ? readDecryptedZCodeJwtToken() : individual?.kind === 'legacy' ? individual.apiKey : null;
+    if (!apiKey && individual?.kind !== 'project') {
       const plan = explicitSelection.providerId === ZCODE_START_PLAN_PROVIDER_ID ? 'start' : 'individual';
       throw new Error(`ZCode ${plan} plan credential is missing or ambiguous`);
     }
@@ -434,9 +437,8 @@ export function buildZCodeSendModelParams(
       },
       modelExecution: {
         selectionScope: 'execution',
-        requestAuth: {
-          apiKey,
-        },
+        // Modern account auth is resolved by the engine's runtime headers request.
+        ...(apiKey ? { requestAuth: { apiKey } } : {}),
       },
     };
   }
