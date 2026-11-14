@@ -248,7 +248,7 @@ opencode 的对话不走一次性子进程，而是连一个 cloudcli 自养的�
 - `opencode-session-settings.ts`：权限模式映射——`plan`→只读 plan 角色+全部变更类 ask 规则；`acceptEdits`→仅 shell ask；`bypassPermissions`→无规则（引擎默认全放行）；`default`→全部变更类 ask。**引擎默认角色本身全放行，权限卡完全靠这些 ask 规则出现**；已应用的切换按会话缓存，避免每次发消息重复下发（切 plan 会附带一条系统提醒）。
 - `opencode-run-registry.ts`：会话登记（运行、后台工作、引擎汇报回合任一未完就存活）、事件分发、首结算生效；断线重连后按 `GET /api/session/:id` 的 `outcome`/`time.idle` 对账，补上错过的终态，避免会话卡在"处理中"。token 预算取自同一接口的 `tokens`，不再读 `opencode.db`。
 - 附件：data-URI 文件块随 prompt 下发（模型真正看到内容），同时保留 `<images_input>`/`<files_input>` 路径标签供历史回读还原。
-- 历史、会话索引、模型目录、登录检测不变：仍读 `opencode.db`（双格式）与 CLI 探测。
+- 历史、会话索引、模型目录、登录检测不变：仍读 `opencode.db`（双格式）与 CLI 探测（推理档位取自 `kv` 表缓存的 models.dev 目录：v2.2 起键名 `models-dev:v2:catalog`、档位在 `capabilities.reasoning.effort`，旧键 `models-dev:catalog` 的 `reasoning_options` 作回退）。
 
 
 ## 会话索引准入：哪些工作区能变成项目
