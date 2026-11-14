@@ -43,6 +43,7 @@ import {
 
 import { getAntigravityDataRoot, getAntigravityTranscriptCandidates } from './antigravity-data-root.js';
 import { tryResolveEnginePath } from './antigravity-engine-path.js';
+import { buildAntigravitySubprocessEnv } from './antigravity-subprocess-env.js';
 import { createAgentTranscriptTail } from './antigravity-agent-tail.js';
 import { AntigravitySessionsProvider } from './antigravity-sessions.provider.js';
 import { readCanonicalAntigravityTranscript } from './antigravity-transcript.provider.js';
@@ -851,7 +852,7 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
       const agyProcess = crossSpawn(enginePath, args, {
         cwd,
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: { ...process.env },
+        env: buildAntigravitySubprocessEnv(),
         windowsHide: true,
       });
 

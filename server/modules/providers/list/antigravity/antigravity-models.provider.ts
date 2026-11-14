@@ -29,6 +29,7 @@ import {
 
 import { getAntigravitySettingsPath } from './antigravity-data-root.js';
 import { tryResolveEnginePath } from './antigravity-engine-path.js';
+import { buildAntigravitySubprocessEnv } from './antigravity-subprocess-env.js';
 import {
   dedupeAntigravityVariantModels,
   findCatalogOptionForModelString,
@@ -95,6 +96,7 @@ async function fetchModelsFromCli(): Promise<ProviderModelsDefinition | null> {
       // leave headroom so a cold start is not misread as a dead CLI.
       timeout: 15000,
       windowsHide: true,
+      env: buildAntigravitySubprocessEnv(),
     });
 
     const entries: AntigravityRawModelEntry[] = [];
@@ -133,8 +135,11 @@ async function fetchModelsFromCli(): Promise<ProviderModelsDefinition | null> {
         DEFAULT: defaultModel,
       };
     }
-  } catch {
-    // Dynamic query failed, fall back to builtin models
+  } catch (error) {
+    // Catalog refresh is stale-while-refresh, so CLI failures are infrequent:
+    // log them — a silent fallback to the builtin list hides auth breakage
+    // (quota and chat report the same CLI state).
+    console.warn('[Antigravity] agy models fetch failed, using builtin fallback:', error);
   }
 
   return null;

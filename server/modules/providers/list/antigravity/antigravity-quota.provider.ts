@@ -18,6 +18,7 @@ import type {
 import { createProviderQuotaCache } from '@/shared/utils.js';
 
 import { tryResolveEnginePath } from './antigravity-engine-path.js';
+import { buildAntigravitySubprocessEnv } from './antigravity-subprocess-env.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -75,7 +76,7 @@ const defaultDependencies: AntigravityQuotaDependencies = {
     return execFileAsync(executablePath, args, {
       timeout: ANTIGRAVITY_QUOTA_COMMAND_TIMEOUT_MS,
       encoding: 'utf8',
-      env: { ...process.env },
+      env: buildAntigravitySubprocessEnv(),
       windowsHide: true,
     });
   },
@@ -172,8 +173,11 @@ export async function fetchAntigravityQuota(
 
         const parsed = JSON.parse(stdout) as RawAgyUsageResponse;
         return normalizeQuotaPayload(parsed, deps.now());
-      } catch {
-        // Antigravity historically treats CLI failures as unavailable quota.
+      } catch (error) {
+        // Quota refresh is cache-gated (2 min TTL), so failures are infrequent:
+        // surface them instead of silently mapping to null, which only shows up
+        // as an empty quota card in the UI and leaves diagnosis nothing to read.
+        console.warn('[Antigravity] agy /usage quota fetch failed:', error);
         return null;
       }
     },
