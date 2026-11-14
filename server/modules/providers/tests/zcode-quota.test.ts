@@ -579,7 +579,6 @@ describe('ZCode Credentials & Quota Provider', () => {
 
     const group = quota.groups[0];
     assert.equal(group.name, 'ZCode (LITE)');
-    assert.equal(group.buckets.length, 3);
 
     const callBucket = group.buckets.find((b) => b.id === 'zcode-calls-limit');
     assert.ok(callBucket);
@@ -595,15 +594,19 @@ describe('ZCode Credentials & Quota Provider', () => {
     assert.equal(mcpRequest.headers.Authorization, `Bearer ${quotaContext.zcodeJwtToken}`);
     assert.equal(mcpRequest.headers['X-Bigmodel-Authorization'], `Bearer ${quotaContext.apiKey}`);
 
-    const mcpBucket = group.buckets.find((b) => b.id === 'zcode-mcp-usage');
+    assert.equal(quota.groups.length, 3, 'mcp calls and the start plan balance each get their own group');
+    const mcpGroup = quota.groups[1];
+    assert.equal(mcpGroup.name, 'ZCode MCP');
+
+    assert.equal(group.buckets.length, 2, 'the app-level mcp quota must not join the plan group');
+    const mcpBucket = mcpGroup.buckets.find((b) => b.id === 'zcode-mcp-usage');
     assert.ok(mcpBucket);
     assert.equal(mcpBucket.name, 'ZCode MCP');
     assert.equal(mcpBucket.description, '1000 of 1000 calls remaining');
     assert.equal(mcpBucket.remainingFraction, 1);
     assert.equal(mcpBucket.resetTime, new Date(1794672000 * 1000).toISOString());
 
-    assert.equal(quota.groups.length, 2, 'the start plan balance becomes its own group');
-    const startPlanGroup = quota.groups[1];
+    const startPlanGroup = quota.groups[2];
     assert.equal(startPlanGroup.name, 'ZCode Start Plan');
     const startPlanBucket = startPlanGroup.buckets.find((b) => b.name === 'GLM-5.3-Flash');
     assert.ok(startPlanBucket);

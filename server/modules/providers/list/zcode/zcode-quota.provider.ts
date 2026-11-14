@@ -282,9 +282,14 @@ export async function fetchZCodeQuota(
         // The reset-card inventory rides along when it can be read; a failing
         // card request must never take the quota display down with it.
         const resetCredits = resetResult.status === 'fulfilled' ? resetResult.value : undefined;
-        // Same for the ZCode MCP call quota: its failure only drops that bucket.
+        // The ZCode MCP call quota is an app-level allowance, not part of the
+        // coding plan subscription — it becomes its own group.
         if (mcpResult.status === 'fulfilled' && mcpResult.value) {
-          normalized.groups[0].buckets.push(mcpResult.value);
+          normalized.groups.push({
+            name: 'ZCode MCP',
+            description: 'ZCode app MCP call allowance',
+            buckets: [mcpResult.value],
+          });
         }
         // The start plan balance becomes its own group — an exhausted trial
         // allowance (remaining 0) is still worth showing.
