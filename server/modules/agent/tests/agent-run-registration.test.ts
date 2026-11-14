@@ -16,6 +16,10 @@ import { createNormalizedMessage } from '@/shared/utils.js';
 
 import { createAgentRouter } from '../agent.routes.js';
 
+// Resolved so the route's own `path.resolve` agrees with it on Windows too,
+// where a rooted POSIX path gains the current drive letter.
+const PROJECT_PATH = path.resolve('/home/test/project');
+
 /**
  * `POST /api/agent` runs a provider for an API-key caller. Until now it wrote
  * the run's events straight to the HTTP response and nothing else knew: the
@@ -49,7 +53,10 @@ async function withIsolatedDatabase(run: () => Promise<void>): Promise<void> {
   }
 }
 
-function createDependencies(queryClaude: RunFunction): AgentDependencies {
+function createDependencies(
+  queryClaude: RunFunction,
+  runtimeOverrides: Partial<AgentDependencies['runtime']> = {},
+): AgentDependencies {
   const unexpected = async (): Promise<never> => { throw new Error('unexpected provider call'); };
   return {
     fileSystem: { access: async () => undefined } as unknown as AgentDependencies['fileSystem'],
@@ -72,6 +79,11 @@ function createDependencies(queryClaude: RunFunction): AgentDependencies {
       },
     },
     runs: chatRunRegistry,
+    runtime: {
+      abort: async () => true,
+      hasBackgroundWork: () => false,
+      ...runtimeOverrides,
+    },
     queryClaude,
     queryCursor: unexpected as RunFunction,
     queryCodex: unexpected as RunFunction,
@@ -96,6 +108,12 @@ async function withAgentServer(dependencies: AgentDependencies, run: (baseUrl: s
 
 const post = (baseUrl: string, body: Record<string, unknown>) =>
   fetch(`${baseUrl}/api/agent`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+
+const abortSession = (baseUrl: string, sessionId: string) =>
+  fetch(`${baseUrl}/api/agent/${encodeURIComponent(sessionId)}/abort`, { method: 'POST' });
+
+const getSessionStatus = (baseUrl: string, sessionId: string) =>
+  fetch(`${baseUrl}/api/agent/${encodeURIComponent(sessionId)}`);
 
 const readEvents = async (response: Response): Promise<Array<Record<string, unknown>>> =>
   (await response.text())
@@ -212,6 +230,122 @@ test('an API run continues a session the caller names by either id, and refuses 
       const unknown = await post(baseUrl, { projectPath: '/home/test/project', message: 'More', sessionId: 'nope', stream: false });
       assert.equal(unknown.status, 404);
       assert.equal(runtime.seen.length, 2);
+    });
+  });
+});
+
+test('a sessionId alone continues where the session lives', async () => {
+  await withIsolatedDatabase(async () => {
+    sessionsDb.createAppSession('app-existing', 'claude', PROJECT_PATH, 'Existing');
+    const runtime = createHeldRuntime();
+    runtime.release();
+    await withAgentServer(createDependencies(runtime.queryClaude), async (baseUrl) => {
+      const response = await post(baseUrl, { message: 'More', sessionId: 'app-existing', stream: false });
+      assert.equal(response.status, 200);
+      const body = await response.json() as { sessionId: string; projectPath: string };
+      assert.equal(body.sessionId, 'app-existing');
+      assert.equal(body.projectPath, PROJECT_PATH);
+      assert.deepEqual(runtime.seen.map((call) => call.sessionId), ['app-existing']);
+    });
+  });
+});
+
+test('an abort stops the running turn and the original response reports it', async () => {
+  await withIsolatedDatabase(async () => {
+    const runtime = createHeldRuntime();
+    const abortCalls: Array<{ provider: string; sessionId: string }> = [];
+    const dependencies = createDependencies(runtime.queryClaude, {
+      abort: async (provider, sessionId) => {
+        abortCalls.push({ provider, sessionId });
+        return true;
+      },
+    });
+    await withAgentServer(dependencies, async (baseUrl) => {
+      const pending = post(baseUrl, { projectPath: PROJECT_PATH, message: 'Run it', stream: false });
+      for (let i = 0; i < 50 && runtime.seen.length === 0; i += 1) {
+        await new Promise((resolve) => { setTimeout(resolve, 20); });
+      }
+      const [running] = chatRunRegistry.listRunningRuns();
+      assert.ok(running, 'the held run is listed before the abort');
+
+      const stopped = await abortSession(baseUrl, running.sessionId);
+      assert.equal(stopped.status, 200);
+      assert.deepEqual(await stopped.json(), {
+        success: true,
+        sessionId: running.sessionId,
+        aborted: true,
+      });
+      assert.deepEqual(abortCalls, [{ provider: 'claude', sessionId: running.sessionId }]);
+
+      // The provider notices the abort and its run resolves; the original
+      // HTTP request reports the aborted turn, as a tab-driven abort does.
+      runtime.release();
+      const response = await pending;
+      const body = await response.json() as { success: boolean; aborted?: boolean };
+      assert.equal(body.success, false);
+      assert.equal(body.aborted, true);
+      assert.deepEqual(chatRunRegistry.listRunningRuns(), []);
+    });
+  });
+});
+
+test('aborting an idle session is idempotent and an unknown one is 404', async () => {
+  await withIsolatedDatabase(async () => {
+    sessionsDb.createAppSession('app-idle', 'claude', PROJECT_PATH, 'Idle');
+    const runtime = createHeldRuntime();
+    runtime.release();
+    await withAgentServer(createDependencies(runtime.queryClaude), async (baseUrl) => {
+      const idle = await abortSession(baseUrl, 'app-idle');
+      assert.equal(idle.status, 200);
+      assert.deepEqual(await idle.json(), {
+        success: true,
+        sessionId: 'app-idle',
+        aborted: false,
+      });
+
+      const missing = await abortSession(baseUrl, 'missing');
+      assert.equal(missing.status, 404);
+    });
+  });
+});
+
+test('session status reports a running turn and then idle', async () => {
+  await withIsolatedDatabase(async () => {
+    const runtime = createHeldRuntime();
+    await withAgentServer(createDependencies(runtime.queryClaude), async (baseUrl) => {
+      const pending = post(baseUrl, { projectPath: PROJECT_PATH, message: 'Run it', stream: false });
+      for (let i = 0; i < 50 && runtime.seen.length === 0; i += 1) {
+        await new Promise((resolve) => { setTimeout(resolve, 20); });
+      }
+      const [running] = chatRunRegistry.listRunningRuns();
+      assert.ok(running);
+
+      const whileRunning = await getSessionStatus(baseUrl, running.sessionId);
+      assert.equal(whileRunning.status, 200);
+      const runningBody = await whileRunning.json() as {
+        status: string;
+        provider: string;
+        projectPath: string;
+        run: { startedAt: string; lastSeq: number } | null;
+      };
+      assert.equal(runningBody.status, 'running');
+      assert.equal(runningBody.provider, 'claude');
+      assert.equal(runningBody.projectPath, PROJECT_PATH);
+      assert.ok(runningBody.run);
+      assert.match(runningBody.run.startedAt, /^\d{4}-\d{2}-\d{2}T/);
+
+      runtime.release();
+      await pending;
+
+      const after = await getSessionStatus(baseUrl, 'native-1');
+      assert.equal(after.status, 200);
+      const idleBody = await after.json() as { sessionId: string; status: string; run: unknown };
+      assert.equal(idleBody.sessionId, running.sessionId, 'the provider-native id resolves to the app session');
+      assert.equal(idleBody.status, 'idle');
+      assert.equal(idleBody.run, null);
+
+      const missing = await getSessionStatus(baseUrl, 'missing');
+      assert.equal(missing.status, 404);
     });
   });
 });
