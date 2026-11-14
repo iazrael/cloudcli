@@ -479,6 +479,8 @@ export async function readDecryptedZCodeCredentials(
 export type ZCodeCodingPlanQuotaContext = {
   /** Raw coding-plan credential (`authorization` header, no Bearer prefix). */
   apiKey: string;
+  /** Start-plan zcode JWT (`Authorization: Bearer` for the zcode.z.ai gateway). */
+  zcodeJwtToken: string | null;
   /** Plan/provider family (`bigmodel`, `zai`, or legacy `bigmodel-*-coding-plan`). */
   planFamily: string;
   /** `org-…` organization id from the paired project key location, if stored. */
@@ -569,9 +571,17 @@ export async function readZCodeCodingPlanQuotaContext(
 
   const apiKeyEntries: Array<{ planFamily: string; customerId: string; apiKey: string }> = [];
   const locations = new Map<string, { organizationId: string | null; projectId: string | null }>();
+  let zcodeJwtToken: string | null = null;
 
   for (const [key, value] of Object.entries(rawMap)) {
     if (typeof value !== 'string') {
+      continue;
+    }
+
+    if (key === 'zcodejwttoken') {
+      // The start-plan zcode JWT authenticates the zcode.z.ai gateway endpoints
+      // (mcp usage) beside the coding-plan credential.
+      zcodeJwtToken = await decryptCredentialEntry(value, storageDir, env, overrides);
       continue;
     }
 
@@ -614,6 +624,7 @@ export async function readZCodeCodingPlanQuotaContext(
     const location = customerId ? locations.get(customerId) ?? null : null;
     return {
       apiKey,
+      zcodeJwtToken,
       planFamily,
       organizationId: location?.organizationId ?? null,
       projectId: location?.projectId ?? null,

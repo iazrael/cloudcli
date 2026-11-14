@@ -49,6 +49,9 @@ const DEFAULT_DEPENDENCIES: ZCodeQuotaDependencies = {
 
 const BIGMODEL_QUOTA_URL = 'https://bigmodel.cn/api/monitor/usage/quota/limit';
 const ZAI_QUOTA_URL = 'https://api.z.ai/api/monitor/usage/quota/limit';
+// The ZCode MCP call quota lives on the zcode gateway, not on the bigmodel
+// monitor, and its envelope answers `code: 0` instead of `code: 200`.
+const ZCODE_MCP_USAGE_URL = 'https://zcode.z.ai/api/v1/mcp/usage';
 // Reset-card ("用量重置额度") endpoints behind the coding-plan console; only the
 // personal plan segment is wired up — team accounts need org/project ids.
 const BIGMODEL_RESET_LIST_URL = 'https://bigmodel.cn/api/biz/customer-package-reset/list';
@@ -152,7 +155,7 @@ function normalizeQuotaLimit(limit: RawZCodeLimit): ProviderQuotaBucket | null {
 
     return {
       id: 'zcode-calls-limit',
-      name: 'Cycle Calls Limit',
+      name: 'Tool Calls Allowance',
       description: limit.usageDetails && limit.usageDetails.length > 0
         ? `${remaining} of ${usageTotal} calls remaining`
         : 'Cycle model and tool call quota',
@@ -249,9 +252,10 @@ export async function fetchZCodeQuota(
       }
 
       try {
-        const [limitsResult, resetResult] = await Promise.allSettled([
+        const [limitsResult, resetResult, mcpResult] = await Promise.allSettled([
           readLimitsPayload(deps, context),
           readResetCreditsQuietly(deps, context),
+          readMcpUsageBucket(deps, context),
         ]);
 
         if (limitsResult.status === 'rejected') {
@@ -268,6 +272,10 @@ export async function fetchZCodeQuota(
         // The reset-card inventory rides along when it can be read; a failing
         // card request must never take the quota display down with it.
         const resetCredits = resetResult.status === 'fulfilled' ? resetResult.value : undefined;
+        // Same for the ZCode MCP call quota: its failure only drops that bucket.
+        if (mcpResult.status === 'fulfilled' && mcpResult.value) {
+          normalized.groups[0].buckets.push(mcpResult.value);
+        }
         return resetCredits ? { ...normalized, resetCredits } : normalized;
       } catch {
         return null;
@@ -275,6 +283,61 @@ export async function fetchZCodeQuota(
     },
     deps.now,
   );
+}
+
+/**
+ * Reads the ZCode MCP call quota from the zcode.z.ai gateway. Auth is a dual
+ * header pair: the start-plan zcode JWT in `Authorization` beside the
+ * coding-plan credential in `X-Bigmodel-Authorization` (both as Bearer). The
+ * gateway envelope uses `code: 0` — unlike the bigmodel monitor endpoints'
+ * `code: 200` — and a missing/failing read only drops this bucket.
+ */
+async function readMcpUsageBucket(
+  deps: ZCodeQuotaDependencies,
+  context: ZCodeCodingPlanQuotaContext,
+): Promise<ProviderQuotaBucket | null> {
+  if (!context.zcodeJwtToken) {
+    return null;
+  }
+
+  const response = await deps.fetch(ZCODE_MCP_USAGE_URL, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${context.zcodeJwtToken}`,
+      'X-Bigmodel-Authorization': `Bearer ${context.apiKey}`,
+    },
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+  if (!response.ok) {
+    throw new Error(`Mcp usage endpoint returned HTTP ${response.status}`);
+  }
+
+  const record = readObjectRecord(await response.json());
+  const code = Number(record?.code);
+  if (!record || code !== 0) {
+    const message = readOptionalString(record?.msg) ?? 'unknown gateway error';
+    throw new Error(`Mcp usage endpoint rejected the request (code ${Number.isFinite(code) ? code : 'n/a'}): ${message}`);
+  }
+
+  const data = readObjectRecord(record.data);
+  const usage = readObjectRecord(data?.total_usage);
+  const limit = Number(usage?.limit);
+  const remaining = Number(usage?.remaining);
+  if (!Number.isFinite(limit) || limit <= 0) {
+    return null;
+  }
+  const usedRaw = Number(usage?.used);
+  const used = Number.isFinite(usedRaw) ? usedRaw : Math.max(0, limit - remaining);
+  const resetTime = toSafeIsoDate(Number(data?.next_refresh_at) * 1000);
+
+  return {
+    id: 'zcode-mcp-calls',
+    name: 'ZCode MCP Calls',
+    description: `${used} of ${limit} calls used`,
+    window: 'daily',
+    remainingFraction: Math.max(0, Math.min(1, remaining / limit)),
+    resetTime,
+  };
 }
 
 /**
@@ -286,8 +349,7 @@ async function readLimitsPayload(
   deps: ZCodeQuotaDependencies,
   context: ZCodeCodingPlanQuotaContext,
 ): Promise<unknown> {
-  const response = await deps.fetch(resolveQuotaUrl(context.planFamily), {
-    method: 'GET',
+  const response = await deps.fetch(resolveQuotaUrl(context.planFamily), {    method: 'GET',
     headers: buildQuotaAuthHeaders(context),
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });

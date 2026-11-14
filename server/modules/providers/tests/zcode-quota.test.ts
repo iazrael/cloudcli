@@ -46,9 +46,22 @@ function createRouteFetch(routes: Record<string, unknown>) {
 /** The coding-plan quota context the rewritten provider authenticates with. */
 const quotaContext: ZCodeCodingPlanQuotaContext = {
   apiKey: 'test-api-key-id.test-api-key-secret',
+  zcodeJwtToken: 'test-zcode-jwt',
   planFamily: 'bigmodel-team-coding-plan',
   organizationId: 'org-test-org',
   projectId: 'proj_test_project',
+};
+
+/** Captured from the live zcode.z.ai mcp/usage endpoint (2026-11-14). */
+const mcpUsageResponse = {
+  code: 0,
+  msg: '',
+  data: {
+    server_time: 1794641195,
+    next_refresh_at: 1794672000,
+    level: 'lite',
+    total_usage: { used: 0, limit: 1000, remaining: 1000 },
+  },
 };
 
 /** bigmodel prints card expiry in local `YYYY-MM-DD HH:mm:ss`, zone-less. */
@@ -319,6 +332,7 @@ describe('ZCode Credentials & Quota Provider', () => {
     const rawCredentials = {
       'account-provider:coding-plan:account:bigmodel-team-coding-plan:account:72411768202983769:api-key':
         encryptZCodeCredentialValueV2('mock-api-key', osKey, 'os'),
+      'zcodejwttoken': encryptZCodeCredentialValueV2('mock-zcode-jwt', osKey, 'os'),
       [locationKey('72411768202983769')]: encryptZCodeCredentialValueV2(JSON.stringify({
         organizationId: 'org-64D269e45DDa468e9B98462EB4f4B79D',
         projectId: 'proj_b0c1234',
@@ -335,6 +349,7 @@ describe('ZCode Credentials & Quota Provider', () => {
     const context = await readZCodeCodingPlanQuotaContext(tempDir);
     assert.deepEqual(context, {
       apiKey: 'mock-api-key',
+      zcodeJwtToken: 'mock-zcode-jwt',
       planFamily: 'bigmodel-team-coding-plan',
       organizationId: 'org-64D269e45DDa468e9B98462EB4f4B79D',
       projectId: 'proj_b0c1234',
@@ -355,6 +370,7 @@ describe('ZCode Credentials & Quota Provider', () => {
       'account-provider:coding-plan:account:bigmodel-team-coding-plan:account:72411768202983769:api-key':
         encryptZCodeCredentialValueV2('stale-revoked-api-key', osKey, 'os'),
       'oauth:active_provider': encryptZCodeCredentialValueV2('zai_cn', osKey, 'os'),
+      'zcodejwttoken': encryptZCodeCredentialValueV2('mock-zcode-jwt', osKey, 'os'),
       'oauth:zai_cn:access_token': encryptZCodeCredentialValueV2('zai-cn-account-center-token', osKey, 'os'),
       'oauth:zai_cn:user_info': encryptZCodeCredentialValueV2(JSON.stringify({
         user_id: '72411768202983769',
@@ -380,6 +396,7 @@ describe('ZCode Credentials & Quota Provider', () => {
     const context = await readZCodeCodingPlanQuotaContext(tempDir);
     assert.deepEqual(context, {
       apiKey: 'linked-bigmodel-jwt',
+      zcodeJwtToken: 'mock-zcode-jwt',
       planFamily: 'bigmodel',
       organizationId: 'org-64D269e45DDa468e9B98462EB4f4B79D',
       projectId: 'proj_b0c1234',
@@ -429,6 +446,7 @@ describe('ZCode Credentials & Quota Provider', () => {
 
     assert.deepEqual(await readZCodeCodingPlanQuotaContext(tempDir), {
       apiKey: 'direct-bigmodel-jwt',
+      zcodeJwtToken: null,
       planFamily: 'bigmodel',
       organizationId: 'org-bm',
       projectId: 'proj-bm',
@@ -446,6 +464,7 @@ describe('ZCode Credentials & Quota Provider', () => {
 
     assert.deepEqual(await readZCodeCodingPlanQuotaContext(tempDir), {
       apiKey: 'direct-zai-jwt',
+      zcodeJwtToken: null,
       planFamily: 'zai',
       organizationId: 'org-zai',
       projectId: 'proj-zai',
@@ -461,11 +480,13 @@ describe('ZCode Credentials & Quota Provider', () => {
     await fs.writeFile(path.join(v2Dir, 'credentials.json'), JSON.stringify({
       'account-provider:coding-plan:account:bigmodel-individual-coding-plan:account:123:api-key':
         encryptZCodeCredentialValueV2('solo-api-key', osKey, 'os'),
+      'zcodejwttoken': encryptZCodeCredentialValueV2('solo-zcode-jwt', osKey, 'os'),
     }), 'utf8');
 
     const context = await readZCodeCodingPlanQuotaContext(tempDir);
     assert.deepEqual(context, {
       apiKey: 'solo-api-key',
+      zcodeJwtToken: 'solo-zcode-jwt',
       planFamily: 'bigmodel-individual-coding-plan',
       organizationId: null,
       projectId: null,
@@ -491,6 +512,7 @@ describe('ZCode Credentials & Quota Provider', () => {
   test('normalizes the live bigmodel quota payload and sends api-key headers', async () => {
     const { fetchFn, requests } = createRouteFetch({
       '/api/monitor/usage/quota/limit': liveQuotaResponse,
+      '/api/v1/mcp/usage': mcpUsageResponse,
       '/api/biz/customer-package-reset/list': { code: 200, success: true, data: { fiveHourResets: [], weekResets: [] } },
     });
 
@@ -516,7 +538,7 @@ describe('ZCode Credentials & Quota Provider', () => {
     assert.equal(quota.groups.length, 1);
     const group = quota.groups[0];
     assert.equal(group.name, 'ZCode (LITE)');
-    assert.equal(group.buckets.length, 2);
+    assert.equal(group.buckets.length, 3);
 
     const callBucket = group.buckets.find((b) => b.id === 'zcode-calls-limit');
     assert.ok(callBucket);
@@ -526,6 +548,37 @@ describe('ZCode Credentials & Quota Provider', () => {
     const tokenBucket = group.buckets.find((b) => b.id === 'zcode-5h-tokens');
     assert.ok(tokenBucket);
     assert.equal(tokenBucket.remainingFraction, 0.65);
+
+    const mcpRequest = requests.find((request) => request.url.includes('/api/v1/mcp/usage'));
+    assert.ok(mcpRequest);
+    assert.equal(mcpRequest.headers.Authorization, `Bearer ${quotaContext.zcodeJwtToken}`);
+    assert.equal(mcpRequest.headers['X-Bigmodel-Authorization'], `Bearer ${quotaContext.apiKey}`);
+
+    const mcpBucket = group.buckets.find((b) => b.id === 'zcode-mcp-calls');
+    assert.ok(mcpBucket);
+    assert.equal(mcpBucket.name, 'ZCode MCP Calls');
+    assert.equal(mcpBucket.remainingFraction, 1);
+    assert.equal(mcpBucket.resetTime, new Date(1794672000 * 1000).toISOString());
+  });
+
+  test('keeps the quota payload when the mcp usage read fails', async () => {
+    const failingMcpFetch = (async (url: string | URL | Request) => {
+      if (String(url).includes('/api/v1/mcp/usage')) {
+        return { ok: true, json: async () => ({ code: 401, msg: '令牌已过期或验证不正确' }) } as Response;
+      }
+      if (String(url).includes('/api/biz/customer-package-reset/list')) {
+        return { ok: true, json: async () => ({ code: 200, success: true, data: { fiveHourResets: [], weekResets: [] } }) } as Response;
+      }
+      return { ok: true, json: async () => liveQuotaResponse } as Response;
+    }) as typeof globalThis.fetch;
+
+    const quota = await fetchZCodeQuota({ forceRefresh: true }, {
+      fetch: failingMcpFetch,
+      readQuotaContext: async () => quotaContext,
+      now: () => 1_000,
+    });
+    assert.ok(quota);
+    assert.equal(quota.groups[0].buckets.length, 2, 'the mcp bucket stays absent on failure');
   });
 
   test('chooses the quota host by plan family', async () => {
@@ -586,18 +639,18 @@ describe('ZCode Credentials & Quota Provider', () => {
       now: () => 1000,
     };
 
-    // First call fetches — one request for the limits, one for the reset cards
+    // First call fetches — one request each for the limits, the reset cards, and mcp usage
     await fetchZCodeQuota({}, deps);
-    assert.equal(fetchCount, 2);
+    assert.equal(fetchCount, 3);
 
     // Call within TTL returns cached without fetch
     const cached = await fetchZCodeQuota({}, { ...deps, now: () => 10_000 });
     assert.ok(cached);
-    assert.equal(fetchCount, 2);
+    assert.equal(fetchCount, 3);
 
     // Call with forceRefresh fetches regardless of cache
     await fetchZCodeQuota({ forceRefresh: true }, { ...deps, now: () => 20_000 });
-    assert.equal(fetchCount, 4);
+    assert.equal(fetchCount, 6);
   });
 
   test('gracefully degrades to null on HTTP error or network failure', async () => {
