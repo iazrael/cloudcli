@@ -11,14 +11,51 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
 import providerRouter from '@/modules/providers/provider.routes.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
-import type { IProvider } from '@/shared/interfaces.js';
-import type { BackgroundTaskSummary, WorkflowAgentActivity } from '@/shared/types.js';
+import type { IProvider, IProviderModels } from '@/shared/interfaces.js';
+import type { BackgroundTaskSummary, ProviderModelsDefinition, WorkflowAgentActivity } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
+
+/**
+ * Swaps the named providers' model catalogs for static ones and returns a
+ * restore handle. Claude and OpenCode list models from their installed CLIs —
+ * a first load that fails throws by design — so any test that only exercises
+ * the route logic around the catalog pins the catalog instead of depending on
+ * whichever CLI binaries this machine happens to have.
+ */
+function stubModelCatalogs(providers: Array<'claude' | 'opencode'>): { restore: () => void } {
+  const staticCatalog: ProviderModelsDefinition = {
+    OPTIONS: [{ value: 'default', label: 'Default' }],
+    DEFAULT: 'default',
+  };
+  const swapped: Array<{ provider: IProvider; models: IProviderModels }> = [];
+  for (const id of providers) {
+    const provider = providerRegistry.resolveProvider(id);
+    swapped.push({ provider, models: provider.models });
+    Object.defineProperty(provider, 'models', {
+      value: {
+        getSupportedModels: async () => staticCatalog,
+        getCurrentActiveModel: async () => ({ model: staticCatalog.DEFAULT }),
+      } satisfies IProviderModels,
+      configurable: true,
+      writable: true,
+    });
+  }
+  return {
+    restore: () => {
+      for (const { provider, models } of swapped) {
+        Object.defineProperty(provider, 'models', {
+          value: models,
+          configurable: true,
+          writable: true,
+        });
+      }
+    },
+  };
+}
 
 async function withProviderServer(
   run: (baseUrl: string, workspacePath: string) => Promise<void>,
-): Promise<void> {
-  const previousDatabasePath = process.env.DATABASE_PATH;
+): Promise<void> {  const previousDatabasePath = process.env.DATABASE_PATH;
   const tempDirectory = await mkdtemp(path.join(os.tmpdir(), 'provider-routes-'));
 
   closeConnection();
@@ -321,6 +358,13 @@ test('the custom-only route restricts a provider catalog to its custom models', 
 
 test('custom model routes accept, validate, and return reasoning-effort levels', async () => {
   await withProviderServer(async (baseUrl) => {
+    // Claude and OpenCode resolve their catalogs from the installed CLI, and
+    // a first load that fails is an error by design (the picker offers a
+    // retry). The effort rules under test live in the capability matrix, not
+    // in the CLI answer, so the catalogs stand in statically here instead of
+    // reaching for whichever binaries this machine happens to have.
+    const swappedModels = stubModelCatalogs(['claude', 'opencode']);
+    try {
     const postModel = async (provider: string, body: unknown) => {
       const response = await fetch(`${baseUrl}/api/providers/${provider}/models`, {
         method: 'POST',
@@ -413,6 +457,10 @@ test('custom model routes accept, validate, and return reasoning-effort levels',
     assert.equal(oversized.status, 400);
     assert.equal(oversized.payload.error?.code, 'INVALID_MODEL_EFFORT');
     assert.match(oversized.payload.error?.message ?? '', /at most 32 effort levels/);
+
+    } finally {
+      swappedModels.restore();
+    }
   });
 });
 
