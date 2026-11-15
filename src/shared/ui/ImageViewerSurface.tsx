@@ -393,29 +393,28 @@ export function ImageViewerSurface({
         onTouchEnd={handleTouchEnd}
         onTouchCancel={handleTouchEnd}
       >
-        <div
-          className={`flex max-h-full max-w-full items-center justify-center will-change-transform ${transformTransitionClass}`}
+        {/* 尺寸类必须直接落在 img 上：中间包一层自适应高度的元素会让百分比
+            max-height 失去解析基准，长图就只剩 max-width 生效，溢出被裁。
+            img 是定高容器的直接 flex 子项时 max-h-full 才有效，默认即整图可见。 */}
+        <img
+          src={src}
+          referrerPolicy="no-referrer" decoding="async"
+          onError={() => { setDimensions(null); onError?.(); }}
+          onLoad={(event) => {
+            const { naturalWidth, naturalHeight } = event.currentTarget;
+            setDimensions(naturalWidth && naturalHeight ? { src, width: naturalWidth, height: naturalHeight } : null);
+            onLoad?.();
+          }}
+          alt={alt}
+          draggable={false}
+          className={`pointer-events-none max-h-full max-w-full select-none object-contain drop-shadow-sm will-change-transform ${transformTransitionClass}`}
           style={{
             transform: `translate3d(${position.x}px, ${position.y}px, 0) scale(${scale})`,
             transformOrigin: 'center center',
-            // 背景与图片同尺寸缩放，透明底图在黑白衬底之间切换可见性。
+            // 背景随图片一起缩放，透明底图在黑白衬底之间切换可见性。
             backgroundColor: backdrop === 'dark' ? '#000000' : backdrop === 'light' ? '#ffffff' : undefined,
           }}
-        >
-          <img
-            src={src}
-            referrerPolicy="no-referrer" decoding="async"
-            onError={() => { setDimensions(null); onError?.(); }}
-            onLoad={(event) => {
-              const { naturalWidth, naturalHeight } = event.currentTarget;
-              setDimensions(naturalWidth && naturalHeight ? { src, width: naturalWidth, height: naturalHeight } : null);
-              onLoad?.();
-            }}
-            alt={alt}
-            draggable={false}
-            className="pointer-events-none max-h-full max-w-full select-none object-contain drop-shadow-sm"
-          />
-        </div>
+        />
       </div>
       <footer className={`relative z-10 max-h-[30%] shrink-0 touch-auto select-text overflow-y-auto border-t px-4 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2 text-xs ${dark ? 'border-white/10 bg-black/60 text-white/80' : 'border-border bg-background text-muted-foreground'}`}>
         {visibleDimensions && <p className="mb-1 text-center font-mono">{visibleDimensions.width} × {visibleDimensions.height} px</p>}
