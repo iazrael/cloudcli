@@ -14,10 +14,12 @@ import type { CodeEditorFile, Project } from '@/shared/types';
 
 const readFile = vi.fn(async () => ({ ok: true, json: async () => ({ content: 'hello' }) }));
 const saveFile = vi.fn(async () => ({ ok: true, json: async () => ({ success: true }) }));
+const readExternalFile = vi.fn(async () => ({ ok: true, json: async () => ({ content: 'external readme' }) }));
 
 vi.mock('@/shared/api', () => ({
   api: { readFile, saveFile },
   readApiJson: async (response: { json: () => Promise<unknown> }) => response.json(),
+  readExternalFile,
 }));
 
 vi.mock('@/shared/context/ThemeContext', () => ({
@@ -449,4 +451,38 @@ test('the same path in another project is a different file, so it asks first', (
   confirm.mockReturnValue(true);
   act(() => result.current.handleFileOpen('/repo/sub/a.txt'));
   assert.equal(result.current.editingFile?.projectId, 'p2');
+});
+
+// A workspace-external read-only document (the `只读` badge) loads through the
+// external endpoint. Its baseline must follow the loaded content too, or the
+// freshly opened file is born dirty and every close asks to discard nothing.
+test('a read-only external file opens clean and closes without asking', async () => {
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+  const externalFile: CodeEditorFile = { name: 'README.md', path: '/Volumes/ext/repo/README.md', isReadOnlyExternal: true };
+  const onClose = vi.fn();
+  render(<CodeEditor file={externalFile} onClose={onClose} />);
+  const editor = await screen.findByTestId<HTMLTextAreaElement>('editor');
+  await waitFor(() => assert.equal(editor.value, 'external readme'));
+
+  assert.equal(isDirtyDotShown(), false);
+  pressEscape();
+  assert.equal(confirm.mock.calls.length, 0);
+  assert.equal(onClose.mock.calls.length, 1);
+});
+
+// Real edits in a read-only buffer are still at risk (they cannot be saved),
+// so the guard keeps asking when the user actually typed something.
+test('edits in a read-only external file still count as unsaved', async () => {
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+  const externalFile: CodeEditorFile = { name: 'README.md', path: '/Volumes/ext/repo/README.md', isReadOnlyExternal: true };
+  const onClose = vi.fn();
+  render(<CodeEditor file={externalFile} onClose={onClose} />);
+  const editor = await screen.findByTestId<HTMLTextAreaElement>('editor');
+  await waitFor(() => assert.equal(editor.value, 'external readme'));
+
+  typeInto(editor, 'external readme edited');
+  assert.equal(isDirtyDotShown(), true);
+  pressEscape();
+  assert.equal(confirm.mock.calls.length, 1);
+  assert.equal(onClose.mock.calls.length, 0);
 });

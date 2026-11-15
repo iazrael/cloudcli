@@ -108,7 +108,13 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
           }
 
           const externalData = await externalResponse.json();
-          setContent(externalData.content);
+          if (isStaleLoad()) {
+            return;
+          }
+          // The loaded text is also the saved baseline: setting only the buffer
+          // left every external file born dirty, so closing it always asked to
+          // discard changes that were never made.
+          applyLoadedContent(externalData.content);
           return;
         }
 
