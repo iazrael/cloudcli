@@ -115,15 +115,23 @@ function isCodexGeneratedImage(record: Record<string, unknown>): boolean {
     || (record.type === 'Extension' && record.kind === 'image_gen.generation');
 }
 
-function storeInlineImage(mimeType: string, encoded: string): string {
+/**
+ * Validate an inline image and store it as a content-addressed asset. Returns
+ * null when the value is not a usable image (unknown type, truncated or corrupt
+ * base64): engines embed cut-off previews in tool logs, and treating such a row
+ * as fatal makes the whole session history unreadable. The caller keeps the
+ * original value verbatim. Storage failures still propagate — those mean the
+ * display-asset store itself is broken.
+ */
+function storeInlineImage(mimeType: string, encoded: string): string | null {
   const extension = INLINE_IMAGE_EXTENSIONS[mimeType.toLowerCase()];
-  if (!extension) throw new Error(`Unsupported inline image type: ${mimeType}`);
+  if (!extension) return null;
   if (!encoded || encoded.length % 4 === 1 || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) {
-    throw new Error('Invalid inline image base64');
+    return null;
   }
   const bytes = Buffer.from(encoded, 'base64');
   if (bytes.length === 0 || bytes.toString('base64').replace(/=+$/, '') !== encoded.replace(/=+$/, '')) {
-    throw new Error('Invalid inline image base64');
+    return null;
   }
   const filename = `inline-${sha256Hex(bytes)}.${extension}`;
   // Exclusive creation never follows a pre-existing symlink. Identical
@@ -152,7 +160,9 @@ export function hasVisibleText(text: string): boolean {
  * authenticated asset references; engine-owned inputs are never mutated.
  * JSON strings are inspected only when they contain an image marker. The
  * operation is idempotent and intentionally has no in-memory image cache.
- * Invalid base64 and storage failures propagate to the caller.
+ * Inline-image values that fail validation stay verbatim (they are engine
+ * content, e.g. truncated tool-log previews); only display-asset storage
+ * failures propagate to the caller.
  */
 export function compactProviderPayload<T>(value: T): T {
   const seen = new WeakMap<object, unknown>();
@@ -163,8 +173,8 @@ export function compactProviderPayload<T>(value: T): T {
       if (!previewText && /^(content|text|message)$/.test(field)) return input;
       if (input.startsWith('data:image/')) {
         const match = /^data:([^;,]+);base64,([\s\S]*)$/.exec(input);
-        if (!match) throw new Error('Invalid inline image base64 URI');
-        return storeInlineImage(match[1], match[2]);
+        if (!match) return input;
+        return storeInlineImage(match[1], match[2]) ?? input;
       }
       if ((input.startsWith('{') || input.startsWith('['))
         && (input.includes('"image"') || input.includes('data:image/'))) {
@@ -194,14 +204,18 @@ export function compactProviderPayload<T>(value: T): T {
     const childPreviewText = toolResult || (previewText && !userTurn);
     if (record.type === 'base64' && typeof record.media_type === 'string'
       && record.media_type.startsWith('image/') && typeof record.data === 'string') {
-      const result = { type: 'url', url: storeInlineImage(record.media_type, record.data) };
+      const url = storeInlineImage(record.media_type, record.data);
+      if (url === null) return input;
+      const result = { type: 'url', url };
       seen.set(input, result);
       return result;
     }
     if (record.type === 'image' && typeof record.data === 'string'
       && typeof (record.mimeType ?? record.mime_type) === 'string') {
+      const uri = storeInlineImage(String(record.mimeType ?? record.mime_type), record.data);
+      if (uri === null) return input;
       const { data, ...rest } = record;
-      const result = { ...rest, uri: storeInlineImage(String(record.mimeType ?? record.mime_type), data) };
+      const result = { ...rest, uri };
       seen.set(input, result);
       return result;
     }
@@ -209,7 +223,9 @@ export function compactProviderPayload<T>(value: T): T {
       const encoded = record.result;
       const mimeType = BASE64_IMAGE_SIGNATURES.find(([prefix]) => encoded.startsWith(prefix))?.[1];
       if (mimeType) {
-        const result = { ...record, result: storeInlineImage(mimeType, encoded) };
+        const stored = storeInlineImage(mimeType, encoded);
+        if (stored === null) return input;
+        const result = { ...record, result: stored };
         seen.set(input, result);
         return result;
       }

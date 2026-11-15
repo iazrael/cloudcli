@@ -79,9 +79,23 @@ test('payload compaction preserves its input and reuses data URIs inside seriali
   });
 });
 
-test('malformed image data is rejected instead of silently becoming a corrupt asset', async () => {
-  await withAssetStore(() => {
-    assert.throws(() => sharedUtils.compactProviderPayload({ uri: 'data:image/png;base64,%%%invalid%%%' }), /base64/i);
+test('malformed image data stays verbatim instead of poisoning the whole payload', async () => {
+  await withAssetStore(async (home) => {
+    // A truncated or corrupt inline image is provider log content, not an
+    // asset. Codex image-generation tool output embeds a deliberately cut
+    // `image_url_prefix` preview; failing one such row must never make the
+    // whole session history unreadable. Keep the value verbatim and store
+    // nothing, so it can also never become a corrupt asset.
+    const truncated = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAABu4AAAN3CAYAAADd2qx3AABcZmNhQlgAAF';
+    const input = {
+      uri: 'data:image/png;base64,%%%invalid%%%',
+      toolLog: JSON.stringify({ key: 'cloud', image_url_prefix: truncated }),
+      record: { type: 'base64', media_type: 'image/png', data: 'not-base64!' },
+      generated: { type: 'imageGeneration', result: truncated.slice('data:image/png;base64,'.length) },
+    };
+    const compact = sharedUtils.compactProviderPayload(input);
+    assert.deepEqual(compact, input);
+    assert.ok(!fs.existsSync(path.join(home, '.cloudcli/assets')), 'invalid image data must not be stored');
   });
 });
 
