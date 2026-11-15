@@ -197,6 +197,18 @@ const ENGINE_CASES: readonly EngineCase[] = [
           payload: { text: 'hello' },
         },
       },
+      {
+        // The reasoning stream names the message only through the payload's
+        // assistantMessageId; the envelope id is a fresh per-event UUID that
+        // joins nothing and must not leak into the row id.
+        label: 'live assistant reasoning',
+        raw: {
+          type: 'model_streaming',
+          id: 'd1f2f0d4-0f6a-4a1e-9d2a-6c9f2a1b7c33',
+          sessionId: SESSION_ID,
+          payload: { kind: 'reasoning_delta', delta: 'thinking it through', assistantMessageId: 'zcode-message-1' },
+        },
+      },
     ],
   },
 ];

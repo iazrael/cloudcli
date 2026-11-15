@@ -827,6 +827,9 @@ export class ZCodeSessionsProvider implements IProviderSessions {
     // Index of each pushed text row by source message id, so a file part can
     // attach its materialized image onto the message's existing text row.
     const textRowIndexByMessageId = new Map<string, number>();
+    // Index of each message's folded thinking row, so the message's reasoning
+    // parts continue the row the first part opened instead of splitting it.
+    const reasoningRowIndexByMessageId = new Map<string, number>();
 
     for (const row of rows) {
       const timestamp = normalizeProviderTimestamp(row.part_time_created ?? row.message_time_created);
@@ -993,18 +996,30 @@ export class ZCodeSessionsProvider implements IProviderSessions {
         continue;
       }
 
-      // Handle thinking/reasoning parts
+      // Handle thinking/reasoning parts. One message folds into one row: the
+      // live stream keys every reasoning block of the message by the message
+      // id (`${assistantMessageId}_reasoning`), so the persisted parts must
+      // fold the same way or the streamed block and the persisted copies
+      // would disagree on how many rows one reply's thinking owns.
       if (partType === 'reasoning' || partType === 'thinking') {
         const content = extractText(partData);
         if (content.trim()) {
-          normalized.push(createNormalizedMessage({
-            id: baseId,
-            sessionId,
-            timestamp,
-            provider: PROVIDER,
-            kind: 'thinking',
-            content,
-          }));
+          const existingIndex = reasoningRowIndexByMessageId.get(row.message_id);
+          if (existingIndex !== undefined) {
+            // Blocks continue one row; the newline mirrors what the live
+            // stream inserts between two blocks of the same message.
+            normalized[existingIndex].content += `\n${content}`;
+          } else {
+            normalized.push(createNormalizedMessage({
+              id: `${row.message_id}_reasoning`,
+              sessionId,
+              timestamp,
+              provider: PROVIDER,
+              kind: 'thinking',
+              content,
+            }));
+            reasoningRowIndexByMessageId.set(row.message_id, normalized.length - 1);
+          }
         }
         continue;
       }

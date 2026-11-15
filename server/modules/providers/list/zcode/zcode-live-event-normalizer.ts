@@ -411,7 +411,23 @@ export class ZCodeLiveEventNormalizer {
    * update names the summary message the row is called after.
    */
   private readonly compactionSummaries = new Map<string, string>();
-  private readonly reasoningBlockIds = new Map<string, string>();
+  /**
+   * Per-session message id of the assistant reasoning segment currently
+   * streaming. The reasoning events name their message through
+   * `payload.assistantMessageId`, and the row id is that message id — the
+   * same identity the history read derives — so the streamed block and the
+   * persisted one are one row. Generations that omit the field fall back to
+   * the first delta's envelope id, cached like {@link textRowMessageIds}.
+   */
+  private readonly reasoningRowMessageIds = new Map<string, string>();
+  /**
+   * Per-session message id whose reasoning fold is open: the last message a
+   * named reasoning block belonged to. A second block of the same message
+   * continues that message's folded row (with a newline), while a different
+   * message opens a new one. Survives `reasoning_end` on purpose — a block
+   * boundary is exactly what it must outlive.
+   */
+  private readonly reasoningFoldMessageIds = new Map<string, string>();
   /**
    * Per-toolCallId parameter streams, keyed by session first. The engine
    * streams several parallel calls' arguments interleaved (each
@@ -594,7 +610,8 @@ export class ZCodeLiveEventNormalizer {
    */
   resetSession(sessionId: string | null): void {
     const stateKey = sessionId ?? '';
-    this.reasoningBlockIds.delete(stateKey);
+    this.reasoningRowMessageIds.delete(stateKey);
+    this.reasoningFoldMessageIds.delete(stateKey);
     this.toolInputStreams.delete(stateKey);
     this.textRowMessageIds.delete(stateKey);
     this.compactionSummaries.delete(stateKey);
@@ -653,8 +670,22 @@ export class ZCodeLiveEventNormalizer {
     const stateKey = sessionId ?? '';
 
     if (kind === 'reasoning_start') {
-      this.openReasoningBlock(stateKey, baseId);
-      return [];
+      const named = readOptionalString(payload.assistantMessageId);
+      // A message's next block continues the row the first block opened: emit
+      // the newline the history read inserts between the message's parts.
+      const continued = named !== undefined && named === this.reasoningFoldMessageIds.get(stateKey);
+      const rowId = this.resolveReasoningRowId(stateKey, payload, baseId);
+      if (!continued) {
+        return [];
+      }
+      return [createNormalizedMessage({
+        id: rowId,
+        sessionId,
+        timestamp,
+        provider: PROVIDER,
+        kind: 'thinking',
+        content: '\n',
+      })];
     }
 
     if (kind === 'reasoning_delta') {
@@ -663,7 +694,7 @@ export class ZCodeLiveEventNormalizer {
         return [];
       }
       return [createNormalizedMessage({
-        id: this.openReasoningBlock(stateKey, baseId),
+        id: this.resolveReasoningRowId(stateKey, payload, baseId),
         sessionId,
         timestamp,
         provider: PROVIDER,
@@ -673,7 +704,7 @@ export class ZCodeLiveEventNormalizer {
     }
 
     if (kind === 'reasoning_end') {
-      this.reasoningBlockIds.delete(stateKey);
+      this.reasoningRowMessageIds.delete(stateKey);
       return [];
     }
 
@@ -682,7 +713,7 @@ export class ZCodeLiveEventNormalizer {
     }
 
     if (kind) {
-      this.reasoningBlockIds.delete(stateKey);
+      this.reasoningRowMessageIds.delete(stateKey);
     }
 
     if (kind === 'text_start' || kind === 'text_end') {
@@ -782,22 +813,28 @@ export class ZCodeLiveEventNormalizer {
   }
 
   /**
-   * The id every delta of one reasoning segment is emitted under.
-   *
-   * Derived from the engine's own id for the event that opened the segment,
-   * so a history read of the same segment lands on the same id and the client
-   * does not render the streamed block beside the persisted one. The cache
-   * keeps the later deltas on the opening event's id even when the engine
-   * numbers each delta separately.
+   * The id every delta of one reasoning segment is emitted under, and
+   * therefore the identity of its row: the message's reasoning folds into one
+   * row named after the message, the same derivation the history read makes
+   * from its persisted parts, so the streamed block and the persisted one are
+   * one row. The cache keeps the later deltas on the opening delta's id even
+   * when the engine numbers each delta separately, and generations that send
+   * no `assistantMessageId` fall back to the envelope id there — a row that
+   * cannot reconcile with history, which the wire contract names.
    */
-  private openReasoningBlock(stateKey: string, baseId: string): string {
-    const existing = this.reasoningBlockIds.get(stateKey);
-    if (existing) {
-      return existing;
+  private resolveReasoningRowId(stateKey: string, payload: AnyRecord, baseId: string): string {
+    const named = readOptionalString(payload.assistantMessageId);
+    if (named) {
+      this.reasoningRowMessageIds.set(stateKey, named);
+      this.reasoningFoldMessageIds.set(stateKey, named);
+      return `${named}_reasoning`;
     }
-    const id = `${baseId}_reasoning`;
-    this.reasoningBlockIds.set(stateKey, id);
-    return id;
+    const cached = this.reasoningRowMessageIds.get(stateKey);
+    if (cached) {
+      return `${cached}_reasoning`;
+    }
+    this.reasoningRowMessageIds.set(stateKey, baseId);
+    return `${baseId}_reasoning`;
   }
 
   /**

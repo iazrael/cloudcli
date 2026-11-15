@@ -11,6 +11,7 @@ import { ZCodeSessionSynchronizer } from '@/modules/providers/list/zcode/zcode-s
 import { ZCodeLiveEventNormalizer } from '@/modules/providers/list/zcode/zcode-live-event-normalizer.js';
 import { ZCodeSessionsProvider } from '@/modules/providers/list/zcode/zcode-sessions.provider.js';
 import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
+import { enforceNormalizedMessageContract } from '@/shared/normalized-message-contract.js';
 import { AppError } from '@/shared/utils.js';
 
 import { createWorkspaceFixture } from './workspace-fixture.js';
@@ -145,8 +146,9 @@ test('consecutive reasoning deltas of one thinking segment share one stable id',
     { type: 'model_streaming', id: 'zmsg_7', payload: { kind: 'reasoning_delta', delta: 'Let me start' } },
     'sess_1'
   );
-  // The engine numbers each delta separately; the segment keeps the id of the
-  // event that opened it so a history read of the same block matches.
+  // Degraded path: the engine numbered each delta separately and sent no
+  // assistantMessageId, so the segment keeps the opening event's id and
+  // cannot match a history read — the contract names that violation.
   const second = provider.normalizeMessage(
     { type: 'model_streaming', id: 'zmsg_8', payload: { kind: 'reasoning_delta', delta: ' and check' } },
     'sess_1'
@@ -156,6 +158,74 @@ test('consecutive reasoning deltas of one thinking segment share one stable id',
   assert.equal(second[0].kind, 'thinking');
   assert.equal(second[0].id, first[0].id);
   assert.equal(first[0].id, 'zmsg_7_reasoning');
+});
+
+test('reasoning deltas take the assistant message id as their row identity', () => {
+  const provider = new ZCodeSessionsProvider();
+  const first = provider.normalizeMessage(
+    {
+      type: 'model_streaming',
+      // The engine mints a fresh envelope id per event; only the payload's
+      // assistantMessageId names the message both paths persist under.
+      id: 'd1f2f0d4-0f6a-4a1e-9d2a-6c9f2a1b7c33',
+      payload: { kind: 'reasoning_delta', delta: 'Let me start', assistantMessageId: 'msg_muaj6bc0_a3536698' },
+    },
+    'sess_1'
+  );
+  const second = provider.normalizeMessage(
+    {
+      type: 'model_streaming',
+      id: '7c3a9e21-4b8d-4e5f-9a2b-1d6e8f0a3c5b',
+      payload: { kind: 'reasoning_delta', delta: ' and check', assistantMessageId: 'msg_muaj6bc0_a3536698' },
+    },
+    'sess_1'
+  );
+
+  assert.equal(first[0].id, 'msg_muaj6bc0_a3536698_reasoning');
+  assert.equal(second[0].id, first[0].id);
+  const checked = enforceNormalizedMessageContract(first[0]);
+  assert.ok(checked.ok, 'rejected by the contract');
+  assert.deepEqual(checked.contractViolations, []);
+});
+
+test('separate reasoning blocks of one message fold into the same row id', () => {
+  const provider = new ZCodeSessionsProvider();
+  const firstBlock = provider.normalizeMessage(
+    { type: 'model_streaming', payload: { kind: 'reasoning_delta', delta: 'first thought', assistantMessageId: 'msg_a' } },
+    'sess_1'
+  );
+  provider.normalizeMessage({ type: 'model_streaming', payload: { kind: 'reasoning_end', delta: '' } }, 'sess_1');
+  const boundary = provider.normalizeMessage(
+    { type: 'model_streaming', payload: { kind: 'reasoning_start', delta: '', assistantMessageId: 'msg_a' } },
+    'sess_1'
+  );
+  const secondBlock = provider.normalizeMessage(
+    { type: 'model_streaming', payload: { kind: 'reasoning_delta', delta: 'second thought', assistantMessageId: 'msg_a' } },
+    'sess_1'
+  );
+
+  assert.equal(firstBlock[0].id, 'msg_a_reasoning');
+  assert.equal(secondBlock[0].id, 'msg_a_reasoning');
+  // The continued block opens with a newline so the folded row keeps the two
+  // blocks' shapes, the way the history read joins the persisted parts.
+  assert.equal(boundary.length, 1);
+  assert.equal(boundary[0].id, 'msg_a_reasoning');
+  assert.equal(boundary[0].content, '\n');
+});
+
+test('reasoning of another assistant message gets its own row id', () => {
+  const provider = new ZCodeSessionsProvider();
+  const first = provider.normalizeMessage(
+    { type: 'model_streaming', payload: { kind: 'reasoning_delta', delta: 'first reply thinks', assistantMessageId: 'msg_a' } },
+    'sess_1'
+  );
+  const second = provider.normalizeMessage(
+    { type: 'model_streaming', payload: { kind: 'reasoning_delta', delta: 'second reply thinks', assistantMessageId: 'msg_b' } },
+    'sess_1'
+  );
+
+  assert.equal(first[0].id, 'msg_a_reasoning');
+  assert.equal(second[0].id, 'msg_b_reasoning');
 });
 
 test('reasoning boundary markers emit nothing but open and close the block', () => {
@@ -714,6 +784,45 @@ test('fetchHistory loads and paginates the fixture database', async () => {
     const page = await provider.fetchHistory('sess_hist', { limit: 2, offset: 0 });
     assert.equal(page.messages.length, 2);
     assert.equal(page.hasMore, true);
+  });
+});
+
+test('fetchHistory folds a message reasoning parts into one row the live path names too', async () => {
+  await withZCodeStorage(async (storageDir) => {
+    await createFixtureDatabase(storageDir, 'sess_fold');
+    const db = new Database(path.join(storageDir, 'cli', 'db', 'db.sqlite'));
+    try {
+      const insertPart = db.prepare(
+        'INSERT INTO part (id, message_id, session_id, time_created, time_updated, data, sequence) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      );
+      // A second reasoning block on the same assistant message, between the
+      // first one and the text part.
+      insertPart.run(
+        'part_reasoning_2', 'msg_asst', 'sess_fold', 2050, 2050,
+        JSON.stringify({ type: 'reasoning', text: ' and then the tools' }), 1
+      );
+    } finally {
+      db.close();
+    }
+
+    const provider = new ZCodeSessionsProvider();
+    const history = await provider.fetchHistory('sess_fold');
+    const thinking = history.messages.filter((message) => message.kind === 'thinking');
+
+    assert.equal(thinking.length, 1);
+    assert.equal(thinking[0].id, 'msg_asst_reasoning');
+    assert.equal(thinking[0].content, 'Let me check the directory\nand then the tools');
+
+    // The live path derives the same id from the engine's streaming payload,
+    // so the streamed block and the persisted one are one row.
+    const live = provider.normalizeMessage(
+      {
+        type: 'model_streaming',
+        payload: { kind: 'reasoning_delta', delta: 'Let me check the directory', assistantMessageId: 'msg_asst' },
+      },
+      'sess_fold'
+    );
+    assert.equal(live[0].id, thinking[0].id);
   });
 });
 
