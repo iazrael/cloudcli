@@ -24,6 +24,18 @@ it('the image editor loads a signed URL instead of fetching image bytes as a Blo
   expect(fetchMock).not.toHaveBeenCalled();
 });
 
+it('the audio preview loads a signed URL instead of fetching the file as a Blob', async () => {
+  const fetchMock = vi.spyOn(globalThis, 'fetch');
+  const { container } = render(<CodeEditorMediaPreview file={{ name: 'bgm.wav', path: '/repo/bgm.wav', projectId: 'editor-p' }}
+    kind="audio" projectId="editor-p" isSidebar isFullscreen={false} onClose={() => {}} onToggleFullscreen={() => {}}
+    labels={{ loading: 'loading', error: 'error', openInNewTab: 'open', fullscreen: 'full', exitFullscreen: 'exit', close: 'close' }} />);
+  await screen.findByText('bgm.wav');
+  // <audio> 无隐式 ARIA 角色，按元素查。
+  expect(container.querySelector('audio')?.getAttribute('src')).toBe('/api/media/images?ticket=editor');
+  expect(requestImageUrls).toHaveBeenCalledWith([expect.objectContaining({ kind: 'project', projectId: 'editor-p', path: '/repo/bgm.wav' })]);
+  expect(fetchMock).not.toHaveBeenCalled();
+});
+
 it('renews an expired ticket before opening an image in a new tab', async () => {
   const replace = vi.fn();
   const popup = { opener: {}, document: { title: '' }, location: { replace }, close: vi.fn() };

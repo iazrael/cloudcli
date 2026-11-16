@@ -70,6 +70,21 @@ test('replacing an image after inspection cannot return replacement bytes; destr
   });
 });
 
+test('audio files can be signed for streaming preview; other binaries stay rejected', async () => {
+  await fixture(async ({ files, project }) => {
+    await writeFile(path.join(project, 'bgm.wav'), 'WAVBYTES');
+    await writeFile(path.join(project, 'notes.html'), '<p>hi</p>');
+    const inspected = await files.resolveImage({ kind: 'project', projectId: 'p', path: 'bgm.wav' });
+    assert.equal(inspected.contentType, 'audio/wav');
+    const stream = await files.openImage(inspected);
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+    assert.deepEqual(Buffer.concat(chunks), Buffer.from('WAVBYTES'));
+    await assert.rejects(files.resolveImage({ kind: 'project', projectId: 'p', path: 'notes.html' }),
+      (error: unknown) => error instanceof AppError && error.statusCode === 415);
+  });
+});
+
 test('extensionless PNG screenshots and APNG previews remain readable', async () => {
   await fixture(async ({ files, project }) => {
     const png = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex');

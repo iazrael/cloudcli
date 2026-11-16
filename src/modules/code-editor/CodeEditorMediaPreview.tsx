@@ -75,12 +75,15 @@ export default function CodeEditorMediaPreview({
   const isExternal = Boolean(file.isReadOnlyExternal);
   const sourceKey = `${isExternal ? 'external' : (projectId ?? '')}:${file.path}:${kind}`;
 
-  const signed = useSignedImage(kind === 'image' ? isExternal
+  // 图片与音频都走签名 URL 由浏览器直接加载字节（音频因此能边下边播）；其余
+  // 媒体仍 fetch 整文件 blob，以支持进度条 seek 与 PDF magic-byte 校验。
+  const usesSignedUrl = kind === 'image' || kind === 'audio';
+  const signed = useSignedImage(usesSignedUrl ? isExternal
     ? { kind: 'external', path: file.path, ...(projectId ? { projectId } : {}) }
     : projectId ? { kind: 'project', projectId, path: file.path } : null : null, { eager: true });
 
   useEffect(() => {
-    if (kind === 'image') return;
+    if (usesSignedUrl) return;
     if (!isExternal && !projectId) {
       setUrl(null);
       setLoadedKey(null);
@@ -165,13 +168,13 @@ export default function CodeEditorMediaPreview({
         URL.revokeObjectURL(objectUrl);
       }
     };
-  }, [file.path, file.name, projectId, kind, sourceKey, labels.error]);
+  }, [file.path, file.name, projectId, kind, usesSignedUrl, sourceKey, labels.error]);
 
   // Only expose the blob once it matches the file currently being shown, so a
   // stale URL from the previous file is never rendered during a switch.
-  const currentUrl = kind === 'image' ? signed.url : url && loadedKey === sourceKey ? url : null;
-  const currentError = kind === 'image' ? (signed.error || (!isExternal && !projectId) ? labels.error : null) : error;
-  const currentLoading = kind === 'image' ? !currentUrl && !currentError : loading;
+  const currentUrl = usesSignedUrl ? signed.url : url && loadedKey === sourceKey ? url : null;
+  const currentError = usesSignedUrl ? (signed.error || (!isExternal && !projectId) ? labels.error : null) : error;
+  const currentLoading = usesSignedUrl ? !currentUrl && !currentError : loading;
 
   // SVGs render safely inline via <img> (scripts don't execute there), but the
   // open-in-new-tab link is a top-level navigation. A blob URL inherits the
@@ -231,7 +234,7 @@ export default function CodeEditorMediaPreview({
       {!currentLoading && !currentUrl && (
         <div className="flex flex-col items-center gap-3 p-8 text-center text-muted-foreground">
           <p className="text-sm">{currentError || labels.error}</p>
-          {kind === 'image' && <button type="button" onClick={signed.retry}>{t('common:buttons.retry')}</button>}
+          {usesSignedUrl && <button type="button" onClick={signed.retry}>{t('common:buttons.retry')}</button>}
           <p className="break-all text-xs">{file.path}</p>
         </div>
       )}

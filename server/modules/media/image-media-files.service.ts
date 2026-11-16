@@ -6,12 +6,15 @@ import path from 'node:path';
 import type { ImageMediaFile, ImageMediaSource } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
 
-/** 供媒体装配解析并流式读取图片；测试注入路径策略，使用真实文件检查生命周期。 */
+/** 供媒体装配解析并流式读取图片与音频；测试注入路径策略，使用真实文件检查生命周期。 */
 export function createImageMediaFiles(dependencies: {
   resolveFilePath: (input: { path: string; projectId?: string; external: boolean }) => Promise<{ path: string; contentType: string }>;
   resolveAssetPath: (filename: string) => string | null;
 }) {
   const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/apng', 'image/gif', 'image/webp', 'image/svg+xml', 'image/avif', 'image/bmp', 'image/x-icon', 'image/vnd.microsoft.icon']);
+  // 音频按 MIME 前缀放行而非显式集合：值来自 mime-types 按扩展名查表，变体
+  // （audio/x-wav 等）交由前缀覆盖。音频 MIME 无脚本语义，SVG 那类白名单约束不适用。
+  const isAudioType = (contentType: string) => contentType.startsWith('audio/');
 
   function fileError(statusCode: number): never {
     throw new AppError('Image is unavailable', { statusCode, code: 'IMAGE_UNAVAILABLE' });
@@ -71,7 +74,7 @@ export function createImageMediaFiles(dependencies: {
         else if (/^\s*(?:<\?xml[^>]*>\s*)?(?:<!--[\s\S]*?-->\s*)*<svg(?:\s|>)/i.test(bytes.toString('utf8'))) resolved.contentType = 'image/svg+xml';
       } finally { await handle.close(); }
     }
-    if (!IMAGE_TYPES.has(resolved.contentType)) fileError(415);
+    if (!IMAGE_TYPES.has(resolved.contentType) && !isAudioType(resolved.contentType)) fileError(415);
     const metadata = await stat(resolved.path);
     if (!metadata.isFile()) fileError(403);
     return { source: resolved.source, contentType: resolved.contentType, etag: etag(metadata), size: metadata.size };
