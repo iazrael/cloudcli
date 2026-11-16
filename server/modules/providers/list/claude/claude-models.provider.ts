@@ -1,4 +1,3 @@
-import { readFile } from 'node:fs/promises';
 import os from 'node:os';
 
 import { query, type ModelInfo, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
@@ -16,6 +15,7 @@ import {
   buildDefaultProviderCurrentActiveModel,
   isPlaceholderProviderModel,
   readOptionalString,
+  readJsonlRecords,
   stripAnsiSequences,
 } from '@/shared/utils.js';
 
@@ -266,25 +266,16 @@ const readClaudeSessionModelFromJsonl = async (
   sessionId: string,
   jsonlPath: string,
 ): Promise<ProviderCurrentActiveModel | null> => {
-  const content = await readFile(jsonlPath, 'utf8');
-  const lines = content
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    try {
-      const event = JSON.parse(lines[index]) as ClaudeInitEvent;
-      const model = extractClaudeEventModel(event, sessionId);
-      if (model) {
-        return { model };
-      }
-    } catch {
-      // Skip malformed JSONL lines that can happen during concurrent writes.
+  let latest: ProviderCurrentActiveModel | null = null;
+  // A long session's transcript can be hundreds of megabytes; stream it and
+  // keep only the last match instead of building the whole file string.
+  for await (const event of readJsonlRecords(jsonlPath)) {
+    const model = extractClaudeEventModel(event as ClaudeInitEvent, sessionId);
+    if (model) {
+      latest = { model };
     }
   }
-
-  return null;
+  return latest;
 };
 
 export class ClaudeProviderModels implements IProviderModels {
