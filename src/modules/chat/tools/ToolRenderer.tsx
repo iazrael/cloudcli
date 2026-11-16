@@ -11,6 +11,7 @@ import { MarkdownContent } from '@/modules/chat/tools/ContentRenderers/MarkdownC
 import { FileListContent } from '@/modules/chat/tools/ContentRenderers/FileListContent';
 import { TodoListContent } from '@/modules/chat/tools/ContentRenderers/TodoListContent';
 import { TaskListContent } from '@/modules/chat/tools/ContentRenderers/TaskListContent';
+import { BackgroundTasksContent } from '@/modules/chat/tools/ContentRenderers/BackgroundTasksContent';
 import { TextContent } from '@/modules/chat/tools/ContentRenderers/TextContent';
 import { QuestionAnswerContent } from '@/modules/chat/tools/ContentRenderers/QuestionAnswerContent';
 import { PlanDisplay } from '@/modules/chat/tools/PlanDisplay';
@@ -289,6 +290,10 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
         contentComponent = <TaskListContent content={contentProps.content || ''} />;
         break;
 
+      case 'background-tasks':
+        contentComponent = <BackgroundTasksContent content={contentProps.content || ''} />;
+        break;
+
       case 'question-answer':
         contentComponent = (
           <QuestionAnswerContent
@@ -361,7 +366,7 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
 
     // Combined view: the flattened output rides inside the input render so one
     // tool call stays one row; the separate result render is skipped upstream.
-    const inlineOutput = mode === 'input' && toolResult && !toolResult.isError && !shouldHideToolResult(toolName, toolResult)
+    const inlineOutput = mode === 'input' && toolResult && !toolResult.isError && !shouldHideToolResult(toolName, toolResult, toolInput)
       ? extractToolResultText(toolResult)
       : undefined;
 

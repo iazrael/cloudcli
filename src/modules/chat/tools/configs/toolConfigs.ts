@@ -44,12 +44,13 @@ export type ToolDisplayConfig = {
   };
   result?: {
     hidden?: boolean;
-    hideOnSuccess?: boolean;
+    /** Static, or resolved against the call's input when a row only partly suppresses. */
+    hideOnSuccess?: boolean | ((input: any) => boolean);
     type?: 'one-line' | 'collapsible' | 'plan' | 'special';
     title?: string | ((result: any) => string);
     defaultOpen?: boolean;
     // Special result handlers
-    contentType?: 'markdown' | 'file-list' | 'todo-list' | 'text' | 'success-message' | 'task' | 'question-answer';
+    contentType?: 'markdown' | 'file-list' | 'todo-list' | 'text' | 'success-message' | 'task' | 'question-answer' | 'background-tasks';
     getMessage?: (result: any) => string;
     getContentProps?: (result: any) => any;
   };
@@ -596,7 +597,16 @@ export const TOOL_CONFIGS: Record<string, ToolDisplayConfig> = {
       }
     },
     result: {
-      hideOnSuccess: true
+      // `list` answers carry the full profile of every background command the
+      // engine reported as running — showing them turns the bare "Task / list"
+      // row into a readable card. status/kill receipts stay suppressed.
+      hideOnSuccess: (input) => readManageTaskAction(input) !== 'list',
+      type: 'collapsible',
+      title: 'Task list',
+      contentType: 'background-tasks',
+      getContentProps: (result) => ({
+        content: extractToolResultText(result),
+      })
     }
   },
 
@@ -1025,9 +1035,29 @@ export function getToolConfig(toolName: string): ToolDisplayConfig {
 }
 
 /**
+ * Reads agy `manage_task`'s Action off a call's input. The input reaches this
+ * both as the parsed args object and as the JSON string the timeline rows
+ * serialize it into, and the engine's own args may still carry quoting.
+ */
+function readManageTaskAction(input: unknown): string {
+  let value = input;
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      // A bare string stays as-is.
+    }
+  }
+  const action = value && typeof value === 'object'
+    ? (value as Record<string, unknown>).Action
+    : value;
+  return typeof action === 'string' ? action.trim().replace(/^["']|["']$/g, '').toLowerCase() : '';
+}
+
+/**
  * Check if a tool result should be hidden
  */
-export function shouldHideToolResult(toolName: string, toolResult: any): boolean {
+export function shouldHideToolResult(toolName: string, toolResult: any, toolInput?: unknown): boolean {
   const config = getToolConfig(toolName);
 
   if (!config.result) return false;
@@ -1039,8 +1069,10 @@ export function shouldHideToolResult(toolName: string, toolResult: any): boolean
   // Always hidden
   if (config.result.hidden) return true;
 
-  // Hide on success only
-  if (config.result.hideOnSuccess && toolResult) {
+  // Hide on success only — input-aware configs decide per call.
+  const hideOnSuccess = config.result.hideOnSuccess;
+  if (hideOnSuccess && toolResult) {
+    if (typeof hideOnSuccess === 'function') return hideOnSuccess(toolInput);
     return true;
   }
 
