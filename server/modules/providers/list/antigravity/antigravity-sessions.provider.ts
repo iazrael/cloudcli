@@ -68,6 +68,7 @@ import {
   readInvokedAgentSpecs,
   SPAWN_RECEIPT_PATTERN,
 } from './antigravity-subagent.js';
+import { toAskUserQuestionCard } from './antigravity-question.js';
 import { readCanonicalAntigravityTranscript } from './antigravity-transcript.provider.js';
 
 const PROVIDER = 'antigravity';
@@ -679,12 +680,13 @@ export class AntigravitySessionsProvider implements IProviderSessions {
         const toolInfo = readObjectRecord(step.tool_info);
         const parameters = normalizeAntigravityToolArgs(toolInfo?.parameters ?? {});
         const toolId = buildAntigravityToolId(stepIndex, null);
+        const card = toAskUserQuestionCard(toolName, parameters);
 
         messages.push(createNormalizedMessage({
           id: buildAntigravityToolRowId(sessionId, toolId),
           kind: 'tool_use',
-          toolName,
-          toolInput: parameters,
+          toolName: card.toolName,
+          toolInput: card.toolInput,
           toolId,
           sessionId,
           provider: PROVIDER,
@@ -911,8 +913,7 @@ export class AntigravitySessionsProvider implements IProviderSessions {
                   timestamp: createdAt,
                   provider: PROVIDER,
                   kind: 'tool_use',
-                  toolName,
-                  toolInput: args,
+                  ...toAskUserQuestionCard(toolName, args),
                   toolId,
                   sequence: stepIndex,
                 }));
