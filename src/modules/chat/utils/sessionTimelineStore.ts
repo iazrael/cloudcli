@@ -1025,7 +1025,9 @@ export class SessionTimelineStore {
   /** Shared by initial subscription, reconnect and gap recovery. */
   getSubscriptionCursor(sessionId: string) {
     const streamEpoch = this.getStreamEpoch(sessionId);
-    return { sessionId, lastSeq: this.getResumeSeq(sessionId), ...(streamEpoch ? { streamEpoch } : {}) };
+    const lastSeq = this.getResumeSeq(sessionId);
+    return { sessionId, lastSeq, ...(streamEpoch ? { streamEpoch } : {}),
+      ...(!streamEpoch && lastSeq === 0 ? { replayScope: 'current_run' as const } : {}) };
   }
 
   /** Reconnect subscribes cached background conversations as well as the visible one. */

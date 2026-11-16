@@ -1000,7 +1000,14 @@ function handleChatSubscribe(
     // `lastSeq` is the session's authoritative watermark (clients realign to
     // it); `stale` tells the client its `lastSeq` predates the replay buffer
     // and it must refresh history over REST instead of trusting the replay.
-    let replay = chatRunRegistry.replayEvents(sessionId, lastSeq);
+    // A new page loads completed turns through paginated REST history. Replaying
+    // the entire session would resurrect rows outside that page at its tail.
+    // Existing cursors still catch up across turns, including transient output.
+    const replayAfterSeq = (target as AnyRecord).replayScope === 'current_run'
+      && epoch === undefined && lastSeq === 0 && isProcessing
+      ? chatRunRegistry.getRun(sessionId)?.replayAfterSeq
+      : undefined;
+    let replay = chatRunRegistry.replayEvents(sessionId, replayAfterSeq ?? lastSeq);
     const changedEpoch = epoch !== undefined && epoch !== replay.streamEpoch;
     if (changedEpoch) replay = chatRunRegistry.replayEvents(sessionId, 0);
 
@@ -1010,7 +1017,8 @@ function handleChatSubscribe(
       isProcessing,
       lastSeq: replay.lastSeq,
       streamEpoch: replay.streamEpoch,
-      replayFromSeq: isProcessing ? replay.replayFromSeq : replay.lastSeq + 1,
+      replayFromSeq: isProcessing ? Math.max(replay.replayFromSeq, (replayAfterSeq ?? 0) + 1) : replay.lastSeq + 1,
+      ...(replayAfterSeq !== undefined ? { replayAfterSeq } : {}),
       stale: changedEpoch || replay.stale || (!isProcessing && lastSeq < replay.lastSeq),
       pendingPermissions,
       backgroundTasks,

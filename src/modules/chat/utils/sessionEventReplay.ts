@@ -130,7 +130,9 @@ export class SessionEventReplay {
       const ack = event as ChatSubscribedEvent;
       if (!isValidStreamEpoch(ack.streamEpoch)
         || !isValidReplaySeq(ack.lastSeq, true)
-        || !isValidReplaySeq(ack.replayFromSeq) || ack.replayFromSeq! > ack.lastSeq + 1) {
+        || !isValidReplaySeq(ack.replayFromSeq) || ack.replayFromSeq! > ack.lastSeq + 1
+        || (ack.replayAfterSeq !== undefined && (!isValidReplaySeq(ack.replayAfterSeq, true)
+          || ack.replayAfterSeq > ack.lastSeq || ack.replayAfterSeq >= ack.replayFromSeq!))) {
         this.request(state, callbacks.replay);
         throw new Error('invalid subscription replay metadata');
       }
@@ -138,11 +140,17 @@ export class SessionEventReplay {
         this.request(state, callbacks.replay);
         throw new Error('gateway epoch changed on the same connection');
       }
+      const initialSubscription = state.epoch === undefined && state.cursor === 0 && !state.needsRecovery;
       const changed = state.epoch !== undefined && state.epoch !== ack.streamEpoch;
       if (state.epoch !== ack.streamEpoch) {
         state.cursor = 0;
         state.recovery = undefined;
         callbacks.resetStream();
+      }
+      // Only a fresh page can skip completed turns. Reconnects retain their
+      // proven cursor, and gateway changes still require history recovery.
+      if (initialSubscription && ack.replayAfterSeq !== undefined) {
+        state.cursor = ack.replayAfterSeq;
       }
       state.epoch = ack.streamEpoch;
       state.ready = true;

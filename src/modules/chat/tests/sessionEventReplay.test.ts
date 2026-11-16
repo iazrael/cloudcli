@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { afterEach, test } from 'vitest';
 
 import { SessionTimelineStore } from '@/modules/chat/utils/sessionTimelineStore';
-import type { ServerEvent } from '@/shared/types';
+import type { NormalizedMessage, ServerEvent } from '@/shared/types';
 
 const stores: SessionTimelineStore[] = [];
 afterEach(() => { for (const store of stores.splice(0)) store.resetStreamingState(); });
@@ -306,4 +306,50 @@ test('multiple observer failures remain diagnosable after the contiguous backlog
   assert.equal((failure as { errors: unknown[] }).errors.length, 2);
   assert.equal(store.getResumeSeq('session'), 3);
   assert.equal(effects.filter(effect => effect === 'complete').length, 1);
+});
+
+test('a fresh page starts at the active turn baseline and retains unpersisted output after recent history', async () => {
+  const history = [
+    { id: 'implemented', sessionId: 'session', provider: 'antigravity', kind: 'text', role: 'assistant', content: 'already implemented', timestamp: '2026-11-16T10:00:00Z' },
+    { id: 'latest-prompt', sessionId: 'session', provider: 'antigravity', kind: 'text', role: 'user', content: 'generate images', timestamp: '2026-11-16T10:01:00Z' },
+  ] satisfies NormalizedMessage[];
+  const store = new SessionTimelineStore({ fetchPage: async () => ({ messages: history, total: 260, hasMore: true }) });
+  stores.push(store);
+  await store.fetchFromServer('session', { limit: 100, offset: 0 });
+  const effects: string[] = [];
+  store.applyServerEvent(ack(12, { replayFromSeq: 11, replayAfterSeq: 10 }), { onDirective: (d) => effects.push(d.effect) });
+  store.applyServerEvent(event(11, 'stream_delta', { provider: 'antigravity', content: 'generating images' }));
+  store.applyServerEvent(event(12, 'stream_end'));
+  assert.equal(store.getResumeSeq('session'), 12);
+  assert.ok(!effects.includes('recover_stream'), 'an intentional fresh-page baseline is not a transport gap');
+  assert.deepEqual(store.getMessages('session').map((row) => row.content), ['already implemented', 'generate images', 'generating images']);
+});
+
+for (const replayAfterSeq of [-1, 1.5, '10', 13, 11]) {
+  test(`invalid fresh-page baseline is rejected: ${replayAfterSeq}`, () => {
+    const store = createStore();
+    assert.throws(() => store.applyServerEvent(ack(12, { replayFromSeq: 11, replayAfterSeq })), /invalid subscription replay metadata/);
+    assert.equal(store.getResumeSeq('session'), 0);
+  });
+}
+
+test('a repeated acknowledgement cannot move an existing cursor past missing output', () => {
+  const store = createStore();
+  assert.equal(store.getSubscriptionCursor('session').replayScope, 'current_run');
+  store.applyServerEvent(ack(1));
+  store.applyServerEvent(event(1, 'text', { role: 'assistant', content: 'first' }));
+  store.beginConnection();
+  assert.equal(store.getSubscriptionCursor('session').replayScope, undefined);
+  const effect = store.applyServerEvent(ack(12, { replayFromSeq: 11, replayAfterSeq: 10 }));
+  assert.equal(store.getResumeSeq('session'), 1);
+  assert.equal(effect?.effect, 'chat_subscribed');
+  assert.equal(store.getMessages('session')[0].content, 'first');
+});
+
+test('a fresh-page baseline still recovers a missing portion of the active turn', () => {
+  const store = createStore();
+  const effects: string[] = [];
+  store.applyServerEvent(ack(20, { replayFromSeq: 15, replayAfterSeq: 10 }), { onDirective: (d) => effects.push(d.effect) });
+  assert.equal(store.getResumeSeq('session'), 10);
+  assert.ok(effects.includes('recover_stream'));
 });

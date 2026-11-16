@@ -90,6 +90,8 @@ type ChatRun = {
   /** The session's buffered bytes, read from the channel. */
   readonly bufferedBytes: number;
   writer: ChatSessionWriter;
+  /** Last session event before this run; fresh pages replay only this turn. */
+  readonly replayAfterSeq: number;
   startedAt: number;
   completedAt: number | null;
   /**
@@ -483,6 +485,7 @@ export const chatRunRegistry = {
         return channel.bufferedBytes;
       },
       writer: null as unknown as ChatSessionWriter,
+      replayAfterSeq: channel.lastSeq,
       startedAt: Date.now(),
       completedAt: null,
       endReason: null,

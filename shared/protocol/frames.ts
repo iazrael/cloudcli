@@ -34,6 +34,8 @@ export type ChatSubscribedEvent = {
   streamEpoch?: string;
   /** First seq from which every event through lastSeq is still replayable. */
   replayFromSeq?: number;
+  /** Fresh-page baseline: completed turns are loaded through REST, not replayed. */
+  replayAfterSeq?: number;
   /**
    * Whether the client's `lastSeq` already fell out of the replay buffer, in
    * which case catching up needs a REST refresh rather than a replay.

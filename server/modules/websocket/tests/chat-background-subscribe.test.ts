@@ -88,7 +88,7 @@ test('a tab that subscribes during background work receives the run\'s later eve
         getPendingApprovalsForSession: () => [],
       } as never },
     );
-    newTab.emit('message', JSON.stringify({ type: 'chat.subscribe', sessions: [{ sessionId: SESSION_ID, lastSeq: 0 }] }));
+    newTab.emit('message', JSON.stringify({ type: 'chat.subscribe', sessions: [{ sessionId: SESSION_ID, lastSeq: 0, replayScope: 'current_run' }] }));
     await settle();
 
     // Not processing — the composer stays usable — but attached.
@@ -243,5 +243,43 @@ test('subscribe validates replay metadata and a previous epoch cannot suppress c
     assert.equal(socket.frames[0]?.lastSeq, 1);
     assert.equal(socket.frames[1]?.seq, 1);
     assert.equal(socket.frames[1]?.streamEpoch, socket.frames[0]?.streamEpoch);
+  });
+});
+
+test('a fresh tab replays only the active turn while a reconnect catches up across turns', async () => {
+  await withIsolatedDatabase(async () => {
+    const previous = chatRunRegistry.startRun({ appSessionId: SESSION_ID, provider: 'antigravity', providerSessionId: 'native-1', connection: null, userId: 1 });
+    assert.ok(previous);
+    previous.writer.send({ kind: 'stream_delta', provider: 'antigravity', content: 'old proposal' });
+    previous.writer.send({ kind: 'error', provider: 'antigravity', content: 'interrupted' });
+    previous.writer.send({ kind: 'complete', provider: 'antigravity', exitCode: 0 });
+    const boundary = previous.lastSeq;
+    const current = chatRunRegistry.startRun({ appSessionId: SESSION_ID, provider: 'antigravity', providerSessionId: 'native-1', connection: null, userId: 1 });
+    assert.ok(current);
+    current.writer.send({ kind: 'stream_delta', provider: 'antigravity', content: 'generating images' });
+
+    const subscribe = async (cursor: Record<string, unknown>) => {
+      const socket = createFakeSocket();
+      handleChatConnection(socket as never, { user: { id: 1 } } as never, { runtime: {
+        hasBackgroundWork: () => false, getPendingApprovalsForSession: () => [], isBackgroundWorkPending: () => false,
+      } as never });
+      socket.emit('message', JSON.stringify({ type: 'chat.subscribe', sessions: [{ sessionId: SESSION_ID, ...cursor }] }));
+      await settle();
+      return socket.frames;
+    };
+
+    const fresh = await subscribe({ lastSeq: 0, replayScope: 'current_run' });
+    assert.equal(fresh[0]?.replayAfterSeq, boundary);
+    assert.equal(fresh[0]?.stale, false);
+    assert.deepEqual(fresh.slice(1).map((frame) => frame.content), ['generating images']);
+    assert.equal(fresh[1]?.seq, boundary + 1);
+
+    const legacy = await subscribe({ lastSeq: 0 });
+    assert.equal(legacy[0]?.replayAfterSeq, undefined);
+    assert.deepEqual(legacy.slice(1).map((frame) => frame.kind), ['stream_delta', 'error', 'complete', 'stream_delta']);
+
+    const reconnect = await subscribe({ lastSeq: 1, streamEpoch: fresh[0]?.streamEpoch, replayScope: 'current_run' });
+    assert.equal(reconnect[0]?.replayAfterSeq, undefined);
+    assert.deepEqual(reconnect.slice(1).map((frame) => frame.kind), ['error', 'complete', 'stream_delta']);
   });
 });
