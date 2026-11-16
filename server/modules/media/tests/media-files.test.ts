@@ -6,16 +6,16 @@ import test from 'node:test';
 
 import mime from 'mime-types';
 
-import { createImageMediaFiles } from '@/modules/media/image-media-files.service.js';
+import { createMediaFiles } from '@/modules/media/media-files.service.js';
 import { AppError } from '@/shared/utils.js';
 
-async function fixture(run: (context: { root: string; assets: string; project: string; files: ReturnType<typeof createImageMediaFiles> }) => Promise<void>) {
+async function fixture(run: (context: { root: string; assets: string; project: string; files: ReturnType<typeof createMediaFiles> }) => Promise<void>) {
   const temp = await mkdtemp(path.join(os.tmpdir(), 'cloudcli-signed-files-'));
   const root = await realpath(temp);
   const assets = path.join(root, 'assets');
   const project = path.join(root, 'project');
   await mkdir(assets); await mkdir(project);
-  const files = createImageMediaFiles({
+  const files = createMediaFiles({
     resolveAssetPath: (filename) => !filename.includes('/') && !filename.includes('..') ? path.join(assets, filename) : null,
     resolveFilePath: async ({ path: filePath, projectId, external }) => {
       const canonical = await realpath(path.resolve(external ? root : project, filePath));
@@ -33,11 +33,11 @@ async function fixture(run: (context: { root: string; assets: string; project: s
 test('missing legacy assets fall back to project files; external project fallback binds the canonical result', async () => {
   await fixture(async ({ files, project }) => {
     await writeFile(path.join(project, 'old.png'), 'PNG');
-    const attachment = await files.resolveImage({ kind: 'asset', filename: 'old.png', projectId: 'p', fallbackPath: 'old.png' });
+    const attachment = await files.resolveMedia({ kind: 'asset', filename: 'old.png', projectId: 'p', fallbackPath: 'old.png' });
     assert.deepEqual(attachment.source, { kind: 'project', projectId: 'p', path: path.join(project, 'old.png') });
-    const external = await files.resolveImage({ kind: 'external', path: path.join(project, 'old.png'), projectId: 'p', projectFallback: true });
+    const external = await files.resolveMedia({ kind: 'external', path: path.join(project, 'old.png'), projectId: 'p', projectFallback: true });
     assert.deepEqual(external.source, attachment.source);
-    const stream = await files.openImage(attachment);
+    const stream = await files.openMedia(attachment);
     let bytes = ''; for await (const chunk of stream) bytes += chunk.toString();
     assert.equal(bytes, 'PNG');
     assert.equal(stream.destroyed, true);
@@ -50,7 +50,7 @@ test('non-image files, asset traversal and cross-directory asset symlinks cannot
     await writeFile(path.join(project, 'private.png'), 'PRIVATE');
     await symlink(path.join(project, 'private.png'), path.join(assets, 'escape.png'));
     for (const filename of ['active.html', '../project/private.png', 'escape.png']) {
-      await assert.rejects(files.resolveImage({ kind: 'asset', filename }), (error: unknown) => error instanceof AppError && [403, 415].includes(error.statusCode));
+      await assert.rejects(files.resolveMedia({ kind: 'asset', filename }), (error: unknown) => error instanceof AppError && [403, 415].includes(error.statusCode));
     }
   });
 });
@@ -59,11 +59,11 @@ test('replacing an image after inspection cannot return replacement bytes; destr
   await fixture(async ({ files, assets }) => {
     const filePath = path.join(assets, 'a.png');
     await writeFile(filePath, 'ORIGINAL');
-    const inspected = await files.resolveImage({ kind: 'asset', filename: 'a.png' });
+    const inspected = await files.resolveMedia({ kind: 'asset', filename: 'a.png' });
     await unlink(filePath); await writeFile(filePath, 'REPLACED');
-    await assert.rejects(files.openImage(inspected), (error: unknown) => error instanceof AppError && error.statusCode === 409);
-    const current = await files.resolveImage({ kind: 'asset', filename: 'a.png' });
-    const stream = await files.openImage(current);
+    await assert.rejects(files.openMedia(inspected), (error: unknown) => error instanceof AppError && error.statusCode === 409);
+    const current = await files.resolveMedia({ kind: 'asset', filename: 'a.png' });
+    const stream = await files.openMedia(current);
     const closed = new Promise<void>((resolve) => stream.once('close', resolve));
     stream.destroy(); await closed;
     assert.equal(stream.closed, true);
@@ -74,13 +74,13 @@ test('audio files can be signed for streaming preview; other binaries stay rejec
   await fixture(async ({ files, project }) => {
     await writeFile(path.join(project, 'bgm.wav'), 'WAVBYTES');
     await writeFile(path.join(project, 'notes.html'), '<p>hi</p>');
-    const inspected = await files.resolveImage({ kind: 'project', projectId: 'p', path: 'bgm.wav' });
+    const inspected = await files.resolveMedia({ kind: 'project', projectId: 'p', path: 'bgm.wav' });
     assert.equal(inspected.contentType, 'audio/wav');
-    const stream = await files.openImage(inspected);
+    const stream = await files.openMedia(inspected);
     const chunks: Buffer[] = [];
     for await (const chunk of stream) chunks.push(Buffer.from(chunk));
     assert.deepEqual(Buffer.concat(chunks), Buffer.from('WAVBYTES'));
-    await assert.rejects(files.resolveImage({ kind: 'project', projectId: 'p', path: 'notes.html' }),
+    await assert.rejects(files.resolveMedia({ kind: 'project', projectId: 'p', path: 'notes.html' }),
       (error: unknown) => error instanceof AppError && error.statusCode === 415);
   });
 });
@@ -91,9 +91,9 @@ test('extensionless PNG screenshots and APNG previews remain readable', async ()
     await writeFile(path.join(project, 'render'), png);
     await writeFile(path.join(project, 'animation.apng'), png);
     for (const name of ['render', 'animation.apng']) {
-      const inspected = await files.resolveImage({ kind: 'project', projectId: 'p', path: name });
+      const inspected = await files.resolveMedia({ kind: 'project', projectId: 'p', path: name });
       assert.ok(['image/png', 'image/apng'].includes(inspected.contentType));
-      const stream = await files.openImage(inspected);
+      const stream = await files.openMedia(inspected);
       const chunks: Buffer[] = [];
       for await (const chunk of stream) chunks.push(Buffer.from(chunk));
       assert.deepEqual(Buffer.concat(chunks), png);

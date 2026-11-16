@@ -2,15 +2,15 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import type * as sharedApi from '@/shared/api';
-import type { ImageMediaRequest } from '@/shared/types';
+import type { SignedMediaRequest } from '@/shared/types';
 import CodeEditorMediaPreview from '@/modules/code-editor/CodeEditorMediaPreview';
 
-const { requestImageUrls } = vi.hoisted(() => ({ requestImageUrls: vi.fn() }));
+const { requestSignedUrls } = vi.hoisted(() => ({ requestSignedUrls: vi.fn() }));
 
-vi.mock('@/shared/api', async (original) => ({ ...await original<typeof sharedApi>(), requestImageUrls }));
+vi.mock('@/shared/api', async (original) => ({ ...await original<typeof sharedApi>(), requestSignedUrls }));
 beforeEach(() => {
   localStorage.setItem('auth-token', crypto.randomUUID());
-  requestImageUrls.mockReset().mockImplementation(async (images: ImageMediaRequest[]) => ({ ok: true, json: async () => ({ images: images.map(({ id }) => ({ id, url: '/api/media/images?ticket=editor', expiresAt: Date.now() + 600_000 })) }) }));
+  requestSignedUrls.mockReset().mockImplementation(async (files: SignedMediaRequest[]) => ({ ok: true, json: async () => ({ files: files.map(({ id }) => ({ id, url: '/api/media/signed?ticket=editor', expiresAt: Date.now() + 600_000 })) }) }));
 });
 afterEach(() => { vi.clearAllMocks(); });
 
@@ -19,8 +19,8 @@ it('the image editor loads a signed URL instead of fetching image bytes as a Blo
   render(<CodeEditorMediaPreview file={{ name: 'shot.png', path: '/repo/shot.png', projectId: 'editor-p' }}
     kind="image" projectId="editor-p" isSidebar isFullscreen={false} onClose={() => {}} onToggleFullscreen={() => {}}
     labels={{ loading: 'loading', error: 'error', openInNewTab: 'open', fullscreen: 'full', exitFullscreen: 'exit', close: 'close' }} />);
-  expect((await screen.findByRole('img')).getAttribute('src')).toBe('/api/media/images?ticket=editor');
-  expect(requestImageUrls).toHaveBeenCalledWith([expect.objectContaining({ kind: 'project', projectId: 'editor-p', path: '/repo/shot.png' })]);
+  expect((await screen.findByRole('img')).getAttribute('src')).toBe('/api/media/signed?ticket=editor');
+  expect(requestSignedUrls).toHaveBeenCalledWith([expect.objectContaining({ kind: 'project', projectId: 'editor-p', path: '/repo/shot.png' })]);
   expect(fetchMock).not.toHaveBeenCalled();
 });
 
@@ -31,8 +31,8 @@ it('the audio preview loads a signed URL instead of fetching the file as a Blob'
     labels={{ loading: 'loading', error: 'error', openInNewTab: 'open', fullscreen: 'full', exitFullscreen: 'exit', close: 'close' }} />);
   await screen.findByText('bgm.wav');
   // <audio> 无隐式 ARIA 角色，按元素查。
-  expect(container.querySelector('audio')?.getAttribute('src')).toBe('/api/media/images?ticket=editor');
-  expect(requestImageUrls).toHaveBeenCalledWith([expect.objectContaining({ kind: 'project', projectId: 'editor-p', path: '/repo/bgm.wav' })]);
+  expect(container.querySelector('audio')?.getAttribute('src')).toBe('/api/media/signed?ticket=editor');
+  expect(requestSignedUrls).toHaveBeenCalledWith([expect.objectContaining({ kind: 'project', projectId: 'editor-p', path: '/repo/bgm.wav' })]);
   expect(fetchMock).not.toHaveBeenCalled();
 });
 
@@ -46,9 +46,9 @@ it('renews an expired ticket before opening an image in a new tab', async () => 
   await screen.findByRole('img');
   const realNow = Date.now();
   vi.spyOn(Date, 'now').mockReturnValue(realNow + 700_000);
-  requestImageUrls.mockImplementation(async (images: ImageMediaRequest[]) => ({ ok: true, json: async () => ({ images: images.map(({ id }) => ({ id, url: '/api/media/images?ticket=renewed', expiresAt: Date.now() + 600_000 })) }) }));
+  requestSignedUrls.mockImplementation(async (files: SignedMediaRequest[]) => ({ ok: true, json: async () => ({ files: files.map(({ id }) => ({ id, url: '/api/media/signed?ticket=renewed', expiresAt: Date.now() + 600_000 })) }) }));
   fireEvent.click(screen.getByRole('link', { name: 'open' }));
-  await waitFor(() => expect(replace).toHaveBeenCalledWith('/api/media/images?ticket=renewed'));
+  await waitFor(() => expect(replace).toHaveBeenCalledWith('/api/media/signed?ticket=renewed'));
   expect(popup.opener).toBeNull();
 });
 

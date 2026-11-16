@@ -8,7 +8,7 @@ import { oneDark, oneLight } from 'react-syntax-highlighter/dist/esm/styles/pris
 import { useTranslation } from 'react-i18next';
 
 import { reservedImageBox, useRememberedImageSize } from '@/modules/chat/hooks/useRememberedImageSize';
-import { useSignedImageCandidates } from '@/modules/chat/hooks/useSignedImageCandidates';
+import { useSignedMediaCandidates } from '@/modules/chat/hooks/useSignedMediaCandidates';
 import { usePathExistsCandidates } from '@/modules/chat/hooks/usePathExists';
 import { SyntaxHighlighter, isRegisteredLanguage } from '@/modules/chat/composer/codeHighlightLanguages';
 import { MermaidDiagram } from '@/modules/code-editor';
@@ -17,7 +17,7 @@ import { normalizeLatexDelimiters } from '@/modules/chat/utils/latexDelimiters';
 import { remarkImageReferences } from '@/modules/chat/utils/remarkImageReferences';
 import { remarkFileReferences } from '@/modules/chat/utils/remarkFileReferences';
 import { isLocalAbsolutePath, joinWorktreePath, lineFromRef, looksLikeFilePath, referenceProbeCandidates, stripLineSuffix } from '@/modules/chat/utils/fileReference';
-import type { ImageMediaSource } from '@/shared/types';
+import type { SignedMediaSource } from '@/shared/types';
 import { api, readApiJson } from '@/shared/api';
 import { MarkdownWorkspaceContext } from '@/modules/chat/context/MarkdownWorkspaceContext';
 import { shouldProxyLocalHref } from '@/modules/chat/utils/localProxyLink';
@@ -262,11 +262,11 @@ type MarkdownImageTarget =
   | { kind: 'unresolved' };
 
 /** 相对图片引用的双候选签名源：会话工作树拼接路径优先（外部接口 + 项目回退），项目根兜底；绝对路径维持单一候选。 */
-function signedImageSources(
+function signedMediaSources(
   target: MarkdownImageTarget,
   projectId: string | null,
   worktreePath: string | null,
-): { primary: ImageMediaSource | null; fallback: ImageMediaSource | null } {
+): { primary: SignedMediaSource | null; fallback: SignedMediaSource | null } {
   const absolute = target.kind === 'absolute' ? target.path : null;
   if (absolute) {
     return {
@@ -275,7 +275,7 @@ function signedImageSources(
     };
   }
   if (target.kind !== 'relative' || !projectId) return { primary: null, fallback: null };
-  const projectSource: ImageMediaSource = { kind: 'project', projectId, path: target.path };
+  const projectSource: SignedMediaSource = { kind: 'project', projectId, path: target.path };
   if (!worktreePath) return { primary: projectSource, fallback: null };
   return {
     primary: { kind: 'external', path: joinWorktreePath(worktreePath, target.path), projectId, projectFallback: true },
@@ -324,8 +324,8 @@ function MarkdownImageContent({ src = '', alt, node: _node, projectId, worktreeP
   const localPath = target.kind === 'absolute' ? target.path : undefined;
   const workspaceRelative = target.kind === 'relative' ? target.path : undefined;
   const browserSrc = target.kind === 'browser' ? target.src : undefined;
-  const sources = signedImageSources(target, projectId, worktreePath);
-  const { observe, ...signed } = useSignedImageCandidates(sources.primary, sources.fallback);
+  const sources = signedMediaSources(target, projectId, worktreePath);
+  const { observe, ...signed } = useSignedMediaCandidates(sources.primary, sources.fallback);
   const key = JSON.stringify([projectId, worktreePath, src]);
   const { size, remember } = useRememberedImageSize(key);
   // 网页图片保留自己的加载错误；本地错误由签名 Hook 提供。
@@ -400,8 +400,8 @@ function ImageReferenceLink({ source, projectId, worktreePath, children }: {
   const [expanded, setExpanded] = useState(false);
   // 远程图片的解码失败不属于本地签名请求，单独保留以提供重试。
   const [browserFailed, setBrowserFailed] = useState(false);
-  const sources = signedImageSources(target, projectId, worktreePath);
-  const signed = useSignedImageCandidates(sources.primary, sources.fallback, { eager: true });
+  const sources = signedMediaSources(target, projectId, worktreePath);
+  const signed = useSignedMediaCandidates(sources.primary, sources.fallback, { eager: true });
   const unresolved = target.kind === 'unresolved' || (target.kind === 'relative' && !projectId);
   const error = expanded ? unresolved ? 'unresolved' : browserFailed ? 'failed' : signed.error : undefined;
   const imageSrc = target.kind === 'browser' ? target.src : signed.url;

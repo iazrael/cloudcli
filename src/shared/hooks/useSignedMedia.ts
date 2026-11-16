@@ -1,31 +1,31 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 
-import { requestImageUrls } from '@/shared/api';
+import { requestSignedUrls } from '@/shared/api';
 import { createBatchedAccountRequester } from '@/shared/batchedRequester';
-import type { ImageFailure, ImageMediaResult, ImageMediaSource } from '@/shared/types';
+import type { SignedMediaFailure, SignedMediaResult, SignedMediaSource } from '@/shared/types';
 
 type Ticket = { url: string; expiresAt: number };
-type TicketItem = { source: ImageMediaSource; scope: string; failedUrl?: string };
+type TicketItem = { source: SignedMediaSource; scope: string; failedUrl?: string };
 const EXPIRY_MARGIN_MS = 30_000;
 
 function errorFromStatus(status: number): Error {
   return new Error(status === 401 ? 'unauthorized' : status === 403 ? 'forbidden' : status === 404 ? 'notFound' : status === 415 ? 'decode' : 'failed');
 }
 
-const imageTickets = createBatchedAccountRequester<TicketItem, Ticket, Error>({
+const mediaTickets = createBatchedAccountRequester<TicketItem, Ticket, Error>({
   cacheKey: (item) => JSON.stringify([item.scope, item.source]),
   // 票据未过期且不是刚失败的那个地址时复用；过期或图片加载失败重试都重新申请。
   reusable: (entry, item) => !entry.value || (entry.value.expiresAt > Date.now() + EXPIRY_MARGIN_MS && entry.value.url !== item.failedUrl),
-  // 线上契约是扁平的 { ...source, id }；scope 与 failedUrl 只用于客户端缓存键。
-  send: (items) => requestImageUrls(items.map(({ source, id }) => ({ ...source, id }))),
+  // 签名请求体是扁平的 { ...source, id }；scope 与 failedUrl 只用于客户端缓存键。
+  send: (items) => requestSignedUrls(items.map(({ source, id }) => ({ ...source, id }))),
   httpError: errorFromStatus,
   settle: (batch, payload) => {
-    const { images } = payload as { images: ImageMediaResult[] };
+    const { files } = payload as { files: SignedMediaResult[] };
     for (const item of batch) {
-      const result = images.find((image) => image.id === item.id);
+      const result = files.find((entry) => entry.id === item.id);
       if (!result || !('url' in result)) { item.drop(); item.reject(errorFromStatus(result && 'status' in result ? result.status : 500)); continue; }
       // 只接受同源签名路径，不能把异常响应中的地址当作外部凭据使用。
-      if (!result.url.startsWith('/api/media/images?ticket=') || !Number.isFinite(result.expiresAt) || result.expiresAt <= Date.now()) {
+      if (!result.url.startsWith('/api/media/signed?ticket=') || !Number.isFinite(result.expiresAt) || result.expiresAt <= Date.now()) {
         item.drop(); item.reject(new Error('failed')); continue;
       }
       const ticket: Ticket = { url: result.url, expiresAt: result.expiresAt };
@@ -38,8 +38,8 @@ const imageTickets = createBatchedAccountRequester<TicketItem, Ticket, Error>({
 });
 
 /** 聊天、编辑器和文件树共用；只为可见图片申请签名，字节加载和缓存交给浏览器。 */
-export function useSignedImage(source: ImageMediaSource | null, { eager = false }: { eager?: boolean } = {}) {
-  const scope = useSyncExternalStore(imageTickets.subscribe, imageTickets.snapshot, () => 'server');
+export function useSignedMedia(source: SignedMediaSource | null, { eager = false }: { eager?: boolean } = {}) {
+  const scope = useSyncExternalStore(mediaTickets.subscribe, mediaTickets.snapshot, () => 'server');
   const sourceKey = source ? JSON.stringify(source) : '';
   const key = `${scope}:${sourceKey}`;
   // 跟踪实际占位或容器节点，让签名申请跟随视口位置。
@@ -47,8 +47,8 @@ export function useSignedImage(source: ImageMediaSource | null, { eager = false 
   // 可见性归属当前引用，切换图片后重新判断。
   const [visibleKey, setVisibleKey] = useState('');
   // 只展示当前引用的票据或错误，忽略旧异步结果；重新挂载时直接接上仍有效的票据，首帧不闪占位。
-  const [loaded, setLoaded] = useState<{ key: string; ticket?: Ticket; error?: ImageFailure } | null>(() => {
-    const ticket = source ? imageTickets.peek({ source, scope }) : undefined;
+  const [loaded, setLoaded] = useState<{ key: string; ticket?: Ticket; error?: SignedMediaFailure } | null>(() => {
+    const ticket = source ? mediaTickets.peek({ source, scope }) : undefined;
     return ticket ? { key, ticket } : null;
   });
   // 请求代次、重试次数和显示状态只供异步流程使用，不参与渲染。
@@ -74,13 +74,13 @@ export function useSignedImage(source: ImageMediaSource | null, { eager = false 
     if (!sourceKey) return null;
     const serial = ++active.current.serial;
     try {
-      const ticket = await imageTickets.request({ source: JSON.parse(sourceKey) as ImageMediaSource, scope, failedUrl });
+      const ticket = await mediaTickets.request({ source: JSON.parse(sourceKey) as SignedMediaSource, scope, failedUrl });
       if (active.current.key !== key || active.current.serial !== serial) return null;
       setLoaded({ key, ticket });
       return ticket.url;
     } catch (error) {
       if (active.current.key === key && active.current.serial === serial) {
-        const reason = error instanceof Error && ['unauthorized', 'forbidden', 'notFound', 'decode'].includes(error.message) ? error.message as ImageFailure : 'failed';
+        const reason = error instanceof Error && ['unauthorized', 'forbidden', 'notFound', 'decode'].includes(error.message) ? error.message as SignedMediaFailure : 'failed';
         setLoaded({ key, error: reason });
       }
       return null;

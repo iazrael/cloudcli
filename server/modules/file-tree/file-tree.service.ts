@@ -860,7 +860,7 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
       }
     },
 
-    async resolveImagePath(input) {
+    async resolveMediaPath(input) {
       let canonical: string;
       if (input.external) {
         canonical = await resolvePathInsideExternalRoots(fileSystem, await resolveExternalAllowedRoots(input.projectId), input.path);
@@ -868,7 +868,7 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
         if (!input.projectId) throw createFileTreeError('Project is required', 400, 'PROJECT_REQUIRED');
         const root = await resolveProjectRoot(input.projectId);
         const candidate = await resolveReadablePath(root, input.path);
-        // 图片票据同时校验 realpath，防止项目内符号链接授权外部文件。
+        // 媒体票据同时校验 realpath，防止项目内符号链接授权外部文件。
         if (candidate.startsWith(path.resolve(root) + path.sep)) {
           canonical = await resolvePathInsideExternalRoots(fileSystem, [root], candidate);
         } else {
@@ -878,7 +878,7 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
       }
       const stats = await fileSystem.stat(canonical);
       if ((stats.mode & 0o170000) !== 0o100000) {
-        throw createFileTreeError('Image must be a regular file', 403, 'INVALID_IMAGE_FILE');
+        throw createFileTreeError('Image must be a regular file', 403, 'INVALID_MEDIA_FILE');
       }
       return { path: canonical, contentType: dependencies.resolveMimeType(canonical) };
     },
@@ -929,7 +929,7 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
               ));
               return { id, status: 200 };
             } catch (error) {
-              // 与图片签名一致：外部白名单拒绝且给了项目时，再按项目边界校验同一路径。
+              // 与媒体签名一致：外部白名单拒绝且给了项目时，再按项目边界校验同一路径。
               if (!(error instanceof AppError && error.statusCode === 403) || !projectId) throw error;
             }
           } else if (!projectId) {

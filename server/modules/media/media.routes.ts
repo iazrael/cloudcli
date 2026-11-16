@@ -4,7 +4,7 @@ import express from 'express';
 import type { RequestHandler } from 'express';
 import { z } from 'zod';
 
-import { IMAGE_CACHE_SECONDS, type createImageMediaService } from '@/modules/media/image-media.service.js';
+import { MEDIA_CACHE_SECONDS, type createMediaTicketService } from '@/modules/media/media-ticket.service.js';
 import { errorStatusCode } from '@/shared/utils.js';
 
 const text = z.string().min(1).max(8192).refine((value) => !value.includes('\0'));
@@ -13,12 +13,12 @@ const sourceSchema = z.discriminatedUnion('kind', [
   z.object({ id: text, kind: z.literal('project'), projectId: text, path: text }).strict(),
   z.object({ id: text, kind: z.literal('external'), path: text, projectId: text.optional(), projectFallback: z.boolean().optional() }).strict(),
 ]);
-const batchSchema = z.object({ images: z.array(sourceSchema).min(1).max(50) }).strict()
-  .refine(({ images }) => new Set(images.map(({ id }) => id)).size === images.length);
+const batchSchema = z.object({ files: z.array(sourceSchema).min(1).max(50) }).strict()
+  .refine(({ files }) => new Set(files.map(({ id }) => id)).size === files.length);
 
-/** 供媒体装配使用；只有图片读取路由置于 API key 中间件前，签发仍走普通鉴权。 */
-export function createMediaRouter(service: ReturnType<typeof createImageMediaService>, authenticate: RequestHandler) {
-  const images = express.Router();
+/** 供媒体装配使用；只有签名读取路由置于 API key 中间件前，签发仍走普通鉴权。 */
+export function createMediaRouter(service: ReturnType<typeof createMediaTicketService>, authenticate: RequestHandler) {
+  const signed = express.Router();
   const signing = express.Router();
   const fail = (error: unknown, response: express.Response) => {
     const status = errorStatusCode(error);
@@ -26,19 +26,19 @@ export function createMediaRouter(service: ReturnType<typeof createImageMediaSer
     response.setHeader('Cache-Control', 'no-store');
     if (status >= 500) console.error('[Media] Request failed', error instanceof Error ? error.name : 'Unknown error');
     if (response.headersSent) { response.destroy(); return; }
-    response.status(status).json({ error: status >= 500 ? 'Image request failed' : 'Image is unavailable' });
+    response.status(status).json({ error: status >= 500 ? 'Media request failed' : 'Media is unavailable' });
   };
-  signing.post('/image-urls', authenticate, async (request, response) => {
+  signing.post('/signed-urls', authenticate, async (request, response) => {
     response.setHeader('Cache-Control', 'no-store');
     const parsed = batchSchema.safeParse(request.body);
-    if (!parsed.success) { response.status(400).json({ error: 'Invalid image batch' }); return; }
+    if (!parsed.success) { response.status(400).json({ error: 'Invalid media batch' }); return; }
     const authenticated = request as typeof request & { user?: { id?: string | number }; authExpiresAt?: number };
     if (authenticated.user?.id === undefined) { response.sendStatus(401); return; }
     try {
-      response.json({ images: await service.issueBatch(String(authenticated.user.id), parsed.data.images, authenticated.authExpiresAt) });
+      response.json({ files: await service.issueBatch(String(authenticated.user.id), parsed.data.files, authenticated.authExpiresAt) });
     } catch (error) { fail(error, response); }
   });
-  images.get('/images', async (request, response) => {
+  signed.get('/signed', async (request, response) => {
     response.setHeader('Cache-Control', 'no-store');
     if (typeof request.query.ticket !== 'string' || request.query.ticket.length > 32_768) { response.sendStatus(403); return; }
     try {
@@ -51,7 +51,7 @@ export function createMediaRouter(service: ReturnType<typeof createImageMediaSer
       // The global /api no-store middleware sets Pragma too; clear it so the
       // media route's own Cache-Control is the only caching directive.
       response.removeHeader('Pragma');
-      response.setHeader('Cache-Control', `private, max-age=${IMAGE_CACHE_SECONDS}`);
+      response.setHeader('Cache-Control', `private, max-age=${MEDIA_CACHE_SECONDS}`);
       response.setHeader('ETag', file.etag);
       if (request.fresh) { response.status(304).end(); return; }
       // 打开文件时再次核对身份，避免检查与打开之间目标被替换。
@@ -60,5 +60,5 @@ export function createMediaRouter(service: ReturnType<typeof createImageMediaSer
       await pipeline(stream, response);
     } catch (error) { fail(error, response); }
   });
-  return { images, signing };
+  return { signed, signing };
 }

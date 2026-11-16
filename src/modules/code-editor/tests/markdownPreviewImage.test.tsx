@@ -4,15 +4,15 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type * as sharedApi from '@/shared/api';
-import type { ImageMediaRequest, MarkdownImageContext } from '@/shared/types';
+import type { SignedMediaRequest, MarkdownImageContext } from '@/shared/types';
 import MarkdownPreview from '@/modules/code-editor/markdown/MarkdownPreview';
 import { imageBaseDirFromFilePath, resolveDocumentRelativePath, resolveMarkdownImageTarget } from '@/modules/code-editor/utils/markdownImagePath';
 
-const { requestImageUrls } = vi.hoisted(() => ({ requestImageUrls: vi.fn() }));
-vi.mock('@/shared/api', async (original) => ({ ...await original<typeof sharedApi>(), requestImageUrls }));
+const { requestSignedUrls } = vi.hoisted(() => ({ requestSignedUrls: vi.fn() }));
+vi.mock('@/shared/api', async (original) => ({ ...await original<typeof sharedApi>(), requestSignedUrls }));
 beforeEach(() => {
   localStorage.setItem('auth-token', crypto.randomUUID());
-  requestImageUrls.mockReset().mockImplementation(async (images: ImageMediaRequest[]) => ({ ok: true, json: async () => ({ images: images.map(({ id }) => ({ id, url: '/api/media/images?ticket=preview', expiresAt: Date.now() + 600_000 })) }) }));
+  requestSignedUrls.mockReset().mockImplementation(async (files: SignedMediaRequest[]) => ({ ok: true, json: async () => ({ files: files.map(({ id }) => ({ id, url: '/api/media/signed?ticket=preview', expiresAt: Date.now() + 600_000 })) }) }));
 });
 const projectContext: MarkdownImageContext = { projectId: 'project-1', baseDir: '/repo/docs', isExternal: false };
 
@@ -125,32 +125,32 @@ describe('MarkdownPreview images', () => {
     ['file:///repo/images/gato.png', '/repo/images/gato.png'],
   ])('signs the resolved document path %s', async (source, path) => {
     render(<MarkdownPreview content={`![gato](${source})`} imageContext={projectContext} />);
-    expect((await screen.findByRole('img')).getAttribute('src')).toBe('/api/media/images?ticket=preview');
-    expect(requestImageUrls).toHaveBeenCalledWith([expect.objectContaining({ kind: 'project', projectId: 'project-1', path })]);
+    expect((await screen.findByRole('img')).getAttribute('src')).toBe('/api/media/signed?ticket=preview');
+    expect(requestSignedUrls).toHaveBeenCalledWith([expect.objectContaining({ kind: 'project', projectId: 'project-1', path })]);
   });
   it('leaves web images to the browser', () => {
     render(<MarkdownPreview content="![logo](https://example.com/logo.png)" imageContext={projectContext} />);
     expect(screen.getByRole('img').getAttribute('src')).toBe('https://example.com/logo.png');
-    expect(requestImageUrls).not.toHaveBeenCalled();
+    expect(requestSignedUrls).not.toHaveBeenCalled();
   });
   it('signs external references relative to the external document', async () => {
     render(<MarkdownPreview content="![plan](img/plan.png)" imageContext={{ baseDir: '/ext/docs', isExternal: true }} />);
     await screen.findByRole('img');
-    expect(requestImageUrls).toHaveBeenCalledWith([expect.objectContaining({ kind: 'external', path: '/ext/docs/img/plan.png' })]);
+    expect(requestSignedUrls).toHaveBeenCalledWith([expect.objectContaining({ kind: 'external', path: '/ext/docs/img/plan.png' })]);
   });
   it('shows alt text and allows retry when signing fails', async () => {
-    requestImageUrls.mockResolvedValueOnce({ ok: false, status: 403 });
+    requestSignedUrls.mockResolvedValueOnce({ ok: false, status: 403 });
     render(<MarkdownPreview content="![gato](images/gato.png)" imageContext={projectContext} />);
     await screen.findByText('gato');
     expect(screen.queryByRole('img')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'common:buttons.retry' }));
     await screen.findByRole('img');
-    expect(requestImageUrls).toHaveBeenCalledTimes(2);
+    expect(requestSignedUrls).toHaveBeenCalledTimes(2);
   });
   it('shows alt text without a workspace context', () => {
     render(<MarkdownPreview content="![gato](images/gato.png)" />);
     expect(screen.getByText('gato')).toBeTruthy();
-    expect(requestImageUrls).not.toHaveBeenCalled();
+    expect(requestSignedUrls).not.toHaveBeenCalled();
   });
   it('opens and closes the shared viewer without downloading image bytes in JS', async () => {
     render(<MarkdownPreview content="![gato](images/gato.png)" imageContext={projectContext} />);

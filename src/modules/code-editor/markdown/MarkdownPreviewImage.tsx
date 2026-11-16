@@ -2,7 +2,7 @@ import { useTranslation } from 'react-i18next';
 import { useState } from 'react';
 
 import type { MarkdownImageContext } from '@/shared/types';
-import { useSignedImage } from '@/shared/hooks/useSignedImage';
+import { useSignedMedia } from '@/shared/hooks/useSignedMedia';
 import { UnifiedImageViewer } from '@/shared/ui';
 import { resolveMarkdownImageTarget } from '@/modules/code-editor/utils/markdownImagePath';
 
@@ -31,7 +31,7 @@ export default function MarkdownPreviewImage({ src, alt, title, context }: Markd
   // Cheap string work, so it is redone per render rather than memoized on a
   // context object whose identity the caller does not guarantee.
   const target = resolveMarkdownImageTarget(source, context);
-  const { observe, ...signed } = useSignedImage(target.kind === 'file' ? target.external
+  const { observe, ...signed } = useSignedMedia(target.kind === 'file' ? target.external
     ? { kind: 'external', path: target.path, ...(projectId ? { projectId } : {}) }
     : { kind: 'project', path: target.path, projectId: projectId! } : null);
   // Controls the viewer only after a resolved image is clicked: closing it must

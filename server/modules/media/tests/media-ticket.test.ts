@@ -7,22 +7,22 @@ import test from 'node:test';
 import express from 'express';
 import jwt from 'jsonwebtoken';
 
-import { createImageMediaService } from '@/modules/media/image-media.service.js';
+import { createMediaTicketService } from '@/modules/media/media-ticket.service.js';
 import { createMediaRouter } from '@/modules/media/media.routes.js';
 
 async function fixture(run: (base: string, state: { now: number; active: boolean; readable: boolean; version: number; authExpiresAt?: number }) => Promise<void>) {
   const state = { now: 1_800_000_000, active: true, readable: true, version: 1, authExpiresAt: undefined as number | undefined };
-  const service = createImageMediaService({
+  const service = createMediaTicketService({
     secret: 'test-only-media-secret',
     now: () => state.now,
     userExists: () => state.active,
-    resolveImage: async (source) => {
+    resolveMedia: async (source) => {
       if (!state.readable || (source.kind !== 'asset' && source.path.includes('missing'))) {
         throw Object.assign(new Error('missing'), { statusCode: 404 });
       }
       return { source, contentType: source.kind === 'asset' && source.filename.endsWith('.svg') ? 'image/svg+xml' : 'image/png', etag: `"v${state.version}"`, size: 3 };
     },
-    openImage: async () => Readable.from(['PNG']),
+    openMedia: async () => Readable.from(['PNG']),
   });
   const routers = createMediaRouter(service, (req, res, next) => {
     if (req.header('authorization') !== 'Bearer test-login') { res.sendStatus(401); return; }
@@ -31,7 +31,7 @@ async function fixture(run: (base: string, state: { now: number; active: boolean
   });
   const app = express();
   app.use(express.json());
-  app.use('/api/media', routers.images);
+  app.use('/api/media', routers.signed);
   // Signed bytes precede API key validation; issuing a ticket still requires it.
   app.use('/api', (req, res, next) => {
     if (req.header('x-api-key') !== 'test-key') { res.sendStatus(401); return; }
@@ -45,13 +45,13 @@ async function fixture(run: (base: string, state: { now: number; active: boolean
 }
 
 async function readBatch(response: Response) {
-  return await response.json() as { images: Array<{ url: string; expiresAt: number; status?: number }> };
+  return await response.json() as { files: Array<{ url: string; expiresAt: number; status?: number }> };
 }
 
-async function issue(base: string, images: unknown = [{ id: 'a', kind: 'asset', filename: 'a.png' }]) {
-  return fetch(`${base}/api/media/image-urls`, {
+async function issue(base: string, files: unknown = [{ id: 'a', kind: 'asset', filename: 'a.png' }]) {
+  return fetch(`${base}/api/media/signed-urls`, {
     method: 'POST', headers: { authorization: 'Bearer test-login', 'x-api-key': 'test-key', 'content-type': 'application/json' },
-    body: JSON.stringify({ images }),
+    body: JSON.stringify({ files }),
   });
 }
 
@@ -60,7 +60,7 @@ test('authenticated batch issues direct image URLs; bytes need no login or API k
     const response = await issue(base);
     assert.equal(response.status, 200);
     assert.equal(response.headers.get('cache-control'), 'no-store');
-    const { images: [image] } = await readBatch(response);
+    const { files: [image] } = await readBatch(response);
     assert.equal(image.expiresAt, (state.now + 400) * 1000);
     const bytes = await fetch(base + image.url);
     assert.equal(bytes.status, 200);
@@ -77,19 +77,19 @@ test('same source signs the same URL within a window and the window ticket passe
     // Infinity 让登录令牌不截短，签发寿命由签发窗口决定（窗口起点 iat，寿命两个窗口）。
     state.authExpiresAt = Number.POSITIVE_INFINITY;
     const request = [{ id: 'a', kind: 'asset', filename: 'a.png' }];
-    const { images: [first] } = await readBatch(await issue(base, request));
+    const { files: [first] } = await readBatch(await issue(base, request));
     // 1_800_000_000 正好是一个窗口起点：iat = now，exp = now + 两个窗口。
     assert.equal(first.expiresAt, (1_800_000_000 + 1_200) * 1000);
-    const { images: [again] } = await readBatch(await issue(base, request));
+    const { files: [again] } = await readBatch(await issue(base, request));
     assert.equal(again.url, first.url);
     state.now += 300;
-    const { images: [sameWindow] } = await readBatch(await issue(base, request));
+    const { files: [sameWindow] } = await readBatch(await issue(base, request));
     assert.equal(sameWindow.url, first.url);
     // 窗口内签出的 URL 字节可读取，跨窗口后 URL 变化且新票据同样可读。
     const bytes = await fetch(base + sameWindow.url);
     assert.equal(bytes.status, 200);
     state.now += 300;
-    const { images: [nextWindow] } = await readBatch(await issue(base, request));
+    const { files: [nextWindow] } = await readBatch(await issue(base, request));
     assert.notEqual(nextWindow.url, sameWindow.url);
     assert.equal((await fetch(base + nextWindow.url)).status, 200);
   });
@@ -97,10 +97,10 @@ test('same source signs the same URL within a window and the window ticket passe
 
 test('signing requires both API key and login and rejects malformed, duplicate and oversized batches', async () => {
   await fixture(async (base) => {
-    assert.equal((await fetch(`${base}/api/media/image-urls`, { method: 'POST' })).status, 401);
-    assert.equal((await fetch(`${base}/api/media/image-urls`, { method: 'POST', headers: { 'x-api-key': 'test-key' } })).status, 401);
-    for (const images of [[], [{ id: 'x', kind: 'project', path: 'a.png' }], Array.from({ length: 51 }, (_, i) => ({ id: String(i), kind: 'asset', filename: 'a.png' })), [{ id: 'x', kind: 'asset', filename: 'a.png' }, { id: 'x', kind: 'asset', filename: 'b.png' }]]) {
-      assert.equal((await issue(base, images)).status, 400);
+    assert.equal((await fetch(`${base}/api/media/signed-urls`, { method: 'POST' })).status, 401);
+    assert.equal((await fetch(`${base}/api/media/signed-urls`, { method: 'POST', headers: { 'x-api-key': 'test-key' } })).status, 401);
+    for (const files of [[], [{ id: 'x', kind: 'project', path: 'a.png' }], Array.from({ length: 51 }, (_, i) => ({ id: String(i), kind: 'asset', filename: 'a.png' })), [{ id: 'x', kind: 'asset', filename: 'a.png' }, { id: 'x', kind: 'asset', filename: 'b.png' }]]) {
+      assert.equal((await issue(base, files)).status, 400);
     }
   });
 });
@@ -108,15 +108,15 @@ test('signing requires both API key and login and rejects malformed, duplicate a
 test('one missing image does not reject the rest of a batch', async () => {
   await fixture(async (base) => {
     const response = await issue(base, [{ id: 'bad', kind: 'project', projectId: 'p', path: 'missing.png' }, { id: 'good', kind: 'asset', filename: 'a.png' }]);
-    const { images } = await readBatch(response);
-    assert.equal(images[0].status, 404);
-    assert.ok(images[1].url);
+    const { files } = await readBatch(response);
+    assert.equal(files[0].status, 404);
+    assert.ok(files[1].url);
   });
 });
 
 test('tampering, login tokens, expired tickets and deleted users cannot read even with matching ETag', async () => {
   await fixture(async (base, state) => {
-    const { images: [image] } = await readBatch(await issue(base));
+    const { files: [image] } = await readBatch(await issue(base));
     const parsed = new URL(base + image.url);
     const ticket = parsed.searchParams.get('ticket')!;
     const [header, payload, signature] = ticket.split('.');
@@ -137,7 +137,7 @@ test('tampering, login tokens, expired tickets and deleted users cannot read eve
 
 test('each read rechecks permission, and mutable image ETags update after a file changes', async () => {
   await fixture(async (base, state) => {
-    const { images: [image] } = await readBatch(await issue(base));
+    const { files: [image] } = await readBatch(await issue(base));
     assert.equal((await fetch(base + image.url, { headers: { 'cache-control': 'max-age=0', 'if-none-match': '"v1"' } })).status, 304);
     state.version = 2;
     const changed = await fetch(base + image.url, { headers: { 'cache-control': 'max-age=0', 'if-none-match': '"v1"' } });
@@ -150,7 +150,7 @@ test('each read rechecks permission, and mutable image ETags update after a file
 
 test('SVG direct navigation is sandboxed and scripts cannot run in the application origin', async () => {
   await fixture(async (base) => {
-    const { images: [image] } = await readBatch(await issue(base, [{ id: 'svg', kind: 'asset', filename: 'a.svg' }]));
+    const { files: [image] } = await readBatch(await issue(base, [{ id: 'svg', kind: 'asset', filename: 'a.svg' }]));
     const response = await fetch(base + image.url);
     assert.equal(response.headers.get('content-type'), 'image/svg+xml');
     assert.match(response.headers.get('content-security-policy')!, /sandbox/);

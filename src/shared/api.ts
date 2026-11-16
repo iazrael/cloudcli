@@ -1,4 +1,4 @@
-import type { ImageMediaRequest, PathExistenceRequest } from '@/shared/types';
+import type { SignedMediaRequest, PathExistenceRequest } from '@/shared/types';
 import {
   expireAuthSession,
   getStoredAuthToken,
@@ -901,8 +901,8 @@ export const readExternalFileContent = (
   );
 
 /** 鉴权申请图片地址；返回 URL 后由浏览器直接加载图片字节。 */
-export const requestImageUrls = (images: ImageMediaRequest[], options: ApiRequestOptions = {}) =>
-  post('/api/media/image-urls', { images }, options);
+export const requestSignedUrls = (files: SignedMediaRequest[], options: ApiRequestOptions = {}) =>
+  post('/api/media/signed-urls', { files }, options);
 
 /** 鉴权批量探测本地路径是否可读；聊天渲染据此决定路径引用是否可点。 */
 export const requestPathsExist = (items: PathExistenceRequest[], options: ApiRequestOptions = {}) =>

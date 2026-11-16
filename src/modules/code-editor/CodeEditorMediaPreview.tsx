@@ -1,7 +1,7 @@
 import { useTranslation } from 'react-i18next';
 import { useEffect, useRef, useState } from 'react';
 
-import { useSignedImage } from '@/shared/hooks/useSignedImage';
+import { useSignedMedia } from '@/shared/hooks/useSignedMedia';
 import { authenticatedFetch } from '@/shared/api';
 import type { CodeEditorFile, PreviewKind } from '@/shared/types';
 import { getPreviewMimeType } from '@/modules/code-editor/utils/previewableFile';
@@ -78,7 +78,7 @@ export default function CodeEditorMediaPreview({
   // 图片与音频都走签名 URL 由浏览器直接加载字节（音频因此能边下边播）；其余
   // 媒体仍 fetch 整文件 blob，以支持进度条 seek 与 PDF magic-byte 校验。
   const usesSignedUrl = kind === 'image' || kind === 'audio';
-  const signed = useSignedImage(usesSignedUrl ? isExternal
+  const signed = useSignedMedia(usesSignedUrl ? isExternal
     ? { kind: 'external', path: file.path, ...(projectId ? { projectId } : {}) }
     : projectId ? { kind: 'project', projectId, path: file.path } : null : null, { eager: true });
 

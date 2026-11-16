@@ -3,11 +3,11 @@ import { open, realpath, stat } from 'node:fs/promises';
 import type { Stats } from 'node:fs';
 import path from 'node:path';
 
-import type { ImageMediaFile, ImageMediaSource } from '@/shared/types.js';
+import type { SignedMediaFile, SignedMediaSource } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
 
-/** 供媒体装配解析并流式读取图片与音频；测试注入路径策略，使用真实文件检查生命周期。 */
-export function createImageMediaFiles(dependencies: {
+/** 供媒体装配解析并流式读取可预览媒体；测试注入路径策略，使用真实文件检查生命周期。 */
+export function createMediaFiles(dependencies: {
   resolveFilePath: (input: { path: string; projectId?: string; external: boolean }) => Promise<{ path: string; contentType: string }>;
   resolveAssetPath: (filename: string) => string | null;
 }) {
@@ -17,13 +17,13 @@ export function createImageMediaFiles(dependencies: {
   const isAudioType = (contentType: string) => contentType.startsWith('audio/');
 
   function fileError(statusCode: number): never {
-    throw new AppError('Image is unavailable', { statusCode, code: 'IMAGE_UNAVAILABLE' });
+    throw new AppError('Media is unavailable', { statusCode, code: 'MEDIA_UNAVAILABLE' });
   }
   function etag(stats: Stats): string {
     return `W/"${stats.dev}-${stats.ino}-${stats.size}-${stats.mtimeMs}-${stats.ctimeMs}"`;
   }
 
-  async function locate(source: ImageMediaSource): Promise<{ source: ImageMediaSource; path: string; contentType: string }> {
+  async function locate(source: SignedMediaSource): Promise<{ source: SignedMediaSource; path: string; contentType: string }> {
     try {
       if (source.kind === 'asset') {
         const assetPath = dependencies.resolveAssetPath(source.filename);
@@ -57,7 +57,7 @@ export function createImageMediaFiles(dependencies: {
   }
 
   return {
-  async resolveImage(source: ImageMediaSource) {
+  async resolveMedia(source: SignedMediaSource) {
     const resolved = await locate(source);
     // 无扩展名的工具截图仍可预览；只读文件头，不把完整图片读进内存。
     if (resolved.contentType === 'application/octet-stream') {
@@ -79,7 +79,7 @@ export function createImageMediaFiles(dependencies: {
     if (!metadata.isFile()) fileError(403);
     return { source: resolved.source, contentType: resolved.contentType, etag: etag(metadata), size: metadata.size };
   },
-  async openImage(file: ImageMediaFile) {
+  async openMedia(file: SignedMediaFile) {
     const resolved = await locate(file.source);
     const handle = await open(resolved.path, constants.O_RDONLY | constants.O_NOFOLLOW);
     try {

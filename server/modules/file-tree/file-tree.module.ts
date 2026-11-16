@@ -319,4 +319,4 @@ export const fileTreeRoutes = createFileTreeRouter(
 );
 
 /** 媒体装配通过此入口复用工作区和外部文件的路径策略。 */
-export const resolveFileTreeImagePath = fileTreeServices.resolveImagePath;
+export const resolveFileTreeMediaPath = fileTreeServices.resolveMediaPath;

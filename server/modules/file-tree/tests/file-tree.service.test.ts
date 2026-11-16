@@ -1178,15 +1178,15 @@ test('image inspection canonicalizes project files and rejects symlink escapes, 
     const dependencies = createDependencies(createFakeFileSystem({ realpath: fsPromises.realpath, stat: fsPromises.stat }), project, [outside]);
     dependencies.resolveMimeType = () => 'image/png';
     const service = createFileTreeService(dependencies);
-    assert.equal((await service.resolveImagePath({ path: 'inside.png', projectId: 'p', external: false })).path, await fsPromises.realpath(path.join(project, 'ok.png')));
+    assert.equal((await service.resolveMediaPath({ path: 'inside.png', projectId: 'p', external: false })).path, await fsPromises.realpath(path.join(project, 'ok.png')));
     for (const candidate of ['escape.png', '../outside/secret.png', '.']) {
-      await assert.rejects(service.resolveImagePath({ path: candidate, projectId: 'p', external: false }));
+      await assert.rejects(service.resolveMediaPath({ path: candidate, projectId: 'p', external: false }));
     }
-    assert.equal((await service.resolveImagePath({ path: path.join(outside, 'secret.png'), external: true })).path, await fsPromises.realpath(path.join(outside, 'secret.png')));
-    await assert.rejects(service.resolveImagePath({ path: 'secret.png', external: true }));
+    assert.equal((await service.resolveMediaPath({ path: path.join(outside, 'secret.png'), external: true })).path, await fsPromises.realpath(path.join(outside, 'secret.png')));
+    await assert.rejects(service.resolveMediaPath({ path: 'secret.png', external: true }));
     await fsPromises.unlink(path.join(project, 'inside.png'));
     await fsPromises.symlink(path.join(outside, 'secret.png'), path.join(project, 'inside.png'));
-    await assert.rejects(service.resolveImagePath({ path: 'inside.png', projectId: 'p', external: false }));
+    await assert.rejects(service.resolveMediaPath({ path: 'inside.png', projectId: 'p', external: false }));
   } finally { await fsPromises.rm(root, { recursive: true, force: true }); }
 });
 

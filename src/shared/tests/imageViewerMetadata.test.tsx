@@ -25,7 +25,7 @@ test('shows decoded pixel dimensions independently of zoom and clears them for a
 test('copies the original path instead of the signed URL and reports a failed copy', async () => {
   const writeText = vi.fn().mockResolvedValue(undefined);
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
-  const { rerender } = render(<UnifiedImageViewer src="/api/media/images?ticket=secret" filePath="/repo/中文 image.png" onClose={vi.fn()} />);
+  const { rerender } = render(<UnifiedImageViewer src="/api/media/signed?ticket=secret" filePath="/repo/中文 image.png" onClose={vi.fn()} />);
   fireEvent.click(screen.getByRole('button', { name: '复制路径' }));
   await waitFor(() => expect(writeText).toHaveBeenCalledWith('/repo/中文 image.png'));
   expect((await screen.findByRole('status')).textContent).toBe('路径已复制。');
@@ -40,7 +40,7 @@ test('copies the original path instead of the signed URL and reports a failed co
 test('uses a public source URL but never presents a signed URL or embedded bytes as a file path', () => {
   const { rerender } = render(<UnifiedImageViewer src="https://example.test/image.png" onClose={vi.fn()} />);
   expect(screen.getByText('https://example.test/image.png')).toBeTruthy();
-  for (const src of ['data:image/png;base64,abc', 'blob:http://localhost/temporary', '/api/media/images?ticket=secret']) {
+  for (const src of ['data:image/png;base64,abc', 'blob:http://localhost/temporary', '/api/media/signed?ticket=secret']) {
     rerender(<UnifiedImageViewer src={src} onClose={vi.fn()} />);
     expect(screen.getByText('无文件路径')).toBeTruthy();
     expect(screen.queryByRole('button', { name: '复制路径' })).toBeNull();

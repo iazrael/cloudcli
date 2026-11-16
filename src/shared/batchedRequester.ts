@@ -35,7 +35,7 @@ type BatchedRequesterConfig<TItem, TValue, TFail> = {
 };
 
 /**
- * 账号作用域的批量请求基础设施，由 useSignedImage 与聊天模块的 usePathExists 共用：
+ * 账号作用域的批量请求基础设施，由 useSignedMedia 与聊天模块的 usePathExists 共用：
  * 模块级缓存去重、相邻请求按上限分批，账号切换与会话过期使整缓存失效并拒绝在途
  * 请求；失效经 subscribe/snapshot（供 useSyncExternalStore）触发组件重渲染重探。
  */

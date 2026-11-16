@@ -1992,9 +1992,9 @@ export type RunOutcomeRecord = {
 
 //----------------- SIGNED IMAGE MEDIA ------------
 /** 前后端共用的持久图片引用与临时签名响应。 */
-export type { ImageMediaSource, ImageMediaRequest, ImageMediaResult } from '@shared/protocol/imageMedia';
-/** 签名图片加载失败原因，驱动图片占位与重试 UI；useSignedImage 对外暴露。 */
-export type ImageFailure = 'unauthorized' | 'forbidden' | 'notFound' | 'failed' | 'decode';
+export type { SignedMediaSource, SignedMediaRequest, SignedMediaResult } from '@shared/protocol/signedMedia';
+/** 签名图片加载失败原因，驱动图片占位与重试 UI；useSignedMedia 对外暴露。 */
+export type SignedMediaFailure = 'unauthorized' | 'forbidden' | 'notFound' | 'failed' | 'decode';
 
 //----------------- PATH EXISTENCE PROBE ------------
 /** 前后端共用的本地路径可读性探测契约。 */

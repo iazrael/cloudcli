@@ -1,7 +1,7 @@
 import { useContext, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { useSignedImage } from '@/shared/hooks/useSignedImage';
+import { useSignedMedia } from '@/shared/hooks/useSignedMedia';
 import { UnifiedImageViewer } from '@/shared/ui';
 import type { ChatImage } from '@/shared/types';
 import { TranscriptRenderContext } from '@/modules/chat/context/TranscriptRenderContext';
@@ -27,7 +27,7 @@ function useChatImageSrc(image: ChatImage, projectId?: string | null) {
   const storedDataPath = image.data?.startsWith('/api/assets/images/') ? image.data : null;
   const inlineData = (isExporting && assetData?.[image.path || storedDataPath || '']) || (storedDataPath ? null : image.data);
   const imagePath = image.path || storedDataPath;
-  const signed = useSignedImage(!inlineData && imagePath ? {
+  const signed = useSignedMedia(!inlineData && imagePath ? {
     kind: 'asset', filename: imagePath.split(/[\\/]/).pop() || '',
     ...(projectId ? { projectId, fallbackPath: imagePath } : {}),
   } : null);

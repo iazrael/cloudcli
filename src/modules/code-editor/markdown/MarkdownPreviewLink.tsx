@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { usePaletteOps } from '@/modules/command-palette';
 import { resolveMarkdownImageTarget } from '@/modules/code-editor/utils/markdownImagePath';
 import { getPreviewKind } from '@/modules/code-editor/utils/previewableFile';
-import { useSignedImage } from '@/shared/hooks/useSignedImage';
+import { useSignedMedia } from '@/shared/hooks/useSignedMedia';
 import type { MarkdownImageContext } from '@/shared/types';
 import { UnifiedImageViewer } from '@/shared/ui';
 import { filePathFromFileUrl, isFileUrl, isWindowsAbsolutePath } from '@/shared/utils';
@@ -53,11 +53,11 @@ function LocalPreviewLink({ path, external, projectId, directory, title, childre
   const isImage = !directory && getPreviewKind(path) === 'image';
   // 仅点击图片链接才申请，关闭查看器后仍由共享缓存保留有效票据。
   const [expanded, setExpanded] = useState(false);
-  const signed = useSignedImage(isImage && expanded ? external
+  const signed = useSignedMedia(isImage && expanded ? external
     ? { kind: 'external', path, ...(projectId ? { projectId } : {}) }
     : { kind: 'project', projectId: projectId!, path } : null, { eager: true });
   const loading = expanded && !signed.url && !signed.error;
-  const openImage = () => {
+  const openMedia = () => {
     setExpanded(true);
     if (signed.error) signed.retry();
   };
@@ -72,7 +72,7 @@ function LocalPreviewLink({ path, external, projectId, directory, title, childre
         event.preventDefault();
         event.stopPropagation();
         if (directory) openDirectory(path);
-        else if (isImage) openImage();
+        else if (isImage) openMedia();
         else openFileInEditor(path);
       }}>{children}</button>
     {loading && <span role="status" className="ml-2 text-xs text-muted-foreground">{t('filePreview.loading')}</span>}
@@ -82,7 +82,7 @@ function LocalPreviewLink({ path, external, projectId, directory, title, childre
       <button type="button" onClick={(event) => {
         event.preventDefault();
         event.stopPropagation();
-        openImage();
+        openMedia();
       }}>{t('common:buttons.retry')}</button>
     </span>}
     {expanded && signed.url && <UnifiedImageViewer src={signed.url} alt={label} title={title || label}

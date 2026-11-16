@@ -1,7 +1,7 @@
 import { useTranslation } from 'react-i18next';
 import { X } from 'lucide-react';
 
-import { useSignedImage } from '@/shared/hooks/useSignedImage';
+import { useSignedMedia } from '@/shared/hooks/useSignedMedia';
 import { UnifiedImageViewer } from '@/shared/ui';
 import type { FileTreeImageSelection } from '@/shared/types';
 
@@ -13,7 +13,7 @@ type ImageViewerProps = {
 /** Rendered by FileTree to preview an image file picked in the tree using UnifiedImageViewer. */
 export default function ImageViewer({ file, onClose }: ImageViewerProps) {
   const { t } = useTranslation();
-  const signed = useSignedImage({ kind: 'project', projectId: file.projectId, path: file.path }, { eager: true });
+  const signed = useSignedMedia({ kind: 'project', projectId: file.projectId, path: file.path }, { eager: true });
   const imageUrl = signed.url;
   const error = signed.error ? '无法加载图片' : null;
   const loading = !imageUrl && !error;

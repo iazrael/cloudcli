@@ -254,7 +254,7 @@ app.use('/api/tasks', taskBridgeRouter);
 app.use('/mcp/execution', createExecutionModule().router);
 
 // 图片票据只授权单个资源；签发入口仍受 API key 和登录检查保护。
-app.use('/api/media', mediaRoutes.images);
+app.use('/api/media', mediaRoutes.signed);
 
 // Optional API key validation (if configured)
 app.use('/api', validateApiKey);

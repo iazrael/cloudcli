@@ -4,29 +4,29 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import type * as sharedApi from '@/shared/api';
 import { TranscriptRenderContext } from '@/modules/chat/context/TranscriptRenderContext';
 import { ChatMessageImage } from '@/modules/chat/transcript/ChatMessageImages';
-import type { ImageMediaRequest } from '@/shared/types';
+import type { SignedMediaRequest } from '@/shared/types';
 
-const { requestImageUrls } = vi.hoisted(() => ({ requestImageUrls: vi.fn() }));
-vi.mock('@/shared/api', async (original) => ({ ...await original<typeof sharedApi>(), requestImageUrls }));
+const { requestSignedUrls } = vi.hoisted(() => ({ requestSignedUrls: vi.fn() }));
+vi.mock('@/shared/api', async (original) => ({ ...await original<typeof sharedApi>(), requestSignedUrls }));
 beforeEach(() => {
   localStorage.setItem('auth-token', crypto.randomUUID());
-  requestImageUrls.mockReset().mockImplementation(async (images: ImageMediaRequest[]) => ({ ok: true, json: async () => ({ images: images.map(({ id }) => ({ id, url: '/api/media/images?ticket=attachment', expiresAt: Date.now() + 600_000 })) }) }));
+  requestSignedUrls.mockReset().mockImplementation(async (files: SignedMediaRequest[]) => ({ ok: true, json: async () => ({ files: files.map(({ id }) => ({ id, url: '/api/media/signed?ticket=attachment', expiresAt: Date.now() + 600_000 })) }) }));
 });
 it('loads a stored reference in the legacy data field through a signed asset URL', async () => {
   const filename = `inline-${'a'.repeat(64)}.png`;
   render(<ChatMessageImage image={{ data: `/api/assets/images/${filename}`, name: 'screenshot' }} />);
-  expect((await screen.findByRole('img')).getAttribute('src')).toBe('/api/media/images?ticket=attachment');
-  expect(requestImageUrls).toHaveBeenCalledWith([expect.objectContaining({ kind: 'asset', filename })]);
+  expect((await screen.findByRole('img')).getAttribute('src')).toBe('/api/media/signed?ticket=attachment');
+  expect(requestSignedUrls).toHaveBeenCalledWith([expect.objectContaining({ kind: 'asset', filename })]);
 });
 it('keeps existing inline images usable without an API request', () => {
   render(<ChatMessageImage image={{ data: 'data:image/png;base64,QUJD', name: 'inline' }} />);
   expect(screen.getByRole('img').getAttribute('src')).toBe('data:image/png;base64,QUJD');
-  expect(requestImageUrls).not.toHaveBeenCalled();
+  expect(requestSignedUrls).not.toHaveBeenCalled();
 });
 it('preserves legacy project attachment fallback information when signing', async () => {
   render(<ChatMessageImage image={{ path: '/old/project/image.png', name: 'old' }} projectId="legacy" />);
   await screen.findByRole('img');
-  expect(requestImageUrls).toHaveBeenCalledWith([expect.objectContaining({ kind: 'asset', filename: 'image.png', projectId: 'legacy', fallbackPath: '/old/project/image.png' })]);
+  expect(requestSignedUrls).toHaveBeenCalledWith([expect.objectContaining({ kind: 'asset', filename: 'image.png', projectId: 'legacy', fallbackPath: '/old/project/image.png' })]);
 });
 it('shows a generated image as a fixed thumbnail with the whole image visible', async () => {
   render(<ChatMessageImage image={{ path: '/api/assets/images/thumbnail.png', name: 'generated' }} variant="assistant" />);
