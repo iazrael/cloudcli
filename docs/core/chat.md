@@ -24,7 +24,7 @@
 
 服务端支持三种脱离用户直接点击的自主回合（Detached Chat Turn），它们在抢占策略上有着严格的架构边界：
 
-- **定时消息（Scheduled Messages）**：采用**显式抢断**策略（`interruptActiveRun: true`）。调度到期后直接抢占当前正在执行的交互回合，确保定时指令准时送达。composer 横幅提供两个动作：铅笔撤回先调取消接口，成功才把文本放回该会话的输入框（定时消息不带附件，只还原文本；取消失败横幅原样保留）；X 直接取消并丢弃正文。
+- **定时消息（Scheduled Messages）**：采用**显式抢断**策略（`interruptActiveRun: true`）。调度到期后直接抢占当前正在执行的交互回合，确保定时指令准时送达。composer 横幅提供两个动作：铅笔撤回先调取消接口，成功才把文本放回该会话的输入框（定时消息不带附件，只还原文本；取消失败横幅原样保留）；X 直接取消并丢弃正文。新建、取消、被调度器领取和发送失败都会向该会话广播 `scheduled_messages_changed` 帧（不含消息正文），页面收到后重读该会话的定时消息列表。
 - **排队消息（Queued Messages）**：采用**非抢断式空闲占用**策略，服务端是唯一发送方。页面经追加接口写入 `auth.db` 的 `session_drafts.queued_message`，服务端在事务中合并文字和附件，后提交的设置用于整条消息。主轮回复时等待；Claude 声明 `supportsInputAcceptance`，服务端可在后台任务继续运行时尝试原进程续轮。准备设置期间消息仍可编辑、追加或删除，提交前原子领取未变的快照；变化或不能安全续轮就继续等待。同一会话只有一次准备尝试。领取包装在原 JSON 列中保留已领取快照和后续追加，普通引擎起跑确认或支持输入确认的引擎由 SDK 消费输入后，只移除已领取消息；启动失败恢复原顺序。命令不能与其他消息合并，领取中的命令也不能追加普通消息。确认后广播 `queued_message_dispatched`，只带会话 id 和实际提交内容的 SHA-256 指纹，不广播正文；页面只回显指纹匹配的本地消息，其他内容由历史补齐，并重载服务端队列。进程重启恢复未确认领取，跨进程崩溃窗口不提供恰好一次投递保证。浏览器镜像只用于首屏恢复，旧 `queued_message_<sessionId>` key 不读不迁。
 - **异步任务接续（Task Continuation）**：采用**非抢断式空闲占用**策略（`interruptActiveRun: false`）。后台长耗时命令执行完成并原子落库后，派发器（`task-continuation-dispatcher.service.ts`）在领取事件时检查 `chatRunRegistry.isProcessing(sessionId)`。若用户正在输入或当前有正在进行的运行，派发器**主动释放租约并退回 pending**，等待下一次会话空闲轮询；仅当会话完全空闲时才启动唤醒回合，并将任务结果（`toolOutput`）送入引擎，转录落盘为 `status_note` 消息行。集中开关默认关闭；关闭后不领取新投递，但继续保存任务结果并核对已经发送的回合。 Codex 驻留开启时还要检查引擎的完整活动状态，不能只看网关前台运行。管理模块在独占借用处再次判断；确定尚未提交的忙状态经运行时和网关返回 `busy`，派发器把事件从 sending 退回 pending，不转成人工核对。接续使用管理模块创建的一次性进程恢复原生线程，工具结果回合结束后关闭；普通聊天继续跨轮驻留。
 
@@ -101,6 +101,10 @@ flowchart TD
 
 批准和提问卡片的 `context.subagent`（`toolUseId`、`description`）由 provider 在边界填入，横幅在卡片上方显示“来自子 agent：<description>”。一轮成功结束（`complete`）时，带 `context.subagent` 的卡片保留（派它的后台 agent 可能还在跑，要撤回由服务端发 `permission_cancelled`），其余卡片随这一轮清掉；失败或中止的结束清掉全部。没有前台回复在跑时到达的批准卡片只把会话记成后台工作（`onSessionProcessing(id, { awaitingApproval: true })`），不会让它变成前台“处理中”。各引擎怎样把自家的派 agent 形态翻成 `Agent` 行、怎样保证结算，见 [providers.md](./providers.md)「子 agent 卡片」。
 
+### 旁问（Side Questions）
+
+不进主时间线的独立提问，由能力位 `supportsSideQuestions` 门控显隐。入口：发送菜单（含 `/btw` 斜杠命令）与消息行上的旁问按钮；旁问的问题与回答包含在对话导出中。服务端 `side-questions.service` 把旁问建在会话 fork 机制上（各引擎实现见 providers.md「fork 的两种存储形态决定读法」：claude 原生 stdin 优先、fork 副本回落；codex 一次性 off-disk fork；opencode deny-all 副本）。问题与回答以 `side_question` 事件帧（`running` / `done` / `error` 三态）送达（opencode 走私有 `/api/event` SSE 流），渲染在转录旁的旁车列：不进主时间线、不算引擎自发回合、不改变会话忙碌状态。
+
 ## 断线恢复
 
 `chat-run-registry.service.ts` 在网关进程启动时生成 `streamEpoch`，并为每个会话跨回合续增 `seq`；序号、受众和重放缓存挂在会话通道上，回合的 writer 与会话级发布入口共用这条通道。传输事件身份是 `(streamEpoch, sessionId, seq)`，重放保留原身份，引擎不能指定网关代次。历史行继续使用引擎行 ID 和 `providerRowKey`，不参加传输事件账。
@@ -139,13 +143,14 @@ flowchart TD
   - 两种帧还说明这批工作能不能用 `chat.abort` 停：状态帧用 `canInterrupt`，订阅确认用 `backgroundCanInterrupt`。字段缺省按能停处理；ZCode 一轮结束后 agent 还在跑，此时发 `false`，后台阶段的活动不给停止按钮，排队照旧。
   - 卡片描述任务本身，等待状态还包括任务完成后的汇报回复。任务完成或唤醒到期时卡片立即消失，后续回复结束后才解除等待。未提供等待字段的引擎按卡片列表判断。
 - **输入防打断与智能排队**：
-  - 新消息要不要排队由 `useChatSessionState` 的 `isInputBlocked` 决定：主轮正在回复时一定排队；只剩后台工作时，按该会话的 `backgroundWorkQueuesInput` 决定。要排队时发送转入 `queuedDraft`，阻止新一轮打断后台子进程；Claude 的后台阶段先排队，服务端确认原进程可续轮并由 SDK 消费输入后才移除排队卡，任务条和活动指示照常显示。Codex 只剩宿主任务（`cloudcli_task_run` 起的命令）时同样不排队，见 providers.md「Codex 异步任务结果续开」。任务条的提示跟着走：主轮回复中写“本轮结束后发送”，后台工作挡输入时写“任务完成后自动发送”，不挡时写“可直接发送，后台任务继续运行”。
+  - 新消息要不要排队由 `useChatSessionState` 的 `isInputBlocked` 决定：主轮正在回复时，支持 steer 的引擎（能力位 `supportsSteering`）由 composer 提供 Steer 入口，把消息经 `chat.steer` 送进在途回合——模型在下个工具调用边界读到并继续，服务端回 `chat_steer_accepted` 确认接走；拒收（`STEER_UNAVAILABLE`：回合已结束或引擎不能写入在跑回合）时客户端按普通发送重发，输入不丢。steer 消息的 id 是 v4 UUID 并成为它在 transcript 里的 uuid，回显按 id 认领。不支持 steer 的引擎主轮正在回复时一定排队；只剩后台工作时，按该会话的 `backgroundWorkQueuesInput` 决定。要排队时发送转入 `queuedDraft`，阻止新一轮打断后台子进程；Claude 的后台阶段先排队，服务端确认原进程可续轮并由 SDK 消费输入后才移除排队卡，任务条和活动指示照常显示。Codex 只剩宿主任务（`cloudcli_task_run` 起的命令）时同样不排队，见 providers.md「Codex 异步任务结果续开」。任务条的提示跟着走：主轮回复中写“本轮结束后发送”，后台工作挡输入时写“任务完成后自动发送”，不挡时写“可直接发送，后台任务继续运行”。
+  - **后台发送确认对话框**：会话忙的原因只有后台任务（无在途回复、无已排队草稿）且非强制发送时，点发送先弹 `BackgroundSendDialog`：取消=原样退回文本与附件，不发送；排队=走既有静默排队路径；仍要发送=带 `forceInterrupt: true` 直发（非 Claude 引擎以此新开回合并停掉后台任务，弹窗文案已明示）。两条既有行为不变：在途回复期间发送仍静默排队；Claude held-process（`isInputBlocked=false`）发送仍直发并行、不弹窗。
   - **自动释放**：后台执行和后续回复均结束且无新状态阻塞时，由服务端调度器发出排队消息（见上文「排队消息」），页面不发送。服务端的后台驻留检查也包含后续回复；关掉页面、切走会话或断线都不改变等待条件，也不会让消息丢失。排队卡片跟随草稿存储：服务端发出后卡片消失，其他设备排的队也会显示。
   - **强制发送逃生通道**：排队卡片提供 `forceSendQueuedDraft`（`isForced: true`），允许用户显式跳过等待立即发送。只有主轮已经结束、只剩后台工作时才给这个按钮（`canForceSendQueuedDraft`）：主轮还在回复时服务端拒绝第二个运行（`RUN_IN_PROGRESS`），按钮只会失败。服务端不读请求里的 `forceInterrupt`。Claude 不提供强制发送按钮，原进程能续轮时由服务端自动提交，不能续轮时继续等待。ZCode 回合结束后 agent 还在跑时提供此按钮，ZCode 新开一轮不停 agent，所以按钮写“立即发送，后台任务继续运行”。
   - **会话忙状态与取消**：主轮还在回复时到达的任务条帧（Codex、ZCode 在轮内派出又收回的 agent）只更新卡片，不把会话改记成后台活动，也不触发完工提示；轮结束后是否进入后台阶段由 `complete` 决定。实时完成帧和订阅确认在后台等待期间保留会话的后台活动，切走会话的自动发送也等到后续回复结束。后台结束帧只清后台活动，不清新主轮的活动；这条判定不依赖时钟，两个阶段在同一毫秒交接也成立。
   - **停止入口**：任务卡保留启动调用的身份，独立停止使用引擎提供的停止句柄，两者不可混用。后台任务栏仅在所有卡片均有停止句柄时提供中止，逐个发送 `chat.stop-task`，不打断同时运行的主轮。顶部停止和 Esc 共用会话取消入口：主轮正在响应时发送 `chat.abort`。本轮起的后台工作是否保留由引擎决定：Claude 只打断这一轮，后台 Bash 继续跑、后台 agent 由 CLI 停掉（见 providers.md「Claude 后台任务生命周期」）；Antigravity、Codex 的后台工作随这一轮结束；仅剩可单独停止的后台任务时逐个停止；没有独立句柄或只剩汇报回复时发送 `chat.abort` 结束驻留会话。服务端接受仍有后台工作的完成态会话取消，不重复发送主轮的完成帧。卡片和排队状态都等待引擎确认，停止请求本身不清状态，失败仍显示错误。
   - **停止失败**：找不到运行任务、缺少任务句柄、引擎拒绝停止和会话取消失败均保留现有活动，不解除排队；发送被 `RUN_IN_PROGRESS` 拒绝时同样保留，因为拒绝本身说明还有运行在进行。异常响应携带所属会话；`TASK_STOP_FAILED` 与 `ABORT_FAILED` 分别表示任务停止和会话取消的引擎异常，错误仍进入聊天记录。
-  - **可视化呈现**：输入框上方通过 `BackgroundTaskIndicator` 实时展示运行中的后台任务（工具名、命令、动态已用时间）。提交按钮只在停止能起作用、且输入框里没有可以直接发出的内容时显示成停止；会话忙但停不了时保持发送按钮，空输入时禁用，输入内容后点击即排队；Claude 后台阶段输入了内容，点击发送会先排队。
+  - **可视化呈现**：输入框上方通过 `BackgroundTaskIndicator` 实时展示运行中的后台任务（工具名、命令、动态已用时间）。提交按钮只在停止能起作用、且输入框里没有可以直接发出的内容时显示成停止；会话忙但停不了时保持发送按钮，空输入时禁用，输入内容后点击按排队/后台发送确认对话框规则处理；Claude held-process 阶段输入了内容，点击发送仍直发并行、不弹窗。
   - **完工庆祝防误报**：`useChatRealtimeHandlers` 在收到 `complete` 时，若会话仍有后台等待，则暂不触发完工音效与窗口标题提示；待后台等待解除时统一触发。卡片消失本身不表示汇报回复已结束。
 
 ## run 的结束原因（诊断契约）

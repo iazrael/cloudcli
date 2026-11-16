@@ -53,7 +53,7 @@ server/
     assets/                聊天上传资产（~/.cloudcli/assets）的上传与读取
     agent/                 无头 Agent API（API key / 平台模式鉴权）
     execution/             本机执行 MCP（显式授权、持久化运行、异步查询与取消）
-    notifications/         Web Push（VAPID）+ 桌面通知 WS
+    notifications/         Web Push（VAPID）+ 桌面通知 WS + 出站 Webhook（用户配置 URL + 签名密钥，密钥仅创建时展示；只发 run 生命周期事件，接收方按事件 id 去重）
     plugins/               插件注册表、插件子进程、WS 代理
     scheduled-messages/    定时消息与排队消息（调度器 → 无附着 chat turn）
     scheduled-jobs/        定时任务（cron 循环或 run_at 仅一次 + 运行历史；reuse/new 两种会话模式，reuse 可设 rotate_after_days 到龄换新会话并归档旧会话；永不打断在跑回合）
@@ -88,7 +88,7 @@ docs/
 | 异步任务目录与产物 | `~/.cloudcli/tasks/<taskId>` | 后台命令日志 `output.log` 与原子结果 `result.json`，支持宿主断电/崩溃重启后自动扫描补录入库 |
 | 聊天上传资产 | `~/.cloudcli/assets` | 存储清理开启时，`inline-*`、`zcode-*` 按时间清理（读历史时重新生成），上传文件只在选中“同时删除对话”且无人引用时清理。`server/modules/assets`；聊天发送只信任该目录**直接子文件**（`chat-websocket.service.ts` 过滤） |
 | 插件本体与启用状态 | `~/.cloudcli/plugins` + `~/.cloudcli/plugins.json` | `server/modules/plugins`（注册表扫描 + 子进程管理）；首次访问时从旧 `~/.claude-code-ui` 一次性自动迁移（`migrateLegacyPluginPaths`） |
-| 各引擎会话原件 | `~/.claude` / `~/.codex` / `~/.cursor` / `~/.local/share/opencode` / `~/.zcode` / `~/.gemini/antigravity*` | 云 CLI 不复制、不改写；同步器只读解析后把元数据 upsert进 SQLite（`sessions` 表含 `jsonl_path`）；会话名跟随引擎标题，用户在应用内改过名的行带 `name_locked=1` 永不被引擎覆盖；用户置顶的行带 `isPinned=1`，项目内会话分页和跨项目「对话」流都由服务端按「置顶优先、再按活跃时间倒序」分页，前端排序必须与之一致，否则翻页会错位 |
+| 各引擎会话原件 | `~/.claude` / `~/.codex` / `~/.cursor` / `~/.local/share/opencode` / `~/.zcode` / `~/.gemini/antigravity*` | 云 CLI 不复制、不改写；同步器只读解析后把元数据 upsert进 SQLite（`sessions` 表含 `jsonl_path`）；会话名跟随引擎标题，用户在应用内改过名的行带 `name_locked=1` 永不被引擎覆盖；用户置顶的行带 `isPinned=1`，项目内会话分页和跨项目「对话」流都由服务端按「置顶优先、再按活跃时间倒序」分页，前端排序必须与之一致，否则翻页会错位。fork 出的会话带祖先链上下文（`getForkAncestors` 递归 CTE 沿 `forked_from_session_id` 同项目同 provider 上溯，止于归档、缺失、跨项目或跨 provider 的祖先，UNION 去重防环）；项目会话接口与 WS 摘要携带该上下文，侧栏把 fork 会话缩进挂到祖先树下，祖先不占分页位；祖先被删除、改名或行 upsert 时上下文实时保活 |
 | 运行结束记录 | 服务进程内存（有界，约百条） | `server/modules/diagnostics`：每个 run 为什么结束（见 [chat.md](./chat.md)）。刻意不入库——它服务于"刚刚出了什么事"，重启即弃；`GET /api/diagnostics/runs` 读出，前端诊断报告把它和浏览器侧证据合成一份文件 |
 | 前端构建产物 | `dist/`（vite build） | Express 静态托管 + SPA fallback |
 | 服务端构建产物 | `dist-server/` | `tsc + tsc-alias` 先产出 `dist-server.next`，`scripts/promote-dist-server.mjs` 原子晋升（保留 `dist-server.old`；`preserver` 钩子启动前自愈） |
