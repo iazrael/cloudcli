@@ -3,19 +3,23 @@ import path from 'path';
 
 import express from 'express';
 
-import type { ProviderRunFunction } from '@/shared/types.js';
+import type { LLMProvider, ProviderRunFunction } from '@/shared/types.js';
 
 import { normalizeProjectPath } from '../../shared/utils.js';
 
 /** The providers an Agent API run can start: the ones with a runtime and a model catalog. */
 const AGENT_RUN_PROVIDERS = ['claude', 'cursor', 'codex', 'opencode'];
 
-/** What the route reads off a session row it continues: the row, not the request, says which provider and project a session belongs to. */
+/** What the route reads off a session row it continues or reports: the row, not the request, says which provider and project a session belongs to. */
 type AgentSessionRow = {
   session_id: string;
   provider: string;
   provider_session_id: string | null;
   project_path: string | null;
+  custom_name?: string | null;
+  isArchived?: number;
+  created_at?: string;
+  updated_at?: string;
 };
 
 type AgentRouterDependencies = {
@@ -36,7 +40,9 @@ type AgentRouterDependencies = {
     createAppSession(provider: string, projectPath: string, initialMessage: string): { sessionId: string };
   };
   /** The live-run registry the chat socket uses; registering here is what puts an API run on the running-sessions list. */
-  runs: Pick<typeof import('../websocket/index.js').chatRunRegistry, 'startRun' | 'completeRunIfCurrent' | 'isProcessing'>;
+  runs: Pick<typeof import('../websocket/index.js').chatRunRegistry, 'startRun' | 'completeRunIfCurrent' | 'isProcessing' | 'getRun'>;
+  /** The provider runtime's stop path, shared with the chat socket's `chat.abort`. */
+  runtime: Pick<typeof import('../providers/index.js').providerRuntimeService, 'abort' | 'hasBackgroundWork'>;
   queryClaude: ProviderRunFunction;
   queryCursor: ProviderRunFunction;
   queryCodex: ProviderRunFunction;
@@ -61,6 +67,7 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
   const providerModelsService = dependencies.models;
   const sessionGateway = dependencies.sessions;
   const runRegistry = dependencies.runs;
+  const runtime = dependencies.runtime;
   const queryClaudeSDK = dependencies.queryClaude;
   const spawnCursor = dependencies.queryCursor;
   const queryCodex = dependencies.queryCodex;
@@ -604,6 +611,121 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
   // ===============================
 
   /**
+   * Resolves a caller-supplied session id: the app id, or the provider-native
+   * id an earlier response reported. Lifecycle routes and continuations use
+   * the same lookup.
+   */
+  function resolveSessionRow(sessionId) {
+    return sessionGateway.getSessionById(sessionId) ?? sessionGateway.getSessionByProviderSessionId(sessionId);
+  }
+
+  /**
+   * Describes what a session is doing right now. `background` covers a held
+   * process whose foreground turn ended but whose background work still runs.
+   */
+  function describeSession(sessionRow) {
+    const run = runRegistry.getRun(sessionRow.session_id);
+    const running = run?.status === 'running';
+    const background = !running && runtime.hasBackgroundWork(sessionRow.session_id);
+    return {
+      status: running ? 'running' : background ? 'background' : 'idle',
+      run: running ? { startedAt: new Date(run.startedAt).toISOString(), lastSeq: run.lastSeq } : null,
+    };
+  }
+
+  /**
+   * Stops whatever the session is doing, through the same path as
+   * `chat.abort`: a running turn first, then background work on a held
+   * process. An idle session is not an error; the caller may retry safely.
+   */
+  async function stopSession(sessionRow) {
+    const run = runRegistry.getRun(sessionRow.session_id);
+    if (run && run.status === 'running') {
+      const stopped = await runtime.abort(run.provider, sessionRow.session_id);
+      if (!stopped) {
+        return { stopped: false, backgroundOnly: false };
+      }
+      runRegistry.completeRunIfCurrent(run, {
+        exitCode: 0,
+        aborted: true,
+        reason: 'client_abort',
+      });
+      return { stopped: true, backgroundOnly: false };
+    }
+
+    if (runtime.hasBackgroundWork(sessionRow.session_id)) {
+      const stopped = await runtime.abort(sessionRow.provider as LLMProvider, sessionRow.session_id);
+      return { stopped, backgroundOnly: stopped };
+    }
+
+    return { stopped: true, backgroundOnly: false, idle: true };
+  }
+
+  /**
+   * POST /api/agent/:sessionId/abort
+   *
+   * Stops a running turn, or the background work a held process still owns.
+   * The original POST /api/agent request then ends with `success: false,
+   * aborted: true` (or a `status` event in streaming mode). An idle session
+   * returns `aborted: false`, so retries are safe.
+   */
+  router.post('/:sessionId/abort', validateExternalApiKey, async (req, res) => {
+    const sessionRow = resolveSessionRow(req.params.sessionId);
+    if (!sessionRow) {
+      return res.status(404).json({ error: `Session "${req.params.sessionId}" was not found` });
+    }
+
+    try {
+      const result = await stopSession(sessionRow);
+      if (!result.stopped) {
+        return res.status(409).json({
+          success: false,
+          sessionId: sessionRow.session_id,
+          error: `Could not stop the active run for session "${sessionRow.session_id}"`,
+        });
+      }
+      return res.json({
+        success: true,
+        sessionId: sessionRow.session_id,
+        aborted: !result.idle,
+        ...(result.backgroundOnly ? { backgroundOnly: true } : {}),
+      });
+    } catch (error) {
+      console.error('❌ Agent abort failed:', error);
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  /**
+   * GET /api/agent/:sessionId
+   *
+   * Reports where the session lives and whether a turn or background work is
+   * still running. Uses the same app-id / provider-native-id lookup as the
+   * other lifecycle routes.
+   */
+  router.get('/:sessionId', validateExternalApiKey, (req, res) => {
+    const sessionRow = resolveSessionRow(req.params.sessionId);
+    if (!sessionRow) {
+      return res.status(404).json({ error: `Session "${req.params.sessionId}" was not found` });
+    }
+
+    const state = describeSession(sessionRow);
+    return res.json({
+      success: true,
+      sessionId: sessionRow.session_id,
+      provider: sessionRow.provider,
+      providerSessionId: sessionRow.provider_session_id,
+      projectPath: sessionRow.project_path,
+      name: sessionRow.custom_name ?? null,
+      archived: Boolean(sessionRow.isArchived),
+      status: state.status,
+      run: state.run,
+      createdAt: sessionRow.created_at ?? null,
+      updatedAt: sessionRow.updated_at ?? null,
+    });
+  });
+
+  /**
    * POST /api/agent
    *
    * Trigger an AI agent to work on a project.
@@ -625,6 +747,7 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
    *                               - If used alone: Must point to existing project directory
    *                               - If used with githubUrl: Target location for cloning
    *                               - If omitted with githubUrl: Auto-generates temporary path in ~/.claude/external-projects/
+   *                               - If omitted with sessionId: Uses the session's own project path
    *
    * @param {string} message - (Required) Task description for the AI agent. Used as:
    *                          - Instructions for the agent
@@ -640,7 +763,11 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
    *                          - false: Returns complete JSON response after completion
    *
    * @param {string} sessionId - (Optional) Continue an existing session: the id an earlier
-   *                             response reported as `sessionId` / in its `session-id` event.
+   *                             response reported as `sessionId` / in its `session-id` event,
+   *                             or the provider-native id it reported as `providerSessionId`.
+   *                             When this alone identifies the target, `projectPath` and
+   *                             `githubUrl` may be omitted; the session row supplies the
+   *                             working directory and provider.
    *                             A session already mid-run is refused (409); an unknown id, 404.
    *                             Omitted: a new session is created for the run.
    *
@@ -896,8 +1023,8 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
     const createPR = req.body.createPR === true || req.body.createPR === 'true';
 
     // Validate inputs
-    if (!githubUrl && !projectPath) {
-      return res.status(400).json({ error: 'Either githubUrl or projectPath is required' });
+    if (!githubUrl && !projectPath && !sessionId) {
+      return res.status(400).json({ error: 'Either githubUrl, projectPath, or sessionId is required' });
     }
 
     if (!message || !message.trim()) {
@@ -910,8 +1037,8 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
 
     // Validate GitHub branch/PR creation requirements
     // Allow branch/PR creation with projectPath as long as it has a GitHub remote
-    if ((createBranch || createPR) && !githubUrl && !projectPath) {
-      return res.status(400).json({ error: 'createBranch and createPR require either githubUrl or projectPath with a GitHub remote' });
+    if ((createBranch || createPR) && !githubUrl && !projectPath && !sessionId) {
+      return res.status(400).json({ error: 'createBranch and createPR require either githubUrl, projectPath, or a sessionId whose project has a GitHub remote' });
     }
 
     // A run continues a session the caller names, by its app id or — for a
@@ -921,12 +1048,17 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
     // it does for a chat send; a request that names another is refused.
     let sessionRow = null;
     if (sessionId) {
-      sessionRow = sessionGateway.getSessionById(sessionId) ?? sessionGateway.getSessionByProviderSessionId(sessionId);
+      sessionRow = resolveSessionRow(sessionId);
       if (!sessionRow) {
         return res.status(404).json({ error: `Session "${sessionId}" was not found` });
       }
       if (requestedProvider !== null && requestedProvider !== sessionRow.provider) {
         return res.status(400).json({ error: `Session "${sessionRow.session_id}" belongs to provider "${sessionRow.provider}"` });
+      }
+      // The row is the source of the working directory when the caller names
+      // only a session; a row without one cannot be continued.
+      if (!githubUrl && !projectPath && !sessionRow.project_path?.trim()) {
+        return res.status(400).json({ error: `Session "${sessionRow.session_id}" has no project path; pass projectPath` });
       }
       // Refused before any side effect — a clone per retry would pile up
       // under external-projects. startRun below still has the last word.
@@ -962,8 +1094,10 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
         finalProjectPath = clonedProject.path;
         clonedProjectCreated = clonedProject.created;
       } else {
-        // Use existing project path
-        finalProjectPath = normalizeProjectPath(path.resolve(projectPath));
+        // Use the path the request names, or — for a sessionId-only
+        // continuation — the one the session row lives in.
+        const targetProjectPath = projectPath ?? sessionRow?.project_path;
+        finalProjectPath = normalizeProjectPath(path.isAbsolute(targetProjectPath) ? targetProjectPath : path.resolve(targetProjectPath));
 
         // Verify the path exists
         try {

@@ -46,6 +46,11 @@ function createDependencies(
       })) as unknown as AgentDependencies['runs']['startRun'],
       completeRunIfCurrent: () => undefined,
       isProcessing: () => false,
+      getRun: () => undefined,
+    },
+    runtime: {
+      abort: async () => true,
+      hasBackgroundWork: () => false,
     },
     queryClaude: unexpectedProviderCall as AgentDependencies['queryClaude'],
     queryCursor: unexpectedProviderCall as AgentDependencies['queryCursor'],
@@ -113,7 +118,7 @@ test('Agent route rejects missing project input before invoking provider depende
     const body = await response.json() as { error: string };
 
     assert.equal(response.status, 400);
-    assert.equal(body.error, 'Either githubUrl or projectPath is required');
+    assert.equal(body.error, 'Either githubUrl, projectPath, or sessionId is required');
   });
 });
 

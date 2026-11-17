@@ -252,6 +252,11 @@
             color: white;
         }
 
+        .method-get {
+            background: var(--primary);
+            color: white;
+        }
+
         .endpoint-path {
             font-family: 'Monaco', 'Menlo', monospace;
             font-size: 0.9375rem;
@@ -439,6 +444,7 @@
 
             <div class="sidebar-title">API Reference</div>
             <a href="#agent">Agent</a>
+            <a href="#session-lifecycle">Session Lifecycle</a>
 
             <div class="sidebar-title">Examples</div>
             <a href="#usage-examples">Usage Patterns</a>
@@ -449,7 +455,7 @@
             <div class="section-row">
                 <div class="docs-section">
                     <div class="intro">
-                        <p><strong>Programmatically trigger AI agents to work on projects.</strong> Clone GitHub repositories or use existing project paths. Perfect for CI/CD pipelines, automated code reviews, and bulk processing.</p>
+                        <p><strong>Programmatically trigger AI agents to work on projects, then inspect, continue or stop the resulting session.</strong> Clone GitHub repositories or use existing project paths. Perfect for CI/CD pipelines, automated code reviews, and bulk processing.</p>
                     </div>
 
                     <section id="authentication">
@@ -512,7 +518,13 @@
                                         <td><code>projectPath</code></td>
                                         <td>string</td>
                                         <td><span class="badge badge-optional">Conditional</span></td>
-                                        <td>Path to existing project OR destination for cloning. If omitted with <code>githubUrl</code>, auto-generates path. If used alone, must point to existing project directory.</td>
+                                        <td>Path to existing project OR destination for cloning. If omitted with <code>githubUrl</code>, auto-generates path. If omitted with <code>sessionId</code>, uses the session's own project path. If used alone, must point to existing project directory.</td>
+                                    </tr>
+                                    <tr>
+                                        <td><code>sessionId</code></td>
+                                        <td>string</td>
+                                        <td><span class="badge badge-optional">Optional</span></td>
+                                        <td>Continue an existing session: the <code>sessionId</code> (or <code>providerSessionId</code>) an earlier response reported. When this alone identifies the target, <code>projectPath</code> and <code>githubUrl</code> may be omitted. A session already running returns <code>409</code>; an unknown id returns <code>404</code>. Omitted: a new session is created.</td>
                                     </tr>
                                     <tr>
                                         <td><code>message</code></td>
@@ -568,19 +580,19 @@
                                         <td><code>branchName</code></td>
                                         <td>string</td>
                                         <td><span class="badge badge-optional">Optional</span></td>
-                                        <td>Custom branch name to use. If provided, <code>createBranch</code> is automatically enabled. Branch names are validated against Git naming rules. Works with <code>githubUrl</code> or <code>projectPath</code> (if it has a GitHub remote).</td>
+                                        <td>Custom branch name to use. If provided, <code>createBranch</code> is automatically enabled. Branch names are validated against Git naming rules. Works with <code>githubUrl</code>, <code>projectPath</code>, or <code>sessionId</code> (if the project has a GitHub remote).</td>
                                     </tr>
                                     <tr>
                                         <td><code>createBranch</code></td>
                                         <td>boolean</td>
                                         <td><span class="badge badge-optional">Optional</span></td>
-                                        <td>Create a new branch after successful completion (default: <code>false</code>). Automatically set to <code>true</code> if <code>branchName</code> is provided. Works with <code>githubUrl</code> or <code>projectPath</code> (if it has a GitHub remote).</td>
+                                        <td>Create a new branch after successful completion (default: <code>false</code>). Automatically set to <code>true</code> if <code>branchName</code> is provided. Works with <code>githubUrl</code>, <code>projectPath</code>, or <code>sessionId</code> (if the project has a GitHub remote).</td>
                                     </tr>
                                     <tr>
                                         <td><code>createPR</code></td>
                                         <td>boolean</td>
                                         <td><span class="badge badge-optional">Optional</span></td>
-                                        <td>Create a pull request after successful completion (default: <code>false</code>). PR title and description auto-generated from commit messages. Works with <code>githubUrl</code> or <code>projectPath</code> (if it has a GitHub remote).</td>
+                                        <td>Create a pull request after successful completion (default: <code>false</code>). PR title and description auto-generated from commit messages. Works with <code>githubUrl</code>, <code>projectPath</code>, or <code>sessionId</code> (if the project has a GitHub remote).</td>
                                     </tr>
                                 </tbody>
                             </table>
@@ -589,12 +601,14 @@
                                 <strong>Path Handling Behavior:</strong><br><br>
                                 <strong>Scenario 1:</strong> Only <code>githubUrl</code> → Clones to auto-generated temporary path<br>
                                 <strong>Scenario 2:</strong> Only <code>projectPath</code> → Uses existing project at specified path<br>
-                                <strong>Scenario 3:</strong> Both provided → Clones <code>githubUrl</code> to <code>projectPath</code><br><br>
+                                <strong>Scenario 3:</strong> Both provided → Clones <code>githubUrl</code> to <code>projectPath</code><br>
+                                <strong>Scenario 4:</strong> Only <code>sessionId</code> → Continues in the session's own project path<br><br>
                                 <strong>Validation:</strong> If <code>projectPath</code> exists and contains a git repository, the remote URL is compared with <code>githubUrl</code>. If URLs match, the existing repo is reused. If URLs differ, an error is returned.
                             </div>
 
                             <h4>Response (Streaming)</h4>
                             <p>Server-sent events (SSE) format with real-time updates. Content-Type: <code>text/event-stream</code></p>
+                            <p>The first events include <code>session-id</code> (the app session id to pass back as <code>sessionId</code>) and <code>status</code>. Provider events follow with their own <code>kind</code>, <code>seq</code> and <code>sessionId</code>.</p>
 
                             <h4>Response (Non-Streaming)</h4>
                             <p>JSON object containing session details, assistant messages only (filtered), and token usage summary. Content-Type: <code>application/json</code></p>
@@ -665,6 +679,7 @@ print(response.json())</code></pre>
                     <div class="example-block">
                         <h4>Streaming Response</h4>
 <pre><code class="language-javascript">data: {"type":"status","message":"Repository cloned"}
+data: {"type":"session-id","sessionId":"abc123"}
 data: {"type":"thinking","content":"Analyzing..."}
 data: {"type":"tool_use","tool":"read_file"}
 data: {"type":"content","content":"Done!"}
@@ -719,6 +734,94 @@ data: {"type":"done"}</code></pre>
   "success": false,
   "error": "Directory exists with different repo"
 }</code></pre>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Session Lifecycle Section -->
+            <div class="section-row">
+                <div class="docs-section">
+                    <section id="session-lifecycle">
+                        <h2>Session Lifecycle</h2>
+                        <p>Every response reports its app session id. Use it — or the provider-native <code>providerSessionId</code> — to inspect or stop the session. Closing the stream does <strong>not</strong> stop the run; send an explicit abort.</p>
+
+                        <div class="endpoint">
+                            <div class="endpoint-header">
+                                <span class="method method-get">GET</span>
+                                <span class="endpoint-path"><span class="api-url">http://localhost:3001</span>/api/agent/:sessionId</span>
+                            </div>
+
+                            <p>Reports whether a turn or background work is still running.</p>
+
+                            <h4>Response</h4>
+<pre><code class="language-json">{
+  "success": true,
+  "sessionId": "abc123",
+  "provider": "claude",
+  "providerSessionId": "ses_9f2c...",
+  "projectPath": "/path/to/project",
+  "name": "Fix authentication bug",
+  "archived": false,
+  "status": "running",
+  "run": {
+    "startedAt": "2026-11-14T12:00:00.000Z",
+    "lastSeq": 12
+  },
+  "createdAt": "2026-11-14T11:59:00.000Z",
+  "updatedAt": "2026-11-14T12:00:10.000Z"
+}</code></pre>
+
+                            <p><code>status</code> is <code>running</code> while a turn is active, <code>background</code> while only background work remains, and <code>idle</code> otherwise. <code>run</code> is <code>null</code> unless a turn is running.</p>
+                        </div>
+
+                        <div class="endpoint">
+                            <div class="endpoint-header">
+                                <span class="method method-post">POST</span>
+                                <span class="endpoint-path"><span class="api-url">http://localhost:3001</span>/api/agent/:sessionId/abort</span>
+                            </div>
+
+                            <p>Stops the running turn or the remaining background work, using the same path as the UI's stop button. An idle session returns <code>aborted: false</code>, so retries are safe.</p>
+
+                            <h4>Response</h4>
+<pre><code class="language-json">{
+  "success": true,
+  "sessionId": "abc123",
+  "aborted": true
+}</code></pre>
+
+                            <p>Unknown session: <code>404</code>. Provider refused to stop: <code>409</code>. The original <code>POST /api/agent</code> request then ends with <code>success: false, aborted: true</code> (or a <code>status</code> event in streaming mode).</p>
+                        </div>
+                    </section>
+                </div>
+
+                <div class="examples-section">
+                    <div class="example-block">
+                        <h4>Get Session Status</h4>
+<pre><code class="language-bash">curl <span class="api-url">http://localhost:3001</span>/api/agent/abc123 \
+  -H "X-API-Key: ck_..."</code></pre>
+                    </div>
+
+                    <div class="example-block">
+                        <h4>Abort a Run</h4>
+<pre><code class="language-bash">curl -X POST <span class="api-url">http://localhost:3001</span>/api/agent/abc123/abort \
+  -H "X-API-Key: ck_..."</code></pre>
+                    </div>
+
+                    <div class="example-block">
+                        <h4>Abort Response</h4>
+<pre><code class="language-json">{"success":true,"sessionId":"abc123","aborted":true}</code></pre>
+                    </div>
+
+                    <div class="example-block">
+                        <h4>Continue a Session</h4>
+<pre><code class="language-bash">curl -X POST <span class="api-url">http://localhost:3001</span>/api/agent \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: ck_..." \
+  -d '{
+    "sessionId": "abc123",
+    "message": "Now add tests",
+    "stream": false
+  }'</code></pre>
                     </div>
                 </div>
             </div>
