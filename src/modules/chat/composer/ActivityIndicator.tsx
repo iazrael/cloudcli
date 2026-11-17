@@ -23,9 +23,14 @@ const ACTION_KEYS = [
 const DEFAULT_ACTION_WORDS = ['Thinking', 'Processing', 'Analyzing', 'Working', 'Computing', 'Reasoning'];
 const EXIT_ANIMATION_MS = 220;
 
-/** What the background work is: the one task by kind and name, or how many when there are several. */
+/**
+ * What the background work is: the one task by kind and name, or how many when
+ * there are several. Empty when nothing is listed (a waiting wakeup, a reply
+ * still to come): "0 tasks" over a strip showing work read as a contradiction.
+ */
 function describeBackgroundTasks(allTasks: BackgroundTaskSummary[], t: TFunction): string {
   const tasks = ownBackgroundTasks(allTasks);
+  if (tasks.length === 0) return '';
   return tasks.length === 1
     ? describeBackgroundTask(tasks[0], t)
     : t('claudeStatus.backgroundTask.count', { count: tasks.length, defaultValue: '{{count}} tasks' });

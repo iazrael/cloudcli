@@ -1289,7 +1289,7 @@ export function useChatComposerState({
           const targetActivity = sessionKey ? processingSessions?.get(sessionKey) : undefined;
           const replyInFlight = Boolean(targetActivity && !targetActivity.background);
           if (!replyInFlight && hasActiveBackgroundTasks && !queuedDraft) {
-            const work = targetActivity?.tasks
+            const work = targetActivity?.tasks?.length
               ? ownBackgroundTasks(targetActivity.tasks).map((task) => describeBackgroundTask(task, t))
               : backgroundTasks.map((task) => task.command || task.description || task.toolName);
             const choice = await askBeforeSendingOverBackgroundWork(work);

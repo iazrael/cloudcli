@@ -63,6 +63,32 @@ function cardFromTask(state: SessionWork, toolUseId: string, record: TaskRecord)
   return true;
 }
 
+const TASK_TYPE_BY_CARD_TOOL: Record<string, string> = {
+  Bash: 'local_bash',
+  Workflow: 'local_workflow',
+  [SUBAGENT_TOOL_NAME]: 'local_agent',
+};
+
+/**
+ * A launch the strip lists but no `task_started` was paired with (an SDK
+ * stream without task events, or one whose event named neither the call nor a
+ * known task id). Without this the running-sessions list reported the session
+ * busy with no tasks, and the composer's pill read "0 tasks" over a strip
+ * showing one. Waiting wakeups, crons and monitors stay unlisted.
+ */
+function summaryFromCard(toolUseId: string, record: TaskRecord): BackgroundTaskSummary | undefined {
+  const card = record.card;
+  const taskType = card ? TASK_TYPE_BY_CARD_TOOL[card.toolName] : undefined;
+  if (!card || !taskType) return undefined;
+  return {
+    taskId: record.taskId ?? card.taskId ?? toolUseId,
+    toolUseId,
+    taskType,
+    description: card.description ?? card.command ?? '',
+    startedAt: card.startedAt,
+  };
+}
+
 // Crons and wakeups without an acknowledged time never report back on their
 // own; the turn they trigger is the only sign they ran.
 function lapsesAfterNextTurn(record: TaskRecord): boolean {
@@ -298,7 +324,10 @@ export function createBackgroundWorkTracker() {
         // provider id lands; no consumer can address a null session, so the
         // public list leaves those out.
         if (sessionId === null) return [];
-        const tasks = Array.from(state.records.values()).flatMap((record) => record.summary ? [record.summary] : []);
+        const tasks = Array.from(state.records.entries()).flatMap(([toolUseId, record]) => {
+          const summary = record.summary ?? summaryFromCard(toolUseId, record);
+          return summary ? [summary] : [];
+        });
         return tasks.length ? [{ sessionId, tasks }] : [];
       });
     },

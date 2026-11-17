@@ -39,6 +39,26 @@ for (const [toolName, acknowledgement] of [
   });
 }
 
+test('a launch with no task_started is still listed, so the pill counts what the strip shows', () => {
+  const tracker = createBackgroundWorkTracker();
+  tracker.apply('s1', {
+    type: 'assistant', message: { content: [
+      { type: 'tool_use', id: 'toolu_bash', name: 'Bash', input: { run_in_background: true, command: 'sleep 999' } },
+      { type: 'tool_use', id: 'toolu_wake', name: 'ScheduleWakeup', input: { delaySeconds: 60 } },
+    ] },
+  });
+  tracker.apply('s1', {
+    type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_bash', content: 'started' }] },
+    tool_use_result: { backgroundTaskId: 'bash-task' },
+  });
+
+  assert.equal(tracker.activeTasks('s1').length, 2);
+  const [entry] = tracker.list();
+  assert.deepEqual(entry.tasks.map((task) => [task.toolUseId, task.taskId, task.taskType, task.description]), [
+    ['toolu_bash', 'bash-task', 'local_bash', 'sleep 999'],
+  ], 'a waiting wakeup is not a task to count');
+});
+
 // Only turns that start work outliving the turn hold their CLI process open. A
 // turn scored `false` here has its stdin released the moment `result` arrives,
 // and the CLI reads that EOF as print wind-down — so anything still running dies.
