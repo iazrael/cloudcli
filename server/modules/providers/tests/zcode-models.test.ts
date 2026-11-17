@@ -52,15 +52,24 @@ const withZCodeStorage = async (runTest: (storageDir: string) => Promise<void>):
 const withEngineTemplateModelRules = async (
   storageDir: string,
   rules: unknown[],
+  modelRules: unknown[] = [],
 ): Promise<void> => {
   const providerDir = path.join(storageDir, 'engine', 'provider');
   await mkdir(providerDir, { recursive: true });
   await writeFile(path.join(providerDir, 'zcode-builtin.json'), JSON.stringify({
     schemaVersion: 1,
     revision: 1,
-    config: { modelConfigRules: { templateModelRules: rules } },
+    config: { modelConfigRules: { templateModelRules: rules, ...(modelRules.length ? { modelRules } : {}) } },
   }), 'utf8');
 };
+
+/** Engine reasoning specs mirroring the aliyun template shape. */
+const ALIYUN_MODEL_RULES = [
+  // The catch-all ships first, engine-accurate ordering.
+  { modelMatch: '.*', config: { optionSpecs: { reasoningLevel: { values: ['disabled', 'enabled'] } } } },
+  { modelMatch: '.*qwen-max.*', config: { optionSpecs: { reasoningLevel: { values: ['low', 'medium', 'xhigh'] } } } },
+  { modelMatch: '.*deepseek-x.*', config: { optionSpecs: { reasoningLevel: { values: ['disabled', 'low', 'high', 'max'] } } } },
+];
 
 test('getSupportedModels falls back to the builtin catalog without a config', async () => {
   await withZCodeStorage(async () => {
@@ -715,6 +724,53 @@ test('personalModelIds memberships stay enabled even when the template ships the
       definition.OPTIONS.map((opt) => opt.value),
       ['qwen-max', 'deepseek-x', 'manual-y'],
     );
+  });
+});
+
+test('native options carry engine reasoning levels and sends default to the top level', async () => {
+  await withZCodeStorage(async (storageDir) => {
+    await withNativeProviderConfig(storageDir, NATIVE_ALIYUN_CONFIG);
+    await withEngineTemplateModelRules(storageDir, ALIYUN_TEMPLATE_RULES, ALIYUN_MODEL_RULES);
+
+    const definition = await new ZCodeProviderModels().getSupportedModels();
+    const qwen = definition.OPTIONS.find((opt) => opt.value === 'qwen-max');
+    assert.deepEqual(qwen?.effort?.values.map((v) => v.value), ['low', 'medium', 'xhigh']);
+    assert.equal(qwen?.effort?.default, 'xhigh');
+    const deepseek = definition.OPTIONS.find((opt) => opt.value === 'deepseek-x');
+    assert.deepEqual(deepseek?.effort?.values.map((v) => v.value), ['low', 'high', 'max', 'disabled']);
+    assert.equal(deepseek?.effort?.default, 'max');
+    // A disabled/enabled toggle is not an effort picker for the menu.
+    const manual = definition.OPTIONS.find((opt) => opt.value === 'manual-y');
+    assert.equal(manual?.effort, undefined);
+
+    // The engine requires a level when the model ships reasoning specs, so
+    // sends default to the top effort and keep explicit choices.
+    assert.deepEqual(buildZCodeSendModelParams('qwen-max'), {
+      modelSelection: {
+        providerId: 'qwen-alibaba-model-studio-cn',
+        modelId: 'qwen-max',
+        options: { reasoningLevel: 'xhigh' },
+      },
+      modelExecution: { selectionScope: 'execution' },
+    });
+    assert.deepEqual(buildZCodeSendModelParams('deepseek-x')?.modelSelection.options, { reasoningLevel: 'max' });
+    assert.deepEqual(buildZCodeSendModelParams('qwen-max', 'low')?.modelSelection.options, { reasoningLevel: 'low' });
+    // Toggle-only models default to thinking off.
+    assert.deepEqual(buildZCodeSendModelParams('manual-y')?.modelSelection.options, { reasoningLevel: 'disabled' });
+  });
+});
+
+test('native sends omit reasoning options when the engine ships no specs', async () => {
+  await withZCodeStorage(async (storageDir) => {
+    await withNativeProviderConfig(storageDir, NATIVE_ALIYUN_CONFIG);
+    // Builtin present for template defaults but no modelRules: no reasoning
+    // knowledge, so no invented level.
+    await withEngineTemplateModelRules(storageDir, ALIYUN_TEMPLATE_RULES);
+
+    assert.deepEqual(buildZCodeSendModelParams('qwen-max')?.modelSelection, {
+      providerId: 'qwen-alibaba-model-studio-cn',
+      modelId: 'qwen-max',
+    });
   });
 });
 

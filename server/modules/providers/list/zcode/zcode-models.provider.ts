@@ -20,7 +20,11 @@ import {
 
 import { readZCodeIndividualPlanAuthContext, readDecryptedZCodeJwtToken } from './zcode-credentials.js';
 import { getZCodeDatabasePath, getZCodeStorageDir } from './zcode-data-root.js';
-import { readZCodeTemplateModelDefaults, resolveZCodeProviderApiType } from './zcode-provider-config.js';
+import {
+  readZCodeModelReasoningValues,
+  readZCodeTemplateModelDefaults,
+  resolveZCodeProviderApiType,
+} from './zcode-provider-config.js';
 
 /**
  * Account id of the BigModel trial plan (体验套餐). The picker keys its pinned
@@ -94,6 +98,48 @@ const REASONING_EFFORT_ORDER: Record<string, number> = {
   high: 30,
   max: 40,
 };
+
+/** disabled/enabled-only option lists are engine thinking toggles, not effort pickers. */
+function isToggleOnlyReasoning(values: string[]): boolean {
+  return values.every((value) => value === 'disabled' || value === 'enabled');
+}
+
+function sortReasoningValues(values: string[]): string[] {
+  return [...values].sort((a, b) => {
+    const orderA = REASONING_EFFORT_ORDER[a] ?? 999;
+    const orderB = REASONING_EFFORT_ORDER[b] ?? 999;
+    if (orderA !== orderB) return orderA - orderB;
+    return a.localeCompare(b);
+  });
+}
+
+/**
+ * Level used when the composer carried none. The engine requires
+ * `options.reasoningLevel` for any model shipping a reasoning spec, so
+ * something must be picked: the top effort (highest sorted value, which
+ * lands on max → xhigh before exotic ids), and thinking-off for toggle-only
+ * specs. Null without a spec — nothing is invented.
+ */
+function pickNativeReasoningDefault(values: string[]): string | null {
+  const efforts = values.filter((value) => value !== 'disabled' && value !== 'enabled');
+  if (efforts.length > 0) return sortReasoningValues(efforts).at(-1) ?? null;
+  if (values.includes('disabled')) return 'disabled';
+  if (values.includes('enabled')) return 'enabled';
+  return null;
+}
+
+/** Menu effort from engine reasoning specs; toggle-only specs stay off the picker. */
+function buildNativeReasoningEffort(values: string[]): ProviderModelOption['effort'] | undefined {
+  if (values.length === 0 || isToggleOnlyReasoning(values)) return undefined;
+  const fallback = pickNativeReasoningDefault(values);
+  return {
+    ...(fallback ? { default: fallback } : {}),
+    values: sortReasoningValues(values).map((value) => ({
+      value,
+      description: EFFORT_DESCRIPTIONS[value] || `${value} reasoning level`,
+    })),
+  };
+}
 
 /**
  * One personal provider parsed from ZCode's native `v2/provider_config.json`
@@ -217,9 +263,11 @@ function readNativePersonalProviderRules(): NativePersonalProviderRule[] {
  * Send params for a selection whose authoritative config is the native
  * personal provider file. Only the selection travels: the engine resolves
  * the api key from the personal config handed to it at spawn, so the
- * credential is never copied into send params. Returns null (engine default
- * model, the existing degrade philosophy) when the provider/model is not in
- * the native config or lacks api-key access.
+ * credential is never copied into send params. The engine hard-requires
+ * `options.reasoningLevel` for models that ship a reasoning spec, so when
+ * the composer carried none the top spec level is filled in. Returns null
+ * (engine default model, the existing degrade philosophy) when the
+ * provider/model is not in the native config or lacks api-key access.
  *
  * Consumer: `buildZCodeSendModelParams` below.
  */
@@ -234,8 +282,14 @@ function buildNativePersonalSendParams(
     && candidate.modelIds.includes(explicitSelection.modelId)
   ));
   if (!rule || !rule.apiKeyConfigured) return null;
+  const modelSelection = { ...explicitSelection };
+  if (!modelSelection.options?.reasoningLevel) {
+    const values = readZCodeModelReasoningValues(explicitSelection.modelId) ?? [];
+    const fallback = values.length > 0 ? pickNativeReasoningDefault(values) : null;
+    if (fallback) modelSelection.options = { reasoningLevel: fallback };
+  }
   return {
-    modelSelection: explicitSelection,
+    modelSelection,
     modelExecution: { selectionScope: 'execution' },
   };
 }
@@ -355,11 +409,14 @@ const readZCodeModelConfig = async (): Promise<ProviderModelsDefinition> => {
       for (const modelId of rule.modelIds) {
         if (seenModelKeys.has(modelId)) continue;
         seenModelKeys.add(modelId);
+        const reasoningValues = readZCodeModelReasoningValues(modelId);
+        const effort = reasoningValues ? buildNativeReasoningEffort(reasoningValues) : undefined;
         modelOptions.push({
           value: modelId,
           label: modelId,
           group: rule.providerName,
           description: `ZCode ${modelId} model`,
+          ...(effort ? { effort } : {}),
         });
       }
     }
@@ -646,8 +703,13 @@ export function buildZCodeSendModelParams(
   }
 
   const configuredDefault = readOptionalString(readObjectRecord(modelRecord?.reasoning)?.defaultLevel);
+  // Same engine-spec fallback as the native path: a cli-config provider can
+  // select a model whose builtin reasoning spec the local config knows
+  // nothing about, and the engine rejects sends without a required level.
+  const specValues = readZCodeModelReasoningValues(explicitSelection.modelId) ?? [];
   const selectedReasoningLevel = explicitSelection.options?.reasoningLevel
-    ?? configuredDefault?.toLowerCase();
+    ?? configuredDefault?.toLowerCase()
+    ?? (specValues.length > 0 ? pickNativeReasoningDefault(specValues) : null);
   const modelSelection = {
     providerId: explicitSelection.providerId,
     modelId: explicitSelection.modelId,

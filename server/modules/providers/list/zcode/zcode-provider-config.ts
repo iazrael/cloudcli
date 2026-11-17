@@ -253,21 +253,24 @@ export function findBuiltinConfig(enginePath: string): string | null {
   return null;
 }
 
-/** Cached template defaults keyed by builtin file identity (path+mtime+size). */
-let templateDefaultsCache: { key: string; defaults: Map<string, Map<string, boolean>> } | null = null;
+/** Cached builtin template state keyed by builtin file identity (path+mtime+size). */
+type ZCodeBuiltinTemplateState = {
+  /**
+   * Per-template default model enablement. Null means the engine ships no
+   * `templateModelRules` rows ("unknown", never "all off").
+   */
+  templateDefaults: Map<string, Map<string, boolean>> | null;
+  /**
+   * reasoningLevel option specs in file order. The engine ships its `.*`
+   * catch-all first and narrower regex rows later, and later matches
+   * supersede earlier ones, so resolution walks forward and keeps the last
+   * match. Invalid regexes never match anything.
+   */
+  reasoningSpecs: { regex: RegExp | null; values: string[] }[];
+};
+let builtinTemplateCache: { key: string; state: ZCodeBuiltinTemplateState } | null = null;
 
-/**
- * Reads the engine builtin provider config's `templateModelRules` rows: the
- * per-template default model enablement the ZCode App applies unless the user
- * stored a deviation in `v2/provider_config.json`. The App model page shows
- * exactly this overlay, so the CloudCLI catalog mirrors it from the same
- * source. Returns null when the engine, its builtin config or the rows are
- * unavailable, letting callers fall back to permissive listing (better to
- * over-list than to silently hide everything).
- *
- * Consumer: `readNativePersonalProviderRules` in zcode-models.provider.ts.
- */
-export function readZCodeTemplateModelDefaults(): Map<string, Map<string, boolean>> | null {
+function readZCodeBuiltinTemplateState(): ZCodeBuiltinTemplateState | null {
   const enginePath = tryResolveEnginePath();
   if (!enginePath) return null;
   const builtinPath = findBuiltinConfig(enginePath);
@@ -280,16 +283,20 @@ export function readZCodeTemplateModelDefaults(): Map<string, Map<string, boolea
     return null;
   }
   const cacheKey = `${builtinPath}:${stat.mtimeMs}:${stat.size}`;
-  if (templateDefaultsCache?.key === cacheKey) return templateDefaultsCache.defaults;
+  if (builtinTemplateCache?.key === cacheKey) return builtinTemplateCache.state;
 
   try {
-    const config = readObjectRecord(readObjectRecord(JSON.parse(fs.readFileSync(builtinPath, 'utf8')))?.config);
-    const modelConfig = readObjectRecord(config?.modelConfigRules);
-    // Absent rows (older engine layouts) mean "no knowledge", not "all off".
-    if (!Array.isArray(modelConfig?.templateModelRules)) return null;
+    const modelConfig = readObjectRecord(
+      readObjectRecord(readObjectRecord(JSON.parse(fs.readFileSync(builtinPath, 'utf8')))?.config)?.modelConfigRules,
+    );
+    if (!modelConfig) return null;
 
+    // Absent rows (older engine layouts) mean "no knowledge", not "all off".
+    const templateRows = Array.isArray(modelConfig.templateModelRules)
+      ? modelConfig.templateModelRules as unknown[]
+      : null;
     const defaults = new Map<string, Map<string, boolean>>();
-    for (const entry of modelConfig.templateModelRules as unknown[]) {
+    for (const entry of templateRows ?? []) {
       const record = readObjectRecord(entry);
       const templateId = readOptionalString(record?.templateId);
       const modelId = readOptionalString(record?.modelId);
@@ -298,11 +305,72 @@ export function readZCodeTemplateModelDefaults(): Map<string, Map<string, boolea
       models.set(modelId, readObjectRecord(record?.config)?.enabled !== false);
       defaults.set(templateId, models);
     }
-    templateDefaultsCache = { key: cacheKey, defaults };
-    return defaults;
+
+    const reasoningSpecs: ZCodeBuiltinTemplateState['reasoningSpecs'] = [];
+    for (const entry of Array.isArray(modelConfig.modelRules) ? modelConfig.modelRules as unknown[] : []) {
+      const record = readObjectRecord(entry);
+      const pattern = readOptionalString(record?.modelMatch);
+      if (!pattern) continue;
+      const spec = readObjectRecord(readObjectRecord(record?.config)?.optionSpecs)?.reasoningLevel;
+      const values = (Array.isArray(readObjectRecord(spec)?.values) ? readObjectRecord(spec)?.values as unknown[] : [])
+        .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+        .map((value) => value.trim().toLowerCase());
+      if (values.length === 0) continue;
+      let regex: RegExp | null = null;
+      try {
+        regex = new RegExp(pattern);
+      } catch {
+        // Unusable pattern: this row never matches.
+      }
+      reasoningSpecs.push({ regex, values });
+    }
+
+    const state: ZCodeBuiltinTemplateState = {
+      templateDefaults: templateRows ? defaults : null,
+      reasoningSpecs,
+    };
+    builtinTemplateCache = { key: cacheKey, state };
+    return state;
   } catch {
     return null;
   }
+}
+
+/**
+ * The engine builtin config's `templateModelRules` rows: per-template default
+ * model enablement that the ZCode App applies unless the user stored a
+ * deviation in `v2/provider_config.json`. The App model page shows exactly
+ * this overlay, so the CloudCLI catalog mirrors it from the same source.
+ * Returns null when the engine, its builtin config or the rows are
+ * unavailable, letting callers fall back to permissive listing (better to
+ * over-list than to silently hide everything).
+ *
+ * Consumer: `readNativePersonalProviderRules` in zcode-models.provider.ts.
+ */
+export function readZCodeTemplateModelDefaults(): Map<string, Map<string, boolean>> | null {
+  return readZCodeBuiltinTemplateState()?.templateDefaults ?? null;
+}
+
+/**
+ * Effective reasoningLevel values for a model id: the values of the LAST
+ * builtin `modelRules` row whose `modelMatch` regex matches it (the engine
+ * ships the `.*` catch-all first). Null when nothing matches or the builtin
+ * config is unavailable — callers must not invent a level then. The engine
+ * rejects sends without `options.reasoningLevel` for models that ship a
+ * non-empty spec ("Reasoning level is required for <provider>/<model>"), so
+ * this feeds both the menu effort and the send-time default.
+ *
+ * Consumers: native catalog entries and native send defaults in
+ * zcode-models.provider.ts.
+ */
+export function readZCodeModelReasoningValues(modelId: string): string[] | null {
+  const specs = readZCodeBuiltinTemplateState()?.reasoningSpecs;
+  if (!specs?.length) return null;
+  let matched: string[] | null = null;
+  for (const spec of specs) {
+    if (spec.regex?.test(modelId)) matched = spec.values;
+  }
+  return matched;
 }
 
 /**
