@@ -4,6 +4,9 @@
  * @module cli-installation-probe
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
+
 import spawn from 'cross-spawn';
 
 /**
@@ -20,7 +23,7 @@ export const DEFAULT_NEGATIVE_PROBE_TTL_MS = 120_000;
 /**
  * How long a timed-out probe is trusted as "installed" before the next query
  * probes again. A timeout means the binary exists and launched (a missing one
- * fails fast with ENOENT) but did not answer in time — in practice CPU/disk
+ * is caught by the PATH check in `probeSpawnAsync`) but did not answer in time — in practice CPU/disk
  * contention right after a server restart, when the initial session sync runs
  * alongside the first status checks. Reporting that as "not installed" would
  * hide the provider for the whole negative TTL.
@@ -85,8 +88,42 @@ export type ProbeSpawn = (
   options: { timeoutMs: number },
 ) => Promise<ProbeOutcome>;
 
+const isFile = (candidate: string): boolean => {
+  try {
+    return fs.statSync(candidate).isFile();
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Whether `command` resolves to a file, either as a path or through PATH
+ * (plus PATHEXT on Windows).
+ *
+ * Consumers: `probeSpawnAsync`, to answer "not installed" without spawning.
+ * On Windows cross-spawn wraps an unresolvable command in `cmd.exe /c`, so a
+ * missing CLI does not fail fast with ENOENT — it waits for cmd to exit, which
+ * under startup contention outlasts the probe timeout and would be misread as
+ * an installed-but-slow CLI.
+ */
+const isCommandResolvable = (command: string): boolean => {
+  const extensions = process.platform === 'win32'
+    ? ['', ...(process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)]
+    : [''];
+  const bases = path.isAbsolute(command) || /[\\/]/.test(command)
+    ? [path.resolve(command)]
+    : (process.env.PATH ?? '').split(path.delimiter).filter(Boolean).map((dir) => path.join(dir, command));
+  return bases.some((base) => extensions.some((extension) => isFile(base + extension)));
+};
+
 const probeSpawnAsync: ProbeSpawn = (command, args, { timeoutMs }) =>
   new Promise((resolve) => {
+    if (!isCommandResolvable(command)) {
+      resolve({ error: new Error(`${command} not found on PATH`), status: null });
+      return;
+    }
+
+
     let settled = false;
     let childProcess: ReturnType<typeof spawn> | undefined;
 

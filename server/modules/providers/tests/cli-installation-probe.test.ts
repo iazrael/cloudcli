@@ -167,3 +167,14 @@ test('a timed-out probe is trusted briefly, then probed again', async () => {
   assert.equal(await probe.isInstalled(), false);
   assert.equal(calls.length, 2);
 });
+
+test('a CLI missing from PATH is not installed even when the probe would time out', async () => {
+  // On Windows cross-spawn runs an unresolvable command through cmd.exe, which
+  // can outlast the timeout; the PATH check must answer before any spawn.
+  const probe = createCliInstallationProbe({
+    command: () => 'cloudcli-probe-definitely-missing-cli',
+    timeoutMs: 1,
+  });
+
+  assert.equal(await probe.isInstalled(), false);
+});
