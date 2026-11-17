@@ -1,6 +1,5 @@
 import os from 'node:os';
 import path from 'node:path';
-import { readFile } from 'node:fs/promises';
 
 import { sessionsDb } from '@/modules/database/index.js';
 import {
@@ -9,6 +8,7 @@ import {
   findFilesRecursivelyCreatedAfter,
   normalizeSessionName,
   readFileTimestamps,
+  readJsonlRecords,
 } from '@/shared/utils.js';
 import type { IProviderSessionSynchronizer } from '@/shared/interfaces.js';
 import type { ProviderSessionWatchTarget } from '@/shared/types.js';
@@ -225,28 +225,17 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
     sessionId: string
   ): Promise<TranscriptScan> {
     try {
-      const content = await readFile(filePath, 'utf8');
-      const lines = content.split(/\r?\n/);
-
       let foundCustomTitle: string | undefined;
       let foundAiTitle: string | undefined;
       let foundLastPrompt: string | undefined;
       let lastActivityMs = Number.NEGATIVE_INFINITY;
 
-      for (let index = 0; index < lines.length; index += 1) {
-        const line = lines[index]?.trim();
-        if (!line) {
-          continue;
-        }
-
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(line);
-        } catch {
-          continue;
-        }
-
-        const data = parsed as Record<string, unknown>;
+      // Read line by line: a long-running session's transcript can reach
+      // hundreds of megabytes, and this scan runs on every watcher event.
+      // Building the whole-file string here made a 133 MB transcript peak at
+      // ~450 MB RSS per scan, which stacked until PM2's memory limit killed
+      // the server mid-turn.
+      for await (const data of readJsonlRecords(filePath)) {
         const eventType = typeof data.type === 'string' ? data.type : undefined;
         const eventSessionId = typeof data.sessionId === 'string' ? data.sessionId : undefined;
 

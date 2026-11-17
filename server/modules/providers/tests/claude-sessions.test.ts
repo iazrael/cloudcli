@@ -2652,3 +2652,72 @@ test('synchronizeFile skips non-jsonl files', { concurrency: false }, async () =
     assert.equal(result, null);
   });
 });
+
+test('claude: a transcript with a megabyte-scale row still syncs and reports usage', { concurrency: false }, async () => {
+  // Regression for the streaming readers: a long session's transcript can grow
+  // to hundreds of megabytes, and its tool results can be large single rows.
+  // Both the watcher's scan and /token-usage must read it without building the
+  // whole-file string that used to stack past PM2's memory limit.
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'claude-large-transcript-'));
+  const workspacePath = await createWorkspaceFixture();
+  const restoreHomeDir = patchHomeDir(tmp);
+  const previousContextWindow = process.env.CONTEXT_WINDOW;
+  process.env.CONTEXT_WINDOW = '200000';
+
+  try {
+    await mkdir(path.join(tmp, '.claude'), { recursive: true });
+    const transcriptPath = await writeSessionJsonl(workspacePath, 'large-session.jsonl', [
+      JSON.stringify({ type: 'ai-title', aiTitle: 'Large transcript title', sessionId: 'test-session-1', cwd: workspacePath }),
+      JSON.stringify({
+        type: 'assistant',
+        sessionId: 'test-session-1',
+        timestamp: '2026-07-10T00:05:00.000Z',
+        message: {
+          role: 'assistant',
+          model: 'claude-sonnet-5',
+          content: [{ type: 'tool_result', content: 'x'.repeat(8 * 1024 * 1024) }],
+          usage: {
+            input_tokens: 200,
+            cache_read_input_tokens: 50,
+            output_tokens: 25,
+          },
+        },
+      }),
+      JSON.stringify({
+        type: 'last-prompt',
+        lastPrompt: 'latest prompt',
+        sessionId: 'test-session-1',
+        cwd: workspacePath,
+        timestamp: '2026-07-10T00:06:00.000Z',
+      }),
+    ]);
+
+    await withIsolatedDatabase(async () => {
+      const synchronizer = new ClaudeSessionSynchronizer();
+      const sessionId = await synchronizer.synchronizeFile(transcriptPath);
+      assert.ok(sessionId, 'synchronizeFile should return a session id');
+      const session = sessionsDb.getSessionById(sessionId!);
+      assert.equal(session?.custom_name, 'Large transcript title');
+      assert.equal(session?.updated_at, '2026-07-10T00:06:00.000Z');
+
+      const usage = await new ClaudeSessionsProvider().getTokenUsage({
+        appSessionId: sessionId!,
+        nativeSessionId: 'test-session-1',
+        jsonlPath: transcriptPath,
+        projectPath: workspacePath,
+      });
+      assert.equal(usage.used, 275);
+      assert.equal(usage.inputTokens, 250);
+      assert.equal(usage.outputTokens, 25);
+      assert.equal(usage.total, 200_000);
+    });
+  } finally {
+    if (previousContextWindow === undefined) {
+      delete process.env.CONTEXT_WINDOW;
+    } else {
+      process.env.CONTEXT_WINDOW = previousContextWindow;
+    }
+    restoreHomeDir();
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
