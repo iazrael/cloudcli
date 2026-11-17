@@ -271,6 +271,45 @@ test('a new-mode job follows its own last run before the workspace default', asy
   });
 });
 
+test('an unresolvable provider catalog does not fail the occurrence', async () => {
+  await withIsolatedDatabase(async (userId, projectPath) => {
+    // No seeded model anywhere, so the run falls through to the catalog
+    // default — which the bogus CLI path makes fail fast (ENOENT) instead of
+    // depending on whatever `claude` resolves to on this machine. The
+    // occurrence must still run on the engine's own default model.
+    const previousCliPath = process.env.CLAUDE_CLI_PATH;
+    process.env.CLAUDE_CLI_PATH = '/nonexistent/claude-scheduled-jobs-probe';
+    try {
+      const job = scheduledJobsService.create({
+        userId,
+        name: 'Daily audit',
+        provider: 'claude',
+        projectPath,
+        sessionId: undefined,
+        sessionMode: 'new',
+        prompt: 'audit the workspace',
+        options: {},
+        cronExpression: CRON_EVERY_MINUTE,
+        timezone: TIMEZONE,
+      });
+
+      const runs: RunCall[] = [];
+      await dispatchDueScheduledJobs(createRuntime(runs), new Date(Date.now() + 120_000));
+
+      const history = scheduledJobsService.listRuns(userId, job.id);
+      assert.equal(history[0].status, 'succeeded');
+      assert.equal(history[0].error, null);
+      assert.ok(runs.length > 0);
+    } finally {
+      if (previousCliPath === undefined) {
+        delete process.env.CLAUDE_CLI_PATH;
+      } else {
+        process.env.CLAUDE_CLI_PATH = previousCliPath;
+      }
+    }
+  });
+});
+
 test('a rotating job keeps its session until it reaches the rotation age', async () => {
   await withIsolatedDatabase(async (userId) => {
     const job = createReuseJob(userId, { rotateAfterDays: 7 });

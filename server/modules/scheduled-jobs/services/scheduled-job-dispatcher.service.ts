@@ -187,15 +187,27 @@ async function ensureRunSessionModel(job: ScheduledJobRow, sessionId: string): P
   }
 
   // Last resort: the provider's own catalog default. It is still a model
-  // this provider can route, unlike the engine's free-model fallback.
-  const providerDefault = await providerModelsService.resolveSessionModel(
-    job.provider as LLMProvider,
-  );
-  if (providerDefault.model) {
-    sessionsDb.setSessionModel(sessionId, providerDefault.model);
-    if (providerDefault.effort) {
-      sessionsDb.setSessionEffort(sessionId, providerDefault.effort);
+  // this provider can route, unlike the engine's free-model fallback. The
+  // catalog can be unresolvable (a CLI that is missing or briefly failing),
+  // and that must not fail the occurrence — the engine's own default covers
+  // this run, so the selection stays best-effort.
+  try {
+    const providerDefault = await providerModelsService.resolveSessionModel(
+      job.provider as LLMProvider,
+    );
+    if (providerDefault.model) {
+      sessionsDb.setSessionModel(sessionId, providerDefault.model);
+      if (providerDefault.effort) {
+        sessionsDb.setSessionEffort(sessionId, providerDefault.effort);
+      }
     }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn('[ScheduledJobs] Could not resolve a catalog default model; the run continues on the engine default', {
+      jobId: job.id,
+      provider: job.provider,
+      error: message,
+    });
   }
 }
 
