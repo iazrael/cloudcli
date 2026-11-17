@@ -568,6 +568,23 @@ export function probeCliVersion(command: string, args: string[] = ['--version'])
   };
 }
 
+/**
+ * Checks whether a normalized absolute path is the root itself or a descendant
+ * of it. A filesystem root keeps its trailing separator (`C:\`, `/`), so the
+ * separator is appended only when it is missing; otherwise `${root}${path.sep}`
+ * compares every child against `C:\\` or `//` and rejects it.
+ *
+ * Consumers: the workspace, read-only-root and provider path guards in this
+ * module.
+ */
+function isPathInsideRoot(targetPath: string, rootPath: string): boolean {
+  if (targetPath === rootPath) {
+    return true;
+  }
+  const rootPrefix = rootPath.endsWith(path.sep) ? rootPath : `${rootPath}${path.sep}`;
+  return targetPath.startsWith(rootPrefix);
+}
+
 export async function resolvePathUnderRoots(targetPath: string, roots: string[]): Promise<string | null> {
   const normalizedTarget = normalizeProjectPath(targetPath);
   if (!normalizedTarget || !path.isAbsolute(normalizedTarget)) {
@@ -590,7 +607,7 @@ export async function resolvePathUnderRoots(targetPath: string, roots: string[])
       continue;
     }
 
-    if (resolvedPath === resolvedRoot || resolvedPath.startsWith(`${resolvedRoot}${path.sep}`)) {
+    if (isPathInsideRoot(resolvedPath, resolvedRoot)) {
       return resolvedPath;
     }
   }
@@ -859,8 +876,7 @@ export async function validateWorkspacePath(
       }
     }));
     const insideAllowedRoot = resolvedRoots.some(
-      (resolvedRoot) => resolvedPath === resolvedRoot
-        || resolvedPath.startsWith(`${resolvedRoot}${path.sep}`),
+      (resolvedRoot) => isPathInsideRoot(resolvedPath, resolvedRoot),
     );
     if (!insideAllowedRoot) {
       return {
@@ -889,8 +905,7 @@ export async function validateWorkspacePath(
         const resolvedSymlinkPath = path.resolve(path.dirname(absolutePath), symlinkTarget);
         const realSymlinkPath = normalizeProjectPath(await realpath(resolvedSymlinkPath));
         const symlinkInsideAllowedRoot = resolvedRoots.some(
-          (resolvedRoot) => realSymlinkPath === resolvedRoot
-            || realSymlinkPath.startsWith(`${resolvedRoot}${path.sep}`),
+          (resolvedRoot) => isPathInsideRoot(realSymlinkPath, resolvedRoot),
         );
         if (!symlinkInsideAllowedRoot) {
           return {
@@ -929,7 +944,7 @@ export function validatePathSecurity(targetPath: string, rootPath: string): void
   const resolvedTarget = path.resolve(targetPath);
   const resolvedRoot = path.resolve(rootPath);
 
-  if (!resolvedTarget.startsWith(`${resolvedRoot}${path.sep}`) && resolvedTarget !== resolvedRoot) {
+  if (!isPathInsideRoot(resolvedTarget, resolvedRoot)) {
     throw new AppError('Path validation failed: potential directory traversal attempt.', {
       code: 'PATH_SECURITY_VIOLATION',
       statusCode: 400,
@@ -1275,7 +1290,7 @@ export function isSystemTemporaryWorkspacePath(projectPath: string): boolean {
   }
 
   return systemTemporaryDirectoryRoots().some(
-    (root) => normalizedProjectPath === root || normalizedProjectPath.startsWith(`${root}${path.sep}`),
+    (root) => isPathInsideRoot(normalizedProjectPath, root),
   );
 }
 
