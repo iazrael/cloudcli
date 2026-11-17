@@ -7,6 +7,7 @@ import test from 'node:test';
 import Database from 'better-sqlite3';
 
 import { encryptZCodeCredentialValue } from '@/modules/providers/list/zcode/zcode-credentials.js';
+import { clearEnginePathCache } from '@/modules/providers/list/zcode/zcode-engine-path.js';
 import {
   ZCodeProviderModels,
   buildZCodeSendModelParams,
@@ -16,8 +17,18 @@ import {
 /** Redirects ZCODE_STORAGE_DIR to a temp dir for fixture isolation. */
 const withZCodeStorage = async (runTest: (storageDir: string) => Promise<void>): Promise<void> => {
   const previous = process.env.ZCODE_STORAGE_DIR;
+  const previousEngine = process.env.CLOUDCLI_ZCODE_ENGINE;
   const tempDir = await mkdtemp(path.join(os.tmpdir(), 'zcode-models-'));
   process.env.ZCODE_STORAGE_DIR = tempDir;
+  // Pin engine resolution to a fixture bundle without a builtin provider
+  // config, so native template defaults read as unavailable unless the test
+  // installs them explicitly. The resolver caches per process, so the cache
+  // is reset around every case.
+  const enginePath = path.join(tempDir, 'engine', 'zcode.cjs');
+  await mkdir(path.dirname(enginePath), { recursive: true });
+  await writeFile(enginePath, '', 'utf8');
+  process.env.CLOUDCLI_ZCODE_ENGINE = enginePath;
+  clearEnginePathCache();
 
   try {
     await runTest(tempDir);
@@ -27,8 +38,28 @@ const withZCodeStorage = async (runTest: (storageDir: string) => Promise<void>):
     } else {
       process.env.ZCODE_STORAGE_DIR = previous;
     }
+    if (previousEngine === undefined) {
+      delete process.env.CLOUDCLI_ZCODE_ENGINE;
+    } else {
+      process.env.CLOUDCLI_ZCODE_ENGINE = previousEngine;
+    }
+    clearEnginePathCache();
     await rm(tempDir, { recursive: true, force: true });
   }
+};
+
+/** Writes template model enable defaults into the fixture engine bundle. */
+const withEngineTemplateModelRules = async (
+  storageDir: string,
+  rules: unknown[],
+): Promise<void> => {
+  const providerDir = path.join(storageDir, 'engine', 'provider');
+  await mkdir(providerDir, { recursive: true });
+  await writeFile(path.join(providerDir, 'zcode-builtin.json'), JSON.stringify({
+    schemaVersion: 1,
+    revision: 1,
+    config: { modelConfigRules: { templateModelRules: rules } },
+  }), 'utf8');
 };
 
 test('getSupportedModels falls back to the builtin catalog without a config', async () => {
@@ -574,6 +605,7 @@ const NATIVE_ALIYUN_CONFIG = {
       providerRules: [
         {
           providerId: 'qwen-alibaba-model-studio-cn',
+          templateId: 'qwen-alibaba-model-studio-cn',
           providerName: '阿里云百炼（中国）',
           config: {
             group: 'standard-personal',
@@ -603,6 +635,13 @@ const NATIVE_ALIYUN_CONFIG = {
   },
 };
 
+/** Engine-side template defaults: only qwen-max ships enabled. */
+const ALIYUN_TEMPLATE_RULES = [
+  { templateId: 'qwen-alibaba-model-studio-cn', modelId: 'qwen-max', config: { enabled: true } },
+  { templateId: 'qwen-alibaba-model-studio-cn', modelId: 'qwen-flash', config: { enabled: false } },
+  { templateId: 'qwen-alibaba-model-studio-cn', modelId: 'deepseek-x', config: { enabled: false } },
+];
+
 test('getSupportedModels merges ZCode App native providers as grouped options', async () => {
   await withZCodeStorage(async (storageDir) => {
     const cliDir = path.join(storageDir, 'cli');
@@ -620,26 +659,34 @@ test('getSupportedModels merges ZCode App native providers as grouped options', 
       },
     }), 'utf8');
     await withNativeProviderConfig(storageDir, NATIVE_ALIYUN_CONFIG);
+    await withEngineTemplateModelRules(storageDir, ALIYUN_TEMPLATE_RULES);
 
     const definition = await new ZCodeProviderModels().getSupportedModels();
 
-    // Personal whitelist still drops GLM-4.7; native entries apply the model
-    // enable rules, dedupe personalModelIds against modelOrder, keep manual
-    // additions, and never list reserved account rows.
+    // Personal whitelist still drops GLM-4.7; native entries match the App
+    // model page: user rules first, engine template defaults next (qwen-flash
+    // ships disabled and nobody enabled it), personalModelIds memberships stay
+    // enabled, manual additions pass through, reserved account rows never
+    // list. deepseek-x wins over the template `false` via its user rule.
     assert.deepEqual(
       definition.OPTIONS.map((opt) => opt.value),
-      ['GLM-5.3', 'GLM-5.3-Flash', 'qwen-max', 'qwen-flash', 'deepseek-x', 'manual-y'],
+      ['GLM-5.3', 'GLM-5.3-Flash', 'qwen-max', 'deepseek-x', 'manual-y'],
     );
     assert.equal(definition.OPTIONS[0].group, undefined);
     assert.equal(definition.OPTIONS[2].group, '阿里云百炼（中国）');
     assert.equal(definition.OPTIONS[2].description, 'ZCode qwen-max model');
     assert.equal(definition.OPTIONS[2].effort, undefined);
     assert.equal(definition.DEFAULT, 'GLM-5.3');
+    // A template-disabled model is not routable either.
+    assert.equal(buildZCodeSendModelParams('qwen-flash'), null);
   });
 });
 
-test('getSupportedModels lists native providers without any cli config', async () => {
+test('getSupportedModels lists native providers permissively when template defaults are unavailable', async () => {
   await withZCodeStorage(async (storageDir) => {
+    // Fixture engine bundle has no zcode-builtin.json: with no template
+    // defaults to consult, unlisted models fall back to enabled rather than
+    // showing an empty group.
     await withNativeProviderConfig(storageDir, NATIVE_ALIYUN_CONFIG);
 
     const definition = await new ZCodeProviderModels().getSupportedModels();
@@ -649,6 +696,25 @@ test('getSupportedModels lists native providers without any cli config', async (
       ['qwen-max', 'qwen-flash', 'deepseek-x', 'manual-y'],
     );
     assert.equal(definition.DEFAULT, 'qwen-max');
+  });
+});
+
+test('personalModelIds memberships stay enabled even when the template ships them off', async () => {
+  await withZCodeStorage(async (storageDir) => {
+    const noUserRules = JSON.parse(JSON.stringify(NATIVE_ALIYUN_CONFIG));
+    noUserRules.config.modelConfigRules.providerModelRules = [];
+    await withNativeProviderConfig(storageDir, noUserRules);
+    await withEngineTemplateModelRules(storageDir, ALIYUN_TEMPLATE_RULES);
+
+    const definition = await new ZCodeProviderModels().getSupportedModels();
+
+    // deepseek-x: not in templateModelRules as enabled, but listed in
+    // personalModelIds (user-added), so it mirrors the App. qwen-flash stays
+    // out: template-off with neither a user rule nor membership.
+    assert.deepEqual(
+      definition.OPTIONS.map((opt) => opt.value),
+      ['qwen-max', 'deepseek-x', 'manual-y'],
+    );
   });
 });
 
@@ -681,9 +747,9 @@ test('resolveZCodeModelRef routes native model ids to their provider', async () 
   await withZCodeStorage(async (storageDir) => {
     await withNativeProviderConfig(storageDir, NATIVE_ALIYUN_CONFIG);
 
-    assert.deepEqual(resolveZCodeModelRef('qwen-flash', 'low'), {
+    assert.deepEqual(resolveZCodeModelRef('qwen-max', 'low'), {
       providerId: 'qwen-alibaba-model-studio-cn',
-      modelId: 'qwen-flash',
+      modelId: 'qwen-max',
       options: { reasoningLevel: 'low' },
     });
     // Scoped refs route through the existing explicit-provider branch.
@@ -698,11 +764,11 @@ test('buildZCodeSendModelParams routes native providers without copying the api 
   await withZCodeStorage(async (storageDir) => {
     await withNativeProviderConfig(storageDir, NATIVE_ALIYUN_CONFIG);
 
-    const params = buildZCodeSendModelParams('qwen-flash', 'low');
+    const params = buildZCodeSendModelParams('qwen-max', 'low');
     assert.deepEqual(params, {
       modelSelection: {
         providerId: 'qwen-alibaba-model-studio-cn',
-        modelId: 'qwen-flash',
+        modelId: 'qwen-max',
         options: { reasoningLevel: 'low' },
       },
       modelExecution: { selectionScope: 'execution' },

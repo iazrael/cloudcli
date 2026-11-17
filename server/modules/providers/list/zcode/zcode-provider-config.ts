@@ -23,6 +23,7 @@ import type { AnyRecord } from '@/shared/types.js';
 
 import { readZCodeIndividualPlanAuthContext, readDecryptedZCodeJwtToken } from './zcode-credentials.js';
 import { getZCodeStorageDir } from './zcode-data-root.js';
+import { tryResolveEnginePath } from './zcode-engine-path.js';
 
 /**
  * Engine env override names, exported so the supervisor can strip ambient
@@ -250,6 +251,58 @@ export function findBuiltinConfig(enginePath: string): string | null {
     }
   }
   return null;
+}
+
+/** Cached template defaults keyed by builtin file identity (path+mtime+size). */
+let templateDefaultsCache: { key: string; defaults: Map<string, Map<string, boolean>> } | null = null;
+
+/**
+ * Reads the engine builtin provider config's `templateModelRules` rows: the
+ * per-template default model enablement the ZCode App applies unless the user
+ * stored a deviation in `v2/provider_config.json`. The App model page shows
+ * exactly this overlay, so the CloudCLI catalog mirrors it from the same
+ * source. Returns null when the engine, its builtin config or the rows are
+ * unavailable, letting callers fall back to permissive listing (better to
+ * over-list than to silently hide everything).
+ *
+ * Consumer: `readNativePersonalProviderRules` in zcode-models.provider.ts.
+ */
+export function readZCodeTemplateModelDefaults(): Map<string, Map<string, boolean>> | null {
+  const enginePath = tryResolveEnginePath();
+  if (!enginePath) return null;
+  const builtinPath = findBuiltinConfig(enginePath);
+  if (!builtinPath) return null;
+
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(builtinPath);
+  } catch {
+    return null;
+  }
+  const cacheKey = `${builtinPath}:${stat.mtimeMs}:${stat.size}`;
+  if (templateDefaultsCache?.key === cacheKey) return templateDefaultsCache.defaults;
+
+  try {
+    const config = readObjectRecord(readObjectRecord(JSON.parse(fs.readFileSync(builtinPath, 'utf8')))?.config);
+    const modelConfig = readObjectRecord(config?.modelConfigRules);
+    // Absent rows (older engine layouts) mean "no knowledge", not "all off".
+    if (!Array.isArray(modelConfig?.templateModelRules)) return null;
+
+    const defaults = new Map<string, Map<string, boolean>>();
+    for (const entry of modelConfig.templateModelRules as unknown[]) {
+      const record = readObjectRecord(entry);
+      const templateId = readOptionalString(record?.templateId);
+      const modelId = readOptionalString(record?.modelId);
+      if (!templateId || !modelId) continue;
+      const models = defaults.get(templateId) ?? new Map<string, boolean>();
+      models.set(modelId, readObjectRecord(record?.config)?.enabled !== false);
+      defaults.set(templateId, models);
+    }
+    templateDefaultsCache = { key: cacheKey, defaults };
+    return defaults;
+  } catch {
+    return null;
+  }
 }
 
 /**

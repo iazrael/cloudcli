@@ -20,7 +20,7 @@ import {
 
 import { readZCodeIndividualPlanAuthContext, readDecryptedZCodeJwtToken } from './zcode-credentials.js';
 import { getZCodeDatabasePath, getZCodeStorageDir } from './zcode-data-root.js';
-import { resolveZCodeProviderApiType } from './zcode-provider-config.js';
+import { readZCodeTemplateModelDefaults, resolveZCodeProviderApiType } from './zcode-provider-config.js';
 
 /**
  * Account id of the BigModel trial plan (体验套餐). The picker keys its pinned
@@ -143,6 +143,7 @@ function readNativePersonalProviderRules(): NativePersonalProviderRule[] {
       : []
   );
 
+  const templateDefaults = readZCodeTemplateModelDefaults();
   const rules: NativePersonalProviderRule[] = [];
   for (const entry of providerRules) {
     const record = readObjectRecord(entry);
@@ -156,6 +157,16 @@ function readNativePersonalProviderRules(): NativePersonalProviderRule[] {
       || providerId === 'bigmodel-coding-plan') continue;
 
     const config = readObjectRecord(record?.config);
+    const templateId = readOptionalString(record?.templateId) || providerId;
+    const templateModels = templateDefaults?.get(templateId) ?? null;
+    const personalModelIds = collectStringList(config?.personalModelIds);
+
+    // Mirrors the App model page, which shows exactly this overlay: user
+    // deviation rules first, then user-added personal models (listed only
+    // when picked, so membership means enabled), then the engine template's
+    // shipped defaults. When the template defaults are entirely unavailable
+    // (no engine, no builtin rows) stay permissive rather than hiding the
+    // whole group.
     const isModelEnabled = (modelId: string): boolean => {
       for (const modelEntry of modelRules) {
         const modelRecord = readObjectRecord(modelEntry);
@@ -164,24 +175,29 @@ function readNativePersonalProviderRules(): NativePersonalProviderRule[] {
           return readObjectRecord(modelRecord?.config)?.enabled !== false;
         }
       }
-      // Absent rule means enabled: the App only stores explicit switches for
-      // models it has toggled.
+      if (personalModelIds.includes(modelId)) return true;
+      if (templateModels) return templateModels.get(modelId) === true;
       return true;
     };
 
     const modelIds: string[] = [];
+    const addModel = (modelId: string) => {
+      if (!modelIds.includes(modelId)) modelIds.push(modelId);
+    };
     const pushModel = (modelId: string) => {
-      if (!modelIds.includes(modelId) && isModelEnabled(modelId)) modelIds.push(modelId);
+      if (isModelEnabled(modelId)) addModel(modelId);
     };
     // modelOrder first (the App's display order), then ids it omits.
     collectStringList(config?.modelOrder).forEach(pushModel);
-    collectStringList(config?.personalModelIds).forEach(pushModel);
+    personalModelIds.forEach(pushModel);
     for (const manualEntry of manualRules) {
       const manualRecord = readObjectRecord(manualEntry);
       if (readOptionalString(manualRecord?.providerId) !== providerId) continue;
       if (readObjectRecord(manualRecord?.config)?.enabled === false) continue;
       const manualModelId = readOptionalString(manualRecord?.modelId);
-      if (manualModelId) pushModel(manualModelId);
+      // The manual row itself is the user's explicit enable signal; skip the
+      // template consult (manual models are not template catalog members).
+      if (manualModelId) addModel(manualModelId);
     }
     if (modelIds.length === 0) continue;
 
