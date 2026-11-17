@@ -555,6 +555,176 @@ test('readZCodeSessionModelInfoFromDb re-scopes start-plan sessions for picker h
   });
 });
 
+/** Writes a ZCode App native personal provider config into the fixture. */
+const withNativeProviderConfig = async (
+  storageDir: string,
+  body: unknown,
+): Promise<void> => {
+  const v2Dir = path.join(storageDir, 'v2');
+  await mkdir(v2Dir, { recursive: true });
+  await writeFile(path.join(v2Dir, 'provider_config.json'), JSON.stringify(body), 'utf8');
+};
+
+/** Aliyun Bailian-shaped native config fixture (App settings page output). */
+const NATIVE_ALIYUN_CONFIG = {
+  schemaVersion: 1,
+  config: {
+    providerOrder: ['qwen-alibaba-model-studio-cn'],
+    providerConfigRules: {
+      providerRules: [
+        {
+          providerId: 'qwen-alibaba-model-studio-cn',
+          providerName: '阿里云百炼（中国）',
+          config: {
+            group: 'standard-personal',
+            access: { type: 'api-key', apiKey: 'native-secret' },
+            api: { baseUrl: 'https://example.invalid/apps/anthropic' },
+            personalModelIds: ['deepseek-x'],
+            modelOrder: ['qwen-max', 'qwen-flash', 'deepseek-x', 'DISABLED-MODEL'],
+          },
+        },
+        {
+          // Reserved account rows belong to the plan routing, not the native list.
+          providerId: 'account:bigmodel-start-plan',
+          config: { modelOrder: ['SHOULD-NOT-APPEAR'] },
+        },
+      ],
+    },
+    modelConfigRules: {
+      providerModelRules: [
+        { providerId: 'qwen-alibaba-model-studio-cn', modelId: 'deepseek-x', config: { enabled: true } },
+        { providerId: 'qwen-alibaba-model-studio-cn', modelId: 'DISABLED-MODEL', config: { enabled: false } },
+      ],
+      manualProviderModelRules: [
+        { providerId: 'qwen-alibaba-model-studio-cn', modelId: 'manual-y', config: { enabled: true } },
+        { providerId: 'qwen-alibaba-model-studio-cn', modelId: 'manual-off', config: { enabled: false } },
+      ],
+    },
+  },
+};
+
+test('getSupportedModels merges ZCode App native providers as grouped options', async () => {
+  await withZCodeStorage(async (storageDir) => {
+    const cliDir = path.join(storageDir, 'cli');
+    await mkdir(cliDir, { recursive: true });
+    await writeFile(path.join(cliDir, 'config.json'), JSON.stringify({
+      provider: {
+        'bigmodel-coding-plan': {
+          kind: 'anthropic',
+          models: {
+            'GLM-5.3': { reasoning: { variants: ['low', 'max'], defaultLevel: 'max' } },
+            'GLM-5.3-Flash': {},
+            'GLM-4.7': {},
+          },
+        },
+      },
+    }), 'utf8');
+    await withNativeProviderConfig(storageDir, NATIVE_ALIYUN_CONFIG);
+
+    const definition = await new ZCodeProviderModels().getSupportedModels();
+
+    // Personal whitelist still drops GLM-4.7; native entries apply the model
+    // enable rules, dedupe personalModelIds against modelOrder, keep manual
+    // additions, and never list reserved account rows.
+    assert.deepEqual(
+      definition.OPTIONS.map((opt) => opt.value),
+      ['GLM-5.3', 'GLM-5.3-Flash', 'qwen-max', 'qwen-flash', 'deepseek-x', 'manual-y'],
+    );
+    assert.equal(definition.OPTIONS[0].group, undefined);
+    assert.equal(definition.OPTIONS[2].group, '阿里云百炼（中国）');
+    assert.equal(definition.OPTIONS[2].description, 'ZCode qwen-max model');
+    assert.equal(definition.OPTIONS[2].effort, undefined);
+    assert.equal(definition.DEFAULT, 'GLM-5.3');
+  });
+});
+
+test('getSupportedModels lists native providers without any cli config', async () => {
+  await withZCodeStorage(async (storageDir) => {
+    await withNativeProviderConfig(storageDir, NATIVE_ALIYUN_CONFIG);
+
+    const definition = await new ZCodeProviderModels().getSupportedModels();
+
+    assert.deepEqual(
+      definition.OPTIONS.map((opt) => opt.value),
+      ['qwen-max', 'qwen-flash', 'deepseek-x', 'manual-y'],
+    );
+    assert.equal(definition.DEFAULT, 'qwen-max');
+  });
+});
+
+test('cli config keeps precedence over native providers with the same model key', async () => {
+  await withZCodeStorage(async (storageDir) => {
+    const cliDir = path.join(storageDir, 'cli');
+    await mkdir(cliDir, { recursive: true });
+    await writeFile(path.join(cliDir, 'config.json'), JSON.stringify({
+      provider: {
+        'custom-provider': {
+          name: 'Custom Provider',
+          kind: 'anthropic',
+          options: { apiKey: 'custom-key', baseURL: 'https://example.invalid/api' },
+          models: { 'qwen-flash': {} },
+        },
+      },
+    }), 'utf8');
+    await withNativeProviderConfig(storageDir, NATIVE_ALIYUN_CONFIG);
+
+    const definition = await new ZCodeProviderModels().getSupportedModels();
+    const duplicates = definition.OPTIONS.filter((opt) => opt.value === 'qwen-flash');
+    assert.equal(duplicates.length, 1);
+    assert.equal(duplicates[0].group, 'Custom Provider');
+    // Routing follows the same precedence as the list.
+    assert.equal(resolveZCodeModelRef('qwen-flash').providerId, 'custom-provider');
+  });
+});
+
+test('resolveZCodeModelRef routes native model ids to their provider', async () => {
+  await withZCodeStorage(async (storageDir) => {
+    await withNativeProviderConfig(storageDir, NATIVE_ALIYUN_CONFIG);
+
+    assert.deepEqual(resolveZCodeModelRef('qwen-flash', 'low'), {
+      providerId: 'qwen-alibaba-model-studio-cn',
+      modelId: 'qwen-flash',
+      options: { reasoningLevel: 'low' },
+    });
+    // Scoped refs route through the existing explicit-provider branch.
+    assert.equal(
+      resolveZCodeModelRef('qwen-alibaba-model-studio-cn/qwen-max').providerId,
+      'qwen-alibaba-model-studio-cn',
+    );
+  });
+});
+
+test('buildZCodeSendModelParams routes native providers without copying the api key', async () => {
+  await withZCodeStorage(async (storageDir) => {
+    await withNativeProviderConfig(storageDir, NATIVE_ALIYUN_CONFIG);
+
+    const params = buildZCodeSendModelParams('qwen-flash', 'low');
+    assert.deepEqual(params, {
+      modelSelection: {
+        providerId: 'qwen-alibaba-model-studio-cn',
+        modelId: 'qwen-flash',
+        options: { reasoningLevel: 'low' },
+      },
+      modelExecution: { selectionScope: 'execution' },
+    });
+    // The credential lives in the personal config handed to the engine at
+    // spawn; it must never be duplicated into the send payload.
+    assert.doesNotMatch(JSON.stringify(params), /native-secret/);
+  });
+});
+
+test('buildZCodeSendModelParams degrades to null for native providers without api-key access', async () => {
+  await withZCodeStorage(async (storageDir) => {
+    const headless = JSON.parse(JSON.stringify(NATIVE_ALIYUN_CONFIG));
+    delete headless.config.providerConfigRules.providerRules[0].config.access.apiKey;
+    await withNativeProviderConfig(storageDir, headless);
+
+    assert.equal(buildZCodeSendModelParams('qwen-flash'), null);
+    // Disabled models are not routable either.
+    assert.equal(buildZCodeSendModelParams('DISABLED-MODEL'), null);
+  });
+});
+
 test('getSupportedModels enforces personal whitelist and keeps custom provider groups distinct', async () => {
   await withZCodeStorage(async (storageDir) => {
     const cliDir = path.join(storageDir, 'cli');
