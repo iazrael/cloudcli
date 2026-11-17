@@ -134,6 +134,7 @@
     "newFolder": "New Folder (Cmd+Shift+N)",
     "refresh": "Refresh",
     "collapseAll": "Collapse All",
+    "showHiddenFiles": "Show hidden & ignored files",
     "context": {
       "rename": "Rename",
       "delete": "Delete",

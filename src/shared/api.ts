@@ -441,8 +441,10 @@ export const api = {
     put(`/api/file-tree/projects/${projectId}/file`, { filePath, content }),
   // Lists project directories one level deep, up to 50 per call; '' is the
   // project root, other paths are relative to it or absolute inside it.
-  listDirectories: (projectId: string, paths: string[], options: ApiRequestOptions = {}) =>
-    post(`/api/file-tree/projects/${projectId}/directories`, { paths }, options),
+  // showHidden lifts the server's ignore filtering for this batch (VCS
+  // metadata directories stay hidden); the File Tree's toggle passes it.
+  listDirectories: (projectId: string, paths: string[], options: ApiRequestOptions = {}, showHidden = false) =>
+    post(`/api/file-tree/projects/${projectId}/directories`, { paths, showHidden }, options),
   // Searches the project's files by name and path on the server (best name
   // matches first); type 'any' also returns matching folders. Answers with a
   // `FileTreeSearchResponse`.

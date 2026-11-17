@@ -1521,9 +1521,15 @@ export type FileTreeServices = {
    * project-relative (`''` is the root) or absolute inside the project; it is
    * realpath-checked against the project root, so traversal and symlinks out of
    * the project are refused per path. Entries hidden by hard exclusions and the
-   * `.gitignore` chain from the root down are omitted.
+   * `.gitignore` chain from the root down are omitted. With `showHidden` the
+   * ignore rules and fallback names are skipped and only the `.git`, `.svn`,
+   * and `.hg` metadata directories stay excluded.
    */
-  listDirectories(projectId: string, paths: string[]): Promise<FileTreeDirectoryListing[]>;
+  listDirectories(
+    projectId: string,
+    paths: string[],
+    options?: { showHidden?: boolean },
+  ): Promise<FileTreeDirectoryListing[]>;
   /**
    * Searches a project's visible files (and, for `type: 'any'`, the
    * directories that contain them) by case-insensitive substring tokens over

@@ -131,6 +131,7 @@
     "newFolder": "新建文件夹 (Cmd+Shift+N)",
     "refresh": "刷新",
     "collapseAll": "全部折叠",
+    "showHiddenFiles": "显示隐藏与忽略的文件",
     "context": {
       "rename": "重命名",
       "delete": "删除",

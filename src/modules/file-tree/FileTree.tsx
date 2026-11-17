@@ -50,6 +50,8 @@ export default function FileTree({ selectedProject, onFileOpen, revealDirectory 
     }
   }, [toast]);
 
+  // 显示隐藏/忽略文件是会话内临时开关：不持久化，刷新页面即回到默认隐藏。
+  const [showHidden, setShowHidden] = useState(false);
   const {
     items,
     loading,
@@ -60,7 +62,7 @@ export default function FileTree({ selectedProject, onFileOpen, revealDirectory 
     collapseAll,
     refresh: refreshTree,
     revealDirectory: revealTreeDirectory,
-  } = useLazyFileTree(selectedProject);
+  } = useLazyFileTree(selectedProject, showHidden);
   const { viewMode, changeViewMode } = useFileTreeViewMode();
   const search = useFileTreeSearch(selectedProject?.projectId);
   const { refreshSearch, setSearchQuery } = search;
@@ -247,6 +249,8 @@ export default function FileTree({ selectedProject, onFileOpen, revealDirectory 
       <FileTreeHeader
         viewMode={viewMode}
         onViewModeChange={changeViewMode}
+        showHidden={showHidden}
+        onToggleShowHidden={() => setShowHidden((previous) => !previous)}
         searchQuery={search.searchQuery}
         onSearchQueryChange={setSearchQuery}
         onUploadFiles={upload.handleFileSelect}

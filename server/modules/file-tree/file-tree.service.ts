@@ -18,6 +18,13 @@ const HARD_EXCLUDED_DIRECTORY_NAMES = new Set([
   'node_modules', '.git', '.svn', '.hg',
 ]);
 
+// VCS metadata directories stay hidden even when the browser asks for hidden
+// entries: they are tooling internals with no browsing value and can hold tens
+// of thousands of objects.
+const VCS_METADATA_DIRECTORY_NAMES = new Set([
+  '.git', '.svn', '.hg',
+]);
+
 const IGNORED_DIRECTORY_NAMES = new Set([
   ...HARD_EXCLUDED_DIRECTORY_NAMES,
   'dist', 'build', '.next', '.nuxt', '.cache', '.parcel-cache', '.vercel',
@@ -74,16 +81,21 @@ type SearchIndex = { entries: SearchIndexEntry[]; incomplete: boolean; builtAt: 
  * Applies hard exclusions, the fallback directory names, and the ignore layers
  * from the lowest precedence (`.git/info/exclude`, then the root `.gitignore`)
  * to the highest (the directory's own `.gitignore`), so a deeper `!pattern`
- * re-includes what a shallower rule excluded, as git does.
+ * re-includes what a shallower rule excluded, as git does. With `showHidden`
+ * the ignore rules and fallback names are skipped: everything shows except the
+ * VCS metadata directories.
  */
 function isEntryVisible(
   entryRelativePath: string,
   isDirectory: boolean,
   layers: IgnoreLayer[],
   useFallbackDirectoryNames: boolean,
+  showHidden = false,
 ): boolean {
   if (isDirectory) {
     const name = path.posix.basename(entryRelativePath);
+    if (VCS_METADATA_DIRECTORY_NAMES.has(name)) return false;
+    if (showHidden) return true;
     if (HARD_EXCLUDED_DIRECTORY_NAMES.has(name)) return false;
     if (useFallbackDirectoryNames && IGNORED_DIRECTORY_NAMES.has(name)) return false;
   }
@@ -458,10 +470,12 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
     rootPath: string,
     directoryPath: string,
     rules: ReturnType<typeof createIgnoreRules>,
+    showHidden = false,
   ): Promise<{ entries: FileTreeNode[]; truncated: boolean }> {
     const relativeDirectory = path.relative(rootPath, directoryPath).split(path.sep).join('/');
-    const layers = await rules.layersFor(relativeDirectory);
-    const useFallbackDirectoryNames = await rules.usesFallbackDirectoryNames();
+    // Hidden mode never consults ignore files, so none are read or parsed.
+    const layers = showHidden ? [] : await rules.layersFor(relativeDirectory);
+    const useFallbackDirectoryNames = showHidden ? false : await rules.usesFallbackDirectoryNames();
 
     const visibleEntries: FileTreeDirectoryEntry[] = [];
     let truncated = false;
@@ -469,7 +483,7 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
     try {
       for await (const entry of fileSystem.openDirectory(directoryPath)) {
         const entryRelativePath = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
-        if (!isEntryVisible(entryRelativePath, entry.isDirectory(), layers, useFallbackDirectoryNames)) {
+        if (!isEntryVisible(entryRelativePath, entry.isDirectory(), layers, useFallbackDirectoryNames, showHidden)) {
           continue;
         }
         // Leaving the loop closes the directory stream, so the rest of a huge
@@ -968,7 +982,7 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
       return { success: true, path: resolvedPath, message: 'File saved successfully' };
     },
 
-    async listDirectories(projectId, paths) {
+    async listDirectories(projectId, paths, options) {
       const projectRoot = await resolveProjectRoot(projectId);
       let realProjectRoot: string;
       try {
@@ -977,6 +991,7 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
         throw createFileTreeError(`Project path not found: ${projectRoot}`, 404, 'PROJECT_PATH_NOT_FOUND');
       }
       const rootPath = path.resolve(projectRoot);
+      const showHidden = options?.showHidden === true;
 
       // Ignore files are shared by every directory of the batch.
       const rules = createIgnoreRules(rootPath);
@@ -984,7 +999,7 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
       return Promise.all(paths.map(async (request): Promise<FileTreeDirectoryListing> => {
         try {
           const directoryPath = await resolveListableDirectory(rootPath, realProjectRoot, request);
-          const { entries, truncated } = await listOneDirectory(rootPath, directoryPath, rules);
+          const { entries, truncated } = await listOneDirectory(rootPath, directoryPath, rules, showHidden);
           return { request, path: directoryPath, entries, truncated };
         } catch (error) {
           if (error instanceof AppError) {

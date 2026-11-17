@@ -23,10 +23,13 @@ const pathExistenceBatchSchema = z.object({
 
 /**
  * Directories the browser expands, refreshes or reveals arrive as one batch.
- * An empty string is the project root, so paths here may be empty.
+ * An empty string is the project root, so paths here may be empty. `showHidden`
+ * lifts the ignore filtering for this batch (the service keeps VCS metadata
+ * directories hidden).
  */
 const directoryBatchSchema = z.object({
   paths: z.array(z.string().max(8192).refine((value) => !value.includes('\0'))).min(1).max(50),
+  showHidden: z.boolean().optional(),
 }).strict();
 
 const DEFAULT_SEARCH_LIMIT = 50;
@@ -232,7 +235,11 @@ export function createFileTreeRouter(
     if (!parsed.success) {
       throw new AppError('Invalid directory batch', { code: 'INVALID_FILE_TREE_REQUEST', statusCode: 400 });
     }
-    response.json({ directories: await services.listDirectories(readProjectId(request), parsed.data.paths) });
+    response.json({
+      directories: await services.listDirectories(readProjectId(request), parsed.data.paths, {
+        showHidden: parsed.data.showHidden,
+      }),
+    });
   }, logger));
 
   router.get('/projects/:projectId/files/search', createRouteHandler(async (request, response) => {

@@ -23,8 +23,11 @@ let fake: ReturnType<typeof createFakeDirectoryApi>;
 
 const find = (items: FileTreeNode[], name: string) => items.find((item) => item.name === name);
 
-async function renderTree(selected: Project = project) {
-  const rendered = renderHook(({ current }) => useLazyFileTree(current), { initialProps: { current: selected } });
+async function renderTree(selected: Project = project, showHidden = false) {
+  const rendered = renderHook(
+    ({ current, hidden }) => useLazyFileTree(current, hidden),
+    { initialProps: { current: selected, hidden: showHidden } },
+  );
   await waitFor(() => expect(rendered.result.current.loading).toBe(false));
   return rendered;
 }
@@ -186,10 +189,29 @@ describe('useLazyFileTree', () => {
     act(() => result.current.toggleDirectory(`${ROOT}/src`));
     await waitFor(() => expect(find(result.current.items, 'src')?.children).toHaveLength(2));
 
-    rerender({ current: { ...project, projectId: 'p2' } });
+    rerender({ current: { ...project, projectId: 'p2' }, hidden: false });
 
-    await waitFor(() => expect(listDirectories).toHaveBeenLastCalledWith('p2', [''], expect.anything()));
+    await waitFor(() => expect(listDirectories).toHaveBeenLastCalledWith('p2', [''], expect.anything(), false));
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.expandedDirs.size).toBe(0);
+  });
+
+  it('re-reads the root and open folders with showHidden when it flips', async () => {
+    const { result, rerender } = await renderTree();
+    act(() => result.current.toggleDirectory(`${ROOT}/src`));
+    await waitFor(() => expect(find(result.current.items, 'src')?.children).toHaveLength(2));
+    fake.calls.length = 0;
+
+    rerender({ current: project, hidden: true });
+
+    // One batch covering the root plus the open folder, flag on.
+    await waitFor(() => expect(fake.calls).toEqual([['', `${ROOT}/src`]]));
+    expect(listDirectories).toHaveBeenLastCalledWith('p1', expect.anything(), expect.anything(), true);
+
+    // Collapsed folders re-read under the new mode when next opened.
+    fake.calls.length = 0;
+    act(() => result.current.toggleDirectory(`${ROOT}/docs`));
+    await waitFor(() => expect(fake.calls).toEqual([[`${ROOT}/docs`]]));
+    expect(listDirectories).toHaveBeenLastCalledWith('p1', [`${ROOT}/docs`], expect.anything(), true);
   });
 });

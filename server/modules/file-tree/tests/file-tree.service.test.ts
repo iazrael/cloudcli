@@ -266,6 +266,31 @@ test('listDirectories falls back to conventional directory names when the root h
   assert.deepEqual(listingNames(documentation), ['guide.md']);
 });
 
+test('listDirectories with showHidden reveals ignored entries but keeps VCS metadata hidden', async () => {
+  const fileSystem = createTreeFileSystem(fakeProjectRoot, {
+    '': ['.git/', 'node_modules/', 'dist/', '.env', 'README.md', '.gitignore'],
+    '.git': ['HEAD'],
+    node_modules: ['left-pad/'],
+    dist: ['bundle.js'],
+  }, { files: { '.gitignore': ['dist/', '.env'].join('\n') } });
+  const service = createFileTreeService(createDependencies(fileSystem, fakeProjectRoot));
+
+  const [root] = await service.listDirectories('project-1', [''], { showHidden: true });
+
+  assert.deepEqual(listingNames(root), ['dist', 'node_modules', '.env', '.gitignore', 'README.md']);
+});
+
+test('listDirectories with showHidden skips the fallback directory names too', async () => {
+  const fileSystem = createTreeFileSystem(fakeProjectRoot, {
+    '': ['node_modules/', 'dist/', 'docs/', 'guide.md'],
+  });
+  const service = createFileTreeService(createDependencies(fileSystem, fakeProjectRoot));
+
+  const [root] = await service.listDirectories('project-1', [''], { showHidden: true });
+
+  assert.deepEqual(listingNames(root), ['dist', 'docs', 'node_modules', 'guide.md']);
+});
+
 test('listDirectories truncates one oversized directory without reading it all', async () => {
   let streamedEntries = 0;
   const fileSystem = createFakeFileSystem({

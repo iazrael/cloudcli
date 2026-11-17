@@ -129,6 +129,7 @@
     "newFolder": "新增資料夾 (Cmd+Shift+N)",
     "refresh": "重新整理",
     "collapseAll": "全部收合",
+    "showHiddenFiles": "顯示隱藏與忽略的檔案",
     "context": {
       "rename": "重新命名",
       "delete": "刪除",

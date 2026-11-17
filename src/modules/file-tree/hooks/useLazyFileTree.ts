@@ -103,9 +103,11 @@ function buildVisibleTree(
 /**
  * Lazily loaded file tree for one project: the root is listed when the project
  * opens and every other folder when it is first expanded, so the cost follows
- * what the user looks at rather than the size of the project.
+ * what the user looks at rather than the size of the project. `showHidden`
+ * lifts the server's ignore filtering for every fetch; flipping it re-reads
+ * the root and the open folders, and collapsed folders re-read when next opened.
  */
-export function useLazyFileTree(selectedProject: Project | null): UseLazyFileTreeResult {
+export function useLazyFileTree(selectedProject: Project | null, showHidden = false): UseLazyFileTreeResult {
   const projectId = selectedProject?.projectId;
   // Every folder fetched for the current project, keyed by absolute path (the
   // root by ROOT_KEY). The visible tree is derived from it.
@@ -158,7 +160,7 @@ export function useLazyFileTree(selectedProject: Project | null): UseLazyFileTre
     let listings: DirectoryListing[];
     try {
       const batches = await Promise.all(chunk(requests, MAXIMUM_DIRECTORIES_PER_REQUEST).map(async (batch) => {
-        const response = await api.listDirectories(projectId, batch, { signal: controller.signal });
+        const response = await api.listDirectories(projectId, batch, { signal: controller.signal }, showHidden);
         if (!response.ok) {
           throw new Error(await readResponseErrorMessage(response));
         }
@@ -239,17 +241,24 @@ export function useLazyFileTree(selectedProject: Project | null): UseLazyFileTre
       });
     }
     return listings;
-  }, [projectId]);
+  }, [projectId, showHidden]);
+
+  // The latest fetcher, read through a ref so the session setup below only
+  // re-runs when the project changes; the showHidden flip has its own effect.
+  const fetchRef = useRef(fetchDirectories);
+  useEffect(() => {
+    fetchRef.current = fetchDirectories;
+  }, [fetchDirectories]);
 
   useEffect(() => {
     const session = { generation: sessionRef.current.generation + 1, controller: new AbortController() };
     sessionRef.current = session;
     if (projectId) {
       // No root state yet already reads as loading.
-      void fetchDirectories([ROOT_KEY], { markLoading: false });
+      void fetchRef.current([ROOT_KEY], { markLoading: false });
     }
     return () => session.controller.abort();
-  }, [projectId, fetchDirectories]);
+  }, [projectId]);
 
   const toggleDirectory = useCallback((path: string) => {
     const { directories: known, expandedDirs: open } = latestRef.current;
@@ -304,6 +313,22 @@ export function useLazyFileTree(selectedProject: Project | null): UseLazyFileTre
     });
     void fetchDirectories([...visible], { markLoading: true });
   }, [fetchDirectories]);
+
+  // The hidden-files toggle starts a new fetch session so in-flight answers
+  // read under the previous mode are aborted instead of overwriting the
+  // re-read: open folders re-read right away, and refresh marks the collapsed
+  // ones stale so they re-read the same way when next opened. The ref skips
+  // the mount, where the project effect above already loads the root.
+  const appliedShowHiddenRef = useRef(showHidden);
+  useEffect(() => {
+    if (appliedShowHiddenRef.current === showHidden) return;
+    appliedShowHiddenRef.current = showHidden;
+    if (!projectId) return;
+    const session = { generation: sessionRef.current.generation + 1, controller: new AbortController() };
+    sessionRef.current = session;
+    refresh();
+    return () => session.controller.abort();
+  }, [showHidden, projectId, refresh]);
 
   const projectRoot = selectedProject?.path || selectedProject?.fullPath || '';
   const revealDirectory = useCallback(async (reference: string): Promise<string | null> => {

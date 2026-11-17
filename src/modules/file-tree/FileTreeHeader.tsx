@@ -1,6 +1,6 @@
 import { useRef } from 'react';
 import type { ChangeEvent } from 'react';
-import { ChevronDown, Eye, FileText, FolderPlus, List, Loader2, RefreshCw, Search, TableProperties, Upload, X } from 'lucide-react';
+import { ChevronDown, Eye, EyeOff, FileText, FolderPlus, List, Loader2, RefreshCw, Search, TableProperties, Upload, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { Button, Input } from '@/shared/ui';
@@ -11,6 +11,10 @@ import type { FileTreeViewMode } from '@/shared/types';
 type FileTreeHeaderProps = {
   viewMode: FileTreeViewMode;
   onViewModeChange: (mode: FileTreeViewMode) => void;
+  // Session-only toggle: when on, the server also returns gitignored and
+  // fallback-ignored entries (VCS metadata stays hidden).
+  showHidden?: boolean;
+  onToggleShowHidden?: () => void;
   searchQuery: string;
   onSearchQueryChange: (query: string) => void;
   // Toolbar actions
@@ -30,6 +34,8 @@ type FileTreeHeaderProps = {
 export default function FileTreeHeader({
   viewMode,
   onViewModeChange,
+  showHidden,
+  onToggleShowHidden,
   searchQuery,
   onSearchQueryChange,
   onNewFile,
@@ -157,6 +163,20 @@ export default function FileTreeHeader({
           )}
           {/* Divider */}
           <div className="mx-0.5 h-4 w-px bg-border" />
+          {/* Hidden/ignored files toggle (session-only) */}
+          {onToggleShowHidden && (
+            <Button
+              variant={showHidden ? 'default' : 'ghost'}
+              size="sm"
+              className="h-7 w-7 p-0"
+              onClick={onToggleShowHidden}
+              title={t('fileTree.showHiddenFiles', 'Show hidden & ignored files')}
+              aria-label={t('fileTree.showHiddenFiles', 'Show hidden & ignored files')}
+              aria-pressed={showHidden}
+            >
+              <EyeOff className="h-3.5 w-3.5" />
+            </Button>
+          )}
           {/* View mode buttons */}
           <Button
             variant={viewMode === 'simple' ? 'default' : 'ghost'}

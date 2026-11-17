@@ -87,7 +87,33 @@ test('directories route forwards the batch and returns the listings in order', a
     });
   });
 
-  assert.deepEqual(inputs, [['project-1', ['', 'src']]]);
+  assert.deepEqual(inputs, [['project-1', ['', 'src'], { showHidden: undefined }]]);
+});
+
+test('directories route forwards showHidden to the service', async () => {
+  const inputs: Parameters<FileTreeServices['listDirectories']>[] = [];
+  const services = createFakeServices({
+    listDirectories: async (...input) => {
+      inputs.push(input);
+      return input[1].map((request) => ({ request, path: `/root/${request}`, entries: [], truncated: false }));
+    },
+  });
+
+  await withFileTreeServer(services, async (baseUrl) => {
+    const post = (body: Record<string, unknown>) => fetch(`${baseUrl}/api/file-tree/projects/project-1/directories`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    assert.equal((await post({ paths: [''], showHidden: true })).status, 200);
+    assert.equal((await post({ paths: [''] })).status, 200);
+  });
+
+  assert.deepEqual(inputs, [
+    ['project-1', [''], { showHidden: true }],
+    ['project-1', [''], { showHidden: undefined }],
+  ]);
 });
 
 test('directories route rejects malformed and oversized batches', async () => {
