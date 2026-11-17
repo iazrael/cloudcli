@@ -28,10 +28,15 @@ async function withForwardingPair(
   const app = express();
   app.use(express.text({ type: '*/*' }));
   app.use((req, res, next) => {
+    // Production callers pass Express-decoded pathnames and an already-encoded
+    // query; the forwarder re-encodes the pathname, so the fixture must not
+    // hand it the still-encoded originalUrl verbatim.
+    const queryIndex = req.originalUrl.indexOf('?');
+    const search = queryIndex === -1 ? '' : req.originalUrl.slice(queryIndex);
     forwardToLoopbackService(
       {
         port: upstreamPort,
-        path: req.originalUrl,
+        path: `${decodeURIComponent(req.path)}${search}`,
         method: req.method,
         headers: { 'x-forwarded-test': 'yes' },
         body: typeof req.body === 'string' && req.body.length > 0 ? req.body : undefined,

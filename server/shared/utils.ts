@@ -2511,7 +2511,10 @@ export function parseAntigravityWorkspacePath(workspaceUris: string | null): str
  * machine's loopback interface.
  *
  * `path` must be an absolute path and already carry its query string; the
- * forwarder does not rebuild it. `headers` fully replaces the caller's headers
+ * forwarder does not rebuild it. Callers may pass a transport-decoded pathname
+ * (Express's `req.params` is decoded): the forwarder percent-encodes everything
+ * before the first `?`, and forwards the query verbatim on the assumption that
+ * the caller already encoded it. `headers` fully replaces the caller's headers
  * so no client credentials leak into a local service by accident. `body` is
  * only written when present, which is why GET/HEAD callers simply omit it.
  * `transformResponseHeaders` is the last chance to strip or rewrite upstream
@@ -2528,6 +2531,18 @@ export type LoopbackForwardRequest = {
     statusCode: number,
   ) => http.OutgoingHttpHeaders;
 };
+
+// http.request rejects a request path holding unescaped non-ASCII characters
+// (ERR_UNESCAPED_CHARACTERS), which is what a decoded proxy path such as
+// `/试听.html` arrives as. Only the pathname is re-encoded: the query is
+// already percent-encoded by both callers, and encodeURI would double-encode
+// its existing `%XX` sequences. encodeURI over a decoded pathname is a lossless
+// round-trip, including for names that contain a literal `%` themselves.
+function encodeForwardPath(path: string): string {
+  const queryStart = path.indexOf('?');
+  const pathname = queryStart === -1 ? path : path.slice(0, queryStart);
+  return encodeURI(pathname) + (queryStart === -1 ? '' : path.slice(queryStart));
+}
 
 /**
  * Pipes a request to `127.0.0.1:<port>` and streams the upstream response
@@ -2551,7 +2566,7 @@ export function forwardToLoopbackService(
     {
       hostname: '127.0.0.1',
       port: request.port,
-      path: request.path,
+      path: encodeForwardPath(request.path),
       method: request.method,
       headers: request.headers,
     },

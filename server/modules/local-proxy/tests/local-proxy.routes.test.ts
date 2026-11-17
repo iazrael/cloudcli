@@ -126,6 +126,39 @@ test('serves the upstream page to a request carrying the session cookie', async 
   });
 });
 
+test('forwards a non-ASCII document path percent-encoded to the upstream service', async () => {
+  await withProxy(respondWithEcho, async (harness) => {
+    const proxyPath = await mintProxyPath(harness, '/试听.html');
+    const redirect = await fetch(`${harness.baseUrl}${proxyPath}`, { redirect: 'manual' });
+    const cookie = (redirect.headers.get('set-cookie') ?? '').split(';')[0];
+
+    const response = await fetch(`${harness.baseUrl}/api/local-proxy/p/${harness.upstreamPort}/试听.html`, {
+      headers: { cookie },
+    });
+
+    assert.equal(response.status, 200);
+    // The upstream sees the encoded form; passing the decoded path would make
+    // http.request throw ERR_UNESCAPED_CHARACTERS and surface as a 500.
+    assert.equal(await response.text(), '<html>/%E8%AF%95%E5%90%AC.html</html>');
+  });
+});
+
+test('keeps an already-encoded non-ASCII query intact', async () => {
+  await withProxy(respondWithEcho, async (harness) => {
+    const proxyPath = await mintProxyPath(harness, '/report.html?q=中文');
+    const redirect = await fetch(`${harness.baseUrl}${proxyPath}`, { redirect: 'manual' });
+    const cookie = (redirect.headers.get('set-cookie') ?? '').split(';')[0];
+
+    const response = await fetch(`${harness.baseUrl}/api/local-proxy/p/${harness.upstreamPort}/report.html?q=中文`, {
+      headers: { cookie },
+    });
+
+    assert.equal(response.status, 200);
+    // Re-encoding the query would turn %E4%B8%AD%E6%96%87 into %25E4%25B8%25AD%E6%2596%2587.
+    assert.equal(await response.text(), '<html>/report.html?q=%E4%B8%AD%E6%96%87</html>');
+  });
+});
+
 test('rejects a request with neither ticket nor session cookie', async () => {
   await withProxy(respondWithEcho, async (harness) => {
     const response = await fetch(`${harness.baseUrl}/api/local-proxy/p/${harness.upstreamPort}/report.html`);
