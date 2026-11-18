@@ -15,6 +15,7 @@ import type { ProviderSessionWatchTarget } from '@/shared/types.js';
 
 import { admitsWorkspacePath } from '../../shared/sessions/workspace-admission.js';
 import { applySessionWorktreePlacement } from '../../shared/sessions/session-worktree-placement.js';
+import { canonicalizeSessionProjectPath } from '../../shared/sessions/session-project-path-canonicalization.js';
 import { resolveSessionTitle, type DerivedSessionTitle } from '../../shared/sessions/session-title-resolution.js';
 
 type ParsedSession = {
@@ -166,6 +167,12 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
     if (!parsed) {
       return null;
     }
+
+    // An engine that canonicalizes its cwd records a filesystem equivalent of
+    // the project the user opened (claude ≥ 2.1.327 resolves `/Users/...`
+    // symlinks to `/Volumes/...`); file the session under the registered
+    // project instead of splitting a twin into the sidebar.
+    parsed.projectPath = canonicalizeSessionProjectPath(parsed.projectPath);
 
     // A transcript whose cwd is engine infrastructure, or a sandbox directory
     // the system has since reaped, is not a project.

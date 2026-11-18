@@ -220,6 +220,7 @@ ZCode 的 `SendMessage` 能把已结束的 agent 复活到后台。引擎把这�
 - `sessions/sqlite-session-synchronizer.provider.ts`：`SqliteSessionSynchronizer<Row>` 模板方法基类——watch 过滤、高水位增量、只读短连接、pending-app-session 绑定、工作树认亲。zcode / antigravity / opencode 共用；claude / codex 解析 JSONL，cursor 读 store.db，各自实现。
 - `sessions/workspace-admission.ts`：会话入库前的工作区准入闸门，见下节。
 - `sessions/session-worktree-placement.ts`：会话目录的工作树认亲改判，见下节。
+- `sessions/session-project-path-canonicalization.ts`：引擎记录的目录与注册项目为同一目录的两种写法（软链还原）时，会话归并到已注册项目的存储写法，见下节。
 - `mcp/mcp.provider.ts`、`skills/skills.provider.ts`：MCP 与技能的校验/扫描基类。
 - `background-work/background-work-registry.ts`：`BackgroundWorkRegistry`——按应用会话登记引擎里仍在跑的后台工作（codex / zcode / antigravity / opencode 的子 agent，以及 opencode 放到后台的命令），运行时切面的 `listBackgroundWork()` 从它作答，见上文「子 agent 卡片」。
 Codex 的模型目录由 `codex-models.provider.ts` 通过 `codex-app-server.client.ts` 的连接读取。例如 CLI 的 `model/list` 只返回当前可见模型时，选择器只显示这些模型，不会补回写死的旧型号。查询使用对话运行时同一份内置 `@openai/codex`，不使用终端 PATH 上的另一份 CLI。适配器读取所有分页，过滤隐藏模型，按模型 ID 去重，并使用引擎返回的名称、说明、推理强度和默认模型；没有默认标记时使用首个可见模型。自定义模型由 `provider-models.service.ts` 合并。同 ID 的自定义记录与引擎目录只显示一项，保留用户名称和可编辑记录，并继承引擎的推理强度。引擎收录已有自定义 ID 后，用户仍可修改名称；创建或修改为其他已存在 ID 仍会被拒绝。删除已被引擎收录的自定义记录只移除用户名称，型号继续显示，已有会话的型号与强度保持不变；删除仅存在于自定义记录中的型号才切换到默认型号并清空强度。
@@ -271,6 +272,12 @@ opencode 的对话不走一次性子进程，而是连一个 cloudcli 自养的�
 `shared/sessions/session-worktree-placement.ts` 的 `applySessionWorktreePlacement` 在六个同步器入库前统一改判（与 `admitsWorkspacePath` 同一套约定，新引擎接入同样必接）：目录是某个**已注册且在役**项目主仓的关联工作树时，会话挂回主仓项目，工作树路径与分支记入 `sessions.worktree_path`/`worktree_branch`，工作区头部副标题以「项目 · 分支」标注。两条例外保持现状：工作树目录已有正式命名的项目行（工作树面板「打开为项目」写入「仓 · 分支」格式）时会话留在该独立项目；主仓未注册或已归档时不动。git 归属查询在 worktrees 模块（`resolveWorktreeHome`，`git worktree list --porcelain`，按目录 30 秒正负缓存；软链路径与 git 还原路径不一致时不认亲，安全降级为现状）。解析器经 `server/index.ts` 组装根注入 placement——placement 静态引 worktrees barrel 会经 projects→providers 的既有依赖闭合模块初始化环。
 
 会话搬离后空掉的项目行由落库层收尾：`sessions.db.ts` 的孤儿归档只处理「自定义名等于目录名（即自动注册的默认名）且零活跃会话」的行，正式命名的项目永不自动归档，归档可逆。
+
+## 会话目录等价归并：同一目录的另一种写法不裂新项目
+
+项目以路径字符串为键，而引擎可能把同一目录记成另一种写法：claude CLI ≥ 2.1.327 启动时解析软链，把用户经 `/Users/azrael/workspaces/X` 打开的项目录成物理路径 `/Volumes/.../X`，纯字符串键控随之出现同名双项目（实证 2026-11-18 DuskBastion：41+2 会话 vs 2 会话），且之后每个项目都会随新版 CLI 裂一份。
+
+`shared/sessions/session-project-path-canonicalization.ts` 的 `canonicalizeSessionProjectPath` 在六个同步器解析出会话目录后、准入判断前统一改判（与前两条同一套约定，新引擎接入同样必接）：目录的 realpath 等于某个**非归档**注册项目的 realpath 时，会话按该项目的存储写法入库；等价者不止一个（双胞胎状态）时会话数多的胜出，重扫因此向重的一侧排空，清空后的影子行走既有孤儿归档。归并只做**精确等价**（realpath 相同），不做前缀包含——子目录会话与工作树会话各归各的策略管，这里不改变任何合法的"不同目录各建项目"行为。全新目录、解析不出 realpath 的路径、无等价注册项目：一律按引擎上报写法原样入库，项目形成行为与从前一致。realpath 失败与常规路径（realpath 等于自身且无歧义时也要查注册表——项目可能注册在任一写法下）都走注册表扫描，项目表很小，单次代价是一个 SELECT 加每行一次 realpath。
 
 ## 会话标题：跟随引擎命名与改名锁
 

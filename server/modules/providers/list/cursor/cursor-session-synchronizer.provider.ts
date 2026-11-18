@@ -16,6 +16,7 @@ import type { ProviderSessionWatchTarget } from '@/shared/types.js';
 
 import { admitsWorkspacePath } from '../../shared/sessions/workspace-admission.js';
 import { applySessionWorktreePlacement } from '../../shared/sessions/session-worktree-placement.js';
+import { canonicalizeSessionProjectPath } from '../../shared/sessions/session-project-path-canonicalization.js';
 import { resolveSessionTitle } from '../../shared/sessions/session-title-resolution.js';
 
 type ParsedSession = {
@@ -153,9 +154,14 @@ export class CursorSessionSynchronizer implements IProviderSessionSynchronizer {
       return null;
     }
 
+    // An engine that canonicalizes its cwd records a filesystem equivalent of
+    // the project the user opened; file the session under the registered
+    // project instead of splitting a twin into the sidebar.
+    const canonicalProjectPath = canonicalizeSessionProjectPath(projectPath);
+
     // A workspace that is engine infrastructure, or a sandbox directory the
     // system has since reaped, is not a project.
-    if (!admitsWorkspacePath(projectPath)) {
+    if (!admitsWorkspacePath(canonicalProjectPath)) {
       return null;
     }
 
@@ -187,7 +193,7 @@ export class CursorSessionSynchronizer implements IProviderSessionSynchronizer {
 
       return {
         sessionId,
-        projectPath,
+        projectPath: canonicalProjectPath,
         sessionName: normalizeSessionName(resolvedName ?? undefined, 'Untitled Cursor Session'),
       };
     });

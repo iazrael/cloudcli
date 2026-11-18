@@ -1,16 +1,17 @@
 import assert from 'node:assert/strict';
+import fsSync from 'node:fs';
 import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
+import { closeConnection, initializeDatabase, projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { ClaudeSessionsProvider } from '@/modules/providers/list/claude/claude-sessions.provider.js';
 import { AppError, buildLookupMap, extractFirstValidJsonlData } from '@/shared/utils.js';
 import { ClaudeSessionSynchronizer } from '@/modules/providers/list/claude/claude-session-synchronizer.provider.js';
 import { searchConversations } from '@/modules/providers/services/session-conversations-search.service.js';
 
-import { createWorkspaceFixture } from './workspace-fixture.js';
+import { createWorkspaceFixture, workspaceFixturePath } from './workspace-fixture.js';
 
 async function withIsolatedDatabase(runTest: () => void | Promise<void>): Promise<void> {
   const previousDatabasePath = process.env.DATABASE_PATH;
@@ -2747,6 +2748,96 @@ test('claude: a transcript with a megabyte-scale row still syncs and reports usa
     } else {
       process.env.CONTEXT_WINDOW = previousContextWindow;
     }
+    restoreHomeDir();
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// cwd canonicalization — a transcript recorded under a filesystem-equivalent
+// spelling of the project directory must not split a twin project
+// ---------------------------------------------------------------------------
+
+test('synchronizeFile files a physically spelled cwd under the project registered through its symlink', { concurrency: false }, async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'claude-sync-canonical-'));
+  const realWorkspace = await createWorkspaceFixture();
+  const linkWorkspace = workspaceFixturePath('canonical-sync-link');
+  fsSync.symlinkSync(realWorkspace, linkWorkspace, 'dir');
+  const restoreHomeDir = patchHomeDir(tmp);
+
+  try {
+    await mkdir(path.join(tmp, '.claude'), { recursive: true });
+    // claude ≥ 2.1.327 resolves the symlink before recording cwd, so the
+    // transcript carries the physical spelling of the registered project.
+    const transcriptPath = await writeSessionJsonl(realWorkspace, 'test-session-1.jsonl', []);
+
+    await withIsolatedDatabase(async () => {
+      projectsDb.ensureProjectPath(linkWorkspace);
+
+      const synchronizer = new ClaudeSessionSynchronizer();
+      const sessionId = await synchronizer.synchronizeFile(transcriptPath);
+      assert.ok(sessionId, 'synchronizeFile should return a session id');
+
+      // The session lands on the registered project, not on a twin.
+      assert.equal(sessionsDb.getSessionById(sessionId!)?.project_path, linkWorkspace);
+      assert.equal(projectsDb.getProjectPath(realWorkspace), null, 'no shadow project may form');
+    });
+  } finally {
+    restoreHomeDir();
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('synchronizeFile heals sessions a pre-canonicalization scan filed under the physical twin', { concurrency: false }, async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'claude-sync-canonical-heal-'));
+  const realWorkspace = await createWorkspaceFixture();
+  const linkWorkspace = workspaceFixturePath('canonical-heal-link');
+  fsSync.symlinkSync(realWorkspace, linkWorkspace, 'dir');
+  const restoreHomeDir = patchHomeDir(tmp);
+
+  // Writes a minimal transcript for one session id with the physical cwd the
+  // canonicalizing CLI records.
+  const writeSplitTranscript = async (sessionId: string): Promise<string> => {
+    const transcriptPath = path.join(realWorkspace, `${sessionId}.jsonl`);
+    const content = [
+      JSON.stringify({ type: 'user', uuid: `${sessionId}-msg-1`, sessionId, timestamp: '2026-11-18T01:00:00.000Z', cwd: realWorkspace, message: { role: 'user', content: 'first prompt' } }),
+      '',
+    ].join('\n');
+    await writeFile(transcriptPath, content, 'utf8');
+    return transcriptPath;
+  };
+
+  try {
+    await mkdir(path.join(tmp, '.claude'), { recursive: true });
+    const transcriptA = await writeSplitTranscript('split-session-a');
+    const transcriptB = await writeSplitTranscript('split-session-b');
+
+    await withIsolatedDatabase(async () => {
+      // The production state this deploy walks into: the original project
+      // carries the project's history, while the sessions a pre-fix scan
+      // split off live in the auto-registered physical twin.
+      projectsDb.ensureProjectPath(linkWorkspace);
+      sessionsDb.createSession('original-history-1', 'claude', linkWorkspace);
+      sessionsDb.createSession('original-history-2', 'claude', linkWorkspace);
+      sessionsDb.createSession('original-history-3', 'claude', linkWorkspace);
+      sessionsDb.createSession('split-session-a', 'claude', realWorkspace);
+      sessionsDb.createSession('split-session-b', 'claude', realWorkspace);
+      assert.equal(projectsDb.getProjectPath(realWorkspace)?.isArchived, 0);
+
+      const synchronizer = new ClaudeSessionSynchronizer();
+      await synchronizer.synchronizeFile(transcriptA);
+      await synchronizer.synchronizeFile(transcriptB);
+
+      // The rescan moves the split rows back onto the original project — the
+      // heavier side, which stays the canonical target while the twin drains
+      // — and the emptied twin (default-named, auto-registered) archives
+      // itself once the last row leaves.
+      assert.equal(sessionsDb.getSessionById('split-session-a')?.project_path, linkWorkspace);
+      assert.equal(sessionsDb.getSessionById('split-session-b')?.project_path, linkWorkspace);
+      assert.equal(projectsDb.getProjectPath(realWorkspace)?.isArchived, 1);
+      assert.equal(projectsDb.getProjectPath(linkWorkspace)?.isArchived, 0);
+    });
+  } finally {
     restoreHomeDir();
     await rm(tmp, { recursive: true, force: true });
   }

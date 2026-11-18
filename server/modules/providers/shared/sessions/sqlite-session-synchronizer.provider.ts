@@ -26,6 +26,7 @@ import { normalizeProviderTimestamp, normalizeSessionName, readOptionalString } 
 
 import { admitsWorkspacePath } from './workspace-admission.js';
 import { applySessionWorktreePlacement } from './session-worktree-placement.js';
+import { canonicalizeSessionProjectPath } from './session-project-path-canonicalization.js';
 import { resolveSessionTitle, type DerivedSessionTitle } from './session-title-resolution.js';
 
 /**
@@ -222,10 +223,16 @@ export abstract class SqliteSessionSynchronizer<Row extends SqliteSynchronizerRo
       return null;
     }
 
-    const projectPath = this.getProjectPath(row);
-    if (!projectPath) {
+    const reportedProjectPath = this.getProjectPath(row);
+    if (!reportedProjectPath) {
       return null;
     }
+
+    // An engine that canonicalizes its session directory records a filesystem
+    // equivalent of the project the user opened; canonicalize before
+    // admission so the session files under the registered project instead of
+    // splitting a twin into the sidebar.
+    const projectPath = canonicalizeSessionProjectPath(reportedProjectPath);
 
     if (!admitsWorkspacePath(projectPath)) {
       return null;
