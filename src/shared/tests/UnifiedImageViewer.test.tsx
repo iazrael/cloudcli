@@ -66,6 +66,18 @@ test('toggles the solid backing behind the image between black and white', () =>
   expect(backdrop).toHaveProperty('style.backgroundColor', 'rgb(0, 0, 0)');
 });
 
+test('seeds the backing from defaultBackdrop and keeps it togglable', () => {
+  // Diagram entries pass a theme-matched initial backing; other callers stay dark.
+  render(
+    <UnifiedImageViewer src="blob:http://localhost/diagram" title="流程图.svg" defaultBackdrop="light" onClose={vi.fn()} />,
+  );
+  const backdrop = screen.getByRole('region', { name: '流程图.svg' }).firstElementChild as HTMLElement;
+  expect(backdrop).toHaveProperty('style.backgroundColor', 'rgb(255, 255, 255)');
+
+  fireEvent.click(screen.getByRole('button', { name: '切换图片背景颜色' }));
+  expect(backdrop).toHaveProperty('style.backgroundColor', 'rgb(0, 0, 0)');
+});
+
 test('disables duplicate downloads while the save hand-off is pending', async () => {
   let finishSave!: () => void;
   vi.mocked(saveOrShareBlob).mockImplementationOnce(() => new Promise<void>((resolve) => { finishSave = resolve; }));

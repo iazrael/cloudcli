@@ -11,6 +11,19 @@ const TEST_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="100%" viewBox="
 const mermaidMock = vi.hoisted(() => ({ initialize: vi.fn(), render: vi.fn() }));
 vi.mock('mermaid', () => ({ default: mermaidMock }));
 
+// ThemeContext resolves `system` mode through matchMedia, so the stub decides
+// whether the diagram reports a dark or light rendering theme.
+const stubMatchMedia = (matches: boolean) => {
+  vi.stubGlobal('matchMedia', vi.fn().mockImplementation((query: string) => ({
+    matches,
+    media: query,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+  })));
+};
+
 // restoreMocks wipes per-test stubs, so the render promise is re-armed here.
 beforeEach(() => {
   mermaidMock.initialize.mockReset();
@@ -46,6 +59,20 @@ describe('MermaidDiagram tap-to-zoom', () => {
     fireEvent.click(screen.getByRole('button', { name: '关闭图片预览' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(screen.getByRole('button', { name: 'common:imageViewer.expandDiagram' })).toBeTruthy();
+  });
+
+  it.each([
+    [true, 'rgb(0, 0, 0)'],
+    [false, 'rgb(255, 255, 255)'],
+  ])('seeds the viewer backing from the rendering theme (dark=%s → %s)', async (dark, color) => {
+    stubMatchMedia(dark);
+    renderDiagram();
+    fireEvent.click(await screen.findByRole('button', { name: 'common:imageViewer.expandDiagram' }));
+    const backdrop = screen.getByRole('region', { name: 'common:imageViewer.diagram' }).firstElementChild as HTMLElement;
+    // The initial backing matches the theme the diagram was drawn for: light
+    // strokes need black, dark strokes need white.
+    expect(backdrop).toHaveProperty('style.backgroundColor', color);
+    vi.unstubAllGlobals();
   });
 
   it('turns HTML-serialized label markup into well-formed XML for the viewer', async () => {

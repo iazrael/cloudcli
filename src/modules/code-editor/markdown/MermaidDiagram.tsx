@@ -123,6 +123,8 @@ export default function MermaidDiagram({ code }: MermaidDiagramProps) {
         <UnifiedImageViewer
           src={toViewerDataUrl(svg)}
           alt={t('common:imageViewer.diagram')}
+          // 衬底跟随渲染主题：亮色主题是深色笔画配白底，暗色主题是浅色笔画配黑底。
+          defaultBackdrop={isDarkMode ? 'dark' : 'light'}
           onClose={() => setExpanded(false)}
         />
       )}

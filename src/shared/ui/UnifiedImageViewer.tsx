@@ -16,6 +16,8 @@ type UnifiedImageViewerProps = {
   title?: string;
   filePath?: string;
   onClose: () => void;
+  /** Initial solid backing; source-specific callers (e.g. mermaid diagrams) pass a theme-matched value. */
+  defaultBackdrop?: 'dark' | 'light';
   resolveSrc?: () => Promise<string | null>;
   onImageError?: () => void;
   onImageLoad?: () => void;
@@ -48,6 +50,7 @@ export function UnifiedImageViewer({
   title,
   filePath,
   onClose,
+  defaultBackdrop = 'dark',
   resolveSrc,
   onImageError,
   onImageLoad,
@@ -61,8 +64,8 @@ export function UnifiedImageViewer({
   /** Keep download failures visible without interrupting the image preview. */
   const [downloadError, setDownloadError] = useState<string | null>(null);
 
-  /** Solid backing behind the image; light rescues light-stroked diagrams that vanish on the dark viewer. */
-  const [imageBackdrop, setImageBackdrop] = useState<'dark' | 'light'>('dark');
+  /** Solid backing behind the image; light rescues dark-stroked diagrams that vanish on the dark viewer. */
+  const [imageBackdrop, setImageBackdrop] = useState<'dark' | 'light'>(defaultBackdrop);
 
   /** Imperative handle to trigger zoomIn, zoomOut, and resetZoom on the inner viewer. */
   const viewerRef = useRef<ImageViewerHandle | null>(null);
