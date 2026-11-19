@@ -5,6 +5,8 @@ import type { Question } from '@/shared/types';
 type QuestionAnswerContentProps = {
   questions: Question[];
   answers: Record<string, string>;
+  /** The tool call is still awaiting the user's answer — no Skipped labels yet. */
+  pending?: boolean;
   className?: string;
 };
 
@@ -16,6 +18,7 @@ type QuestionAnswerContentProps = {
 export const QuestionAnswerContent: React.FC<QuestionAnswerContentProps> = ({
   questions,
   answers,
+  pending = false,
   className = '',
 }) => {
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
@@ -203,7 +206,9 @@ export const QuestionAnswerContent: React.FC<QuestionAnswerContentProps> = ({
         );
       })}
 
-      {!hasAnyAnswer && total === 1 && (
+      {/* Only a finished run can be "skipped" — an in-flight question simply
+          hasn't been answered yet. */}
+      {!pending && !hasAnyAnswer && total === 1 && (
         <div className="text-[11px] italic text-gray-400 dark:text-gray-500">
           Skipped
         </div>

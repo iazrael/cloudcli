@@ -68,6 +68,31 @@ test('renders without throwing when an answer is a non-string value', () => {
   });
 });
 
+// While the question is still awaiting an answer (tool running, no result yet)
+// the card must not claim the run was skipped; the label is only for a
+// finished run that truly got no answer.
+test('a pending single question shows no Skipped label', () => {
+  const html = renderToStaticMarkup(
+    React.createElement(QuestionAnswerContent, {
+      questions: [{ question: 'Pick one?', options: [{ label: 'A' }, { label: 'B' }] }],
+      answers: {},
+      pending: true,
+    }),
+  );
+  assert.ok(html.includes('Pick one?'));
+  assert.ok(!html.includes('Skipped'));
+});
+
+test('a finished single question with no answers still reports Skipped', () => {
+  const html = renderToStaticMarkup(
+    React.createElement(QuestionAnswerContent, {
+      questions: [{ question: 'Pick one?', options: [{ label: 'A' }] }],
+      answers: {},
+    }),
+  );
+  assert.ok(html.includes('Skipped'));
+});
+
 test('still renders a well-formed question + answer', () => {
   const html = renderToStaticMarkup(
     React.createElement(QuestionAnswerContent, {

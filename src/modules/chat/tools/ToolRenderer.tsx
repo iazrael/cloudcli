@@ -295,10 +295,13 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
         break;
 
       case 'question-answer':
+        // `toolStatus` is only derived on input renders; while it is still
+        // running nobody has answered yet, so the card must not say Skipped.
         contentComponent = (
           <QuestionAnswerContent
             questions={contentProps.questions || []}
             answers={contentProps.answers || {}}
+            pending={toolStatus === 'running'}
           />
         );
         break;
