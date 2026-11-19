@@ -7,7 +7,12 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
-import { codexAppServer } from '@/modules/providers/list/codex/codex-app-server.client.js';
+import { codexAppServer, codexAppServerTransport } from '@/modules/providers/list/codex/codex-app-server.client.js';
+import {
+  acquireCodexResidentSession,
+  closeCodexResidentSessions,
+  listCodexResidentSessions,
+} from '@/modules/providers/list/codex/codex-session-manager.js';
 import { CodexSessionSynchronizer } from '@/modules/providers/list/codex/codex-session-synchronizer.provider.js';
 import { CodexSessionsProvider } from '@/modules/providers/list/codex/codex-sessions.provider.js';
 
@@ -267,6 +272,49 @@ test('editing the first prompt starts the conversation over', { concurrency: fal
     assert.equal(session?.provider_session_id, null);
     assert.equal(session?.jsonl_path, null);
     assert.equal(sessionsDb.isProviderSessionSuperseded('thread-1', 'codex'), true);
+  });
+});
+
+test('rewinding releases the resident process so the next round cannot resume the retired thread', { concurrency: false }, async (t) => {
+  await withIndexedSession(THREE_TURNS, async ({ sessionId, workspacePath }) => {
+    // A resident process from the previous (failed) round still holds thread-1.
+    // If the rewind leaves it alive, the next round acquires it and appends the
+    // edited turn to the very transcript the indexer refuses — the production
+    // shape that left a conversation permanently unreadable.
+    let residentClosed = false;
+    t.mock.method(codexAppServerTransport, 'open', async () => ({
+      async call() {
+        return { thread: { id: 'thread-1' } };
+      },
+      close() {
+        residentClosed = true;
+      },
+      addNotificationListener: () => () => {},
+      addExitListener: () => () => {},
+      waitForExit: () => Promise.resolve(),
+    }));
+
+    const resident = await acquireCodexResidentSession({
+      appSessionId: sessionId,
+      nativeThreadId: 'thread-1',
+      workingDirectory: workspacePath,
+      approvalPolicy: 'never',
+      sandbox: 'workspace-write',
+      sandboxPolicy: { type: 'workspaceWrite', networkAccess: false },
+    });
+    assert.equal(resident.threadId, 'thread-1');
+
+    try {
+      await new CodexSessionsProvider().rewindSession(sessionId, null);
+
+      assert.equal(residentClosed, true);
+      assert.equal(
+        listCodexResidentSessions().some((entry) => entry.appSessionId === sessionId),
+        false,
+      );
+    } finally {
+      closeCodexResidentSessions();
+    }
   });
 });
 

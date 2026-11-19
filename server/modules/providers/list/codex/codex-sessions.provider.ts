@@ -7,6 +7,7 @@ import { getCodexHome } from '@/shared/index.js';
 import { sessionsDb } from '@/modules/database/index.js';
 import { codexAppServer } from '@/modules/providers/list/codex/codex-app-server.client.js';
 import { codexBackgroundWork } from '@/modules/providers/list/codex/codex-background-work.js';
+import { releaseCodexResidentSession } from '@/modules/providers/list/codex/codex-session-manager.js';
 import {
   buildCodexSubagentAgentRow,
   codexThreadItemToRows,
@@ -1193,7 +1194,17 @@ async function findCodexSessionFile(
  * reports.
  */
 async function getCodexSessionMessages(sessionId: string): Promise<CodexHistoryResult> {
-  const sessionFilePath = sessionsDb.getSessionById(sessionId)?.jsonl_path;
+  // The indexed `jsonl_path` wins while it still exists; when the row lost it
+  // but kept the provider id — a detach that was never re-announced, or a
+  // mapping recorded without a path — the rollout is located on disk the same
+  // way `getTokenUsage` finds it. Without either, the conversation is empty.
+  const session = sessionsDb.getSessionById(sessionId);
+  const indexedFilePath = session?.jsonl_path && fsSync.existsSync(session.jsonl_path)
+    ? session.jsonl_path
+    : null;
+  const sessionFilePath = indexedFilePath ?? (session?.provider_session_id
+    ? await findCodexSessionFile(path.join(getCodexHome(), 'sessions'), session.provider_session_id)
+    : null);
 
   if (!sessionFilePath) {
     console.warn(`Codex session file not found for session ${sessionId}`);
@@ -1561,6 +1572,16 @@ export class CodexSessionsProvider implements IProviderSessions {
         statusCode: 409,
       });
     }
+
+    // The resident process of the previous round still holds the thread this
+    // session is leaving. If it survives, the next round acquires it and
+    // resumes the retired thread — the engine then appends the edited turn to
+    // the very transcript the indexer refuses to re-attach, and the row's
+    // just-cleared mapping is never corrected, so the conversation reads as
+    // empty forever. Closing it makes the next round open the thread the row
+    // now points at. Idle at rewind time: the rewind runs inside an admitted
+    // run, before that run's own process exists.
+    releaseCodexResidentSession(sessionId, { dispose: true });
 
     // Nothing of the conversation survives an edit to its first prompt, and
     // there is no such thing as a fork of no turns, so the session is simply

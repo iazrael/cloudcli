@@ -319,6 +319,49 @@ test('Codex history reads 0.153-era prompts from item_completed UserMessage rows
   }
 });
 
+test('Codex history locates the rollout by the provider id when the row has no indexed path', { concurrency: false }, async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'codex-history-fallback-'));
+  const workspacePath = await createWorkspaceFixture();
+  const restoreHomeDir = patchHomeDir(tempRoot);
+
+  try {
+    const providerSessionId = 'codex-fallback-1';
+    const sessionsDir = path.join(tempRoot, '.codex', 'sessions', '2026', '07', '07');
+    await mkdir(sessionsDir, { recursive: true });
+    await writeFile(
+      path.join(sessionsDir, `rollout-${providerSessionId}.jsonl`),
+      [
+        JSON.stringify({ type: 'session_meta', payload: { id: providerSessionId, cwd: workspacePath } }),
+        JSON.stringify({ type: 'event_msg', payload: { type: 'task_started', turn_id: 'turn-1' } }),
+        JSON.stringify({ type: 'turn_context', payload: { turn_id: 'turn-1' } }),
+        JSON.stringify({
+          type: 'event_msg',
+          payload: { type: 'item_completed', turn_id: 'turn-1', item: { type: 'UserMessage', id: 'item-u1', content: [{ type: 'text', text: 'prompt from the orphaned rollout' }] } },
+        }),
+        JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete', turn_id: 'turn-1' } }),
+      ].join('\n') + '\n',
+      'utf8',
+    );
+
+    await withIsolatedDatabase(async () => {
+      // The mapping a lost path leaves behind: the provider id survived, the
+      // indexed path did not. The reader must find the rollout the same way
+      // getTokenUsage does, or the conversation reads as empty forever.
+      sessionsDb.createAppSession('app-fallback-1', 'codex', workspacePath);
+      sessionsDb.assignProviderSessionId('app-fallback-1', providerSessionId);
+      assert.equal(sessionsDb.getSessionById('app-fallback-1')?.jsonl_path ?? null, null);
+
+      const history = await new CodexSessionsProvider().fetchHistory('app-fallback-1');
+      const userRows = history.messages.filter((message) => message.kind === 'text' && message.role === 'user');
+      assert.equal(userRows.length, 1);
+      assert.equal(userRows[0]?.content, 'prompt from the orphaned rollout');
+    });
+  } finally {
+    restoreHomeDir();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test('getTokenUsage reports the last turn as context and the rollout totals as the session spend', async () => {
   const tempDirectory = await mkdtemp(path.join(os.tmpdir(), 'codex-token-usage-'));
   const sessionFilePath = path.join(tempDirectory, 'rollout-provider-session.jsonl');
