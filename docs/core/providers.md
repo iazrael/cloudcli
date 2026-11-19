@@ -335,6 +335,8 @@ opencode 的自动命名由引擎自己做，CloudCLI 只负责不挡路。引�
 
 `/cost` 路由在实时载荷缺 `cumulative` 时读一次 provider 的持久化快照补齐，已有累计量就不再扫转录。前端把 `tokenUsage` 写进输入框按钮、把 `cumulativeUsage` 写进详情；页面回到前台（`visibilitychange`）会补拉一次用量，避免手机休眠后按钮停在旧快照。
 
+**读转录不重扫全文件。** token 用量刷新（切会话、一轮结束、`/cost`）走 `shared/utils.ts` 的 `readJsonlIncrementally`：每个转录按路径记一个游标（已读字节偏移 + 未换行的残行 + 各自累加器），只解析新追加的尾部；`dev`/`ino` 变了或文件变短就从头重来，同一路径的并发调用串行化，避免同一段增量被算两次。没有换行结尾的最后一行，只要整行能解析成对象就消费掉（防半行误读，也兼容没写结尾换行的转录）。Codex 的累加器只留最新快照（`readCodexRolloutTokenUsage`），Claude 留上下文与累计两套数（`readClaudeTranscriptTokenUsage`），两者都只保留最近读过的 200 个会话。实测 47MB Codex roll-out 冷读约 0.2s，之后每次刷新约 1ms；54MB Claude 转录冷读约 0.1s，之后约 1ms —— 开销不再随转录增长。Antigravity 的转录较小，仍是整份读取。
+
 ## 能力矩阵：声明优于分支
 
 `provider-capabilities.catalog.ts` 放**推导不出来的静态事实**（权限模式、默认模型、附件/中止/effort）；

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -350,13 +350,14 @@ test('getTokenUsage reports the last turn as context and the rollout totals as t
     ].join('\n'));
 
     const provider = new CodexSessionsProvider();
+    const first = await provider.getTokenUsage({
+      appSessionId: 'app-session',
+      nativeSessionId: 'provider-session',
+      jsonlPath: sessionFilePath,
+      projectPath: null,
+    });
     assert.deepEqual(
-      await provider.getTokenUsage({
-        appSessionId: 'app-session',
-        nativeSessionId: 'provider-session',
-        jsonlPath: sessionFilePath,
-        projectPath: null,
-      }),
+      first,
       {
         // The newest turn's prompt is the context reading (what the composer
         // shows); the cumulative block is the session's whole spend.
@@ -366,6 +367,37 @@ test('getTokenUsage reports the last turn as context and the rollout totals as t
         outputTokens: 11,
         breakdown: { input: 70, output: 11 },
         cumulative: { used: 149, inputTokens: 140, outputTokens: 9 },
+      },
+    );
+
+    // The reader keeps a cursor per rollout: the next turn appends a snapshot
+    // and the refresh must pick it up from the tail alone.
+    await appendFile(sessionFilePath, `${JSON.stringify({
+      type: 'event_msg',
+      payload: {
+        type: 'token_count',
+        info: {
+          total_token_usage: { input_tokens: 240, output_tokens: 12, total_tokens: 252 },
+          last_token_usage: { input_tokens: 110, output_tokens: 3, total_tokens: 113 },
+          model_context_window: 250_000,
+        },
+      },
+    })}\n`);
+
+    assert.deepEqual(
+      await provider.getTokenUsage({
+        appSessionId: 'app-session',
+        nativeSessionId: 'provider-session',
+        jsonlPath: sessionFilePath,
+        projectPath: null,
+      }),
+      {
+        used: 113,
+        total: 250_000,
+        inputTokens: 110,
+        outputTokens: 3,
+        breakdown: { input: 110, output: 3 },
+        cumulative: { used: 252, inputTokens: 240, outputTokens: 12 },
       },
     );
   } finally {

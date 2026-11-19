@@ -69,11 +69,23 @@ Codex 的实时事件与 roll-out 读取共用 `services/codex-usage.ts` 的一�
 
 ## 验证
 
-- providers 各引擎的 `getTokenUsage` 单测：上下文与累计同时断言。
+- providers 各引擎的 `getTokenUsage` 单测：上下文与累计同时断言；追加一行后再次读取必须拿到新值（走增量游标）。
+- `readJsonlIncrementally` 单测：只消费新增尾部、半行等待、文件被替换后重来、并发不重复计数。
 - codex runtime 的 `token_budget` 事件断言累计块。
 - `/cost` 路由单测：有实时累计时不读持久化；缺累计时补齐。
 - 前端 command modal 单测：四行固定、累计值正确、`used` 不再当总量。
 - 手动：对一个 Codex 长会话执行 `/cost`，与 roll-out 里最后一组 `token_count` 对齐。
+
+## 性能
+
+用量刷新不能整份重扫转录。`server/shared/utils.ts` 的 `readJsonlIncrementally` 按路径保存游标（已读字节偏移、未换行的残行、各自累加器），只解析追加的尾部；`dev`/`ino` 变化或文件变短即从头重来，同一路径的并发调用串行化。残行未闭合时保留到下次；整行能解析但没有结尾换行时直接消费。
+
+| 转录 | 冷读 | 之后的每次刷新 |
+| --- | --- | --- |
+| Codex roll-out 47MB | ~200ms | ~1ms |
+| Claude 转录 54MB | ~85ms | ~1ms |
+
+Antigravity 转录较小，保持整份读取。
 
 ## 风险
 

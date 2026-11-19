@@ -47,6 +47,7 @@ import { sessionsDb } from '@/modules/database/index.js';
 import { getClaudeSDKSessionStartTime } from '@/modules/providers/list/claude/claude-runtime.provider.js';
 import {
   getReportedClaudeContextWindow,
+  readClaudeTranscriptTokenUsage,
   summarizeClaudeTokenUsage,
 } from '@/modules/providers/services/claude-usage.js';
 import { liftMemoryCitations } from '@/modules/providers/shared/memory-citations.js';
@@ -1056,24 +1057,22 @@ function readTaskUsage(value: unknown): TaskUsage | undefined {
 }
 
 /**
- * Reads the latest assistant-message usage snapshot from a Claude JSONL file.
+ * Reads the latest usage snapshot from a Claude JSONL file.
  *
- * Only assistant rows that carry usage are kept, and the snapshot is picked by
- * `summarizeClaudeTokenUsage` — the same rule the history reader applies — so
- * a subagent turn or a `<synthetic>` all-zero row never becomes the newest turn.
+ * The file is append-only and reaches hundreds of megabytes, so the shared
+ * reader parses only the bytes added since the previous call; the rules for
+ * which row is the context reading (newest main-thread assistant turn) and
+ * which rows count as spend live in `claude-usage.ts` and are shared with the
+ * history reader.
+ *
+ * Consumers: this provider's token-usage endpoint.
  */
 async function readClaudeTokenUsage(
   filename: string,
   configuredContextWindow: string | undefined,
   reportedContextWindow?: number,
 ): Promise<ProviderTokenUsageResult> {
-  const usageRows: AnyRecord[] = [];
-  for await (const entry of readJsonlRecords(filename)) {
-    if (entry.type === 'assistant' && entry.message?.usage) {
-      usageRows.push({ type: entry.type, isSidechain: entry.isSidechain, message: { usage: entry.message.usage } });
-    }
-  }
-  return summarizeClaudeTokenUsage(usageRows, configuredContextWindow, reportedContextWindow);
+  return readClaudeTranscriptTokenUsage(filename, configuredContextWindow, reportedContextWindow);
 }
 
 /**

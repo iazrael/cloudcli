@@ -1,5 +1,5 @@
 import type { AnyRecord, ProviderTokenUsageResult } from '@/shared/types.js';
-import { readUsageNumber } from '@/shared/utils.js';
+import { readJsonlIncrementally, readUsageNumber, type JsonlIncrementalState } from '@/shared/utils.js';
 
 /**
  * Context windows the Claude SDK reported per provider session id.
@@ -48,6 +48,111 @@ export function getReportedClaudeContextWindow(
   return providerSessionId ? reportedClaudeContextWindows.get(providerSessionId) : undefined;
 }
 
+/** Running totals over one Claude transcript: newest context plus whole spend. */
+type ClaudeUsageAccumulator = {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  cumulativeInputTokens: number;
+  cumulativeOutputTokens: number;
+};
+
+/** Cursors of the transcripts already read; one small object per session. */
+const claudeTranscriptCursors = new Map<string, JsonlIncrementalState<ClaudeUsageAccumulator>>();
+
+/** Bounds a long-lived server's memory; the least recently read entry leaves. */
+const MAX_CLAUDE_TRANSCRIPT_CURSORS = 200;
+
+function createClaudeUsageAccumulator(): ClaudeUsageAccumulator {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    cumulativeInputTokens: 0,
+    cumulativeOutputTokens: 0,
+  };
+}
+
+/**
+ * Folds one transcript entry into the running totals.
+ *
+ * Shared by the pure summarizer (which is handed already-parsed rows) and the
+ * incremental file reader, so both apply exactly the same rules.
+ */
+function applyClaudeUsageEntry(accumulator: ClaudeUsageAccumulator, entry: AnyRecord): void {
+  const usage = entry?.type === 'assistant' ? entry.message?.usage : null;
+  if (!usage) {
+    return;
+  }
+
+  const directInputTokens = readUsageNumber(usage.input_tokens ?? usage.inputTokens);
+  const rowCacheReadTokens = readUsageNumber(
+    usage.cache_read_input_tokens ?? usage.cacheReadInputTokens ?? usage.cacheReadTokens,
+  );
+  const rowCacheCreationTokens = readUsageNumber(
+    usage.cache_creation_input_tokens
+      ?? usage.cacheCreationInputTokens
+      ?? usage.cacheCreationTokens,
+  );
+  const rowInputTokens = directInputTokens + rowCacheReadTokens + rowCacheCreationTokens;
+  const rowOutputTokens = readUsageNumber(usage.output_tokens ?? usage.outputTokens);
+
+  // `<synthetic>` rows — interrupts, API errors, "No response requested" —
+  // are written with an all-zero usage block rather than none at all. They
+  // never carried a prompt, so counting one zeroed a counter that a live
+  // event had just set correctly.
+  if (rowInputTokens === 0 && rowOutputTokens === 0) {
+    return;
+  }
+
+  accumulator.cumulativeInputTokens += rowInputTokens;
+  accumulator.cumulativeOutputTokens += rowOutputTokens;
+
+  // A subagent's turns report the subagent's context window, not this
+  // conversation's; reading one makes the counter drop to the subagent's
+  // number and bounce back on the next main-thread turn. They still count as
+  // spend above, and the newest main-thread row wins here.
+  if (entry?.isSidechain === true) {
+    return;
+  }
+
+  accumulator.cacheReadTokens = rowCacheReadTokens;
+  accumulator.cacheCreationTokens = rowCacheCreationTokens;
+  accumulator.inputTokens = rowInputTokens;
+  accumulator.outputTokens = rowOutputTokens;
+}
+
+function buildClaudeUsageResult(
+  accumulator: ClaudeUsageAccumulator,
+  configuredContextWindow: string | undefined,
+  reportedContextWindow?: number,
+): ProviderTokenUsageResult {
+  const parsedContextWindow = Number.parseInt(configuredContextWindow ?? '', 10);
+  const configuredOrDefaultContextWindow = Number.isFinite(parsedContextWindow) ? parsedContextWindow : 160_000;
+  const contextWindow = reportedContextWindow && reportedContextWindow > 0
+    ? reportedContextWindow
+    : configuredOrDefaultContextWindow;
+  const cacheTokens = accumulator.cacheReadTokens + accumulator.cacheCreationTokens;
+
+  return {
+    used: accumulator.inputTokens + accumulator.outputTokens,
+    total: contextWindow,
+    inputTokens: accumulator.inputTokens,
+    outputTokens: accumulator.outputTokens,
+    cacheReadTokens: accumulator.cacheReadTokens,
+    cacheCreationTokens: accumulator.cacheCreationTokens,
+    cacheTokens,
+    cumulative: {
+      used: accumulator.cumulativeInputTokens + accumulator.cumulativeOutputTokens,
+      inputTokens: accumulator.cumulativeInputTokens,
+      outputTokens: accumulator.cumulativeOutputTokens,
+    },
+    breakdown: { input: accumulator.inputTokens, output: accumulator.outputTokens },
+  };
+}
+
 /**
  * Latest context-window usage plus the session's cumulative spend from a
  * Claude transcript's already-parsed rows.
@@ -72,76 +177,51 @@ export function summarizeClaudeTokenUsage(
   configuredContextWindow: string | undefined = process.env.CONTEXT_WINDOW,
   reportedContextWindow?: number,
 ): ProviderTokenUsageResult {
-  let inputTokens = 0;
-  let outputTokens = 0;
-  let cacheReadTokens = 0;
-  let cacheCreationTokens = 0;
-  let cumulativeInputTokens = 0;
-  let cumulativeOutputTokens = 0;
-
+  const accumulator = createClaudeUsageAccumulator();
   for (const entry of entries) {
-    const usage = entry?.type === 'assistant' ? entry.message?.usage : null;
-    if (!usage) {
-      continue;
+    applyClaudeUsageEntry(accumulator, entry);
+  }
+  return buildClaudeUsageResult(accumulator, configuredContextWindow, reportedContextWindow);
+}
+
+/**
+ * Same reading, computed from the transcript file itself and parsing only the
+ * bytes appended since the previous call.
+ *
+ * A Claude transcript reaches hundreds of megabytes while each turn adds a few
+ * kilobytes, so replaying the whole file on every usage refresh spends
+ * hundreds of milliseconds of parse and GC for nothing. The accumulator keeps
+ * the running totals, which is all a refresh needs.
+ *
+ * Consumers: the Claude sessions provider's token-usage endpoint.
+ */
+export async function readClaudeTranscriptTokenUsage(
+  filename: string,
+  configuredContextWindow: string | undefined = process.env.CONTEXT_WINDOW,
+  reportedContextWindow?: number,
+): Promise<ProviderTokenUsageResult> {
+  const next = await readJsonlIncrementally(
+    filename,
+    claudeTranscriptCursors.get(filename),
+    createClaudeUsageAccumulator,
+    applyClaudeUsageEntry,
+  );
+
+  if (next) {
+    // Re-insert so the most recently read transcripts are the last evicted.
+    claudeTranscriptCursors.delete(filename);
+    claudeTranscriptCursors.set(filename, next);
+    if (claudeTranscriptCursors.size > MAX_CLAUDE_TRANSCRIPT_CURSORS) {
+      const oldest = claudeTranscriptCursors.keys().next().value;
+      if (oldest !== undefined) {
+        claudeTranscriptCursors.delete(oldest);
+      }
     }
-
-    const directInputTokens = readUsageNumber(usage.input_tokens ?? usage.inputTokens);
-    const rowCacheReadTokens = readUsageNumber(
-      usage.cache_read_input_tokens ?? usage.cacheReadInputTokens ?? usage.cacheReadTokens,
-    );
-    const rowCacheCreationTokens = readUsageNumber(
-      usage.cache_creation_input_tokens
-        ?? usage.cacheCreationInputTokens
-        ?? usage.cacheCreationTokens,
-    );
-    const rowInputTokens = directInputTokens + rowCacheReadTokens + rowCacheCreationTokens;
-    const rowOutputTokens = readUsageNumber(usage.output_tokens ?? usage.outputTokens);
-
-    // `<synthetic>` rows — interrupts, API errors, "No response requested" —
-    // are written with an all-zero usage block rather than none at all. They
-    // never carried a prompt, so counting one zeroed a counter that a live
-    // event had just set correctly.
-    if (rowInputTokens === 0 && rowOutputTokens === 0) {
-      continue;
-    }
-
-    cumulativeInputTokens += rowInputTokens;
-    cumulativeOutputTokens += rowOutputTokens;
-
-    // A subagent's turns report the subagent's context window, not this
-    // conversation's; reading one makes the counter drop to the subagent's
-    // number and bounce back on the next main-thread turn. They still count
-    // as spend above, and the newest main-thread row wins here.
-    if (entry?.isSidechain === true) {
-      continue;
-    }
-
-    cacheReadTokens = rowCacheReadTokens;
-    cacheCreationTokens = rowCacheCreationTokens;
-    inputTokens = rowInputTokens;
-    outputTokens = rowOutputTokens;
   }
 
-  const parsedContextWindow = Number.parseInt(configuredContextWindow ?? '', 10);
-  const configuredOrDefaultContextWindow = Number.isFinite(parsedContextWindow) ? parsedContextWindow : 160_000;
-  const contextWindow = reportedContextWindow && reportedContextWindow > 0
-    ? reportedContextWindow
-    : configuredOrDefaultContextWindow;
-  const cacheTokens = cacheReadTokens + cacheCreationTokens;
-
-  return {
-    used: inputTokens + outputTokens,
-    total: contextWindow,
-    inputTokens,
-    outputTokens,
-    cacheReadTokens,
-    cacheCreationTokens,
-    cacheTokens,
-    cumulative: {
-      used: cumulativeInputTokens + cumulativeOutputTokens,
-      inputTokens: cumulativeInputTokens,
-      outputTokens: cumulativeOutputTokens,
-    },
-    breakdown: { input: inputTokens, output: outputTokens },
-  };
+  return buildClaudeUsageResult(
+    next?.accumulator ?? createClaudeUsageAccumulator(),
+    configuredContextWindow,
+    reportedContextWindow,
+  );
 }

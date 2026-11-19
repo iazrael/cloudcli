@@ -283,6 +283,152 @@ export async function* readJsonlRecords(filename: string): AsyncGenerator<AnyRec
   }
 }
 
+/**
+ * How much of one append-only JSONL file a caller has already consumed, with
+ * the caller's own accumulation over those records.
+ *
+ * `pending` holds the bytes of a trailing line that has no newline yet: the
+ * writer may be in the middle of one, and parsing half a JSON object either
+ * fails or — worse — reads a truncated value as data. Offsets are byte based
+ * rather than character based because a UTF-8 character can straddle a chunk
+ * boundary, so lines are only decoded once their newline has arrived.
+ */
+export type JsonlIncrementalState<TAccumulator> = {
+  /** Byte offset of the first byte not yet consumed. */
+  offset: number;
+  /** Already-read bytes of the trailing line that has no newline yet. */
+  pending: Buffer;
+  /** Device and inode identity, so a replaced file restarts from zero. */
+  device: number;
+  inode: number;
+  /** The caller's accumulation over every record consumed so far. */
+  accumulator: TAccumulator;
+};
+
+/**
+ * One JSONL line as an object, or null when it is blank, a primitive, an
+ * array, or still incomplete. Shared by the incremental reader's two entry
+ * points (complete lines and a trailing line that lacks its newline).
+ */
+function parseJsonlLine(text: string): AnyRecord | null {
+  if (!text) {
+    return null;
+  }
+  let record: unknown;
+  try {
+    record = JSON.parse(text);
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      return null;
+    }
+    throw error;
+  }
+  return record && typeof record === 'object' && !Array.isArray(record) ? record as AnyRecord : null;
+}
+
+/**
+ * One queue per path, so two concurrent readers of the same file cannot both
+ * apply the same delta to the same accumulator.
+ */
+const jsonlIncrementalQueues = new Map<string, Promise<unknown>>();
+
+/**
+ * Consumes only the bytes a JSONL file gained since `previous`, and hands each
+ * complete new record to `applyRecord` in order.
+ *
+ * Transcripts are append-only and routinely reach hundreds of megabytes;
+ * re-reading one from zero for every usage refresh costs hundreds of
+ * milliseconds of parsing and GC on a server that also serves the chat. Feed
+ * the previous state back in and only the new tail is parsed. A changed inode
+ * or a shrunken size means the file was replaced or truncated, so the
+ * accumulator starts over rather than mixing two files.
+ *
+ * Returns null when the file does not exist. Filesystem errors other than a
+ * missing file propagate, matching `readJsonlRecords`.
+ *
+ * Consumers: the Codex and Claude usage readers, which cache one state per
+ * session transcript.
+ */
+export async function readJsonlIncrementally<TAccumulator>(
+  filename: string,
+  previous: JsonlIncrementalState<TAccumulator> | null | undefined,
+  createAccumulator: () => TAccumulator,
+  applyRecord: (accumulator: TAccumulator, record: AnyRecord) => void,
+): Promise<JsonlIncrementalState<TAccumulator> | null> {
+  const run = async (): Promise<JsonlIncrementalState<TAccumulator> | null> => {
+    let stats: fs.Stats;
+    try {
+      stats = await fs.promises.stat(filename);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') {
+        return null;
+      }
+      throw error;
+    }
+
+    const previousOffset = previous?.offset ?? 0;
+    const previousPending = previous?.pending ?? Buffer.alloc(0);
+    const continues = Boolean(previous)
+      && previous!.device === stats.dev
+      && previous!.inode === stats.ino
+      && stats.size >= previousOffset + previousPending.length;
+
+    let offset = continues ? previousOffset : 0;
+    let pending = continues ? previousPending : Buffer.alloc(0);
+    const accumulator = continues ? previous!.accumulator : createAccumulator();
+
+    if (stats.size > offset + pending.length) {
+      const input = fs.createReadStream(filename, { start: offset + pending.length });
+      try {
+        for await (const chunk of input) {
+          const buffer = pending.length > 0 ? Buffer.concat([pending, chunk as Buffer]) : chunk as Buffer;
+          let lineStart = 0;
+          // `indexOf` is native; scanning tens of megabytes byte-by-byte in JS
+          // costs about an order of magnitude more than the parse itself.
+          for (let newline = buffer.indexOf(0x0a); newline !== -1; newline = buffer.indexOf(0x0a, lineStart)) {
+            const text = buffer.subarray(lineStart, newline).toString('utf8').trim();
+            lineStart = newline + 1;
+            const record = parseJsonlLine(text);
+            if (record) {
+              applyRecord(accumulator, record);
+            }
+          }
+          offset += lineStart;
+          pending = Buffer.from(buffer.subarray(lineStart));
+        }
+      } finally {
+        input.destroy();
+      }
+    }
+
+    // A transcript's last record may have been written without its trailing
+    // newline (a file copied or closed mid-flush). Once the bytes parse as a
+    // whole record they are consumed, exactly as the streaming reader would
+    // have consumed them; a genuinely half-written line stays pending, since a
+    // JSON prefix that parses completely is the complete record.
+    if (pending.length > 0) {
+      const record = parseJsonlLine(pending.toString('utf8').trim());
+      if (record) {
+        applyRecord(accumulator, record);
+        offset += pending.length;
+        pending = Buffer.alloc(0);
+      }
+    }
+
+    return { offset, pending, device: stats.dev, inode: stats.ino, accumulator };
+  };
+
+  let settled: Promise<JsonlIncrementalState<TAccumulator> | null>;
+  const queued = (jsonlIncrementalQueues.get(filename) ?? Promise.resolve()).then(run, run);
+  settled = queued.finally(() => {
+    if (jsonlIncrementalQueues.get(filename) === settled) {
+      jsonlIncrementalQueues.delete(filename);
+    }
+  });
+  jsonlIncrementalQueues.set(filename, settled);
+  return settled;
+}
+
 //----------------- ENVIRONMENT UTILITIES ------------
 /**
  * Indicates whether the backend is running in hosted Platform mode rather than

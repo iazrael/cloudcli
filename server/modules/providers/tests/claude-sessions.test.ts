@@ -2128,6 +2128,45 @@ test('claude: getTokenUsage reports the newest turn as context and the whole tra
         && error.statusCode === 404
       ),
     );
+
+    // The reader keeps a cursor per transcript: the next turn's rows are
+    // parsed from the tail, including the one that completed the malformed
+    // trailing line the fixture left behind.
+    await appendFile(sessionFilePath, `\n${JSON.stringify({
+      type: 'assistant',
+      message: {
+        usage: {
+          input_tokens: 5,
+          cache_read_input_tokens: 2000,
+          cache_creation_input_tokens: 0,
+          output_tokens: 7,
+        },
+      },
+    })}\n`);
+
+    assert.deepEqual(
+      await provider.getTokenUsage({
+        appSessionId: 'app-session',
+        nativeSessionId: 'provider-session',
+        jsonlPath: sessionFilePath,
+        projectPath: null,
+      }),
+      {
+        used: 2012,
+        total: 180_000,
+        inputTokens: 2005,
+        outputTokens: 7,
+        cacheReadTokens: 2000,
+        cacheCreationTokens: 0,
+        cacheTokens: 2000,
+        cumulative: {
+          used: 3279,
+          inputTokens: 3179,
+          outputTokens: 100,
+        },
+        breakdown: { input: 2005, output: 7 },
+      },
+    );
   } finally {
     if (previousContextWindow === undefined) {
       delete process.env.CONTEXT_WINDOW;

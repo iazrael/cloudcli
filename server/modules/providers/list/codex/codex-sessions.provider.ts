@@ -21,7 +21,7 @@ import {
 import { parseFilesInputTag, toImageAttachments } from '@/shared/image-attachments.js';
 import type { IProviderSessions } from '@/shared/interfaces.js';
 import { prepareTranscriptMessages } from '@/shared/message-unification.js';
-import { buildCodexUsageSnapshot } from '@/modules/providers/services/codex-usage.js';
+import { buildCodexUsageSnapshot, readCodexRolloutTokenUsage } from '@/modules/providers/services/codex-usage.js';
 import type {
   AnyRecord,
   FetchHistoryOptions,
@@ -1174,41 +1174,6 @@ async function findCodexSessionFile(
 }
 
 /**
- * Reads the latest token snapshot from a Codex rollout JSONL.
- *
- * Codex appends cumulative totals over time, so the scan walks the whole file
- * and keeps the last readable `token_count` entry. One entry carries both
- * blocks: `last_token_usage` (the turn that just ran — the context window's
- * current occupancy) and `total_token_usage` (the session's cumulative
- * spend). `buildCodexUsageSnapshot` maps them the same way the live
- * `thread/tokenUsage/updated` notification is mapped, so a reload reports what
- * the live gauge did.
- *
- * Consumers: the provider token-usage service and this provider's history
- * reader.
- */
-async function readCodexTokenUsage(filename: string): Promise<ProviderTokenUsageResult> {
-  let snapshot: ProviderTokenUsageResult | null = null;
-
-  for await (const entry of readJsonlRecords(filename)) {
-    const tokenInfo = entry.type === 'event_msg' && entry.payload?.type === 'token_count'
-      ? entry.payload.info
-      : null;
-    if (!tokenInfo) {
-      continue;
-    }
-
-    snapshot = buildCodexUsageSnapshot({
-      last: tokenInfo.last_token_usage,
-      total: tokenInfo.total_token_usage,
-      contextWindow: tokenInfo.model_context_window,
-    }) ?? snapshot;
-  }
-
-  return snapshot ?? { used: 0, total: 200_000, inputTokens: 0, outputTokens: 0, breakdown: { input: 0, output: 0 } };
-}
-
-/**
  * Reads one Codex rollout file and produces the compact per-message records
  * `normalizeHistoryEntry` turns into `NormalizedMessage`s.
  *
@@ -1932,7 +1897,7 @@ export class CodexSessionsProvider implements IProviderSessions {
       });
     }
 
-    return readCodexTokenUsage(sessionFilePath);
+    return readCodexRolloutTokenUsage(sessionFilePath);
   }
 
   /**
