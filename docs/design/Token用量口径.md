@@ -47,6 +47,8 @@ type ProviderTokenUsageResult = {
 
 Codex 的实时事件与 roll-out 读取共用 `services/codex-usage.ts` 的一个解析函数，保证两条路径永远同值。
 
+Antigravity 的累计块由运行时直接产出：`token_budget` 帧与持久化的 `token_usage.json` 都带 `cumulative`（step 到达时逐步累加，`result` 的 usage 是权威运行累计，到达时替换并补发一帧终值），`getTokenUsage` 读快照即可拿到累计；快照缺 `cumulative`（旧文件）才落到转录读取器。
+
 ### 接口
 
 `/cost` 回传：
@@ -72,6 +74,7 @@ Codex 的实时事件与 roll-out 读取共用 `services/codex-usage.ts` 的一�
 - providers 各引擎的 `getTokenUsage` 单测：上下文与累计同时断言；追加一行后再次读取必须拿到新值（走增量游标）。
 - `readJsonlIncrementally` 单测：只消费新增尾部、半行等待、文件被替换后重来、并发不重复计数。
 - codex runtime 的 `token_budget` 事件断言累计块。
+- antigravity runtime 单测：step 帧逐步累加累计、`result` 以其 usage 为准补发终帧、`token_usage.json` 携带同一累计块。
 - `/cost` 路由单测：有实时累计时不读持久化；缺累计时补齐。
 - 前端 command modal 单测：四行固定、累计值正确、`used` 不再当总量。
 - 手动：对一个 Codex 长会话执行 `/cost`，与 roll-out 里最后一组 `token_count` 对齐。

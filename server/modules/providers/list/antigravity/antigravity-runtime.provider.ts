@@ -56,19 +56,49 @@ import {
 const PROVIDER = 'antigravity';
 
 /**
+ * Serializes each session's snapshot writes: the step and result persists can
+ * be issued a few milliseconds apart, and two concurrent `writeFile` calls on
+ * one path interleave into a torn file that JSON parsing then rejects. The
+ * entry drops once it is the settled tail, so the map stays at in-flight
+ * chains only.
+ */
+const tokenUsagePersistChains = new Map<string, Promise<void>>();
+
+/**
  * Persists token usage snapshot into session's brain directory for offline / reloaded queries.
  */
 async function persistAntigravityTokenUsage(sessionId: string, tokenBudget: unknown): Promise<void> {
+  const safeId = sanitizeLeafDirectoryName(sessionId, 'antigravity session id');
+  const usageFile = path.join(getAntigravityDataRoot(), 'brain', safeId, 'token_usage.json');
+  // The brain directory only exists once the engine wrote a transcript there;
+  // snapshots for unknown sessions have nowhere to land.
+  if (!fsSync.existsSync(path.dirname(usageFile))) return;
+  const content = JSON.stringify(tokenBudget, null, 2);
+  const write = (tokenUsagePersistChains.get(safeId) ?? Promise.resolve())
+    .then(() => fsp.writeFile(usageFile, content, 'utf8'));
+  tokenUsagePersistChains.set(safeId, write);
   try {
-    const safeId = sanitizeLeafDirectoryName(sessionId, 'antigravity session id');
-    const brainDir = path.join(getAntigravityDataRoot(), 'brain', safeId);
-    if (fsSync.existsSync(brainDir)) {
-      const usageFile = path.join(brainDir, 'token_usage.json');
-      await fsp.writeFile(usageFile, JSON.stringify(tokenBudget, null, 2), 'utf8');
-    }
+    await write;
   } catch {
     // Best-effort persistence
+  } finally {
+    if (tokenUsagePersistChains.get(safeId) === write) {
+      tokenUsagePersistChains.delete(safeId);
+    }
   }
+}
+
+/**
+ * Reads one engine usage record (`step_update.usage` or `result.usage`) into
+ * the used/input/output triplet shared by the token budget frames and the
+ * persisted snapshot. Missing numbers count as zero; `total_tokens` wins as
+ * the used value, otherwise input + output.
+ */
+function readAntigravityUsageRecord(usage: AnyRecord | null): { used: number; inputTokens: number; outputTokens: number } {
+  const inputTokens = Number(usage?.input_tokens ?? usage?.inputTokens ?? usage?.prompt_tokens ?? 0) || 0;
+  const outputTokens = Number(usage?.output_tokens ?? usage?.outputTokens ?? usage?.completion_tokens ?? usage?.candidates_tokens ?? 0) || 0;
+  const used = Number(usage?.total_tokens ?? usage?.totalTokens ?? (inputTokens + outputTokens)) || 0;
+  return { used, inputTokens, outputTokens };
 }
 
 /**
@@ -252,6 +282,15 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
        * the first non-text event after text deltas closes the segment.
        */
       let agentResponseSegmentOpen = false;
+      /**
+       * Per-run token accounting for the `/cost` detail's cumulative block.
+       * Each step reports one model call, so their sum is the run's bill
+       * until the result's usage — the authoritative turn total — replaces
+       * it. `lastContextReading` keeps the newest step for the result frame:
+       * the context occupancy must stay the last call, never the turn sum.
+       */
+      let runCumulative = { used: 0, inputTokens: 0, outputTokens: 0 };
+      let lastContextReading: { used: number; inputTokens: number; outputTokens: number } | null = null;
       /**
        * Set when the watchdog killed a wedged run, so `close` reports the
        * timeout instead of a bare signal termination.
@@ -709,10 +748,16 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
           }
 
           if (usageRecord) {
-            const inputTokens = Number(usageRecord.input_tokens ?? usageRecord.inputTokens ?? usageRecord.prompt_tokens ?? 0) || 0;
-            const outputTokens = Number(usageRecord.output_tokens ?? usageRecord.outputTokens ?? usageRecord.completion_tokens ?? usageRecord.candidates_tokens ?? 0) || 0;
-            const used = Number(usageRecord.total_tokens ?? usageRecord.totalTokens ?? (inputTokens + outputTokens)) || 0;
+            const usage = readAntigravityUsageRecord(usageRecord);
+            const { inputTokens, outputTokens } = usage;
+            const { used } = usage;
             if (used > 0 || inputTokens > 0 || outputTokens > 0) {
+              runCumulative = {
+                used: runCumulative.used + used,
+                inputTokens: runCumulative.inputTokens + inputTokens,
+                outputTokens: runCumulative.outputTokens + outputTokens,
+              };
+              lastContextReading = { ...usage };
               const tokenBudget = {
                 used,
                 total: 1048576,
@@ -722,6 +767,7 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
                   input: inputTokens,
                   output: outputTokens,
                 },
+                cumulative: { ...runCumulative },
               };
               writer.send(createNormalizedMessage({
                 id: generateMessageId(PROVIDER),
@@ -788,6 +834,41 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
             const turnContinues = isError && isStreamInterruptedNotice(errorMessage);
             if (turnContinues) {
               return;
+            }
+
+            // The result's usage is the run's authoritative bill: it replaces
+            // the step accumulation in one final `token_budget` frame, which
+            // also lands in `token_usage.json` so `/cost` reads the cumulative
+            // block back without a transcript pass. Context stays the last
+            // step's reading; with no step usage at all the run bill is also
+            // the best context answer — the transcript reader's same fallback.
+            const resultUsage = readAntigravityUsageRecord(usageData);
+            if (resultUsage.used > 0 || resultUsage.inputTokens > 0 || resultUsage.outputTokens > 0) {
+              runCumulative = { ...resultUsage };
+              const contextReading = lastContextReading ?? { ...resultUsage };
+              const tokenBudget = {
+                used: contextReading.used,
+                total: 1048576,
+                inputTokens: contextReading.inputTokens,
+                outputTokens: contextReading.outputTokens,
+                breakdown: {
+                  input: contextReading.inputTokens,
+                  output: contextReading.outputTokens,
+                },
+                cumulative: { ...runCumulative },
+              };
+              writer.send(createNormalizedMessage({
+                id: generateMessageId(PROVIDER),
+                kind: 'status',
+                text: 'token_budget',
+                tokenBudget,
+                sessionId: capturedSessionId || sessionId || null,
+                provider: PROVIDER,
+              }));
+              const activeSessionId = capturedSessionId || sessionId;
+              if (activeSessionId) {
+                void persistAntigravityTokenUsage(activeSessionId, tokenBudget);
+              }
             }
 
             // agy reports a turn only after its subagents are back, so their

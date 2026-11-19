@@ -334,7 +334,48 @@ test('token budget tracks the latest model call, not the turn-wide result sum', 
   const budgets = messages
     .filter((msg) => msg.kind === 'status' && msg.text === 'token_budget')
     .map((msg) => (msg.tokenBudget as { used: number }).used);
-  assert.deepEqual(budgets, [13181, 13594]);
+  // The result frame repeats the last step's context reading; the turn sum
+  // (26775) must never appear as the context occupancy.
+  assert.deepEqual(budgets, [13181, 13594, 13594]);
+});
+
+test('token budget carries the run cumulative and persists it for offline reads', async () => {
+  const dataDir = fsSync.mkdtempSync(path.join(os.tmpdir(), 'agy-usage-'));
+  // The runtime keys the brain directory by the captured native session id.
+  fsSync.mkdirSync(path.join(dataDir, 'brain', 'stub-conv-usage'), { recursive: true });
+  process.env.CLOUDCLI_ANTIGRAVITY_DATA_DIR = dataDir;
+  process.env.AGY_STUB_MODE = 'multi-step-usage';
+  const runtime = new AntigravityRuntimeProvider();
+  const { messages, writer } = createWriter();
+  try {
+    await runtime.run('hello', { sessionId: 'sess-usage' }, writer, context);
+  } finally {
+    delete process.env.AGY_STUB_MODE;
+    delete process.env.CLOUDCLI_ANTIGRAVITY_DATA_DIR;
+  }
+
+  type BudgetShape = {
+    used: number;
+    cumulative?: { used: number; inputTokens: number; outputTokens: number };
+  };
+  const budgets = messages
+    .filter((msg) => msg.kind === 'status' && msg.text === 'token_budget')
+    .map((msg) => msg.tokenBudget as BudgetShape);
+  // Steps accumulate the run bill call by call; the result's usage is the
+  // authoritative turn total and replaces the accumulation in the final frame.
+  assert.deepEqual(budgets.map((budget) => budget.cumulative?.used), [13181, 26775, 26775]);
+  assert.deepEqual(budgets.map((budget) => budget.cumulative?.inputTokens), [13129, 26722, 26722]);
+  assert.deepEqual(budgets.map((budget) => budget.cumulative?.outputTokens), [52, 53, 53]);
+
+  // The persisted snapshot carries the same cumulative block so `/cost` reads
+  // it back after a reload without a transcript pass.
+  const persisted = JSON.parse(
+    await fs.readFile(path.join(dataDir, 'brain', 'stub-conv-usage', 'token_usage.json'), 'utf8'),
+  ) as BudgetShape;
+  assert.equal(persisted.used, 13594);
+  assert.deepEqual(persisted.cumulative, { used: 26775, inputTokens: 26722, outputTokens: 53 });
+
+  await fs.rm(dataDir, { recursive: true, force: true });
 });
 
 test('abort resolves the run quietly as aborted', async () => {
