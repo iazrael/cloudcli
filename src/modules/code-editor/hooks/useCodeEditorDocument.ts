@@ -57,6 +57,10 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
   useEffect(() => {
     const loadGeneration = ++loadGenerationRef.current;
     const isStaleLoad = () => loadGenerationRef.current !== loadGeneration;
+    // Cancelling the editor (close or file switch) drops the in-flight read
+    // instead of letting a huge transfer finish into a buffer nobody watches.
+    const abortController = new AbortController();
+    const { signal } = abortController;
 
     // Every load path resets the saved baseline together with the buffer, so a
     // freshly opened file (or an error placeholder) never counts as dirty.
@@ -102,7 +106,7 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
         // Workspace-external documents are served by the read-only external
         // endpoint and are not tied to a project.
         if (isReadOnlyExternal) {
-          const externalResponse = await readExternalFile(filePath, fileProjectId);
+          const externalResponse = await readExternalFile(filePath, fileProjectId, { signal });
           if (!externalResponse.ok) {
             throw new Error(`Failed to load file: ${externalResponse.status} ${externalResponse.statusText}`);
           }
@@ -122,7 +126,7 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
           throw new Error('Missing project identifier');
         }
 
-        const response = await api.readFile(fileProjectId, filePath);
+        const response = await api.readFile(fileProjectId, filePath, { signal });
         // Read through readApiJson so the API's own explanation reaches the
         // pane — a directory, a path outside the project root, a missing file.
         // The bare status showed all of those as an opaque "403 Forbidden".
@@ -132,7 +136,9 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
         }
         applyLoadedContent(data.content);
       } catch (error) {
-        if (isStaleLoad()) {
+        // An aborted read is a cancellation, not a failure: the editor closed
+        // or moved to another file, so there is no pane left to report to.
+        if (signal.aborted || isStaleLoad()) {
           return;
         }
         const message = getErrorMessage(error);
@@ -149,6 +155,8 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
     };
 
     loadFileContent();
+
+    return () => abortController.abort();
   }, [file.diffInfo, file.name, isReadOnlyExternal, fileDiffNewString, fileDiffOldString, fileName, filePath, fileProjectId]);
 
   const handleSave = useCallback(async () => {

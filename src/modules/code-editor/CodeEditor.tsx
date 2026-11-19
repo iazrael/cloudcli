@@ -246,6 +246,9 @@ export default function CodeEditor({
         isDarkMode={isDarkMode}
         isSidebar={isSidebar}
         loadingText={t('loading', { fileName: file.name })}
+        // A loading buffer has no edits to lose, so this closes straight away.
+        onCancel={requestClose}
+        cancelLabel={t('actions.cancel', 'Cancel')}
       />
     );
   }
