@@ -122,22 +122,42 @@ function readTokenTotals(value: unknown): ZCodeTokenTotals | null {
 }
 
 /**
- * Builds the shared token usage summary from ZCode token totals.
- * Shape matches the `token_budget` summaries other providers report
- * (`used` plus input/output breakdown).
+ * Total tokens ZCode recorded for one message, in the app's counting rule.
+ *
+ * The engine separates cache hits from fresh input, so both are added: the
+ * app treats "input" as the whole prompt, the way every other provider
+ * reports it.
  */
-function buildTokenUsage(totals: ZCodeTokenTotals | null): ProviderTokenUsageResult | undefined {
-  if (!totals) {
-    return undefined;
-  }
+function sumZCodeTokenTotals(totals: ZCodeTokenTotals): number {
+  return totals.input + totals.output + totals.reasoning + totals.cache;
+}
+
+/**
+ * Builds the shared token usage summary from ZCode token totals.
+ *
+ * `context` is the newest message that recorded usage — that turn's whole
+ * prompt, i.e. what the context window currently holds — while `totals` is the
+ * sum over every message, the session's cumulative spend. Shape matches the
+ * `token_budget` summaries other providers report.
+ */
+function buildTokenUsage(
+  context: ZCodeTokenTotals | null,
+  totals: ZCodeTokenTotals,
+): ProviderTokenUsageResult {
+  const current = context ?? totals;
 
   return {
-    used: totals.input + totals.output + totals.reasoning + totals.cache,
-    inputTokens: totals.input,
-    outputTokens: totals.output,
+    used: sumZCodeTokenTotals(current),
+    inputTokens: current.input,
+    outputTokens: current.output,
+    cumulative: {
+      used: sumZCodeTokenTotals(totals),
+      inputTokens: totals.input,
+      outputTokens: totals.output,
+    },
     breakdown: {
-      input: totals.input,
-      output: totals.output,
+      input: current.input,
+      output: current.output,
     },
   };
 }
@@ -448,6 +468,10 @@ function buildZCodeTurnAnchors(rows: ZCodeHistoryRow[]): Map<string, string> {
 
 /**
  * Aggregate token usage from all messages in a session.
+ *
+ * Returns the last usage-bearing message (append order) as the context
+ * reading and the sum over every message as the cumulative block; the composer
+ * shows the former, the `/cost` detail the latter.
  */
 function aggregateZCodeSessionTokenUsage(
   db: Database.Database,
@@ -456,6 +480,7 @@ function aggregateZCodeSessionTokenUsage(
   const rows = db.prepare('SELECT data FROM message WHERE session_id = ?').iterate(sessionId) as Iterable<{ data: string }>;
 
   const totals: ZCodeTokenTotals = { input: 0, output: 0, reasoning: 0, cache: 0 };
+  let latestContext: ZCodeTokenTotals | null = null;
   let hasAnyUsage = false;
 
   for (const row of rows) {
@@ -470,9 +495,10 @@ function aggregateZCodeSessionTokenUsage(
     totals.output += messageTotals.output;
     totals.reasoning += messageTotals.reasoning;
     totals.cache += messageTotals.cache;
+    latestContext = messageTotals;
   }
 
-  return hasAnyUsage ? buildTokenUsage(totals) : undefined;
+  return hasAnyUsage ? buildTokenUsage(latestContext, totals) : undefined;
 }
 
 /**

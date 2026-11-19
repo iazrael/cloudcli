@@ -25,4 +25,13 @@ describe('TokenUsageSummary count', () => {
     assert.equal(shownCount(999_600), '1.0M');
     assert.equal(shownCount(9_960_000), '10M');
   });
+
+  it('names the context window in the tooltip so the number is not read as a total', () => {
+    const { getByRole, unmount } = render(
+      <TokenUsageSummary usage={{ used: 335_960, total: 475_000 }} />,
+    );
+    const title = getByRole('button').getAttribute('title');
+    unmount();
+    assert.equal(title, 'chat:misc.contextTokensUsed');
+  });
 });

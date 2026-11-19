@@ -263,6 +263,12 @@ flowchart LR
 - `transcript/Markdown.tsx` 对明确的图片链接使用统一图片查看器；本地图片引用按 `useSignedMedia` 的视口规则先批量申请签名探测存在性，明确不存在或不可读的引用渲染为不可点的普通文字，可点引用点击后才加载图片字节。`MarkdownWorkspaceContext` 携带消息所属项目与会话记录的运行工作树；相对路径按工作树根和项目根两处候选探测，工作树命中优先，工作树路径仍由后端既有工作树白名单校验，绝对路径复用 Markdown 图片的读取规则。Markdown 语法树转换只为正文及独立行内代码中的明确图片地址和文件路径补充链接（路径要求含分隔符或带扩展名，含空格的必须路径锚定，纯文本不猜测），跳过代码块、公式和既有链接，不改消息原文。其他工作区文件路径（Markdown 链接与行内代码）经 `usePathExists` 挂载时调用 file-tree 的批量存在性接口探测，可读才在编辑器或文件树中打开；指向服务器本机端口（而页面自身不在那台机器上）的链接改走本机服务代理，机制与安全边界见 [overview.md](./overview.md#认证与安全边界)；其余按普通外链新标签打开。
 - 虚拟化与滚动的硬约束见 [frontend.md](./frontend.md) 的性能守则；端到端闸门是 `scripts/perf/chat-scroll-up-stability.mjs`，它断言屏幕上的行走了多远，而不是 `scrollTop` 变了多少。
 
+## 输入框的 token 计数
+
+输入框按钮只显示**上下文占用**：`status/token_budget` 帧（或历史页带回的 `tokenUsage`）里的 `used` 与 `total`，即最近一次请求的 prompt 加输出。`/cost` 详情另外读 `cumulativeUsage`（会话累计），两处口径不能互换，契约在 [providers.md](./providers.md#token-用量口径)。
+
+按钮值只在「切换会话」「一轮结束」「页面回到前台」时刷新：手机休眠或标签页后台化期间收不到 `token_budget`，回到前台由 `useChatSessionState` 的 `visibilitychange` 监听补拉一次；WebSocket 重连走既有的历史尾页刷新，历史页同样带回上下文快照。`/cost` 的返回只覆盖上下文三项，不会把累计量写进按钮。
+
 ## 扩展检查单
 
 | 要做什么 | 改哪里 |

@@ -17,7 +17,6 @@ import { useAskSideQuestion } from '@/modules/chat/hooks/useSideQuestions';
 import { api, ApiRequestError, authenticatedFetch } from '@/shared/api';
 import { MAX_ATTACHMENT_COUNT } from '@/shared/constants';
 import { createClientRequestId, isEnginePromptCommand, isImageAttachment } from '@/shared/utils';
-import type { MarkSessionProcessing, SessionActivityMap } from '@/shared/types';
 import { uploadAttachmentFiles } from '@/modules/chat/utils/attachmentUpload';
 import { createAttachmentUploadQueue } from '@/modules/chat/utils/attachmentUploadQueue';
 import { grantClaudeToolPermission } from '@/modules/chat/utils/chatPermissions';
@@ -50,7 +49,15 @@ import type {
   SessionEstablishedContext,
   UploadedComposerAttachment,
 } from '@/shared/types';
-import type { Project, ProjectSession, LLMProvider, ProviderModelOption, ProviderQuotaData } from '@/shared/types';
+import type {
+  CostCommandData,
+  MarkSessionProcessing,
+  Project,
+  ProjectSession,
+  LLMProvider,
+  ProviderModelOption,
+  SessionActivityMap,
+} from '@/shared/types';
 import { describeBackgroundTask, ownBackgroundTasks } from '@/modules/chat/utils/backgroundTasks';
 import { escapeRegExp } from '@/modules/chat/utils/chatFormatting';
 
@@ -139,29 +146,16 @@ export type ModelCommandData = {
 };
 
 /**
- * Quota shapes come from the wire contract; this module used to restate them
- * under different names and had already drifted on `updatedAt`.
+ * Quota and cost shapes come from the wire contract; this module used to
+ * restate them under different names and had already drifted on `updatedAt`.
  */
+export type { CostCommandData };
 export type {
   ProviderQuotaBucket as QuotaBucket,
   ProviderQuotaData,
   ProviderQuotaGroup as QuotaGroup,
   ProviderQuotaResetCredit,
 } from '@/shared/types';
-
-export type CostCommandData = {
-  tokenUsage?: {
-    used?: number;
-    total?: number;
-  };
-  tokenBreakdown?: {
-    input?: number;
-    output?: number;
-  };
-  provider?: string;
-  model?: string;
-  quota?: ProviderQuotaData;
-};
 
 export type StatusCommandData = {
   version?: string;
@@ -232,6 +226,17 @@ function buildLocalCostData(
   data.tokenUsage = { used, total: Number(tokenBudget?.total) || 0 };
   if (input + output > 0) {
     data.tokenBreakdown = { input, output };
+  }
+  // The live frames that carry a cumulative block (Codex) let the detail open
+  // with the total already filled in instead of a dash until the server replies.
+  const cumulative = tokenBudget?.cumulative as Record<string, unknown> | null | undefined;
+  const cumulativeUsed = Number(cumulative?.used) || 0;
+  if (cumulativeUsed > 0) {
+    data.cumulativeUsage = {
+      used: cumulativeUsed,
+      inputTokens: Number(cumulative?.inputTokens) || 0,
+      outputTokens: Number(cumulative?.outputTokens) || 0,
+    };
   }
   return data;
 }

@@ -21,6 +21,7 @@ import {
 import { parseFilesInputTag, toImageAttachments } from '@/shared/image-attachments.js';
 import type { IProviderSessions } from '@/shared/interfaces.js';
 import { prepareTranscriptMessages } from '@/shared/message-unification.js';
+import { buildCodexUsageSnapshot } from '@/modules/providers/services/codex-usage.js';
 import type {
   AnyRecord,
   FetchHistoryOptions,
@@ -41,7 +42,6 @@ import {
   createNormalizedMessage,
   generateMessageId,
   readObjectRecord,
-  readUsageNumber,
   removePathIfExists,
   sliceTailPage,
   MAX_TRANSMITTED_SUBAGENT_ACTIVITIES,
@@ -1174,44 +1174,38 @@ async function findCodexSessionFile(
 }
 
 /**
- * Reads the latest `token_count` snapshot from a Codex rollout JSONL.
+ * Reads the latest token snapshot from a Codex rollout JSONL.
  *
- * Codex appends cumulative totals over time, so the scan walks from the end
- * and stops at the first readable token_count entry.
+ * Codex appends cumulative totals over time, so the scan walks the whole file
+ * and keeps the last readable `token_count` entry. One entry carries both
+ * blocks: `last_token_usage` (the turn that just ran — the context window's
+ * current occupancy) and `total_token_usage` (the session's cumulative
+ * spend). `buildCodexUsageSnapshot` maps them the same way the live
+ * `thread/tokenUsage/updated` notification is mapped, so a reload reports what
+ * the live gauge did.
+ *
+ * Consumers: the provider token-usage service and this provider's history
+ * reader.
  */
 async function readCodexTokenUsage(filename: string): Promise<ProviderTokenUsageResult> {
-  let inputTokens = 0;
-  let outputTokens = 0;
-  let totalTokens = 0;
-  let contextWindow = 200_000;
+  let snapshot: ProviderTokenUsageResult | null = null;
 
   for await (const entry of readJsonlRecords(filename)) {
-      const tokenInfo = entry.type === 'event_msg' && entry.payload?.type === 'token_count'
-        ? entry.payload.info
-        : null;
-      if (!tokenInfo) {
-        continue;
-      }
+    const tokenInfo = entry.type === 'event_msg' && entry.payload?.type === 'token_count'
+      ? entry.payload.info
+      : null;
+    if (!tokenInfo) {
+      continue;
+    }
 
-      inputTokens = 0;
-      outputTokens = 0;
-      totalTokens = 0;
-      if (tokenInfo.total_token_usage) {
-        inputTokens = readUsageNumber(tokenInfo.total_token_usage.input_tokens);
-        outputTokens = readUsageNumber(tokenInfo.total_token_usage.output_tokens);
-        totalTokens = readUsageNumber(tokenInfo.total_token_usage.total_tokens)
-          || inputTokens + outputTokens;
-      }
-      contextWindow = readUsageNumber(tokenInfo.model_context_window) || 200_000;
+    snapshot = buildCodexUsageSnapshot({
+      last: tokenInfo.last_token_usage,
+      total: tokenInfo.total_token_usage,
+      contextWindow: tokenInfo.model_context_window,
+    }) ?? snapshot;
   }
 
-  return {
-    used: totalTokens,
-    total: contextWindow,
-    inputTokens,
-    outputTokens,
-    breakdown: { input: inputTokens, output: outputTokens },
-  };
+  return snapshot ?? { used: 0, total: 200_000, inputTokens: 0, outputTokens: 0, breakdown: { input: 0, output: 0 } };
 }
 
 /**
@@ -1242,7 +1236,7 @@ async function getCodexSessionMessages(sessionId: string): Promise<CodexHistoryR
   }
 
   const messages: AnyRecord[] = [];
-  let tokenUsage: AnyRecord | null = null;
+  let tokenUsage: ProviderTokenUsageResult | null = null;
 
   const turns = createCodexTurnTracker();
   /** Turns whose prompt already carries the anchor, so only the first does. */
@@ -1337,10 +1331,14 @@ async function getCodexSessionMessages(sessionId: string): Promise<CodexHistoryR
 
     if (payload.type === 'token_count' && payload.info) {
       const info = payload.info as AnyRecord;
-      if (info.total_token_usage) {
-        const usage = info.total_token_usage as AnyRecord;
-        tokenUsage = { used: usage.total_tokens || 0, total: info.model_context_window || 200000 };
-      }
+      // Same mapping the live notification goes through: the composer shows
+      // the last turn's occupancy, the `/cost` detail shows the cumulative
+      // block this snapshot also carries.
+      tokenUsage = buildCodexUsageSnapshot({
+        last: info.last_token_usage,
+        total: info.total_token_usage,
+        contextWindow: info.model_context_window,
+      }) ?? tokenUsage;
       continue;
     }
 

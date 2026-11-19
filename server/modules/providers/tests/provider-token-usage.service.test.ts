@@ -252,6 +252,9 @@ test('the Claude summarizer reads the newest assistant turn, not the whole conve
     cacheReadTokens: 4000,
     cacheCreationTokens: 100,
     cacheTokens: 4100,
+    // The total is every turn added up — that is what the session's spend was,
+    // and it is deliberately larger than the newest turn's context reading.
+    cumulative: { used: 5238, inputTokens: 5108, outputTokens: 130 },
     breakdown: { input: 4103, output: 80 },
   });
 });

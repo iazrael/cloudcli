@@ -183,16 +183,24 @@ const isUserTextEcho = (raw: AnyRecord): boolean => {
     || hasUserRole(raw.part);
 };
 
-const buildTokenUsage = (totals: OpenCodeTokenTotals | undefined): AnyRecord | undefined => {
+/**
+ * Builds the app's usage snapshot from one OpenCode token reading.
+ *
+ * `totals` is the session's cumulative spend; `context` is the newest
+ * assistant message's reading, i.e. that turn's whole prompt. Older databases
+ * expose no per-message usage, in which case the cumulative reading also
+ * serves as the context number rather than reporting zero.
+ */
+const buildTokenUsage = (
+  totals: OpenCodeTokenTotals | undefined,
+  context?: OpenCodeTokenTotals,
+): ProviderTokenUsageResult | undefined => {
   if (!totals) {
     return undefined;
   }
 
-  const inputTokens = totals.inputTokens;
-  const displayInputTokens = inputTokens + totals.cacheReadTokens;
-  const outputTokens = totals.outputTokens;
-  const used = inputTokens
-    + outputTokens
+  const used = totals.inputTokens
+    + totals.outputTokens
     + totals.reasoningTokens
     + totals.cacheReadTokens
     + totals.cacheWriteTokens;
@@ -201,13 +209,26 @@ const buildTokenUsage = (totals: OpenCodeTokenTotals | undefined): AnyRecord | u
     return undefined;
   }
 
+  const current = context ?? totals;
+  const displayInputTokens = current.inputTokens + current.cacheReadTokens;
+  const usedContext = current.inputTokens
+    + current.outputTokens
+    + current.reasoningTokens
+    + current.cacheReadTokens
+    + current.cacheWriteTokens;
+
   return {
-    used,
+    used: usedContext,
     inputTokens: displayInputTokens,
-    outputTokens,
+    outputTokens: current.outputTokens,
+    cumulative: {
+      used,
+      inputTokens: totals.inputTokens + totals.cacheReadTokens,
+      outputTokens: totals.outputTokens,
+    },
     breakdown: {
       input: displayInputTokens,
-      output: outputTokens,
+      output: current.outputTokens,
     },
   };
 };
@@ -216,6 +237,65 @@ const readOpenCodeSessionColumnTokenUsage = (
   db: Database.Database,
   sessionId: string,
 ): AnyRecord | undefined => buildTokenUsage(readOpenCodeSessionTokenTotals(db, sessionId) ?? undefined);
+
+/** One OpenCode message's own `tokens` block, or undefined when it carries none. */
+const readOpenCodeMessageTokenTotals = (tokens: unknown): OpenCodeTokenTotals | undefined => {
+  const record = readObjectRecord(tokens);
+  if (!record) {
+    return undefined;
+  }
+
+  const cache = readObjectRecord(record.cache);
+  const totals: OpenCodeTokenTotals = {
+    inputTokens: Number(record.input ?? 0),
+    outputTokens: Number(record.output ?? 0),
+    reasoningTokens: Number(record.reasoning ?? 0),
+    cacheReadTokens: Number(cache?.read ?? 0),
+    cacheWriteTokens: Number(cache?.write ?? 0),
+  };
+  const used = totals.inputTokens
+    + totals.outputTokens
+    + totals.reasoningTokens
+    + totals.cacheReadTokens
+    + totals.cacheWriteTokens;
+  return used > 0 ? totals : undefined;
+};
+
+/**
+ * The newest assistant message's own token reading — that turn's whole prompt,
+ * i.e. what the context window currently holds.
+ *
+ * Only the tail is scanned: a session's earlier messages cannot be its newest
+ * reading, and a long transcript is thousands of rows. Databases that record
+ * no per-message usage (some v1 builds) answer undefined and the caller falls
+ * back to the session totals.
+ */
+const readOpenCodeLatestMessageTokenUsage = (
+  db: Database.Database,
+  sessionId: string,
+): OpenCodeTokenTotals | undefined => {
+  const layout = resolveOpenCodeMessageLayout(db);
+  if (!layout) {
+    return undefined;
+  }
+
+  const rows = layout === 'session_message'
+    ? db.prepare('SELECT type, data FROM session_message WHERE session_id = ? ORDER BY seq DESC LIMIT 200').iterate(sessionId)
+    : db.prepare('SELECT data FROM message WHERE session_id = ? ORDER BY time_created DESC, id DESC LIMIT 200').iterate(sessionId);
+
+  for (const row of rows as Iterable<{ type?: string | null; data: string }>) {
+    const info = readJsonRecord(row.data);
+    const role = readOptionalString(info?.role) ?? readOptionalString(row.type);
+    if (role !== 'assistant') {
+      continue;
+    }
+    const totals = readOpenCodeMessageTokenTotals(info?.tokens);
+    if (totals) {
+      return totals;
+    }
+  }
+  return undefined;
+};
 
 /**
  * For every user prompt of a v2 transcript, the engine message that closes
@@ -429,7 +509,10 @@ const aggregateOpenCodeSessionTokenUsage = (
 ): AnyRecord | undefined => {
   const sessionColumnUsage = readOpenCodeSessionColumnTokenUsage(db, sessionId);
   if (sessionColumnUsage) {
-    return sessionColumnUsage;
+    return buildTokenUsage(
+      readOpenCodeSessionTokenTotals(db, sessionId) ?? undefined,
+      readOpenCodeLatestMessageTokenUsage(db, sessionId),
+    );
   }
 
   const rows = db.prepare('SELECT data FROM message WHERE session_id = ?').iterate(sessionId) as Iterable<{ data: string }>;
@@ -439,6 +522,7 @@ const aggregateOpenCodeSessionTokenUsage = (
   let reasoningTokens = 0;
   let cacheReadTokens = 0;
   let cacheWriteTokens = 0;
+  let latestContext: OpenCodeTokenTotals | undefined;
 
   for (const row of rows) {
     const info = readJsonRecord(row.data);
@@ -446,17 +530,17 @@ const aggregateOpenCodeSessionTokenUsage = (
       continue;
     }
 
-    const tokens = readObjectRecord(info?.tokens);
-    if (!tokens) {
+    const messageTotals = readOpenCodeMessageTokenTotals(info?.tokens);
+    if (!messageTotals) {
       continue;
     }
 
-    inputTokens += Number(tokens.input ?? 0);
-    outputTokens += Number(tokens.output ?? 0);
-    reasoningTokens += Number(tokens.reasoning ?? 0);
-    const cache = readObjectRecord(tokens.cache);
-    cacheReadTokens += Number(cache?.read ?? 0);
-    cacheWriteTokens += Number(cache?.write ?? 0);
+    inputTokens += messageTotals.inputTokens;
+    outputTokens += messageTotals.outputTokens;
+    reasoningTokens += messageTotals.reasoningTokens;
+    cacheReadTokens += messageTotals.cacheReadTokens;
+    cacheWriteTokens += messageTotals.cacheWriteTokens;
+    latestContext = messageTotals;
   }
 
   return buildTokenUsage({
@@ -465,7 +549,7 @@ const aggregateOpenCodeSessionTokenUsage = (
     reasoningTokens,
     cacheReadTokens,
     cacheWriteTokens,
-  });
+  }, latestContext);
 };
 
 const readToolResult = (state: AnyRecord): SubagentActivity['toolResult'] => {
@@ -777,12 +861,16 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
       }
 
       // v2 keeps the per-session token totals on the session row; the v1
-      // layout aggregates them from per-message rows instead.
+      // layout aggregates them from per-message rows instead. Either way the
+      // newest assistant message supplies the context reading.
       const rows = layout === 'session_message'
         ? [...flattenOpenCodeV2HistoryRows(db, providerSessionId)]
         : this.readV1HistoryRows(db, providerSessionId);
       const tokenUsage = layout === 'session_message'
-        ? buildTokenUsage(readOpenCodeSessionTokenTotals(db, providerSessionId) ?? undefined)
+        ? buildTokenUsage(
+            readOpenCodeSessionTokenTotals(db, providerSessionId) ?? undefined,
+            readOpenCodeLatestMessageTokenUsage(db, providerSessionId),
+          )
         : aggregateOpenCodeSessionTokenUsage(db, providerSessionId);
       const turnAnchors = layout === 'session_message'
         ? buildOpenCodeTurnAnchors(rows)
@@ -1233,19 +1321,23 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
         });
       }
 
-      const inputTokens = readUsageNumber(row.inputTokens) + readUsageNumber(row.cacheReadTokens);
-      const outputTokens = readUsageNumber(row.outputTokens);
-      const used = readUsageNumber(row.inputTokens)
-        + outputTokens
-        + readUsageNumber(row.reasoningTokens)
-        + readUsageNumber(row.cacheReadTokens)
-        + readUsageNumber(row.cacheWriteTokens);
-
-      return {
-        used,
-        inputTokens,
-        outputTokens,
-        breakdown: { input: inputTokens, output: outputTokens },
+      // The session row is the cumulative spend; the newest assistant message
+      // is the context reading. `buildTokenUsage` reports the former in the
+      // detail's total and the latter as `used`.
+      return buildTokenUsage(
+        {
+          inputTokens: readUsageNumber(row.inputTokens),
+          outputTokens: readUsageNumber(row.outputTokens),
+          reasoningTokens: readUsageNumber(row.reasoningTokens),
+          cacheReadTokens: readUsageNumber(row.cacheReadTokens),
+          cacheWriteTokens: readUsageNumber(row.cacheWriteTokens),
+        },
+        readOpenCodeLatestMessageTokenUsage(database, input.nativeSessionId),
+      ) ?? {
+        used: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        breakdown: { input: 0, output: 0 },
       };
     } finally {
       database.close();

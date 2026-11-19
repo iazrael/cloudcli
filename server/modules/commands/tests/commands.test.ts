@@ -213,3 +213,77 @@ test('cost command returns immediate session token usage without blocking on quo
   assert.equal(data.tokenBreakdown?.input, 80);
   assert.equal(data.tokenBreakdown?.output, 20);
 });
+
+test('cost command keeps the context reading apart from the session total', async () => {
+  const mockTokenUsage = {
+    getSessionTokenUsage: async () => ({
+      used: 336_000,
+      total: 475_000,
+      inputTokens: 335_462,
+      outputTokens: 498,
+      breakdown: { input: 335_462, output: 498 },
+      cumulative: { used: 33_389_947, inputTokens: 33_271_701, outputTokens: 118_246 },
+    }),
+  };
+
+  // The live frame carries only the context reading and the window, so the
+  // route has to fetch the cumulative block from the persisted snapshot.
+  const cost = await executeCommand(
+    '/cost',
+    {
+      provider: 'codex',
+      sessionId: 'test-session-123',
+      tokenUsage: { used: 335_960, total: 475_000 },
+    },
+    {},
+    mockTokenUsage,
+  );
+
+  const data = cost.data as {
+    tokenUsage: { used: number; total: number };
+    cumulativeUsage?: { used: number; inputTokens: number; outputTokens: number };
+  };
+
+  assert.equal(data.tokenUsage.used, 335_960);
+  assert.equal(data.tokenUsage.total, 475_000);
+  assert.deepEqual(data.cumulativeUsage, {
+    used: 33_389_947,
+    inputTokens: 33_271_701,
+    outputTokens: 118_246,
+  });
+});
+
+test('cost command does not read the persisted snapshot when the live frame has every reading', async () => {
+  let reads = 0;
+  const mockTokenUsage = {
+    getSessionTokenUsage: async () => {
+      reads += 1;
+      return { used: 1, inputTokens: 1, outputTokens: 0, breakdown: { input: 1, output: 0 } };
+    },
+  };
+
+  const cost = await executeCommand(
+    '/cost',
+    {
+      provider: 'codex',
+      sessionId: 'test-session-123',
+      tokenUsage: {
+        used: 500,
+        total: 200_000,
+        inputTokens: 400,
+        outputTokens: 100,
+        breakdown: { input: 400, output: 100 },
+        cumulative: { used: 9_000, inputTokens: 8_000, outputTokens: 1_000 },
+      },
+    },
+    {},
+    mockTokenUsage,
+  );
+
+  const data = cost.data as {
+    cumulativeUsage?: { used: number; inputTokens: number; outputTokens: number };
+  };
+
+  assert.equal(reads, 0);
+  assert.deepEqual(data.cumulativeUsage, { used: 9_000, inputTokens: 8_000, outputTokens: 1_000 });
+});

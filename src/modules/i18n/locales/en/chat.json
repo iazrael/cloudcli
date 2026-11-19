@@ -400,6 +400,10 @@
   "cost": {
     "readingUsage": "Reading session usage…",
     "totalTokensUsed": "Total tokens used",
+"cumulativeTokens": "Total tokens (session)",
+"cumulativeInputTokens": "Input tokens (session)",
+"cumulativeOutputTokens": "Output tokens (session)",
+"contextTokens": "Current context",
     "inputTokens": "Input tokens",
     "outputTokens": "Output tokens",
     "contextWindow": "Context window",
@@ -492,6 +496,7 @@
     "cancelEditing": "Cancel editing",
     "userDeniedTool": "User denied tool use",
     "showTokenUsage": "Show token usage",
+    "contextTokensUsed": "Current context: {{used}} / {{total}} tokens",
     "fallbackCommands": {
       "models": "Browse available models for the active provider.",
       "cost": "Review token usage for the active session.",

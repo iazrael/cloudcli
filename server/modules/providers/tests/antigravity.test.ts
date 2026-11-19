@@ -1733,7 +1733,7 @@ test('AntigravitySessionsProvider reads token usage from the indexed transcript'
         jsonlPath: transcriptPath,
         projectPath: null,
       }),
-      { used: 330, inputTokens: 250, outputTokens: 80, breakdown: { input: 250, output: 80 } },
+      { used: 330, inputTokens: 250, outputTokens: 80, breakdown: { input: 250, output: 80 }, cumulative: { used: 330, inputTokens: 250, outputTokens: 80 } },
     );
   } finally {
     await fs.rm(tempDirectory, { recursive: true, force: true });

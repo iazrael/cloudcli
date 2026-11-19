@@ -319,7 +319,7 @@ test('Codex history reads 0.153-era prompts from item_completed UserMessage rows
   }
 });
 
-test('getTokenUsage reads the latest token_count snapshot from the indexed rollout', async () => {
+test('getTokenUsage reports the last turn as context and the rollout totals as the session spend', async () => {
   const tempDirectory = await mkdtemp(path.join(os.tmpdir(), 'codex-token-usage-'));
   const sessionFilePath = path.join(tempDirectory, 'rollout-provider-session.jsonl');
 
@@ -331,6 +331,7 @@ test('getTokenUsage reads the latest token_count snapshot from the indexed rollo
           type: 'token_count',
           info: {
             total_token_usage: { input_tokens: 10, output_tokens: 4, total_tokens: 14 },
+            last_token_usage: { input_tokens: 30, output_tokens: 6, total_tokens: 36 },
             model_context_window: 100_000,
           },
         },
@@ -340,7 +341,8 @@ test('getTokenUsage reads the latest token_count snapshot from the indexed rollo
         payload: {
           type: 'token_count',
           info: {
-            total_token_usage: { input_tokens: 40, output_tokens: 9, total_tokens: 49 },
+            total_token_usage: { input_tokens: 140, output_tokens: 9, total_tokens: 149 },
+            last_token_usage: { input_tokens: 70, output_tokens: 11, total_tokens: 81 },
             model_context_window: 250_000,
           },
         },
@@ -355,7 +357,16 @@ test('getTokenUsage reads the latest token_count snapshot from the indexed rollo
         jsonlPath: sessionFilePath,
         projectPath: null,
       }),
-      { used: 49, total: 250_000, inputTokens: 40, outputTokens: 9, breakdown: { input: 40, output: 9 } },
+      {
+        // The newest turn's prompt is the context reading (what the composer
+        // shows); the cumulative block is the session's whole spend.
+        used: 81,
+        total: 250_000,
+        inputTokens: 70,
+        outputTokens: 11,
+        breakdown: { input: 70, output: 11 },
+        cumulative: { used: 149, inputTokens: 140, outputTokens: 9 },
+      },
     );
   } finally {
     await rm(tempDirectory, { recursive: true, force: true });

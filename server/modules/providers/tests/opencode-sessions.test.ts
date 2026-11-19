@@ -492,9 +492,12 @@ test('OpenCode sessions provider reads sqlite history and token usage', { concur
     assert.equal(history.messages[3]?.kind, 'tool_use');
     assert.deepEqual(history.messages[3]?.toolResult, { content: 'ok', isError: false });
     assert.deepEqual(history.tokenUsage, {
-      used: 42,
+      // The seeded assistant message's own tokens are the context reading;
+      // the session row's totals are the session-wide spend.
+      used: 35,
       inputTokens: 13,
       outputTokens: 20,
+      cumulative: { used: 42, inputTokens: 13, outputTokens: 20 },
       breakdown: {
         input: 13,
         output: 20,
@@ -633,7 +636,8 @@ test('getTokenUsage reads the token columns for the provider-native session', as
     await createOpenCodeDatabase(tempRoot, workspacePath);
 
     const provider = new OpenCodeSessionsProvider();
-    // Seeded session row: tokens 10/20/7/3/2 → used 42, input incl. cache reads 13.
+    // Seeded session row: tokens 10/20/7/3/2 → cumulative 42, and the last
+    // assistant message carries 10/20/0/3/2 → context 35.
     assert.deepEqual(
       await provider.getTokenUsage({
         appSessionId: 'app-1',
@@ -641,7 +645,13 @@ test('getTokenUsage reads the token columns for the provider-native session', as
         jsonlPath: null,
         projectPath: null,
       }),
-      { used: 42, inputTokens: 13, outputTokens: 20, breakdown: { input: 13, output: 20 } },
+      {
+        used: 35,
+        inputTokens: 13,
+        outputTokens: 20,
+        cumulative: { used: 42, inputTokens: 13, outputTokens: 20 },
+        breakdown: { input: 13, output: 20 },
+      },
     );
   } finally {
     restoreHomeDir();
@@ -696,7 +706,7 @@ test('OpenCode sessions provider reads v2 session_message history and token colu
         );
         INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data) VALUES
           ('msg_u', 'ses_v2_hist', 'user', 1, 1000, 1000, '{"time":{"created":1000},"text":"Build it","files":[],"agents":[]}'),
-          ('msg_a', 'ses_v2_hist', 'assistant', 2, 1100, 1200, '{"time":{"created":1100},"model":{"id":"beam-free","providerID":"opencode","variant":"high"},"content":[{"type":"reasoning","text":"thinking"},{"type":"tool","id":"call_1","name":"write","state":{"status":"completed","input":{"path":"/tmp/x"},"output":"ok"}},{"type":"text","text":"done"}]}');
+          ('msg_a', 'ses_v2_hist', 'assistant', 2, 1100, 1200, '{"time":{"created":1100},"model":{"id":"beam-free","providerID":"opencode","variant":"high"},"tokens":{"input":6,"output":4,"reasoning":1,"cache":{"read":90,"write":0}},"content":[{"type":"reasoning","text":"thinking"},{"type":"tool","id":"call_1","name":"write","state":{"status":"completed","input":{"path":"/tmp/x"},"output":"ok"}},{"type":"text","text":"done"}]}');
       `);
     } finally {
       db.close();
@@ -717,12 +727,14 @@ test('OpenCode sessions provider reads v2 session_message history and token colu
     assert.deepEqual(history.messages[2]?.toolResult, { content: 'ok', isError: false });
     assert.equal(history.messages[3]?.content, 'done');
     assert.equal(history.messages[3]?.id, 'msg_a_text_0');
-    // Totals come from the session_v2 token columns: 100+20+5+8+2.
+    // The session row is the cumulative spend (100+20+5+8+2); the newest
+    // assistant message's own tokens are the context reading (6+4+1+90+0).
     assert.deepEqual(history.tokenUsage, {
-      used: 135,
-      inputTokens: 108,
-      outputTokens: 20,
-      breakdown: { input: 108, output: 20 },
+      used: 101,
+      inputTokens: 96,
+      outputTokens: 4,
+      cumulative: { used: 135, inputTokens: 108, outputTokens: 20 },
+      breakdown: { input: 96, output: 4 },
     });
   } finally {
     restoreHomeDir();

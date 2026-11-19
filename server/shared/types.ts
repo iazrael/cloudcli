@@ -168,13 +168,32 @@ export type AntigravityQuotaData = QuotaDataShape;
 // ---------------------------
 //----------------- PROVIDER SESSION TOKEN USAGE TYPES ------------
 /**
+ * Whole-session token spend for one provider session.
+ *
+ * Every engine counts the same way: `inputTokens` includes cache hits and
+ * `used` is their sum with `outputTokens`. Shape shared by the provider
+ * adapters, the live `token_budget` status frames and the `/cost` command.
+ */
+export type ProviderCumulativeTokenUsage = {
+  used: number;
+  inputTokens: number;
+  outputTokens: number;
+};
+
+/**
  * Latest token-usage snapshot for one provider session, as served by
  * `GET /providers/sessions/:sessionId/token-usage`.
  *
  * Each provider sessions facet produces this shape from its own native
- * storage. `unsupported: true` marks providers that cannot report usage at
- * all (callers surface `message` instead of the counters); `total` carries
- * the context window when the provider knows it.
+ * storage. `used`, `inputTokens`, `outputTokens` and `breakdown` describe the
+ * context window's current occupancy — the prompt plus output of the newest
+ * request, which is what the composer's counter shows. `cumulative` is the
+ * session's whole spend and is what the `/cost` detail reports as the total;
+ * summing per-turn context readings would count the same cached prefix once
+ * per turn, so the two numbers must never be confused. `total` carries the
+ * context window when the provider knows it, and `unsupported: true` marks
+ * providers that cannot report usage at all (callers surface `message`
+ * instead of the counters).
  */
 export type ProviderTokenUsageResult = {
   used: number;
@@ -184,6 +203,7 @@ export type ProviderTokenUsageResult = {
   cacheReadTokens?: number;
   cacheCreationTokens?: number;
   cacheTokens?: number;
+  cumulative?: ProviderCumulativeTokenUsage;
   breakdown: {
     input: number;
     output: number;

@@ -322,6 +322,19 @@ opencode 的自动命名由引擎自己做，CloudCLI 只负责不挡路。引�
 
 改完跑：`npm run typecheck && npm run lint && npm test`（provider 相关测试在 `server/modules/providers/tests/`）。
 
+## Token 用量口径
+
+`ProviderTokenUsageResult` 有两个互不替代的口径，前端各用一处：
+
+- **上下文占用**（`used` / `inputTokens` / `outputTokens` / `breakdown`）：最近一次请求的 prompt 加输出，也就是上下文窗口现在装着多少。输入框按钮只显示这个数，`total` 是它对照的窗口。
+- **会话累计**（`cumulative`）：整段会话的真实消耗，输入含缓存命中。`/cost` 详情的「累计总用量 / 累计输入 / 累计输出」只读它，不会拿上下文数冒充总量。
+
+各家的来源都是原生记录，不做估算：Claude 从转录里取最新一条主线程 assistant 作为上下文、全部 assistant 行（含子代理）求和作为累计；Codex 的 `last_token_usage` / `total_token_usage` 由 `services/codex-usage.ts` 的 `buildCodexUsageSnapshot` 统一解析，实时通知与 roll-out 读取走同一函数，所以刷新前后同值；OpenCode 的上下文是最后一条 assistant 消息的 `tokens`，累计是 `session_v2` 的 token 列（旧库退回逐条求和）；ZCode 同理取最后一条带 `tokens` 的消息与全部消息之和；Antigravity 的上下文是最后一个 step 的 usage，累计取 `result.usage`（引擎自己的运行累计）。Cursor 不支持。
+
+窗口 `total` 只有引擎自己报了才有：Claude 用 SDK 报告的 `result.modelUsage[...].contextWindow`（回落 `CONTEXT_WINDOW`），Codex 用 `model_context_window`；OpenCode / ZCode / Antigravity 的转录不提供窗口，详情显示占位而不是猜一个。
+
+`/cost` 路由在实时载荷缺 `cumulative` 时读一次 provider 的持久化快照补齐，已有累计量就不再扫转录。前端把 `tokenUsage` 写进输入框按钮、把 `cumulativeUsage` 写进详情；页面回到前台（`visibilitychange`）会补拉一次用量，避免手机休眠后按钮停在旧快照。
+
 ## 能力矩阵：声明优于分支
 
 `provider-capabilities.catalog.ts` 放**推导不出来的静态事实**（权限模式、默认模型、附件/中止/effort）；

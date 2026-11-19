@@ -68,6 +68,7 @@ import {
 } from '@/modules/providers/list/codex/codex-turn-error.js';
 import { createBackgroundTasksStatusMessage, createTaskStatusMessage } from '@/modules/providers/shared/background-work/task-status.js';
 import { codexSessionTitleService } from '@/modules/providers/services/codex-session-title.service.js';
+import { buildCodexUsageSnapshot } from '@/modules/providers/services/codex-usage.js';
 import { notifyRunFailed, notifyRunStopped } from '@/modules/notifications/index.js';
 import {
   appendFilesInputTag,
@@ -233,9 +234,6 @@ const PROGRESSIVE_CODEX_ITEM_TYPES = new Set([
   'collabAgentToolCall',
 ]);
 
-/** Default context window reported when the server has not said otherwise. */
-const DEFAULT_CODEX_CONTEXT_WINDOW = 200000;
-
 /**
  * The server-to-client requests that are an approval the user can answer.
  *
@@ -309,35 +307,14 @@ function resolveCodexTerminalStatus(
 function readCodexTokenBudget(params: AnyRecord) {
   const usage = readObjectRecord(params.tokenUsage);
   // `last` is the turn that just ran — what the context window holds.
-  // `total` is the session's cumulative spend; using it as `used` made the
-  // live percentage climb every turn until a reload re-read the rollout.
-  const last = readObjectRecord(usage?.last);
-  const cumulative = readObjectRecord(usage?.total);
-  const current = last ?? cumulative;
-  if (!current) {
-    return null;
-  }
-
-  const inputTokens = Number(current.inputTokens) || 0;
-  const outputTokens = Number(current.outputTokens) || 0;
-  const cumulativeInputTokens = Number(cumulative?.inputTokens) || 0;
-  const cumulativeOutputTokens = Number(cumulative?.outputTokens) || 0;
-  return {
-    used: Number(current.totalTokens) || inputTokens + outputTokens,
-    total: Number(usage?.modelContextWindow) || DEFAULT_CODEX_CONTEXT_WINDOW,
-    inputTokens,
-    outputTokens,
-    breakdown: { input: inputTokens, output: outputTokens },
-    ...(cumulative
-      ? {
-          cumulative: {
-            used: Number(cumulative.totalTokens) || cumulativeInputTokens + cumulativeOutputTokens,
-            inputTokens: cumulativeInputTokens,
-            outputTokens: cumulativeOutputTokens,
-          },
-        }
-      : {}),
-  };
+  // `total` is the session's cumulative spend; the shared builder keeps both
+  // blocks so the detail view can report the total without the live
+  // percentage climbing every turn.
+  return buildCodexUsageSnapshot({
+    last: usage?.last,
+    total: usage?.total,
+    contextWindow: usage?.modelContextWindow,
+  });
 }
 
 /**

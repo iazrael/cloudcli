@@ -724,6 +724,26 @@ export function useChatSessionState({
     void refreshTokenUsage(activeSessionId);
   }, [activeSessionId, refreshTokenUsage]);
 
+  /**
+   * A phone that slept, or a tab the user backgrounded, stops receiving live
+   * `token_budget` frames while the session keeps working. Merging the
+   * persisted reading back on return keeps the counter from showing whatever
+   * snapshot the page last saw (an hour-old, 46K-against-475K reading in one
+   * reported case) while the detail modal already reports the current one.
+   */
+  useEffect(() => {
+    if (!activeSessionId) {
+      return;
+    }
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') {
+        void refreshTokenUsage(activeSessionId);
+      }
+    };
+    document.addEventListener('visibilitychange', refreshWhenVisible);
+    return () => document.removeEventListener('visibilitychange', refreshWhenVisible);
+  }, [activeSessionId, refreshTokenUsage]);
+
   // Refresh token usage automatically when a turn finishes processing within the same session
   const lastProcessedSessionIdRef = useRef<string | null>(null);
   useEffect(() => {

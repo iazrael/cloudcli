@@ -1307,7 +1307,14 @@ test('getTokenUsage aggregates message token totals from the fixture database', 
         projectPath: null,
       }),
       // msg_asst carries tokens {input: 100, output: 20, reasoning: 5, cache.read: 10}
-      { used: 135, inputTokens: 100, outputTokens: 20, breakdown: { input: 100, output: 20 } },
+      // — one message, so its own reading is also the session total.
+      {
+        used: 135,
+        inputTokens: 100,
+        outputTokens: 20,
+        cumulative: { used: 135, inputTokens: 100, outputTokens: 20 },
+        breakdown: { input: 100, output: 20 },
+      },
     );
   });
 });

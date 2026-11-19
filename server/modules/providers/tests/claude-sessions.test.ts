@@ -2043,7 +2043,7 @@ test('resolving an edit anchor skips rows that are not conversation turns', { co
   }
 });
 
-test('claude: getTokenUsage reads the latest assistant usage snapshot', async () => {
+test('claude: getTokenUsage reports the newest turn as context and the whole transcript as the total', async () => {
   const tempDirectory = await mkdtemp(path.join(os.tmpdir(), 'claude-token-usage-'));
   const sessionFilePath = path.join(tempDirectory, 'provider-session.jsonl');
   const previousContextWindow = process.env.CONTEXT_WINDOW;
@@ -2062,6 +2062,31 @@ test('claude: getTokenUsage reads the latest assistant usage snapshot', async ()
           },
         },
       }),
+      // A subagent turn is real spend but reports the subagent's window, so it
+      // must count in the total and never become the context reading.
+      JSON.stringify({
+        type: 'assistant',
+        isSidechain: true,
+        message: {
+          usage: {
+            input_tokens: 7,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            output_tokens: 3,
+          },
+        },
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          usage: {
+            input_tokens: 40,
+            cache_read_input_tokens: 1000,
+            cache_creation_input_tokens: 2,
+            output_tokens: 60,
+          },
+        },
+      }),
       '{incomplete',
     ].join('\n'));
 
@@ -2074,14 +2099,19 @@ test('claude: getTokenUsage reads the latest assistant usage snapshot', async ()
         projectPath: null,
       }),
       {
-        used: 155,
+        used: 1102,
         total: 180_000,
-        inputTokens: 125,
-        outputTokens: 30,
-        cacheReadTokens: 20,
-        cacheCreationTokens: 5,
-        cacheTokens: 25,
-        breakdown: { input: 125, output: 30 },
+        inputTokens: 1042,
+        outputTokens: 60,
+        cacheReadTokens: 1000,
+        cacheCreationTokens: 2,
+        cacheTokens: 1002,
+        cumulative: {
+          used: 1267,
+          inputTokens: 1174,
+          outputTokens: 93,
+        },
+        breakdown: { input: 1042, output: 60 },
       },
     );
 

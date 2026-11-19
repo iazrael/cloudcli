@@ -31,6 +31,8 @@ import type {
   WorkflowInfo,
 } from '@shared/protocol/chatEvents';
 
+import type { ProviderQuotaData } from '@shared/protocol/quota';
+
 /**
  * The sessions ticked for a bulk action, scoped to the one project whose list
  * is in selection mode. Scoping it keeps a delete from mixing rows of two
@@ -707,18 +709,31 @@ export type ModelCommandData = {
   defaultModel?: string;
 };
 
-/** Result payload of the chat `/cost` slash command, carrying the session's token usage totals and input/output breakdown for the command modal's usage view. */
+/** Result payload of the chat `/cost` slash command, carrying the session's context-window reading, its cumulative spend, and the input/output halves of each for the command modal's usage view. */
 export type CostCommandData = {
+  /** Context-window occupancy — what the composer's token counter shows. */
   tokenUsage?: {
     used?: number;
     total?: number;
   };
+  /** Input/output split of `tokenUsage.used`. */
   tokenBreakdown?: {
     input?: number;
     output?: number;
   };
+  /**
+   * The session's whole spend; the detail's "total tokens" row reads this and
+   * never `tokenUsage.used`, which shrinks after a compaction.
+   */
+  cumulativeUsage?: {
+    used?: number;
+    inputTokens?: number;
+    outputTokens?: number;
+  };
   provider?: string;
   model?: string;
+  /** Account quota card, when the provider reports one. */
+  quota?: ProviderQuotaData;
 };
 
 /** Result payload of the chat `/status` slash command, carrying server version, uptime, provider/model and process telemetry for the command modal's status view. */

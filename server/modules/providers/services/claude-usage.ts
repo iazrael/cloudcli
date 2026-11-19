@@ -49,17 +49,20 @@ export function getReportedClaudeContextWindow(
 }
 
 /**
- * Latest context-window usage from a Claude transcript's already-parsed rows.
+ * Latest context-window usage plus the session's cumulative spend from a
+ * Claude transcript's already-parsed rows.
  *
  * Exported because the session-messages reader hands the same usage back on
  * every history page, the way the Codex and OpenCode readers do. Without that,
  * a Claude session's counter only moved when the session was reselected, and
  * the store's "this provider reports no usage" path overwrote it with zero.
  *
- * Reads the newest assistant turn only: `input_tokens + cache_read +
- * cache_creation` is that one request's whole prompt, i.e. what the context
- * window currently holds. Summing turns would count the same cached prefix
- * once per turn.
+ * `used` reads the newest main-thread assistant turn only:
+ * `input_tokens + cache_read + cache_creation` is that one request's whole
+ * prompt, i.e. what the context window currently holds. Summing turns would
+ * count the same cached prefix once per turn, so the cumulative block sums
+ * every assistant row instead — subagent turns included, since their tokens
+ * were really spent on this session.
  *
  * The total is the window the SDK reported for the session when there is one,
  * and the CONTEXT_WINDOW setting otherwise.
@@ -73,16 +76,10 @@ export function summarizeClaudeTokenUsage(
   let outputTokens = 0;
   let cacheReadTokens = 0;
   let cacheCreationTokens = 0;
+  let cumulativeInputTokens = 0;
+  let cumulativeOutputTokens = 0;
 
-  for (let index = entries.length - 1; index >= 0; index -= 1) {
-    const entry = entries[index];
-    // A subagent's turns report the subagent's context window, not this
-    // conversation's; reading one makes the counter drop to the subagent's
-    // number and bounce back on the next main-thread turn.
-    if (entry?.isSidechain === true) {
-      continue;
-    }
-
+  for (const entry of entries) {
     const usage = entry?.type === 'assistant' ? entry.message?.usage : null;
     if (!usage) {
       continue;
@@ -102,9 +99,20 @@ export function summarizeClaudeTokenUsage(
 
     // `<synthetic>` rows — interrupts, API errors, "No response requested" —
     // are written with an all-zero usage block rather than none at all. They
-    // never carried a prompt, so treating one as the newest turn zeroed a
-    // counter that a live event had just set correctly.
+    // never carried a prompt, so counting one zeroed a counter that a live
+    // event had just set correctly.
     if (rowInputTokens === 0 && rowOutputTokens === 0) {
+      continue;
+    }
+
+    cumulativeInputTokens += rowInputTokens;
+    cumulativeOutputTokens += rowOutputTokens;
+
+    // A subagent's turns report the subagent's context window, not this
+    // conversation's; reading one makes the counter drop to the subagent's
+    // number and bounce back on the next main-thread turn. They still count
+    // as spend above, and the newest main-thread row wins here.
+    if (entry?.isSidechain === true) {
       continue;
     }
 
@@ -112,7 +120,6 @@ export function summarizeClaudeTokenUsage(
     cacheCreationTokens = rowCacheCreationTokens;
     inputTokens = rowInputTokens;
     outputTokens = rowOutputTokens;
-    break;
   }
 
   const parsedContextWindow = Number.parseInt(configuredContextWindow ?? '', 10);
@@ -130,6 +137,11 @@ export function summarizeClaudeTokenUsage(
     cacheReadTokens,
     cacheCreationTokens,
     cacheTokens,
+    cumulative: {
+      used: cumulativeInputTokens + cumulativeOutputTokens,
+      inputTokens: cumulativeInputTokens,
+      outputTokens: cumulativeOutputTokens,
+    },
     breakdown: { input: inputTokens, output: outputTokens },
   };
 }

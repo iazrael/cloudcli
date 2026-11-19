@@ -17,7 +17,11 @@
     "outputAssets": "结果附件（{{count}}）",
     "fullOutput": "完整输出.txt",
     "compacted": "已压缩",
-    "compactionSummary": "完整摘要"
+    "compactionSummary": "完整摘要",
+    "showTokenUsage": "查看 token 用量",
+    "tokensUsed": "已用 {{count}} tokens",
+    "tokensLabel": "tokens",
+    "contextTokensUsed": "当前上下文：{{used}} / {{total}} tokens"
   },
   "codeBlock": {
     "copy": "复制",
@@ -388,6 +392,10 @@
   "cost": {
     "readingUsage": "正在读取会话用量…",
     "totalTokensUsed": "总用量",
+    "cumulativeTokens": "累计总用量",
+    "cumulativeInputTokens": "累计输入",
+    "cumulativeOutputTokens": "累计输出",
+    "contextTokens": "当前上下文",
     "inputTokens": "输入用量",
     "outputTokens": "输出用量",
     "contextWindow": "上下文窗口",
