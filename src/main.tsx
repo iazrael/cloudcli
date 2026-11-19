@@ -16,12 +16,15 @@ import '@fontsource/merriweather/700-italic.css'
 import '@/index.css'
 import 'katex/dist/katex.min.css'
 import { markStartupMilestone, startStartupDiagnostics } from '@/shared/diagnostics/startupDiagnostics'
-
+import { setupIosPwaStatusBar } from '@/shared/iosPwaStatusBar'
 // i18n bundles load per language; initI18n must resolve before the first render
 import { initI18n } from '@/modules/i18n'
 
 startStartupDiagnostics()
 markStartupMilestone('entry_evaluated')
+
+const disposeIosPwaStatusBar = setupIosPwaStatusBar()
+if (disposeIosPwaStatusBar) import.meta.hot?.dispose(disposeIosPwaStatusBar)
 
 // React Scan is a render-diagnostics overlay, and an expensive one: measured on
 // this app it roughly halves the dev frame rate, adds ~14 MB of heap and injects
