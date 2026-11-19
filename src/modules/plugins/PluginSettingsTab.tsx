@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Activity,
@@ -463,8 +463,15 @@ function PluginRecommendationCard({
 /** Rendered by the settings module as its Plugins tab, for installing, updating and toggling plugins. */
 export default function PluginSettingsTab() {
   const { t } = useTranslation('settings');
-  const { plugins, loading, installPlugin, uninstallPlugin, updatePlugin, togglePlugin } =
+  const { plugins, loading, pluginsError, refreshPlugins, installPlugin, uninstallPlugin, updatePlugin, togglePlugin } =
     usePlugins();
+
+  // The provider loads the list once at app mount; a failure there leaves an
+  // empty list until some operation refreshes it. This tab is conditionally
+  // mounted, so re-fetch on every open to heal a failed load without a reload.
+  useEffect(() => {
+    void refreshPlugins();
+  }, [refreshPlugins]);
 
   const [gitUrl, setGitUrl] = useState('');
   const [installing, setInstalling] = useState(false);
@@ -626,6 +633,29 @@ export default function PluginSettingsTab() {
           {t('pluginSettings.securityWarning')}
         </span>
       </p>
+
+      {/* A failed list load leaves an empty view that would otherwise look like
+          "nothing installed" and invite duplicate installs (server rejects with
+          "already exists"); surface it with a retry instead. */}
+      {!loading && pluginsError && (
+        <div className="flex items-center justify-between gap-3 rounded-lg border border-red-500/40 bg-red-500/5 px-3 py-2">
+          <div className="min-w-0">
+            <p className="text-sm text-red-500">
+              {t('pluginSettings.loadFailed')}
+            </p>
+            <p className="truncate text-xs text-muted-foreground/60">
+              {typeof pluginsError === 'string' ? pluginsError : String(pluginsError)}
+            </p>
+          </div>
+          <button
+            onClick={() => void refreshPlugins()}
+            className="flex flex-shrink-0 items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted"
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+            {t('pluginSettings.retry')}
+          </button>
+        </div>
+      )}
 
       {/* Plugin sections */}
       {loading ? (

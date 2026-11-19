@@ -839,6 +839,8 @@
     "updateFailed": "Update failed",
     "installFailed": "Installation failed",
     "uninstallFailed": "Uninstall failed",
+    "loadFailed": "Couldn't load the installed plugins.",
+    "retry": "Retry",
     "toggleFailed": "Toggle failed",
     "starterPluginLabel": "Starter Plugin",
     "starter": "Starter",

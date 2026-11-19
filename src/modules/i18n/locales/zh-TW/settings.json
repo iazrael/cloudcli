@@ -615,6 +615,8 @@
     "updateFailed": "更新失敗",
     "installFailed": "安裝失敗",
     "uninstallFailed": "解除安裝失敗",
+    "loadFailed": "無法載入已安裝的外掛",
+    "retry": "重試",
     "toggleFailed": "切換失敗",
     "buildYourOwn": "建立您自己的外掛",
     "starter": "入門範本",

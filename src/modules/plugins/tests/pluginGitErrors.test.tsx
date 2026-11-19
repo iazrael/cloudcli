@@ -105,6 +105,60 @@ describe('Settings > Plugins shows why a git install or update failed', () => {
   });
 });
 
+describe('Settings > Plugins reloads and surfaces a failed list load', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('re-fetches the plugin list when the settings tab opens after a failed load', async () => {
+    // The provider's initial load fails; the settings tab's mount refresh
+    // (this tab is conditionally mounted) must recover the list on its own.
+    let listCalls = 0;
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url === '/api/plugins') {
+        listCalls += 1;
+        const reply: StubbedReply = listCalls === 1
+          ? { status: 500, body: envelope('PLUGINS_UNREADABLE', 'Plugins directory is not readable', { path: '~/.cloudcli/plugins' }) }
+          : { status: 200, body: { plugins: [installedPlugin] } };
+        return new Response(JSON.stringify(reply.body), { status: reply.status, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ error: 'Not found' }), { status: 404, headers: { 'Content-Type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderPluginSettings();
+    await waitFor(() => expect(screen.getByText('Private Demo')).toBeTruthy());
+    // Two list requests: the provider's mount load plus the tab's refresh.
+    expect(fetchMock.mock.calls.filter(([url]) => url === '/api/plugins')).toHaveLength(2);
+  });
+
+  it('shows a load failure with retry, and recovers when the retry succeeds', async () => {
+    let listReply: StubbedReply = {
+      status: 500,
+      body: envelope('PLUGINS_UNREADABLE', 'Plugins directory is not readable', { path: '~/.cloudcli/plugins' }),
+    };
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url === '/api/plugins') return new Response(JSON.stringify(listReply.body), { status: listReply.status, headers: { 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ error: 'Not found' }), { status: 404, headers: { 'Content-Type': 'application/json' } });
+    }));
+
+    renderPluginSettings();
+
+    expect(await screen.findByText("Couldn't load the installed plugins.")).toBeTruthy();
+    expect(screen.getByText('Plugins directory is not readable')).toBeTruthy();
+
+    listReply = { status: 200, body: { plugins: [installedPlugin] } };
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+
+    expect(await screen.findByText('Private Demo')).toBeTruthy();
+    expect(screen.queryByText("Couldn't load the installed plugins.")).toBeNull();
+  });
+});
+
 describe('PluginsContext reads the structured error envelope of every plugin call', () => {
   beforeEach(() => {
     localStorage.clear();

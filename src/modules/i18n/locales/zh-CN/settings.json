@@ -828,6 +828,8 @@
     "updateFailed": "更新失败",
     "installFailed": "安装失败",
     "uninstallFailed": "卸载失败",
+    "loadFailed": "无法加载已安装的插件",
+    "retry": "重试",
     "toggleFailed": "切换失败",
     "starterPluginLabel": "入门插件",
     "starter": "入门模板",
