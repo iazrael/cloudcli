@@ -10,6 +10,9 @@ import { normalizeProjectPath } from '../../shared/utils.js';
 /** The providers an Agent API run can start: the ones with a runtime and a model catalog. */
 const AGENT_RUN_PROVIDERS = ['claude', 'cursor', 'codex', 'opencode'];
 
+/** The runnable providers whose runtime accepts a reasoning effort. */
+const AGENT_EFFORT_PROVIDERS = new Set(['claude', 'codex', 'opencode']);
+
 /** What the route reads off a session row it continues or reports: the row, not the request, says which provider and project a session belongs to. */
 type AgentSessionRow = {
   session_id: string;
@@ -17,6 +20,9 @@ type AgentSessionRow = {
   provider_session_id: string | null;
   project_path: string | null;
   custom_name?: string | null;
+  /** Runtime facts chat.send also records; a continuation inherits them. */
+  model?: string | null;
+  effort?: string | null;
   isArchived?: number;
   created_at?: string;
   updated_at?: string;
@@ -850,7 +856,9 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
    * @param {string} effort - (Optional) Reasoning effort for providers/models that support it.
    *                          Claude supports: 'low', 'medium', 'high', 'xhigh', 'max' depending on model.
    *                          Codex supports: 'low', 'medium', 'high', 'xhigh', 'max', 'ultra' depending on model.
-   *                          'default' or omission lets the provider decide.
+   *                          'default' or omission lets the provider decide. A continuation that
+   *                          omits it keeps the effort recorded for the session, so a follow-up
+   *                          does not reset a max run.
    *
    * @param {boolean} unattended - (Optional) Whether nobody will answer the run's MCP elicitation forms.
    *                              Claude only. Default: true
@@ -1248,6 +1256,27 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
         ? providerModels.DEFAULT
         : undefined;
 
+      // Record what this run starts with, as chat.send does. The composer
+      // reopens the session from this row, and a follow-up must not reset the
+      // engine to its provider default. A new session pins the catalog model
+      // and an explicit `default` effort so reopening does not inherit a later
+      // per-provider browser preference; a continuation without either keeps
+      // whatever the row already recorded, and an omitted effort continues
+      // with the recorded one instead of falling back to the engine default.
+      const requestedEffort = AGENT_EFFORT_PROVIDERS.has(provider) && typeof effort === 'string' ? effort : undefined;
+      const recordedEffort = typeof sessionRow?.effort === 'string' ? sessionRow.effort.trim() : '';
+      const effortForRun = requestedEffort ?? (recordedEffort || undefined);
+      const effectiveModel = model
+        || (typeof sessionRow?.model === 'string' ? sessionRow.model.trim() : '')
+        || (provider === 'cursor' ? cursorDefaultModel : providerModels?.DEFAULT);
+      if (model || (!sessionRow && effectiveModel)) {
+        providerModelsService.setSessionModel(provider, appSessionId, effectiveModel);
+      }
+      const effortToRecord = requestedEffort ?? (sessionRow ? '' : 'default');
+      if (effortToRecord) {
+        providerModelsService.setSessionEffort(provider, appSessionId, effortToRecord);
+      }
+
       // Start the appropriate session
       if (provider === 'claude') {
         console.log('🤖 Starting Claude SDK session');
@@ -1257,7 +1286,7 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
           cwd: finalProjectPath,
           sessionId: appSessionId,
           model: model || providerModels?.DEFAULT,
-          effort,
+          effort: effortForRun,
           permissionMode: 'bypassPermissions', // Bypass all permissions for API calls
           // A caller that only reads this response cannot answer an MCP form;
           // one whose run a person watches in the UI says so with `false`.
@@ -1282,7 +1311,7 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
           cwd: finalProjectPath,
           sessionId: appSessionId,
           model: model || providerModels?.DEFAULT,
-          effort,
+          effort: effortForRun,
           permissionMode: 'bypassPermissions'
         }, run.writer);
       } else if (provider === 'opencode') {
@@ -1293,7 +1322,7 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
           cwd: finalProjectPath,
           sessionId: appSessionId,
           model: model || providerModels?.DEFAULT,
-          effort,
+          effort: effortForRun,
           permissionMode: 'bypassPermissions' // Agent runs are non-interactive, like the other providers above
         }, run.writer);
       }

@@ -29,7 +29,10 @@ function createDependencies(
     apiKeys: { validateApiKey: () => undefined },
     githubTokens: { getActiveGithubToken: () => null },
     projects: { createProjectPath: () => ({ outcome: 'created' }) },
-    models: {} as AgentDependencies['models'],
+    models: {
+      setSessionModel: () => null,
+      setSessionEffort: () => null,
+    } as unknown as AgentDependencies['models'],
     sessions: {
       getSessionById: () => null,
       getSessionByProviderSessionId: () => null,
@@ -235,6 +238,8 @@ test('Agent route reuses a matching checkout without cloning or deleting it', as
     spawnProcess,
     models: {
       getProviderModels: async () => ({ OPTIONS: [], DEFAULT: 'default-model' }),
+      setSessionModel: () => null,
+      setSessionEffort: () => null,
     } as unknown as AgentDependencies['models'],
     queryClaude: (async () => undefined) as AgentDependencies['queryClaude'],
   }), async (baseUrl) => {
@@ -265,6 +270,8 @@ test('Agent route starts opencode on the catalog default when the request names 
     } as unknown as AgentDependencies['fileSystem'],
     models: {
       getProviderModels: async (provider: string) => ({ OPTIONS: [], DEFAULT: `${provider}-catalog-default` }),
+      setSessionModel: () => null,
+      setSessionEffort: () => null,
     } as unknown as AgentDependencies['models'],
     queryOpenCode: (async (_prompt: string, options: { model?: string }) => {
       opencodeCalls.push(options);
@@ -284,6 +291,157 @@ test('Agent route starts opencode on the catalog default when the request names 
   });
 
   assert.deepEqual(opencodeCalls.map((call) => call.model), ['opencode-catalog-default']);
+});
+
+test('Agent route records the requested model and effort on a new app session', async () => {
+  const writes: string[] = [];
+  const opencodeCalls: { model?: string; effort?: string }[] = [];
+
+  await withAgentServer(createDependencies({
+    fileSystem: {
+      access: async () => undefined,
+    } as unknown as AgentDependencies['fileSystem'],
+    models: {
+      getProviderModels: async () => ({
+        OPTIONS: [{
+          value: 'opencode-go/deepseek-v4.1-flash',
+          label: 'DeepSeek V4.1 Flash',
+          effort: { values: [{ value: 'low' }, { value: 'high' }, { value: 'max' }] },
+        }],
+        DEFAULT: 'opencode-go/deepseek-v4.1-flash',
+      }),
+      setSessionModel: (_provider: string, sessionId: string, model: string) => {
+        writes.push(`model:${sessionId}:${model}`);
+        return null;
+      },
+      setSessionEffort: (_provider: string, sessionId: string, effort: string) => {
+        writes.push(`effort:${sessionId}:${effort}`);
+        return null;
+      },
+    } as unknown as AgentDependencies['models'],
+    queryOpenCode: (async (_prompt: string, options: { model?: string; effort?: string }) => {
+      opencodeCalls.push(options);
+    }) as unknown as AgentDependencies['queryOpenCode'],
+  }), async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/agent`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        projectPath: '/home/test/project',
+        message: 'Run',
+        provider: 'opencode',
+        model: 'opencode-go/deepseek-v4.1-flash',
+        effort: 'max',
+        stream: false,
+      }),
+    });
+    assert.equal(response.status, 200);
+  });
+
+  // The composer reads the session row back; without this write it opened on
+  // the browser's per-provider default instead of the effort the run used.
+  assert.deepEqual(writes, [
+    'model:app-session-1:opencode-go/deepseek-v4.1-flash',
+    'effort:app-session-1:max',
+  ]);
+  assert.equal(opencodeCalls[0]?.effort, 'max');
+});
+
+test('Agent route pins an omitted effort to default on a new app session', async () => {
+  const writes: string[] = [];
+
+  await withAgentServer(createDependencies({
+    fileSystem: {
+      access: async () => undefined,
+    } as unknown as AgentDependencies['fileSystem'],
+    models: {
+      getProviderModels: async () => ({ OPTIONS: [], DEFAULT: 'opencode-catalog-default' }),
+      setSessionModel: (_provider: string, sessionId: string, model: string) => {
+        writes.push(`model:${sessionId}:${model}`);
+        return null;
+      },
+      setSessionEffort: (_provider: string, sessionId: string, effort: string) => {
+        writes.push(`effort:${sessionId}:${effort}`);
+        return null;
+      },
+    } as unknown as AgentDependencies['models'],
+    queryOpenCode: (async () => undefined) as unknown as AgentDependencies['queryOpenCode'],
+  }), async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/agent`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        projectPath: '/home/test/project',
+        message: 'Run',
+        provider: 'opencode',
+        stream: false,
+      }),
+    });
+    assert.equal(response.status, 200);
+  });
+
+  // `default` is an explicit choice: reopening the session must not inherit a
+  // later per-provider preference from the browser.
+  assert.deepEqual(writes, [
+    'model:app-session-1:opencode-catalog-default',
+    'effort:app-session-1:default',
+  ]);
+});
+
+test('Agent route continues with the effort recorded for the session', async () => {
+  const opencodeCalls: { effort?: string }[] = [];
+  const writes: string[] = [];
+
+  await withAgentServer(createDependencies({
+    fileSystem: {
+      access: async () => undefined,
+    } as unknown as AgentDependencies['fileSystem'],
+    models: {
+      getProviderModels: async () => ({ OPTIONS: [], DEFAULT: 'catalog-default' }),
+      setSessionModel: (_provider: string, sessionId: string, model: string) => {
+        writes.push(`model:${sessionId}:${model}`);
+        return null;
+      },
+      setSessionEffort: (_provider: string, sessionId: string, effort: string) => {
+        writes.push(`effort:${sessionId}:${effort}`);
+        return null;
+      },
+    } as unknown as AgentDependencies['models'],
+    sessions: {
+      getSessionById: (sessionId: string) => (sessionId === 'session-1'
+        ? {
+          session_id: 'session-1',
+          provider: 'opencode',
+          provider_session_id: 'ses_1',
+          project_path: '/home/test/project',
+          model: 'opencode-go/deepseek-v4.1-flash',
+          effort: 'max',
+        }
+        : null),
+      getSessionByProviderSessionId: () => null,
+      createAppSession: () => { throw new Error('a continued session must not create a row'); },
+    },
+    queryOpenCode: (async (_prompt: string, options: { effort?: string }) => {
+      opencodeCalls.push(options);
+    }) as unknown as AgentDependencies['queryOpenCode'],
+  }), async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/agent`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        sessionId: 'session-1',
+        message: 'Run',
+        provider: 'opencode',
+        stream: false,
+      }),
+    });
+    assert.equal(response.status, 200);
+  });
+
+  // A follow-up that names no effort must not reset the engine's max variant,
+  // and there is nothing new to persist.
+  assert.equal(opencodeCalls[0]?.effort, 'max');
+  assert.deepEqual(writes, []);
 });
 
 /**
@@ -307,6 +465,8 @@ async function collectFrames(
     fileSystem: { access: async () => undefined } as unknown as AgentDependencies['fileSystem'],
     models: {
       getProviderModels: async () => ({ OPTIONS: [], DEFAULT: 'catalog-default' }),
+      setSessionModel: () => null,
+      setSessionEffort: () => null,
     } as unknown as AgentDependencies['models'],
     queryClaude: emit as unknown as AgentDependencies['queryClaude'],
     queryOpenCode: emit,
@@ -380,6 +540,8 @@ test('Agent route starts codex on the catalog default when the request names no 
       // `getProviderModels` resolves to a `ProviderModelsDefinition` - `OPTIONS`
       // and `DEFAULT`, with nothing wrapped around it.
       getProviderModels: async () => ({ OPTIONS: [], DEFAULT: 'catalog-default' }),
+      setSessionModel: () => null,
+      setSessionEffort: () => null,
     } as unknown as AgentDependencies['models'],
     queryCodex: (async (_prompt: string, options: { model?: string }) => {
       codexCalls.push(options);
@@ -425,6 +587,8 @@ async function runWithoutModel(
         catalogReads.push(catalogProvider);
         return catalogs[catalogProvider];
       },
+      setSessionModel: () => null,
+      setSessionEffort: () => null,
     } as unknown as AgentDependencies['models'],
     queryClaude: recordModel,
     queryCursor: recordModel,
@@ -452,6 +616,8 @@ async function startClaudeRunWith(extraBody: Record<string, unknown>): Promise<{
     fileSystem: { access: async () => undefined } as unknown as AgentDependencies['fileSystem'],
     models: {
       getProviderModels: async () => ({ OPTIONS: [{ value: 'sonnet' }], DEFAULT: 'sonnet' }),
+      setSessionModel: () => null,
+      setSessionEffort: () => null,
     } as unknown as AgentDependencies['models'],
     queryClaude: (async (_prompt: string, options: { unattended?: boolean }) => {
       runOptions.push(options);

@@ -384,7 +384,13 @@ const readOpenCodeCliModelIds = async (): Promise<string[]> => {
   }
 };
 
-const parseOpenCodeSessionModelValue = (rawModel: unknown): string | null => {
+/** A provider/model id plus the reasoning variant the engine stored beside it. */
+type OpenCodeSessionModel = {
+  model: string;
+  variant: string | null;
+};
+
+const parseOpenCodeSessionModelValue = (rawModel: unknown): OpenCodeSessionModel | null => {
   if (typeof rawModel === 'string') {
     const trimmed = rawModel.trim();
     if (!trimmed) {
@@ -394,7 +400,7 @@ const parseOpenCodeSessionModelValue = (rawModel: unknown): string | null => {
     try {
       return parseOpenCodeSessionModelValue(JSON.parse(trimmed));
     } catch {
-      return trimmed;
+      return { model: trimmed, variant: null };
     }
   }
 
@@ -418,11 +424,17 @@ const parseOpenCodeSessionModelValue = (rawModel: unknown): string | null => {
   // instead of failing with an unknown-model error.
   const providerId = readOptionalString(record.providerID)
     ?? readOptionalString(record.providerId);
-  if (providerId && !modelId.startsWith(`${providerId}/`)) {
-    return `${providerId}/${modelId}`;
-  }
+  const model = providerId && !modelId.startsWith(`${providerId}/`)
+    ? `${providerId}/${modelId}`
+    : modelId;
 
-  return modelId;
+  // The same object carries the reasoning effort as `variant`; dropping it
+  // would make the composer show the browser's default for a session that
+  // actually ran at `max`.
+  return {
+    model,
+    variant: readOptionalString(record.variant) ?? null,
+  };
 };
 
 /** One catalog read: the account catalog when the CLI answered, else the anchor fallback. */
@@ -478,7 +490,8 @@ export class OpenCodeProviderModels implements IProviderModels {
     // OpenCode's `session` table is keyed by its own session id, so the stable
     // app id has to be translated first; sessions discovered on disk store the
     // provider id in both columns and resolve to themselves.
-    const providerSessionId = sessionsDb.getSessionById(sessionId)?.provider_session_id ?? sessionId;
+    const appSession = sessionsDb.getSessionById(sessionId);
+    const providerSessionId = appSession?.provider_session_id ?? sessionId;
 
     try {
       const dbPath = getOpenCodeDatabasePath();
@@ -509,10 +522,24 @@ export class OpenCodeProviderModels implements IProviderModels {
             } | undefined
           : undefined;
 
-        const model = parseOpenCodeSessionModelValue(row?.model);
-        if (model) {
+        const parsed = parseOpenCodeSessionModelValue(row?.model);
+        if (parsed) {
+          // The engine records the reasoning variant beside the model. A row
+          // that never learned it (an Agent API run, or a session started in
+          // the CLI) gets it back-filled so the composer opens on what the
+          // session actually runs with, and a later resume keeps it. The app's
+          // own recorded choice always wins, so only an empty effort is filled.
+          if (appSession && !appSession.effort && parsed.variant) {
+            try {
+              sessionsDb.setSessionEffort(sessionId, parsed.variant);
+            } catch {
+              // A read-only or busy index must not hide the model the session
+              // runs with; the returned effort still reaches the composer.
+            }
+          }
           return {
-            model,
+            model: parsed.model,
+            effort: parsed.variant,
           };
         }
       } finally {

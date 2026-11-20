@@ -471,6 +471,7 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
       const predefined = await resolveProvider(provider).models.getSupportedModels();
       const providerCatalog = readMergedCatalog(provider, predefined);
       const providerModel = await getCurrentActiveModel(provider, normalizedSessionId);
+      const providerEffort = providerModel.effort?.trim() || null;
       const resolvedProviderModel = providerModel.model?.trim();
       // Adapters answer with their own built-in default when they know nothing
       // about the session. That value, not the merged default (a custom model
@@ -480,7 +481,9 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
           provider,
           sessionId: normalizedSessionId,
           model: resolvedProviderModel,
-          effort: recordedSelection?.effort ?? null,
+          // A recorded choice wins; otherwise surface the effort the provider
+          // kept beside its own model (OpenCode's `variant`, ZCode's level).
+          effort: recordedSelection?.effort ?? providerEffort,
           source: 'provider',
         };
       }
@@ -489,7 +492,10 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
         provider,
         sessionId: normalizedSessionId,
         model: normalizedRequestedModel || providerCatalog.DEFAULT,
-        effort: recordedSelection?.effort ?? null,
+        // A provider answer that equals the predefined default still carries a
+        // real effort for the session; dropping it would reopen on the browser
+        // default even though the engine ran at `max`.
+        effort: recordedSelection?.effort ?? providerEffort,
         source: normalizedRequestedModel ? 'session' : 'default',
       };
     }

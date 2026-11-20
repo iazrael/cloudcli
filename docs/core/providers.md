@@ -645,7 +645,7 @@ Claude、Codex 的全历史缓存按归一化结果的序列化大小、字符�
 执行能力从 provider 注册表发现已安装且声明 `supportsTaskExecution` 的引擎及模型，不在 nexus-kit 维护第二份引擎列表。
 当前只有 ZCode 声明可靠终止契约，已完成真实派发、交付、返工续跑和取消验证。其他引擎继续使用原直连执行器。
 聊天 complete 不自动等于引擎停止：RPC 失败或超时补出的界面终态不能作为自动任务的停止凭据。
-现有 `/api/agent` 保留原协议与鉴权，与执行 MCP 共用 provider 调度层。
+现有 `/api/agent` 保留原协议与鉴权，与执行 MCP 共用 provider 调度层；它在起跑前把本次 `model`/`effort` 写进会话行（新会话缺省 effort 记为 `default`），续跑未显式给 `effort` 时沿用会话已记录值，避免下一轮把引擎档位重置。
 
 服务默认关闭。服务进程须显式配置：
 

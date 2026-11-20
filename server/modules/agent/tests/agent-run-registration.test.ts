@@ -68,7 +68,11 @@ function createDependencies(
     apiKeys: { validateApiKey: () => undefined },
     githubTokens: { getActiveGithubToken: () => null },
     projects: { createProjectPath: () => ({ outcome: 'created' }) },
-    models: { getProviderModels: async () => ({ OPTIONS: [], DEFAULT: 'default-model' }) } as unknown as AgentDependencies['models'],
+    models: {
+      getProviderModels: async () => ({ OPTIONS: [], DEFAULT: 'default-model' }),
+      setSessionModel: () => null,
+      setSessionEffort: () => null,
+    } as unknown as AgentDependencies['models'],
     sessions: {
       getSessionById: (sessionId) => sessionsDb.getSessionById(sessionId),
       getSessionByProviderSessionId: (providerSessionId) => sessionsDb.getSessionByProviderSessionId(providerSessionId),
