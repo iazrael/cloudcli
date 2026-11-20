@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { AlertTriangle, Check, X, Loader2, Folder, Upload } from 'lucide-react';
 
 import { cn } from '@/shared/utils';
+import { LARGE_FILE_OPEN_BYTES, LARGE_FILE_OPEN_LABEL } from '@/shared/constants';
 import { ICON_SIZE_CLASS, getFileIconData } from '@/modules/file-tree/utils/fileIcons';
 import { useFileTreeOperations } from '@/modules/file-tree/hooks/useFileTreeOperations';
 import { useFileTreeSearch } from '@/modules/file-tree/hooks/useFileTreeSearch';
@@ -34,6 +35,11 @@ export default function FileTree({ selectedProject, onFileOpen, revealDirectory 
   const { t } = useTranslation();
   const [selectedImage, setSelectedImage] = useState<FileTreeImageSelection | null>(null);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  // The oversized file waiting on the open confirmation. Loading a file above
+  // the threshold would read the whole document into the editor and stall the
+  // pane, so the click parks the node here and the dialog decides: keep
+  // opening, or download it directly instead.
+  const [largeFileCandidate, setLargeFileCandidate] = useState<FileTreeNode | null>(null);
   const newItemInputRef = useRef<HTMLInputElement>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
 
@@ -194,10 +200,39 @@ export default function FileTree({ selectedProject, onFileOpen, revealDirectory 
         return;
       }
 
+      // Entries above the open threshold ask first: the dialog offers a direct
+      // download so opening a huge document stays a deliberate choice.
+      if ((item.size ?? 0) > LARGE_FILE_OPEN_BYTES) {
+        setLargeFileCandidate(item);
+        return;
+      }
+
       onFileOpen?.(item.path);
     },
     [onFileOpen, selectedProject, toggleDirectory, search.isSearchActive, setSearchQuery, revealAndScroll],
   );
+
+  // Opens the parked large file after the user confirmed; closing the dialog
+  // clears the candidate on every path.
+  const openLargeCandidate = useCallback(() => {
+    if (!largeFileCandidate) return;
+    const { path } = largeFileCandidate;
+    setLargeFileCandidate(null);
+    onFileOpen?.(path);
+  }, [largeFileCandidate, onFileOpen]);
+
+  // Destructured so the dialog's download callback can depend on the stable
+  // memoized handler instead of the per-render operations object.
+  const { handleDownload } = operations;
+
+  // Downloads the parked large file through the same streaming download the
+  // tree's context menu uses, then closes the dialog.
+  const downloadLargeCandidate = useCallback(() => {
+    if (!largeFileCandidate) return;
+    const item = largeFileCandidate;
+    setLargeFileCandidate(null);
+    void handleDownload(item);
+  }, [largeFileCandidate, handleDownload]);
 
   const formatRelativeTimeLabel = useCallback(
     (date?: string) => formatRelativeTime(date, t),
@@ -384,6 +419,53 @@ export default function FileTree({ selectedProject, onFileOpen, revealDirectory 
               >
                 {operationLoading && <Loader2 className="h-4 w-4 animate-spin" />}
                 {t('fileTree.delete.confirm', 'Delete')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Large-file Open Confirmation */}
+      {largeFileCandidate && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50">
+          <div className="mx-4 max-w-sm rounded-lg border border-border bg-background p-4 shadow-lg">
+            <div className="mb-4 flex items-center gap-3">
+              <div className="rounded-full bg-amber-100 p-2 dark:bg-amber-900/30">
+                <AlertTriangle className="h-5 w-5 text-amber-600 dark:text-amber-400" />
+              </div>
+              <div>
+                <h3 className="font-medium text-foreground">
+                  {t('fileTree.largeFile.title', 'Large file')}
+                </h3>
+                <p className="text-sm text-muted-foreground">{largeFileCandidate.name}</p>
+              </div>
+            </div>
+            <p className="mb-4 text-sm text-muted-foreground">
+              {t('fileTree.largeFile.message', 'This file is {{size}}, larger than the {{threshold}} open limit. Opening it loads the whole file into the editor and may stall the page — you can download it directly instead.', {
+                size: formatFileSize(largeFileCandidate.size),
+                threshold: LARGE_FILE_OPEN_LABEL,
+              })}
+            </p>
+            <div className="flex flex-wrap justify-end gap-2">
+              <button
+                onClick={() => setLargeFileCandidate(null)}
+                className="rounded-md px-3 py-1.5 text-sm transition-colors hover:bg-accent"
+              >
+                {t('common.cancel', 'Cancel')}
+              </button>
+              <button
+                onClick={downloadLargeCandidate}
+                disabled={operationLoading}
+                className="flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm transition-colors hover:bg-accent disabled:opacity-50"
+              >
+                {operationLoading && <Loader2 className="h-4 w-4 animate-spin" />}
+                {t('fileTree.largeFile.download', 'Download instead')}
+              </button>
+              <button
+                onClick={openLargeCandidate}
+                className="rounded-md bg-blue-600 px-3 py-1.5 text-sm text-white transition-colors hover:bg-blue-700"
+              >
+                {t('fileTree.largeFile.continueOpen', 'Open anyway')}
               </button>
             </div>
           </div>

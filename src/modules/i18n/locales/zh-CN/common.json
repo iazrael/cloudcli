@@ -153,7 +153,13 @@
     "folderLoadFailed": "无法加载此文件夹",
     "retry": "重试",
     "emptyFolder": "空文件夹",
-    "folderTruncated": "仅显示前 5,000 项。"
+    "folderTruncated": "仅显示前 5,000 项。",
+    "largeFile": {
+      "title": "大文件",
+      "message": "该文件大小为 {{size}}，超过 {{threshold}} 的直接打开上限。打开会把整个文件载入编辑器，可能造成页面卡顿，也可以改为直接下载。",
+      "download": "直接下载",
+      "continueOpen": "继续打开"
+    }
   },
   "projectWizard": {
     "title": "创建新项目",

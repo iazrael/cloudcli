@@ -137,6 +137,12 @@
       "refresh": "Yenile",
       "menuLabel": "Dosya bağlam menüsü",
       "loading": "Yükleniyor..."
+    },
+    "largeFile": {
+      "title": "Büyük dosya",
+      "message": "Bu dosya {{size}} boyutunda ve {{threshold}} açma sınırının üzerinde. Açmak dosyanın tamamını düzenleyiciye yükler ve sayfayı takılabilir — bunun yerine doğrudan indirebilirsiniz.",
+      "download": "Bunun yerine indir",
+      "continueOpen": "Yine de aç"
     }
   },
   "projectWizard": {

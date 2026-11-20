@@ -189,6 +189,12 @@
       "invalidChars": "Název souboru obsahuje neplatné znaky",
       "reserved": "Název souboru je vyhrazený",
       "dotsOnly": "Název souboru nesmí obsahovat jen tečky"
+    },
+    "largeFile": {
+      "title": "Velký soubor",
+      "message": "Tento soubor má {{size}}, což je nad limitem pro otevření {{threshold}}. Otevření načte celý soubor do editoru a může stránku zamrzat — místo toho jej můžete přímo stáhnout.",
+      "download": "Místo toho stáhnout",
+      "continueOpen": "Přesto otevřít"
     }
   },
   "projectWizard": {

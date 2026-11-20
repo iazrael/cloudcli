@@ -151,7 +151,13 @@
     "retry": "重試",
     "emptyFolder": "空資料夾",
     "folderTruncated": "僅顯示前 5,000 項。",
-    "loadFailed": "無法載入檔案"
+    "loadFailed": "無法載入檔案",
+    "largeFile": {
+      "title": "大檔案",
+      "message": "此檔案大小為 {{size}}，超過 {{threshold}} 的直接開啟上限。開啟會把整個檔案載入編輯器，可能造成頁面卡頓，也可以改為直接下載。",
+      "download": "直接下載",
+      "continueOpen": "繼續開啟"
+    }
   },
   "projectWizard": {
     "title": "建立新專案",

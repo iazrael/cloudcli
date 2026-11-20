@@ -135,6 +135,12 @@
       "refresh": "Segarkan",
       "menuLabel": "Menu konteks file",
       "loading": "Memuat..."
+    },
+    "largeFile": {
+      "title": "File besar",
+      "message": "File ini berukuran {{size}}, melebihi batas buka {{threshold}}. Membukanya memuat seluruh file ke editor dan bisa membuat halaman macet — Anda bisa langsung mengunduhnya saja.",
+      "download": "Unduh saja",
+      "continueOpen": "Tetap buka"
     }
   },
   "projectWizard": {

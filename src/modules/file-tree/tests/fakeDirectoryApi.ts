@@ -5,9 +5,14 @@ import type { FileTreeNode } from '@/shared/types';
  * tree's hook and component tests. `directories` maps a project-relative
  * folder ('' is the root) to its entries, with a trailing `/` marking
  * subfolders; a folder missing from it answers like the server's 404, and one
- * listed in `refused` answers with a permission error.
+ * listed in `refused` answers with a permission error. `sizes` optionally maps
+ * a project-relative file path to the byte size its node reports.
  */
-export function createFakeDirectoryApi(root: string, directories: Record<string, string[]>) {
+export function createFakeDirectoryApi(
+  root: string,
+  directories: Record<string, string[]>,
+  sizes?: Record<string, number>,
+) {
   const refused = new Set<string>();
   const calls: string[][] = [];
 
@@ -31,10 +36,13 @@ export function createFakeDirectoryApi(root: string, directories: Record<string,
         truncated: false,
         entries: entries.map((entry): FileTreeNode => {
           const name = entry.replace(/\/$/, '');
+          const entryPath = toAbsolute(relative ? `${relative}/${name}` : name);
+          const relativePath = relative ? `${relative}/${name}` : name;
           return {
             name,
             type: entry.endsWith('/') ? 'directory' : 'file',
-            path: toAbsolute(relative ? `${relative}/${name}` : name),
+            path: entryPath,
+            ...(sizes?.[relativePath] !== undefined ? { size: sizes[relativePath] } : {}),
           };
         }),
       };

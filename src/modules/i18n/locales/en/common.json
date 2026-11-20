@@ -155,7 +155,13 @@
     "folderLoadFailed": "Unable to load this folder",
     "retry": "Retry",
     "emptyFolder": "Empty folder",
-    "folderTruncated": "Only the first 5,000 items are shown."
+    "folderTruncated": "Only the first 5,000 items are shown.",
+    "largeFile": {
+      "title": "Large file",
+      "message": "This file is {{size}}, larger than the {{threshold}} open limit. Opening it loads the whole file into the editor and may stall the page — you can download it directly instead.",
+      "download": "Download instead",
+      "continueOpen": "Open anyway"
+    }
   },
   "projectWizard": {
     "title": "Create New Project",

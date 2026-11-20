@@ -134,6 +134,12 @@
       "refresh": "Aktualisieren",
       "menuLabel": "Datei-Kontextmenü",
       "loading": "Lädt..."
+    },
+    "largeFile": {
+      "title": "Große Datei",
+      "message": "Diese Datei ist {{size}} groß und liegt über dem Öffnungslimit von {{threshold}}. Das Öffnen lädt die gesamte Datei in den Editor und kann die Seite zum Stocken bringen — Sie können sie stattdessen direkt herunterladen.",
+      "download": "Stattdessen herunterladen",
+      "continueOpen": "Trotzdem öffnen"
     }
   },
   "projectWizard": {

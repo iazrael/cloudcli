@@ -134,6 +134,12 @@
       "refresh": "Actualiser",
       "menuLabel": "Menu contextuel du fichier",
       "loading": "Chargement..."
+    },
+    "largeFile": {
+      "title": "Fichier volumineux",
+      "message": "Ce fichier fait {{size}}, au-delà de la limite d'ouverture de {{threshold}}. L'ouvrir charge tout le fichier dans l'éditeur et peut bloquer la page — vous pouvez plutôt le télécharger directement.",
+      "download": "Télécharger plutôt",
+      "continueOpen": "Ouvrir quand même"
     }
   },
   "projectWizard": {

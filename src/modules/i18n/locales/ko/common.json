@@ -134,6 +134,12 @@
       "refresh": "새로 고침",
       "menuLabel": "파일 컨텍스트 메뉴",
       "loading": "로딩 중..."
+    },
+    "largeFile": {
+      "title": "큰 파일",
+      "message": "이 파일은 {{size}}로, 열기 기준 {{threshold}}을(를) 초과합니다. 열면 전체 파일이 편집기에 로드되어 페이지가 멈출 수 있습니다. 대신 바로 다운로드할 수 있습니다.",
+      "download": "대신 다운로드",
+      "continueOpen": "그래도 열기"
     }
   },
   "projectWizard": {

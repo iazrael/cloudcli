@@ -137,6 +137,12 @@
       "refresh": "Atualizar",
       "menuLabel": "Menu de contexto do arquivo",
       "loading": "Carregando..."
+    },
+    "largeFile": {
+      "title": "Arquivo grande",
+      "message": "Este arquivo tem {{size}}, acima do limite de abertura de {{threshold}}. Abrir carrega o arquivo inteiro no editor e pode travar a página — você pode baixá-lo diretamente.",
+      "download": "Baixar em vez disso",
+      "continueOpen": "Abrir mesmo assim"
     }
   },
   "projectWizard": {

@@ -185,6 +185,12 @@
       "invalidChars": "El nombre del archivo contiene caracteres no válidos",
       "reserved": "El nombre del archivo es un nombre reservado",
       "dotsOnly": "El nombre del archivo no puede contener solo puntos"
+    },
+    "largeFile": {
+      "title": "Archivo grande",
+      "message": "Este archivo pesa {{size}}, más que el límite de apertura de {{threshold}}. Abrirlo carga todo el archivo en el editor y puede bloquear la página; puedes descargarlo directamente en su lugar.",
+      "download": "Descargar en su lugar",
+      "continueOpen": "Abrir de todos modos"
     }
   },
   "projectWizard": {

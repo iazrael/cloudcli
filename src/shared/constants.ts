@@ -116,6 +116,16 @@ export const MAX_FILE_UPLOAD_SIZE_LABEL = `${MAX_FILE_UPLOAD_SIZE_MB}MB`;
 
 // ---------------------------
 
+//----------------- LARGE FILE OPEN LIMITS ------------
+
+/** Files above this size ask before opening in the editor: loading a document this big stalls the pane, so the dialog offers a direct download instead. */
+export const LARGE_FILE_OPEN_BYTES = 10 * 1024 * 1024;
+
+/** Human-readable form of the open threshold, shown in the confirm dialog's message. */
+export const LARGE_FILE_OPEN_LABEL = '10MB';
+
+// ---------------------------
+
 //----------------- CHAT ATTACHMENT LIMITS ------------
 
 /** Most attachments one composer draft can hold. */
