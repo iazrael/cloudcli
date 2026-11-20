@@ -639,7 +639,7 @@ export default function ProviderSkills({ selectedProvider, currentProjects }: Pr
                 disabled={isSubmitting}
                 onClick={() => handleAddDialogOpenChange(false)}
               >
-                {t('common:cancel')}
+                {t('common:buttons.cancel', 'Cancel')}
               </Button>
               <Button
                 type="button"

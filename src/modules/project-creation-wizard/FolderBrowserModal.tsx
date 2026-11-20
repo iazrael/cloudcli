@@ -269,7 +269,7 @@ export default function FolderBrowserModal({
                 {creatingFolder ? <Loader2 className="h-4 w-4 animate-spin" /> : t('folderBrowser.create')}
               </Button>
               <Button size="sm" variant="ghost" onClick={resetNewFolderState}>
-                {t('common:cancel')}
+                {t('buttons.cancel', 'Cancel')}
               </Button>
             </div>
           </div>
@@ -386,7 +386,7 @@ export default function FolderBrowserModal({
           </div>
           <div className="flex items-center justify-end gap-2 p-4">
             <Button variant="outline" onClick={handleClose}>
-              {t('common:cancel')}
+              {t('buttons.cancel', 'Cancel')}
             </Button>
             <Button
               variant="outline"

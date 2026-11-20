@@ -48,7 +48,7 @@ export default function LargeFileOpenDialog({ name, size, downloading, onOpen, o
             onClick={onCancel}
             className="rounded-md px-3 py-1.5 text-sm transition-colors hover:bg-accent"
           >
-            {t('common.cancel', 'Cancel')}
+            {t('buttons.cancel', 'Cancel')}
           </button>
           <button
             onClick={onDownload}
