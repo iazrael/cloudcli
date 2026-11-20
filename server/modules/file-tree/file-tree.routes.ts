@@ -163,6 +163,13 @@ export function createFileTreeRouter(
     response.json(await services.readTextFile(readProjectId(request), filePath));
   }, logger));
 
+  // Size-only probe for the large-file open confirmation; the service applies
+  // the same readable-path rules as `readTextFile` and never reads contents.
+  router.get('/projects/:projectId/stat', createRouteHandler(async (request, response) => {
+    const filePath = readRequiredString(request.query.filePath, 'filePath', 'Invalid file path');
+    response.json(await services.statFile(readProjectId(request), filePath));
+  }, logger));
+
   // Read-only access to allowlisted external files (Antigravity brain plan
   // documents or linked project worktrees); the service enforces the allowlist,
   // routes stay thin.

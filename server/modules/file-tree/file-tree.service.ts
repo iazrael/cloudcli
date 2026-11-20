@@ -856,6 +856,24 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
       }
     },
 
+    async statFile(projectId, filePath) {
+      const projectRoot = await resolveProjectRoot(projectId);
+      const resolvedPath = await resolveReadablePath(projectRoot, filePath);
+      try {
+        const stats = await fileSystem.stat(resolvedPath);
+        if ((stats.mode & 0o170000) !== 0o100000) {
+          throw createFileTreeError('Path is not a regular file', 400, 'INVALID_FILE_STAT');
+        }
+        return { size: stats.size };
+      } catch (error) {
+        mapFileSystemError(error, {
+          ENOENT: { message: 'File not found', statusCode: 404 },
+          EACCES: { message: 'Permission denied', statusCode: 403 },
+          EISDIR: { message: 'Path is a directory, not a file', statusCode: 400 },
+        });
+      }
+    },
+
     async readExternalTextFile(filePath, projectId) {
       const allowedRoots = await resolveExternalAllowedRoots(projectId);
       const resolvedPath = await resolvePathInsideExternalRoots(

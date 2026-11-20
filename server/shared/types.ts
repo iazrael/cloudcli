@@ -1507,6 +1507,14 @@ export type FileTreeServices = {
   createWorkspaceFolder(folderPath: string): Promise<{ success: true; path: string }>;
   readTextFile(projectId: string, filePath: string): Promise<{ content: string; path: string }>;
   /**
+   * Reports one readable file's size without reading its contents. Resolution
+   * follows the same rules as `readTextFile` — project-relative paths inside
+   * the project root, absolute paths inside the read-only roots — so anything
+   * this admits could also be opened. Exists so chat file links can show the
+   * large-file confirmation before the editor loads the whole document.
+   */
+  statFile(projectId: string, filePath: string): Promise<{ size: number }>;
+  /**
    * Reads a text file outside any project root. The path must resolve inside
    * one of the injected `externalReadOnlyRoots`, or within a linked worktree of
    * `projectId` when provided; there is deliberately no write counterpart, so

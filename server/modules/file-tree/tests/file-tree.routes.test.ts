@@ -18,6 +18,7 @@ function createFakeServices(overrides: Partial<FileTreeServices> = {}): FileTree
     browseWorkspace: unexpectedOperation,
     createWorkspaceFolder: unexpectedOperation,
     readTextFile: unexpectedOperation,
+    statFile: unexpectedOperation,
     readExternalTextFile: unexpectedOperation,
     openExternalFile: unexpectedOperation,
     openFile: unexpectedOperation,
@@ -406,4 +407,43 @@ test('paths/exists rejects malformed, duplicate and oversized batches', async ()
     assert.equal((await post({ items: [{ id: 'a', path: 'a' }, { id: 'a', path: 'b' }] })).status, 400);
     assert.equal((await post({ items: Array.from({ length: 51 }, (_, index) => ({ id: `id-${index}`, path: 'a.ts' })) })).status, 400);
   });
+});
+
+test('stat route forwards path and project to the size-only service', async () => {
+  const inputs: Array<{ projectId: string; filePath: string }> = [];
+  const services = createFakeServices({
+    statFile: async (projectId, filePath) => {
+      inputs.push({ projectId, filePath });
+      return { size: 21_300_000 };
+    },
+  });
+
+  await withFileTreeServer(services, async (baseUrl) => {
+    const response = await fetch(
+      `${baseUrl}/api/file-tree/projects/p1/stat?filePath=${encodeURIComponent('builds/report.html')}`,
+    );
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { size: 21_300_000 });
+  });
+
+  assert.deepEqual(inputs, [{ projectId: 'p1', filePath: 'builds/report.html' }]);
+});
+
+test('stat route rejects a missing path before calling the service', async () => {
+  let statCalled = false;
+  const services = createFakeServices({
+    statFile: async () => {
+      statCalled = true;
+      throw new Error('statFile should not run without parameters');
+    },
+  });
+
+  await withFileTreeServer(services, async (baseUrl) => {
+    const missingPath = await fetch(`${baseUrl}/api/file-tree/projects/p1/stat`);
+
+    assert.equal(missingPath.status, 400);
+  });
+
+  assert.equal(statCalled, false);
 });

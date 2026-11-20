@@ -433,6 +433,10 @@ export const api = {
   // Workspace file tree
   readFile: (projectId: string, filePath: string, options: ApiRequestOptions = {}) =>
     get(`/api/file-tree/projects/${projectId}/file${query({ filePath })}`, options),
+  // Size-only probe feeding the large-file open confirmation; the answer never
+  // carries contents, so chat file links can ask before the editor loads.
+  fileStat: (projectId: string, filePath: string, options: ApiRequestOptions = {}) =>
+    get(`/api/file-tree/projects/${projectId}/stat${query({ filePath })}`, options),
   // Raw bytes for a workspace file. The endpoint requires the auth header, so
   // media call sites fetch a blob through here instead of using a bare `src`.
   readFileBlob: (projectId: string, filePath: string, options: ApiRequestOptions = {}) =>

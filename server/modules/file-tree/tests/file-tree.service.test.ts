@@ -1255,3 +1255,93 @@ test('checkPathsExist applies read boundaries without reading contents', async (
     });
   } finally { await fsPromises.rm(root, { recursive: true, force: true }); }
 });
+
+test('statFile reports a project file size without reading contents', async () => {
+  const projectRoot = path.resolve('file-tree-test-project');
+  const statPaths: string[] = [];
+  const fileSystem = createFakeFileSystem({
+    stat: async (filePath) => {
+      statPaths.push(filePath);
+      return createStats(false, 0o100644);
+    },
+  });
+  const service = createFileTreeService(createDependencies(fileSystem, projectRoot));
+
+  const result = await service.statFile('project-1', 'builds/report.html');
+
+  assert.equal(result.size, 24);
+  assert.deepEqual(statPaths, [path.join(projectRoot, 'builds/report.html')]);
+});
+
+test('statFile resolves absolute paths through the same read-only roots as reads', async () => {
+  const projectRoot = path.resolve('file-tree-test-project');
+  const externalPath = path.resolve('/tmp/agent-run/report.html');
+  const fileSystem = createFakeFileSystem({
+    stat: async (filePath) => {
+      assert.equal(filePath, externalPath);
+      return { ...createStats(false, 0o100644), size: 21_300_000 };
+    },
+  });
+  const service = createFileTreeService(createDependencies(fileSystem, projectRoot, [], {
+    workspace: {
+      rootPath: projectRoot,
+      readOnlyRoot: null,
+      validatePath: async (candidatePath) => ({ valid: true, resolvedPath: candidatePath }),
+      resolveReadOnlyRootPath: async (candidatePath) => (candidatePath === externalPath ? candidatePath : null),
+    },
+  }));
+
+  const result = await service.statFile('project-1', externalPath);
+
+  assert.equal(result.size, 21_300_000);
+});
+
+test('statFile rejects traversal before invoking the filesystem adapter', async () => {
+  const projectRoot = path.resolve('file-tree-test-project');
+  const statPaths: string[] = [];
+  const fileSystem = createFakeFileSystem({
+    stat: async (filePath) => {
+      statPaths.push(filePath);
+      return createStats(false, 0o100644);
+    },
+  });
+  const service = createFileTreeService(createDependencies(fileSystem, projectRoot));
+
+  await assert.rejects(
+    service.statFile('project-1', '../secret.txt'),
+    (error: unknown) => error instanceof AppError
+      && error.code === 'PATH_OUTSIDE_PROJECT'
+      && error.statusCode === 403,
+  );
+  assert.deepEqual(statPaths, []);
+});
+
+test('statFile reports a missing file as a 404', async () => {
+  const projectRoot = path.resolve('file-tree-test-project');
+  const fileSystem = createFakeFileSystem({
+    stat: async () => {
+      const error = new Error('ENOENT: no such file or directory, stat');
+      (error as NodeJS.ErrnoException).code = 'ENOENT';
+      throw error;
+    },
+  });
+  const service = createFileTreeService(createDependencies(fileSystem, projectRoot));
+
+  await assert.rejects(
+    service.statFile('project-1', 'gone.html'),
+    (error: unknown) => error instanceof AppError && error.statusCode === 404,
+  );
+});
+
+test('statFile reports a directory as a client error', async () => {
+  const projectRoot = path.resolve('file-tree-test-project');
+  const fileSystem = createFakeFileSystem({
+    stat: async () => createStats(true, 0o040755),
+  });
+  const service = createFileTreeService(createDependencies(fileSystem, projectRoot));
+
+  await assert.rejects(
+    service.statFile('project-1', 'builds'),
+    (error: unknown) => error instanceof AppError && error.statusCode === 400,
+  );
+});
