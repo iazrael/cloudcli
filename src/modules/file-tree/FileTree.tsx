@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { AlertTriangle, Check, X, Loader2, Folder, Upload } from 'lucide-react';
 
 import { cn } from '@/shared/utils';
-import { LARGE_FILE_OPEN_BYTES, LARGE_FILE_OPEN_LABEL } from '@/shared/constants';
+import { LARGE_FILE_OPEN_BYTES } from '@/shared/constants';
 import { ICON_SIZE_CLASS, getFileIconData } from '@/modules/file-tree/utils/fileIcons';
 import { useFileTreeOperations } from '@/modules/file-tree/hooks/useFileTreeOperations';
 import { useFileTreeSearch } from '@/modules/file-tree/hooks/useFileTreeSearch';
@@ -20,6 +20,7 @@ import FileTreeHeader from '@/modules/file-tree/FileTreeHeader';
 import FileTreeLoadingState from '@/modules/file-tree/FileTreeLoadingState';
 import FileTreeUploadProgress from '@/modules/file-tree/FileTreeUploadProgress';
 import ImageViewer from '@/modules/file-tree/ImageViewer';
+import LargeFileOpenDialog from '@/modules/file-tree/LargeFileOpenDialog';
 
 
 type FileTreeProps = {
@@ -427,49 +428,14 @@ export default function FileTree({ selectedProject, onFileOpen, revealDirectory 
 
       {/* Large-file Open Confirmation */}
       {largeFileCandidate && (
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50">
-          <div className="mx-4 max-w-sm rounded-lg border border-border bg-background p-4 shadow-lg">
-            <div className="mb-4 flex items-center gap-3">
-              <div className="rounded-full bg-amber-100 p-2 dark:bg-amber-900/30">
-                <AlertTriangle className="h-5 w-5 text-amber-600 dark:text-amber-400" />
-              </div>
-              <div>
-                <h3 className="font-medium text-foreground">
-                  {t('fileTree.largeFile.title', 'Large file')}
-                </h3>
-                <p className="text-sm text-muted-foreground">{largeFileCandidate.name}</p>
-              </div>
-            </div>
-            <p className="mb-4 text-sm text-muted-foreground">
-              {t('fileTree.largeFile.message', 'This file is {{size}}, larger than the {{threshold}} open limit. Opening it loads the whole file into the editor and may stall the page — you can download it directly instead.', {
-                size: formatFileSize(largeFileCandidate.size),
-                threshold: LARGE_FILE_OPEN_LABEL,
-              })}
-            </p>
-            <div className="flex flex-wrap justify-end gap-2">
-              <button
-                onClick={() => setLargeFileCandidate(null)}
-                className="rounded-md px-3 py-1.5 text-sm transition-colors hover:bg-accent"
-              >
-                {t('common.cancel', 'Cancel')}
-              </button>
-              <button
-                onClick={downloadLargeCandidate}
-                disabled={operationLoading}
-                className="flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm transition-colors hover:bg-accent disabled:opacity-50"
-              >
-                {operationLoading && <Loader2 className="h-4 w-4 animate-spin" />}
-                {t('fileTree.largeFile.download', 'Download instead')}
-              </button>
-              <button
-                onClick={openLargeCandidate}
-                className="rounded-md bg-blue-600 px-3 py-1.5 text-sm text-white transition-colors hover:bg-blue-700"
-              >
-                {t('fileTree.largeFile.continueOpen', 'Open anyway')}
-              </button>
-            </div>
-          </div>
-        </div>
+        <LargeFileOpenDialog
+          name={largeFileCandidate.name}
+          size={largeFileCandidate.size}
+          downloading={operationLoading}
+          onOpen={openLargeCandidate}
+          onDownload={downloadLargeCandidate}
+          onCancel={() => setLargeFileCandidate(null)}
+        />
       )}
 
       {/* Toast Notification */}

@@ -15,6 +15,7 @@ import {
   useSessionProtectionActions,
 } from '@/shared/context/SessionProtectionContext';
 import { useFileOpenResolver } from '@/modules/project-workspace/hooks/useFileOpenResolver';
+import { useLargeFileOpenGuard } from '@/modules/project-workspace/hooks/useLargeFileOpenGuard';
 import { EditorSidebar, useEditorSidebar } from '@/modules/code-editor';
 import WorkspaceHeader from '@/modules/project-workspace/WorkspaceHeader';
 import WorkspaceStateView from '@/modules/project-workspace/WorkspaceStateView';
@@ -99,9 +100,14 @@ function WorkspaceMain({
     isMobile,
   });
 
+  // Chat, git and command-palette opens only carry a path, so they pass the
+  // size probe and its confirmation first; the file tree knows the size from
+  // its nodes and keeps handling its own ask.
+  const { openWithGuard, guardDialog } = useLargeFileOpenGuard(selectedProject, handleFileOpen);
+
   // Resolves bare/partial file references (e.g. links inside chat messages) to
   // real project files before opening them in the in-app editor.
-  const resolvedFileOpen = useFileOpenResolver(selectedProject, handleFileOpen);
+  const resolvedFileOpen = useFileOpenResolver(selectedProject, openWithGuard);
 
   useEffect(() => {
     if (!shouldShowBrowserTab && activeTab === 'browser') {
@@ -124,11 +130,11 @@ function WorkspaceMain({
   // Stable so React.memo(ChatInterface) can bail out: an inline arrow here made
   // every WorkspaceMain render re-render the whole chat tree, including during
   // an editor-divider drag.
-  const openFile = useCallback((filePath: string) => {
-    if (handleFileOpen(filePath)) {
+  const openFile = useCallback(async (filePath: string) => {
+    if (await openWithGuard(filePath)) {
       setActiveTab('files');
     }
-  }, [handleFileOpen, setActiveTab]);
+  }, [openWithGuard, setActiveTab]);
 
   // Opens the editor side panel in place, keeping the current tab (e.g. chat).
   const openFileInEditor = useCallback((filePath: string, line?: number | null) => {
@@ -178,7 +184,7 @@ function WorkspaceMain({
                 selectedSession={selectedSession}
                 ws={ws}
                 sendMessage={sendMessage}
-                onFileOpen={handleFileOpen}
+                onFileOpen={openWithGuard}
                 onNavigateToSession={onNavigateToSession}
                 onSessionEstablished={onSessionEstablished}
                 onSessionProcessing={markSessionProcessing}
@@ -221,7 +227,7 @@ function WorkspaceMain({
               <GitPanel
                 selectedProject={selectedProject}
                 isMobile={isMobile}
-                onFileOpen={handleFileOpen}
+                onFileOpen={openWithGuard}
                 onProjectSelect={onProjectSelect}
                 onProjectsRefresh={onProjectsRefresh}
               />
@@ -269,6 +275,8 @@ function WorkspaceMain({
           fillSpace={activeTab === 'files'}
         />
       </div>
+
+      {guardDialog}
     </div>
   );
 }

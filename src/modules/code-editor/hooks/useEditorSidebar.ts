@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { MouseEvent as ReactMouseEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { isWorkspaceExternalPath } from '@/shared/utils';
 import type { Project,CodeEditorDiffInfo,CodeEditorFile } from '@/shared/types';
 
 type UseEditorSidebarOptions = {
@@ -67,16 +68,7 @@ export const useEditorSidebar = ({
       const fileName = normalizedPath.split('/').pop() || filePath;
       // Absolute paths outside the project root are workspace-external
       // documents (e.g. Antigravity plan files); they load read-only.
-      // Windows drive paths (`C:/...`) are absolute too and compare case-insensitively.
-      const projectPath = selectedProject?.path || selectedProject?.fullPath;
-      const isWindowsPath = /^[a-zA-Z]:\//.test(normalizedPath);
-      const comparablePath = isWindowsPath ? normalizedPath.toLowerCase() : normalizedPath;
-      const projectPrefix = projectPath
-        ? `${projectPath.replace(/\\/g, '/').replace(/\/+$/, '')}/`
-        : null;
-      const comparablePrefix = projectPrefix && isWindowsPath ? projectPrefix.toLowerCase() : projectPrefix;
-      const isReadOnlyExternal = (normalizedPath.startsWith('/') || isWindowsPath)
-        && (!comparablePrefix || !comparablePath.startsWith(comparablePrefix));
+      const isReadOnlyExternal = isWorkspaceExternalPath(filePath, selectedProject?.path || selectedProject?.fullPath);
 
       setEditingFile({
         name: fileName,

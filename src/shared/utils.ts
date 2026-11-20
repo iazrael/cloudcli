@@ -545,6 +545,31 @@ export async function saveOrShareBlob(blob: Blob, filename: string): Promise<voi
 
 // ---------------------------
 
+//----------------- WORKSPACE PATH CLASSIFICATION ------------
+
+/**
+ * Whether an absolute path points outside the given project — a workspace-
+ * external document served read-only (Antigravity plan files, temp-dir HTML
+ * reports). Windows drive paths (`C:/…`) count as absolute and compare
+ * case-insensitively; relative paths are never external. The editor sidebar
+ * decides the read-only badge with it, and the large-file open guard picks the
+ * matching download endpoint with it.
+ */
+export function isWorkspaceExternalPath(filePath: string, projectPath?: string | null): boolean {
+  const normalizedPath = filePath.replace(/\\/g, '/');
+  const isWindowsPath = /^[a-zA-Z]:\//.test(normalizedPath);
+  if (!normalizedPath.startsWith('/') && !isWindowsPath) return false;
+
+  const comparablePath = isWindowsPath ? normalizedPath.toLowerCase() : normalizedPath;
+  const projectPrefix = projectPath
+    ? `${projectPath.replace(/\\/g, '/').replace(/\/+$/, '')}/`
+    : null;
+  const comparablePrefix = projectPrefix && isWindowsPath ? projectPrefix.toLowerCase() : projectPrefix;
+  return !comparablePrefix || !comparablePath.startsWith(comparablePrefix);
+}
+
+// ---------------------------
+
 //----------------- REQUEST IDENTITY ------------
 
 /** Creates an identity for one user action; reuse it for retries of that action. */
