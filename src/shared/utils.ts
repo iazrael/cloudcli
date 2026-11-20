@@ -507,18 +507,20 @@ export function formatBuildVersion(version: string, commit: string): string {
 //----------------- FILE DOWNLOAD HAND-OFF ------------
 
 /**
- * Hands a finished blob to the user as a saved file. On iOS — the installed
- * PWA especially — an `<a download>` click navigates the webview to the blob
- * URL instead of downloading, and coming back reloads the whole app; the Web
- * Share API is the platform answer there (Save to Files, AirDrop, …) and
- * never navigates away. Environments that cannot share files keep the
- * classic download link. Used by the chat file cards and transcript export,
- * the file tree, the code editor, and the diagnostics report.
+ * Hands a finished blob to the user as a saved file. On touch screens — the
+ * iOS installed PWA especially — an `<a download>` click navigates the webview
+ * to the blob URL instead of downloading, and coming back reloads the whole
+ * app; the Web Share API is the platform answer there (Save to Files, AirDrop,
+ * …) and never navigates away. Desktop browsers keep the classic download
+ * link: those with Web Share support would otherwise pop their system share
+ * sheet instead of downloading, and dismissing it silently did nothing.
+ * Used by the chat file cards and transcript export, the file tree, the code
+ * editor, and the diagnostics report.
  */
 export async function saveOrShareBlob(blob: Blob, filename: string): Promise<void> {
   const file = new File([blob], filename, { type: blob.type });
 
-  if (navigator.canShare?.({ files: [file] })) {
+  if (navigator.maxTouchPoints > 0 && navigator.canShare?.({ files: [file] })) {
     try {
       await navigator.share({ files: [file] });
       return;
@@ -536,7 +538,9 @@ export async function saveOrShareBlob(blob: Blob, filename: string): Promise<voi
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
-  URL.revokeObjectURL(url);
+  // Revoking in the same task can cancel the download before the browser has
+  // started it — the same race downloadBlob guards against above.
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 // ---------------------------

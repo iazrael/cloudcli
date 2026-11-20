@@ -334,9 +334,12 @@ describe('pdf export', () => {
   });
 });
 
-// On iOS (the installed PWA especially) an <a download> click navigates the
-// webview to the blob URL and returning reloads the app, so the hand-off must
-// prefer the Web Share API whenever the platform can share files.
+// On touch screens (the iOS installed PWA especially) an <a download> click
+// navigates the webview to the blob URL and returning reloads the app, so the
+// hand-off prefers the Web Share API there whenever the platform can share
+// files. Desktop browsers keep the classic download link even when Web Share
+// exists — popping a system share sheet instead of saving read as "download
+// does nothing".
 describe('download hand-off', () => {
   function stubShareApis(supported: boolean, share?: (data: ShareData) => Promise<void>): void {
     Object.defineProperty(navigator, 'canShare', {
@@ -354,12 +357,19 @@ describe('download hand-off', () => {
     Reflect.deleteProperty(navigator, 'share');
   }
 
+  // The share hand-off is a touch-screen behaviour; jsdom reports a desktop,
+  // so the touch cases have to opt in explicitly.
+  function setTouchDevice(touch: boolean): void {
+    Object.defineProperty(navigator, 'maxTouchPoints', { configurable: true, value: touch ? 1 : 0 });
+  }
+
   it('shares a real file instead of navigating when the platform can', async () => {
     const shared: ShareData[] = [];
     stubShareApis(true, (data) => {
       shared.push(data);
       return Promise.resolve();
     });
+    setTouchDevice(true);
     const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
 
     try {
@@ -371,12 +381,14 @@ describe('download hand-off', () => {
       assert.equal(clickSpy.mock.calls.length, 0);
     } finally {
       clickSpy.mockRestore();
+      setTouchDevice(false);
       restoreShareApis();
     }
   });
 
   it('treats dismissing the share sheet as done, not as a failure', async () => {
     stubShareApis(true, () => Promise.reject(new DOMException('dismissed', 'AbortError')));
+    setTouchDevice(true);
     const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
 
     try {
@@ -385,6 +397,7 @@ describe('download hand-off', () => {
       assert.equal(clickSpy.mock.calls.length, 0);
     } finally {
       clickSpy.mockRestore();
+      setTouchDevice(false);
       restoreShareApis();
     }
   });
@@ -401,9 +414,12 @@ describe('download hand-off', () => {
       assert.equal(clickSpy.mock.calls.length, 1);
     } finally {
       clickSpy.mockRestore();
+      restoreShareApis();
+      // The hand-off revokes its object URL one task after the click; let that
+      // timer run before the URL stubs disappear.
+      await new Promise((resolve) => setTimeout(resolve, 0));
       Reflect.deleteProperty(URL, 'createObjectURL');
       Reflect.deleteProperty(URL, 'revokeObjectURL');
-      restoreShareApis();
     }
   });
 });

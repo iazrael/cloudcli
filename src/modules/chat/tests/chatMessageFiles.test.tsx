@@ -27,6 +27,12 @@ function restoreShareApis(): void {
   Reflect.deleteProperty(navigator, 'share');
 }
 
+// The share hand-off is a touch-screen behaviour; jsdom reports a desktop,
+// so the touch cases have to opt in explicitly.
+function setTouchDevice(touch: boolean): void {
+  Object.defineProperty(navigator, 'maxTouchPoints', { configurable: true, value: touch ? 1 : 0 });
+}
+
 function stubBlobUrls(): void {
   Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: () => 'blob:mock' });
   Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: () => undefined });
@@ -41,19 +47,25 @@ const fileAttachments: ChatAttachment[] = [
   { name: 'mir-lite-log.txt', path: '/home/x/.cloudcli/assets/123-456-mir-lite-log.txt', mimeType: 'text/plain', size: 10 },
 ];
 
-// On iOS (the installed PWA especially) an <a download> click navigates the
-// webview to the blob URL and returning reloads the app, so a file card must
-// hand the download to the Web Share API whenever the platform can share
-// files — the same hand-off the transcript export uses.
+// On touch screens (the iOS installed PWA especially) an <a download> click
+// navigates the webview to the blob URL and returning reloads the app, so a
+// file card hands the download to the Web Share API there whenever the
+// platform can share files — the same hand-off the transcript export uses.
+// Desktop browsers keep the classic download link.
 describe('ChatMessageFiles download hand-off', () => {
-  afterEach(() => {
+  afterEach(async () => {
+    setTouchDevice(false);
     restoreShareApis();
+    // The hand-off revokes its object URL one task after the click; let that
+    // timer run before the URL stubs disappear.
+    await new Promise((resolve) => setTimeout(resolve, 0));
     restoreBlobUrls();
     vi.restoreAllMocks();
   });
 
   it('shares the fetched blob as a file instead of navigating', async () => {
     stubShareApis(true);
+    setTouchDevice(true);
     stubBlobUrls();
     const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
     mockAssetsFile.mockResolvedValue({
