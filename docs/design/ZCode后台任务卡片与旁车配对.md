@@ -85,3 +85,25 @@
 - 不改引擎包。
 - 不改输入框上方的后台任务条机制，它按 agentId 登记，复活期间本来就显示。
 - 不给 `SendMessage` 行画卡片。
+
+## 补记（2026-11-21）：引擎 0.16.x 把生命周期事件并进 `session.updated`
+
+### 现象
+
+真实会话 `sess_89f4aba5…`（DuskBastion `/goal`）09:16 派出三个后台子代理，两个持续运行超过 40 分钟；输入框上方始终没有后台任务条，运行会话轮询里也没有任何后台任务记录。在生产线复现：同一会话再派一个测试后台代理，引擎日志有 `subagent.background.started`，但注册表始终为空。
+
+### 根因
+
+引擎包（ZCode.app 2026-11-12 构建，0.16.9）的协议事件名映射 `t4c` 只给会话/回合/工具/批准等事件起了协议名，**没有 `SubagentSpawned`/`SubagentStopped` 的分支**，两者落进 `default:` 以 **`session.updated`** 发出（payload 原样保留：`agentId`、`parentToolCallId`、`status` 等都在）。而归一化器对 `session.updated` 只做压缩（compaction）识别——payload 不带 `cmp_` 前缀的 `operationId` 就返回空。子代理生命周期事件因此全部被静默吞掉：运行中的回合不登记后台任务，回合结束后的 watcher 也认不出事件，输入框上方卡片条和运行会话列表全部失效。
+
+测试没拦住是因为存根引擎直接发裸类型名 `subagent_spawned`/`subagent_stopped`（`zcode-runtime.provider.test.ts`、`zcode-subagents.test.ts`），与旧引擎代一致；本文件上文“引擎的真实语义”描述的 payload 结构不变，只有外层类型名变了。
+
+### 修复
+
+`zcode-live-event-normalizer.ts` 的信封读取（`readZCodeSessionEvent`）在类型名为 `session.updated` 且 payload 同时带字符串 `agentId` 与 `parentToolCallId` 时，按 payload 改写类型：`status === 'running'` 记为 `subagent_spawned`，`completed/failed/stopped` 记为 `subagent_stopped`。其余 `session.updated`（压缩、模式、标题等）不受影响；若引擎将来恢复专用类型名，payload 判别不会与之重复触发。运行时监听器与回合后 watcher 都消费改写后的类型，一处修复两处生效。
+
+### 验证
+
+1. `zcode-subagents.test.ts` 新增用例：`session.updated` 携带 spawned/stopped payload 各归一化为对应 `task_status`；无 `agentId`/`parentToolCallId` 的 `session.updated`（如模式变更）不产生 `task_status`。
+2. 既有 zcode 提供者测试全绿（存根路径不变），`npm run typecheck`、受影响模块测试通过。
+3. 生产线口径：修复合入后，派一个后台代理，运行会话轮询应出现 `background: true` 的任务记录，输入框上方出现卡片条。

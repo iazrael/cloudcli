@@ -95,6 +95,48 @@ test('a subagent event without the launching call is dropped rather than sent un
   assert.deepEqual(provider.normalizeMessage(liveEvent('subagent_spawned', orphan), 'sess_1'), []);
 });
 
+// Engine 0.16.x funnels every session event without a dedicated protocol name
+// into the generic `session.updated`, subagent lifecycles included. The wire
+// payload is unchanged, so the envelope reader must recognize the shape there.
+test('a spawn arriving as session.updated still becomes a running task_status', () => {
+  const provider = new ZCodeSessionsProvider();
+  const [status] = provider.normalizeMessage(liveEvent('session.updated', spawnedPayload), 'sess_1');
+
+  assert.equal(status.kind, 'task_status');
+  assert.equal(status.event, 'started');
+  assert.equal(status.taskId, 'agent_a');
+  assert.equal(status.toolUseId, 'call_agent');
+  assert.equal(status.description, 'Review the fix');
+});
+
+test('a stop arriving as session.updated still settles the task', () => {
+  const provider = new ZCodeSessionsProvider();
+  const [status] = provider.normalizeMessage(liveEvent('session.updated', stoppedPayload), 'sess_1');
+
+  assert.equal(status.kind, 'task_status');
+  assert.equal(status.event, 'notification');
+  assert.equal(status.taskId, 'agent_a');
+  assert.equal(status.toolUseId, 'call_agent');
+  assert.equal(status.status, 'completed');
+  assert.deepEqual(status.usage, { totalTokens: 2216983, toolUses: 40, durationMs: 854566 });
+});
+
+test('a session.updated naming no agent stays a generic update without a task frame', () => {
+  const provider = new ZCodeSessionsProvider();
+  // A mode change: the same generic type carries every session-level update.
+  assert.deepEqual(provider.normalizeMessage(liveEvent('session.updated', { mode: 'plan' }), 'sess_1'), []);
+  // An agent id without the launching call is an unattached status, not a
+  // lifecycle frame either way the type arrived.
+  const { parentToolCallId: _omitted, ...orphan } = spawnedPayload;
+  assert.deepEqual(provider.normalizeMessage(liveEvent('session.updated', orphan), 'sess_1'), []);
+  // Neither agent id nor launching call with an unsettled status is a shape
+  // this reader commits to.
+  assert.deepEqual(
+    provider.normalizeMessage(liveEvent('session.updated', { agentId: 'agent_a', parentToolCallId: 'call_agent', status: 'queued' }), 'sess_1'),
+    [],
+  );
+});
+
 test("the engine's Agent tool keeps its name on every live shape", () => {
   const provider = new ZCodeSessionsProvider();
 

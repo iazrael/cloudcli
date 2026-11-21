@@ -97,6 +97,37 @@ const EVENT_TYPE_ALIASES: Record<string, string> = {
   'permission.requested': 'permission_request',
 };
 
+/** The statuses a settled subagent reports on its stop; `running` is the spawn. */
+const SUBAGENT_STOP_STATUSES = new Set(['completed', 'failed', 'stopped']);
+
+/**
+ * Recovers the subagent lifecycle type from a generic `session.updated`
+ * payload. Engine 0.16.x gives no protocol name to `SubagentSpawned` or
+ * `SubagentStopped` and funnels both into `session.updated` with the payload
+ * intact, where without this they reach only the compaction reader and are
+ * dropped — no background-work registration, no composer strip. An `agentId`
+ * beside a `parentToolCallId` is a shape no other `session.updated` (mode,
+ * title, hook updates) carries; `running` is a spawn, a settled status a
+ * stop. A dedicated protocol name, should the engine regain one, still wins
+ * because this only runs on the generic type.
+ *
+ * Consumers: `readZCodeSessionEvent`, so the runtime's live listener and its
+ * post-turn lifecycle watcher both see the same rewritten type.
+ */
+function readSessionUpdatedSubagentLifecycleType(payload: AnyRecord): string | undefined {
+  if (typeof payload.agentId !== 'string' || !payload.agentId
+    || typeof payload.parentToolCallId !== 'string' || !payload.parentToolCallId) {
+    return undefined;
+  }
+  if (payload.status === 'running') {
+    return 'subagent_spawned';
+  }
+  if (typeof payload.status === 'string' && SUBAGENT_STOP_STATUSES.has(payload.status)) {
+    return 'subagent_stopped';
+  }
+  return undefined;
+}
+
 type ToolInputStream = {
   toolCallId: string;
   toolName: string;
@@ -206,8 +237,11 @@ export function readZCodeSessionEvent(rawMessage: unknown, fallbackSessionId: st
   }
 
   const payload = readObjectRecord(event.payload) ?? {};
+  const canonicalType = EVENT_TYPE_ALIASES[type] ?? type;
   return {
-    type: EVENT_TYPE_ALIASES[type] ?? type,
+    type: canonicalType === 'session.updated'
+      ? readSessionUpdatedSubagentLifecycleType(payload) ?? canonicalType
+      : canonicalType,
     payload,
     sessionId: readOptionalString(event.sessionId) ?? readOptionalString(raw.sessionId) ?? fallbackSessionId,
     timestamp: normalizeProviderTimestamp(event.time ?? event.timestamp),
