@@ -27,8 +27,13 @@ function getPublicKey() {
 
 function configureWebPush() {
   const keys = ensureVapidKeys();
+  // RFC 8292 requires the subject to be an origin the deployment controls.
+  // Apple rejects placeholder TLDs (.local) with 403 BadJwtToken on every
+  // send, so deployments must set VAPID_SUBJECT; the default is only a
+  // valid-format placeholder.
+  const subject = process.env.VAPID_SUBJECT || 'mailto:noreply@example.com';
   webPush.setVapidDetails(
-    'mailto:noreply@claudecodeui.local',
+    subject,
     keys.publicKey,
     keys.privateKey
   );

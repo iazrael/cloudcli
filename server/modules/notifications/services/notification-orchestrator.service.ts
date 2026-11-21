@@ -289,6 +289,15 @@ function sendWebPushPayload(userId: string | number, payload: NotificationPayloa
         const statusCode = (result.reason as { statusCode?: unknown } | undefined)?.statusCode;
         if (statusCode === 410 || statusCode === 404) {
           pushSubscriptionsDb.removeSubscription(subscriptions[index].endpoint);
+        } else {
+          // Non-expiry rejections (403 BadJwtToken, network errors) used to be
+          // swallowed here, which left a dead push channel with no trace.
+          console.error(
+            `Web push send failed for ${subscriptions[index].endpoint.slice(0, 60)}:`,
+            `HTTP ${statusCode ?? 'network'}`,
+            String((result.reason as { body?: unknown; message?: unknown } | undefined)?.body
+              ?? (result.reason as { message?: unknown } | undefined)?.message ?? result.reason)
+          );
         }
       }
     });
