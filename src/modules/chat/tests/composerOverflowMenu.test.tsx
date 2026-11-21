@@ -109,4 +109,14 @@ describe('ComposerOverflowMenu', () => {
     fireEvent(document, new Event('pointerdown', { bubbles: true }));
     expect(screen.queryByText('input.showAllCommands')).toBeNull();
   });
+
+  it('closes on Escape and refocuses the trigger', () => {
+    render(<ComposerOverflowMenu {...baseProps} />);
+    const trigger = screen.getByRole('button', { name: 'input.moreTools' });
+    fireEvent.click(trigger);
+    expect(screen.getByText('input.showAllCommands')).toBeTruthy();
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.queryByText('input.showAllCommands')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
 });
