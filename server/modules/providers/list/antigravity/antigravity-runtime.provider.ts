@@ -47,11 +47,23 @@ import { buildAntigravitySubprocessEnv } from './antigravity-subprocess-env.js';
 import { createAgentTranscriptTail } from './antigravity-agent-tail.js';
 import { AntigravitySessionsProvider } from './antigravity-sessions.provider.js';
 import { readCanonicalAntigravityTranscript } from './antigravity-transcript.provider.js';
-import { antigravityBackgroundWork, extractAntigravitySubagents, judgeAntigravityAgent, readAgentReports } from './antigravity-subagent.js';
+import {
+  antigravityBackgroundWork,
+  buildAntigravityAgentToolId,
+  createAntigravityAgentRow,
+  extractAntigravitySubagents,
+  judgeAntigravityAgent,
+  parseCreatedSubagentIds,
+  readAgentReports,
+  readInvokedAgentSpecs,
+  SPAWN_RECEIPT_PATTERN,
+} from './antigravity-subagent.js';
 import {
   findCatalogOptionForModelString,
   resolveAntigravityModelArgs,
 } from './antigravity-model-effort.js';
+import { AntigravityAcpSessionManager } from './antigravity-acp-session-manager.js';
+import { AntigravityAcpTranslator } from './antigravity-acp-translator.js';
 
 const PROVIDER = 'antigravity';
 
@@ -223,6 +235,54 @@ const isStreamInterruptedNotice = (message: string | null | undefined): boolean 
     || trimmed === `Error: ${STREAM_INTERRUPTED_NOTICE}`;
 };
 
+/**
+ * The ACP runtime is opt-in until it has been verified against production
+ * (`CLOUDCLI_ANTIGRAVITY_ACP=1`); the print path below stays the default and
+ * untouched fallback (docs/design/agyACP运行时.md 灰度开关).
+ */
+const isAcpRuntimeEnabled = (): boolean => process.env.CLOUDCLI_ANTIGRAVITY_ACP === '1';
+
+/**
+ * The resident ACP session manager. One instance serves every session; the
+ * engine path is resolved lazily so the singleton never caches a stale path
+ * across engine reinstalls.
+ */
+let acpManagerInstance: AntigravityAcpSessionManager | null = null;
+const getAcpManager = (): AntigravityAcpSessionManager => {
+  if (!acpManagerInstance) {
+    const enginePath = tryResolveEnginePath() ?? '';
+    acpManagerInstance = new AntigravityAcpSessionManager({
+      onSessionExit: (appSessionId, info) => {
+        console.info(`[AntigravityAcp] Session ${appSessionId} engine exited (code: ${info.code}, signal: ${info.signal})`);
+      },
+    }, enginePath);
+  }
+  return acpManagerInstance;
+};
+
+/**
+ * Agent conversation ids already bound to spawn calls, per session. Receipts
+ * accumulate in the transcript forever, so later turns must not rebind an
+ * earlier turn's ids onto their own spawn calls.
+ */
+const acpBoundSpawnIds = new Map<string, Set<string>>();
+
+/**
+ * The conversation id each app session has already announced through a
+ * `session_created` row. A resident session is announced once; a respawn that
+ * opened a different conversation re-announces so clients rebind.
+ */
+const acpAnnouncedSessionIds = new Map<string, string>();
+
+/**
+ * Kills every resident ACP session process. Server shutdown and the tests
+ * both need this: the children hold the event loop open otherwise.
+ */
+export function closeAntigravityAcpSessions(): void {
+  acpManagerInstance?.destroyAll();
+  acpManagerInstance = null;
+}
+
 export class AntigravityRuntimeProvider implements IProviderRuntime {
   readonly backgroundTasks = {
     list: (sessionId: string) => getAntigravityBackgroundTasksForSession(sessionId),
@@ -241,6 +301,12 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
     // id suffix. A catalog lookup failure must degrade to flag-based effort,
     // never block the run.
     const catalog = await context.getProviderModels().catch(() => null);
+
+    // The resident-ACP path only when opted in; the print path below is the
+    // default fallback until the ACP runtime passes real-machine acceptance.
+    if (isAcpRuntimeEnabled()) {
+      return this.runViaAcp(command, options, writer, context);
+    }
 
     return new Promise((resolve, reject) => {
       const sessionId = readOptionalString(options.sessionId);
@@ -1137,9 +1203,532 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
   }
 
   /**
+   * Runs one turn against the resident ACP session (`CLOUDCLI_ANTIGRAVITY_ACP=1`).
+   *
+   * Contract parity with the print path: resolves `{sessionId, success}` (plus
+   * `aborted` after a `session/cancel`) or rejects with the failure
+   * description; NormalizedMessage frames stream through the writer; terminal
+   * notifications go out once.
+   *
+   * Deliberate gaps while the ACP path is opt-in (docs/design/agyACP运行时.md
+   * 分步实施): model and effort still ride the engine default until the ACP
+   * model channel is wired; question cards render but answering is a plain
+   * follow-up message; permission requests are provisionally approved until
+   * the gateway bridge lands.
+   */
+  private async runViaAcp(
+    command: string,
+    options: AnyRecord,
+    writer: ProviderRuntimeWriter,
+    context: ProviderRuntimeContext,
+  ): Promise<unknown> {
+    const sessionId = readOptionalString(options.sessionId);
+    const explicitWorkspace = readOptionalString(options.cwd)
+      ?? readOptionalString(options.projectPath);
+    const cwd = explicitWorkspace ? path.resolve(explicitWorkspace) : process.cwd();
+    const permissionMode = readOptionalString(options.permissionMode);
+    const skipPermissions = Boolean(options.skipPermissions || options.toolsSettings?.skipPermissions);
+    const sessionSummary = readOptionalString(options.sessionSummary);
+    const providerSessionId = sessionId ? context.resolveProviderSessionId(sessionId) : null;
+
+    const enginePath = tryResolveEnginePath();
+    if (!enginePath) {
+      writer.send(createNormalizedMessage({
+        id: generateMessageId(PROVIDER),
+        kind: 'error',
+        content: 'Antigravity CLI (agy) is not installed. Please install it first.',
+        sessionId: sessionId ?? null,
+        provider: PROVIDER,
+        isError: true,
+      }));
+      throw new Error('Antigravity CLI is not installed.');
+    }
+
+    const manager = getAcpManager();
+    const sessionKey = sessionId || providerSessionId || `agy_acp_${Date.now()}_${keylessRunCounter += 1}`;
+
+    const idleTimeout = readOptionalString(options.idleTimeout)
+      ?? process.env.CLOUDCLI_ANTIGRAVITY_IDLE_TIMEOUT
+      ?? DEFAULT_IDLE_TIMEOUT;
+    const watchdogMs = parseGoDurationMs(idleTimeout) ?? parseGoDurationMs(DEFAULT_IDLE_TIMEOUT) ?? 0;
+    let watchdogTimer: NodeJS.Timeout | null = null;
+    let watchdogExpired = false;
+    const clearWatchdog = () => {
+      if (watchdogTimer) {
+        clearTimeout(watchdogTimer);
+        watchdogTimer = null;
+      }
+    };
+    const touchWatchdog = () => {
+      if (watchdogMs <= 0) return;
+      clearWatchdog();
+      watchdogTimer = setTimeout(() => {
+        watchdogTimer = null;
+        watchdogExpired = true;
+        console.error(`[AntigravityAcp] No output for ${idleTimeout}; terminating session ${sessionKey}`);
+        manager.destroy(sessionKey);
+      }, watchdogMs);
+      watchdogTimer.unref?.();
+    };
+
+    const broadcastBackgroundTasks = () => {
+      writer.send(createBackgroundTasksStatusMessage(
+        { provider: PROVIDER, sessionId: sessionId ?? null },
+        getAntigravityBackgroundTasksForSession(sessionKey),
+      ));
+    };
+
+    let settled = false;
+    let completeSent = false;
+    let runCumulative = { used: 0, inputTokens: 0, outputTokens: 0 };
+    let lastContextReading: { used: number; inputTokens: number; outputTokens: number } | null = null;
+    let unsubscribe: () => void = () => {};
+
+    try {
+      const handle = await manager.acquire(sessionKey, {
+        cwd,
+        resumeProviderSessionId: providerSessionId,
+        skipPermissions: skipPermissions || permissionMode === 'bypassPermissions',
+      });
+      manager.setBusy(sessionKey, true);
+
+      const capturedSessionId = handle.sessionId;
+      writer.setSessionId?.(capturedSessionId);
+      // A resident session is announced once; a respawn under a different
+      // conversation id re-announces so clients rebind to the new engine
+      // session.
+      if (acpAnnouncedSessionIds.get(sessionKey) !== capturedSessionId) {
+        acpAnnouncedSessionIds.set(sessionKey, capturedSessionId);
+        if (!providerSessionId) {
+          writer.send(createNormalizedMessage({
+            id: generateMessageId(PROVIDER),
+            kind: 'session_created',
+            newSessionId: capturedSessionId,
+            sessionId: capturedSessionId,
+            provider: PROVIDER,
+            content: `Antigravity session created: ${capturedSessionId}`,
+          }));
+        }
+        if (handle.continuity === 'restarted') {
+          // The resume failed and a fresh conversation opened; the user must
+          // know the context did not carry over rather than wonder why the
+          // agent lost its memory. Deterministic id: a replay re-announces the
+          // same row instead of stacking a copy.
+          writer.send(createNormalizedMessage({
+            id: `msg_${capturedSessionId}_acp_restarted`,
+            kind: 'task_notification',
+            summary: '引擎会话恢复失败，已开新会话（上下文不延续）',
+            status: 'interrupted',
+            sessionId: capturedSessionId,
+            provider: PROVIDER,
+          }));
+        }
+      }
+
+      // Provisional permission answer until step 3 wires the gateway: the
+      // first allow option keeps agentic turns alive, and the opt-in flag
+      // keeps this out of production until the real bridge lands.
+      manager.handleServerRequests(sessionKey, 'session/request_permission', (request) => {
+        const params = readObjectRecord(request.params);
+        const optionList = Array.isArray(params?.options) ? params.options : [];
+        const allow = optionList
+          .map((option) => readObjectRecord(option))
+          .find((option) => readOptionalString(option?.kind)?.startsWith('allow'))
+          ?? readObjectRecord(optionList[0]);
+        const optionId = readOptionalString(allow?.optionId);
+        const toolCall = readObjectRecord(params?.toolCall);
+        console.debug(`[AntigravityAcp] Provisionally approving ${readOptionalString(toolCall?.name) ?? 'tool'} (gateway bridge pending)`);
+        return optionId ? { outcome: { outcome: 'selected_once', optionId } } : {};
+      });
+
+      const translator = new AntigravityAcpTranslator();
+      translator.setSessionId(capturedSessionId);
+
+      // Subagent wiring: ACP frames never carry an agent's conversation id,
+      // so cards, registry entries and transcript tails bind from the parent
+      // transcript's spawn receipt — the same source history reads. Prints'
+      // step_update events carried the ids live; here a poll bridges the gap.
+      const pendingSpawnCalls = new Map<string, { specs: ReturnType<typeof readInvokedAgentSpecs> }>();
+      const boundSpawnIds = acpBoundSpawnIds.get(capturedSessionId) ?? new Set<string>();
+      acpBoundSpawnIds.set(capturedSessionId, boundSpawnIds);
+      const historyReader = new AntigravitySessionsProvider();
+      const agentTail = createAgentTranscriptTail({
+        readTimeline: async (conversationId) => (await historyReader.fetchHistory(conversationId, {})).messages,
+        emit: (message) => { if (!settled) writer.send(message); },
+      });
+
+      let reportFingerprint: string | undefined;
+      let agentReports = new Map<string, string>();
+      let reportsClosed = false;
+      let reportRead: Promise<void> | null = null;
+
+      /**
+       * One transcript pass that binds unbound spawn calls (new agent ids →
+       * cards, registry, tail) and settles agents whose reports arrived —
+       * print does both from live events plus the same transcript reads.
+       */
+      const reconcileSpawnsAndReports = (): Promise<void> => {
+        if (reportRead || reportsClosed) return reportRead ?? Promise.resolve();
+        reportRead = (async () => {
+          try {
+            const safeId = sanitizeLeafDirectoryName(capturedSessionId, 'antigravity session id');
+            const compact = getAntigravityTranscriptCandidates(safeId).find((candidate) => fsSync.existsSync(candidate));
+            if (!compact) return;
+            const files = [compact, path.join(path.dirname(compact), 'transcript_full.jsonl')];
+            const stamps = await Promise.all(files.map(async (file) => {
+              try {
+                const stat = await fsp.stat(file);
+                return [file, stat.size, stat.mtimeMs];
+              } catch (error) {
+                if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [file, null];
+                throw error;
+              }
+            }));
+            const fingerprint = JSON.stringify(stamps);
+            if (fingerprint === reportFingerprint) {
+              // Metadata unchanged; cached receipts already applied below.
+            } else {
+              reportFingerprint = fingerprint;
+              const rows = await readCanonicalAntigravityTranscript(capturedSessionId);
+              const contents = rows.flatMap(({ entry }) => {
+                if (entry.status !== 'DONE' || entry.source === 'USER_EXPLICIT' || entry.type === 'USER_INPUT') return [];
+                const content = readOptionalString(entry.content) ?? '';
+                return Array.from(content.matchAll(/<SYSTEM_MESSAGE>\s*([\s\S]*?)(?:<\/SYSTEM_MESSAGE>|$)/gi), (match) => match[1]);
+              });
+              const receiptIds = contents
+                .filter((content) => SPAWN_RECEIPT_PATTERN.test(content))
+                .flatMap((receipt) => parseCreatedSubagentIds(receipt));
+              // Multiple parallel spawn calls would share one receipt; ids
+              // bind FIFO in creation order (parallel spawns over ACP are
+              // rare, and the receipt itself does not name its call). A call
+              // whose receipt has not landed yet stays pending for the next
+              // poll instead of being dropped.
+              for (const [callToolId, { specs }] of [...pendingSpawnCalls.entries()]) {
+                let boundForCall = 0;
+                while (receiptIds.length > 0) {
+                  const conversationId = receiptIds.shift()!;
+                  if (boundSpawnIds.has(conversationId)) continue;
+                  boundSpawnIds.add(conversationId);
+                  const spec = specs[0];
+                  const toolUseId = `${callToolId}:${conversationId}`;
+                  antigravityBackgroundWork.start(sessionKey, {
+                    taskId: conversationId,
+                    toolUseId,
+                    taskType: LOCAL_AGENT_TASK_TYPE,
+                    description: spec?.role ?? 'Subagent',
+                  });
+                  agentTail.follow(conversationId, toolUseId);
+                  writer.send(createTaskStatusMessage(
+                    {
+                      provider: PROVIDER,
+                      sessionId: capturedSessionId,
+                      taskId: conversationId,
+                      toolUseId,
+                      taskType: LOCAL_AGENT_TASK_TYPE,
+                    },
+                    { event: 'started', description: spec?.role },
+                  ));
+                  // The Agent card, keyed the way history keys it, so a
+                  // refresh rebuilds the same row.
+                  writer.send(createAntigravityAgentRow({
+                    sessionId: capturedSessionId,
+                    toolId: buildAntigravityAgentToolId(callToolId, conversationId),
+                    spec: spec ?? {},
+                  }));
+                  boundForCall += 1;
+                }
+                if (boundForCall > 0) pendingSpawnCalls.delete(callToolId);
+              }
+              agentReports = readAgentReports(contents);
+            }
+
+            // Agents that reported are done: one task_status per report, the
+            // same judgement history applies at refresh.
+            for (const [agentId] of agentReports) {
+              if (reportsClosed) return;
+              const task = antigravityBackgroundWork.get(sessionKey, agentId);
+              if (!task) continue;
+              await agentTail.stop(agentId);
+              if (reportsClosed || !antigravityBackgroundWork.end(sessionKey, agentId)) continue;
+              writer.send(createTaskStatusMessage(
+                {
+                  provider: PROVIDER,
+                  sessionId: capturedSessionId,
+                  taskId: agentId,
+                  toolUseId: task.toolUseId,
+                  taskType: LOCAL_AGENT_TASK_TYPE,
+                },
+                { event: 'notification', status: 'completed' },
+              ));
+              broadcastBackgroundTasks();
+            }
+          } catch (error) {
+            console.warn('[AntigravityAcp] Could not reconcile spawn receipts and agent reports:', error);
+          }
+        })().finally(() => { reportRead = null; });
+        return reportRead;
+      };
+
+      const reportTimer = setInterval(() => { void reconcileSpawnsAndReports(); }, AGENT_REPORT_POLL_INTERVAL_MS);
+      reportTimer.unref();
+
+      let pendingAskToolCallId: string | null = null;
+      unsubscribe = manager.onNotification(sessionKey, (notification) => {
+        touchWatchdog();
+        if (notification.method !== 'session/update') return;
+        const update = readObjectRecord(readObjectRecord(notification.params)?.update);
+        // The live context occupancy: usage_update frames carry the session's
+        // used tokens directly (the response usage sums the whole turn and
+        // would overstate the context — the same accounting the print path
+        // applies between step usage and the result).
+        if (readOptionalString(update?.sessionUpdate) === 'usage_update' && typeof update?.used === 'number') {
+          lastContextReading = { used: update.used, inputTokens: 0, outputTokens: 0 };
+        }
+        const translation = translator.translate(notification);
+        for (const message of translation.messages) writer.send(message);
+        if (translation.spawnStarted) pendingSpawnCalls.set(translation.spawnStarted.toolCallId, { specs: translation.spawnStarted.specs });
+        if (translation.spawnSettled) pendingSpawnCalls.delete(translation.spawnSettled.toolCallId);
+        if (translation.toolPending?.toolName === 'ask_question') {
+          // The engine parks the turn here: the question card waits for the
+          // user's next message, which IS the answer (step 4 refines the UX).
+          pendingAskToolCallId = translation.toolPending.toolCallId;
+        }
+        if (translation.spawnStarted) void reconcileSpawnsAndReports();
+      });
+
+      const finishAgentTails = async (): Promise<void> => {
+        reportsClosed = true;
+        clearInterval(reportTimer);
+        let timer: NodeJS.Timeout | undefined;
+        try {
+          await Promise.race([
+            Promise.all([reportRead, agentTail.stopAll()]),
+            new Promise<void>((resolve) => {
+              timer = setTimeout(() => {
+                console.warn('[AntigravityAcp] Final agent transcript reads did not finish in time; settling without them.');
+                resolve();
+              }, AGENT_TAIL_FINAL_READ_TIMEOUT_MS);
+            }),
+          ]);
+        } catch (error) {
+          console.error('[AntigravityAcp] Failed to finish agent transcript tails:', error);
+        } finally {
+          clearTimeout(timer);
+        }
+      };
+
+      // The turn travels as one text block with the same attachment tags the
+      // print path embeds, so prompt contents stay identical between modes.
+      const hasAttachments =
+        normalizeAttachmentDescriptors(options.images).length > 0
+        || normalizeAttachmentDescriptors(options.files).length > 0;
+      const promptWithAttachments = appendFilesInputTag(
+        appendImagesInputTag(command || '', options.images),
+        options.files,
+      );
+
+      const settleAgentsAtTurnEnd = (judge: 'transcript' | 'stopped') => {
+        const outstanding = antigravityBackgroundWork.list().find((entry) => entry.sessionId === sessionKey)?.tasks ?? [];
+        for (const task of outstanding) {
+          writer.send(createTaskStatusMessage(
+            {
+              provider: PROVIDER,
+              sessionId: capturedSessionId,
+              taskId: task.taskId,
+              toolUseId: task.toolUseId,
+              taskType: LOCAL_AGENT_TASK_TYPE,
+            },
+            { event: 'notification', status: judge === 'stopped' ? 'stopped' : judgeAntigravityAgent(task.taskId) },
+          ));
+        }
+        antigravityBackgroundWork.clearSession(sessionKey);
+      };
+
+      touchWatchdog();
+
+      if (!(command && command.trim()) && !hasAttachments) {
+        // Nothing to run (parity: the print path exits its process at once).
+        manager.setBusy(sessionKey, false);
+        if (!completeSent) {
+          completeSent = true;
+          writer.send(createCompleteMessage({ provider: PROVIDER, sessionId: capturedSessionId, exitCode: 0 }));
+        }
+        settled = true;
+        return { sessionId: capturedSessionId, success: true };
+      }
+
+      const promptFailure: { error: Error | null } = { error: null };
+      const promptPromise = handle.client
+        .request('session/prompt', {
+          sessionId: handle.sessionId,
+          prompt: [{ type: 'text', text: promptWithAttachments }],
+        })
+        .catch((error: Error) => {
+          promptFailure.error = error;
+          return null;
+        });
+
+      const race = await Promise.race([
+        promptPromise.then((result) => ({ ended: 'response' as const, result })),
+        handle.client.whenExit().then((info) => ({ ended: 'exit' as const, info })),
+      ]);
+
+      if (race.ended === 'exit') {
+        clearWatchdog();
+        const closed = translator.closeOpenSegment();
+        if (closed) writer.send(closed);
+        await finishAgentTails();
+        settleAgentsAtTurnEnd('stopped');
+        if (!completeSent) {
+          completeSent = true;
+          writer.send(createCompleteMessage({ provider: PROVIDER, sessionId: capturedSessionId, exitCode: 1 }));
+        }
+        const failure = watchdogExpired
+          ? `Antigravity CLI produced no output for ${idleTimeout} and was terminated.`
+          : promptFailure.error instanceof Error
+            ? promptFailure.error.message
+            : `Antigravity CLI exited (code: ${race.info.code ?? race.info.signal}).`;
+        writer.send(createNormalizedMessage({
+          id: generateMessageId(PROVIDER),
+          kind: 'error',
+          content: failure,
+          sessionId: capturedSessionId,
+          provider: PROVIDER,
+          isError: true,
+        }));
+        notifyRunFailed({
+          userId: writer.userId != null ? String(writer.userId) : null,
+          provider: PROVIDER,
+          sessionId,
+          sessionName: sessionSummary,
+          error: failure,
+        });
+        settled = true;
+        throw new Error(failure);
+      }
+
+      clearWatchdog();
+      const response = readObjectRecord(race.result);
+      const stopReason = readOptionalString(response?.stopReason);
+      const wasCancelled = stopReason === 'cancelled';
+
+      // The response usage is the turn's authoritative bill; context stays the
+      // last usage_update reading (identical accounting to the print path).
+      const resultUsage = readAntigravityUsageRecord(response?.usage ?? null);
+      if (resultUsage.used > 0 || resultUsage.inputTokens > 0 || resultUsage.outputTokens > 0) {
+        runCumulative = { ...resultUsage };
+        const contextReading = lastContextReading ?? { ...resultUsage };
+        const tokenBudget = {
+          used: contextReading.used,
+          total: 1048576,
+          inputTokens: contextReading.inputTokens,
+          outputTokens: contextReading.outputTokens,
+          breakdown: { input: contextReading.inputTokens, output: contextReading.outputTokens },
+          cumulative: { ...runCumulative },
+        };
+        writer.send(createNormalizedMessage({
+          id: generateMessageId(PROVIDER),
+          kind: 'status',
+          text: 'token_budget',
+          tokenBudget,
+          sessionId: capturedSessionId,
+          provider: PROVIDER,
+        }));
+        void persistAntigravityTokenUsage(capturedSessionId, tokenBudget);
+      }
+
+      // A pending question parks the turn here: the card stays open and the
+      // user's next message answers it (engine semantics; step 4 refines).
+      void pendingAskToolCallId;
+
+      const closed = translator.closeOpenSegment();
+      if (closed) writer.send(closed);
+      await finishAgentTails();
+      if (antigravityBackgroundWork.hasSession(sessionKey)) {
+        settleAgentsAtTurnEnd('transcript');
+        broadcastBackgroundTasks();
+      }
+
+      if (!completeSent) {
+        completeSent = true;
+        const completeMsg = createCompleteMessage({
+          provider: PROVIDER,
+          sessionId: capturedSessionId,
+          exitCode: 0,
+        });
+        if (resultUsage.used > 0) completeMsg.tokens = resultUsage.used;
+        writer.send(completeMsg);
+      }
+
+      const normalizedUserId = writer.userId != null ? String(writer.userId) : null;
+      if (wasCancelled) {
+        notifyRunStopped({
+          userId: normalizedUserId,
+          provider: PROVIDER,
+          sessionId,
+          sessionName: sessionSummary,
+          stopReason: 'aborted',
+        });
+      } else {
+        notifyRunStopped({
+          userId: normalizedUserId,
+          provider: PROVIDER,
+          sessionId,
+          sessionName: sessionSummary,
+          stopReason: 'completed',
+        });
+      }
+      settled = true;
+      return {
+        sessionId: capturedSessionId,
+        success: true,
+        ...(wasCancelled ? { aborted: true } : {}),
+      };
+    } catch (error) {
+      clearWatchdog();
+      // Paths that already reported their failure (exit race, watchdog) mark
+      // themselves settled before throwing; only unexpected errors report
+      // here, exactly once.
+      if (settled) throw error;
+      const failure = error instanceof Error ? error.message : String(error);
+      writer.send(createNormalizedMessage({
+        id: generateMessageId(PROVIDER),
+        kind: 'error',
+        content: failure,
+        sessionId: sessionId ?? null,
+        provider: PROVIDER,
+        isError: true,
+      }));
+      if (!completeSent) {
+        completeSent = true;
+        writer.send(createCompleteMessage({ provider: PROVIDER, sessionId: sessionId ?? null, exitCode: 1 }));
+      }
+      notifyRunFailed({
+        userId: writer.userId != null ? String(writer.userId) : null,
+        provider: PROVIDER,
+        sessionId,
+        sessionName: sessionSummary,
+        error: failure,
+      });
+      settled = true;
+      throw error instanceof Error ? error : new Error(failure);
+    } finally {
+      clearWatchdog();
+      unsubscribe();
+      manager.setBusy(sessionKey, false);
+    }
+  }
+
+  /**
    * Aborts an active Antigravity session.
    */
   async abort(sessionId: string): Promise<boolean> {
+    // A resident ACP session cancels its in-flight turn over the protocol;
+    // the run then settles with stopReason cancelled. The process kill below
+    // stays for print runs and for ACP sessions whose engine already died.
+    if (isAcpRuntimeEnabled() && acpManagerInstance?.cancelTurn(sessionId)) {
+      return true;
+    }
     const process = activeProcesses.get(sessionId);
     if (process) {
       console.info(`[AntigravityRuntime] Aborting session: ${sessionId}`);

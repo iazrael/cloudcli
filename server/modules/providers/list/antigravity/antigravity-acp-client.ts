@@ -169,6 +169,11 @@ export class AntigravityAcpClient {
     return this.child;
   }
 
+  /** True once close() ran or the engine process exited. */
+  isClosed(): boolean {
+    return this.closed || this.exitInfo !== null;
+  }
+
   private ingest(chunk: string): void {
     this.buffer += chunk;
     let newlineAt = this.buffer.indexOf('\n');
