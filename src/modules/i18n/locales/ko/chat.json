@@ -142,6 +142,8 @@
     },
     "clickToChangeMode": "클릭하여 권한 모드 변경 (또는 입력창에서 Tab)",
     "showAllCommands": "모든 명령어 보기",
+    "moreTools": "더보기",
+    "contextUsage": "컨텍스트 사용량",
     "clearInput": "입력 지우기",
     "scrollToBottom": "맨 아래로 스크롤",
     "queue": {

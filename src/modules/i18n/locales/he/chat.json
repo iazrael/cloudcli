@@ -139,6 +139,8 @@
     },
     "clickToChangeMode": "לחיצה להחלפת מצב ההרשאות (או Tab בשדה הקלט)",
     "showAllCommands": "הצגת כל הפקודות",
+    "moreTools": "אפשרויות נוספות",
+    "contextUsage": "ניצול ההקשר",
     "clearInput": "ניקוי הקלט",
     "scrollToBottom": "גלילה לסוף",
     "queue": {

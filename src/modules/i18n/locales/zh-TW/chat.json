@@ -161,6 +161,8 @@
     },
     "clickToChangeMode": "點擊變更權限模式（或在輸入框中按 Tab）",
     "showAllCommands": "顯示所有指令",
+    "moreTools": "更多功能",
+    "contextUsage": "上下文用量",
     "clearInput": "清空輸入",
     "scrollToBottom": "捲動到底部",
     "queue": {

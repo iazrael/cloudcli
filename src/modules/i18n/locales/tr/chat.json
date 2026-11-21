@@ -178,6 +178,8 @@
     },
     "clickToChangeMode": "İzin modunu değiştirmek için tıkla (veya girdide Tab tuşuna bas)",
     "showAllCommands": "Tüm komutları göster",
+    "moreTools": "Daha fazla seçenek",
+    "contextUsage": "Bağlam kullanımı",
     "clearInput": "Girdiyi temizle",
     "scrollToBottom": "En alta git",
     "queue": {

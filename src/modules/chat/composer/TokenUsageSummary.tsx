@@ -2,35 +2,11 @@ import { memo } from 'react';
 import { ActivityIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
+import { formatTokenCount, readTokenUsageTotals } from '@/modules/chat/composer/tokenUsage';
+
 type TokenUsageSummaryProps = {
   usage: Record<string, unknown> | null;
   onClick?: () => void;
-};
-
-const formatTokenCount = (value: number) => {
-  if (!Number.isFinite(value) || value <= 0) {
-    return '0';
-  }
-
-  // Thresholds sit where rounding would carry into the next unit, so 9,960 reads "10K", not "10.0K".
-  if (value >= 999_500) {
-    return `${(value / 1_000_000).toFixed(value >= 9_950_000 ? 0 : 1)}M`;
-  }
-
-  if (value >= 9_950) {
-    return `${Math.round(value / 1_000)}K`;
-  }
-
-  if (value >= 1_000) {
-    return `${(value / 1_000).toFixed(1)}K`;
-  }
-
-  return value.toLocaleString();
-};
-
-const readUsageNumber = (value: unknown) => {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : 0;
 };
 
 /**
@@ -39,14 +15,7 @@ const readUsageNumber = (value: unknown) => {
  */
 function TokenUsageSummary({ usage, onClick }: TokenUsageSummaryProps) {
   const { t } = useTranslation();
-  const breakdown =
-    usage?.breakdown && typeof usage.breakdown === 'object'
-      ? usage.breakdown as Record<string, unknown>
-      : null;
-  const inputTokens = readUsageNumber(usage?.inputTokens ?? breakdown?.input);
-  const outputTokens = readUsageNumber(usage?.outputTokens ?? breakdown?.output);
-  const usedTokens = readUsageNumber(usage?.used) || inputTokens + outputTokens;
-  const contextWindow = readUsageNumber(usage?.total);
+  const { usedTokens, contextWindow } = readTokenUsageTotals(usage);
   // The button measures the context window's current occupancy, not the
   // session's spend; the tooltip says which model window it is measured
   // against so the number cannot be read as a total.

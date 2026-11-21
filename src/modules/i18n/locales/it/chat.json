@@ -138,6 +138,8 @@
     },
     "clickToChangeMode": "Clicca per cambiare modalità permessi (o premi Tab nell'input)",
     "showAllCommands": "Mostra tutti i comandi",
+    "moreTools": "Altre opzioni",
+    "contextUsage": "Utilizzo del contesto",
     "clearInput": "Cancella input",
     "scrollToBottom": "Scorri in basso",
     "queue": {

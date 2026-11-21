@@ -161,6 +161,8 @@
     },
     "clickToChangeMode": "Clique para alterar modo de permissão (ou pressione Tab na entrada)",
     "showAllCommands": "Mostrar todos os comandos",
+    "moreTools": "Mais opções",
+    "contextUsage": "Uso do contexto",
     "clearInput": "Limpar entrada",
     "scrollToBottom": "Rolar para o final",
     "queue": {

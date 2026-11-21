@@ -175,6 +175,8 @@
     },
     "clickToChangeMode": "Kliknutím změníte režim oprávnění (nebo stiskněte Tab ve vstupním poli)",
     "showAllCommands": "Zobrazit všechny příkazy",
+    "moreTools": "Více možností",
+    "contextUsage": "Využití kontextu",
     "clearInput": "Vymazat vstup",
     "scrollToBottom": "Posunout na konec",
     "queue": {

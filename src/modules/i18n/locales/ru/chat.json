@@ -150,6 +150,8 @@
     },
     "clickToChangeMode": "Нажмите для смены режима разрешений (или нажмите Tab в поле ввода)",
     "showAllCommands": "Показать все команды",
+    "moreTools": "Ещё",
+    "contextUsage": "Использование контекста",
     "clearInput": "Очистить ввод",
     "scrollToBottom": "Прокрутить вниз",
     "queue": {

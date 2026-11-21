@@ -178,6 +178,8 @@
     },
     "clickToChangeMode": "Click to change permission mode (or press Tab in input)",
     "showAllCommands": "Show all commands",
+    "moreTools": "More options",
+    "contextUsage": "Context usage",
     "clearInput": "Clear input",
     "scrollToBottom": "Scroll to bottom",
     "queue": {
@@ -400,10 +402,10 @@
   "cost": {
     "readingUsage": "Reading session usage…",
     "totalTokensUsed": "Total tokens used",
-"cumulativeTokens": "Total tokens (session)",
-"cumulativeInputTokens": "Input tokens (session)",
-"cumulativeOutputTokens": "Output tokens (session)",
-"contextTokens": "Current context",
+    "cumulativeTokens": "Total tokens (session)",
+    "cumulativeInputTokens": "Input tokens (session)",
+    "cumulativeOutputTokens": "Output tokens (session)",
+    "contextTokens": "Current context",
     "inputTokens": "Input tokens",
     "outputTokens": "Output tokens",
     "contextWindow": "Context window",

@@ -149,6 +149,8 @@
     },
     "clickToChangeMode": "Klik untuk mengganti mode izin (atau tekan Tab di input)",
     "showAllCommands": "Tampilkan semua perintah",
+    "moreTools": "Opsi lainnya",
+    "contextUsage": "Penggunaan konteks",
     "clearInput": "Kosongkan input",
     "scrollToBottom": "Gulir ke bawah",
     "queue": {

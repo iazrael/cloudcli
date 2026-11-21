@@ -46,6 +46,8 @@ import BackgroundSendDialog from '@/modules/chat/composer/BackgroundSendDialog';
 import type { ActiveBackgroundTask } from '@/shared/types';
 import ComposerModelMenu from '@/modules/chat/composer/ComposerModelMenu';
 import ComposerPermissionMenu from '@/modules/chat/composer/ComposerPermissionMenu';
+import ComposerOverflowMenu from '@/modules/chat/composer/ComposerOverflowMenu';
+import TokenUsageBadge from '@/modules/chat/composer/TokenUsageBadge';
 
 type MentionableFile = {
   name: string;
@@ -582,6 +584,24 @@ function ChatComposer({
 
         <PromptInputFooter>
           <PromptInputTools className="min-w-0">
+            {/* Mobile-only ＋ panel: the low-frequency tools (usage, commands,
+                schedule, clear) collect behind it so the main row stays lean. */}
+            <div className="sm:hidden">
+              <ComposerOverflowMenu
+                tokenBudget={tokenBudget}
+                onShowTokenUsage={onShowTokenUsage}
+                slashCommandsCount={slashCommandsCount}
+                onToggleCommandMenu={onToggleCommandMenu}
+                canSchedule={Boolean(input.trim())}
+                hasInput={hasInput}
+                onClearInput={onClearInput}
+                onScheduleMessage={onScheduleMessage}
+                onScheduleTask={onScheduleTask}
+                supportsNativeScheduling={supportsNativeScheduling}
+                recurringEnabled={scheduledJobsEnabled}
+              />
+            </div>
+
             <PromptInputButton
               tooltip={{ content: t('input.attachFiles') }}
               onClick={openAttachmentPicker}
@@ -594,12 +614,19 @@ function ChatComposer({
               <VoiceInputButton state={voiceState} onToggle={voiceToggle} errorMsg={voiceError} />
             )}
 
-            <TokenUsageSummary usage={tokenBudget} onClick={onShowTokenUsage} />
+            {/* Usage: the full chip is a desktop fixture; on phones the badge
+                only speaks up once the window closes in on full. */}
+            <div className="hidden sm:block">
+              <TokenUsageSummary usage={tokenBudget} onClick={onShowTokenUsage} />
+            </div>
+            <div className="sm:hidden">
+              <TokenUsageBadge usage={tokenBudget} onClick={onShowTokenUsage} />
+            </div>
 
             <PromptInputButton
               tooltip={{ content: t('input.showAllCommands') }}
               onClick={onToggleCommandMenu}
-              className="relative"
+              className="relative hidden sm:inline-flex"
             >
               <SquareSlashIcon />
               {slashCommandsCount > 0 && (
@@ -630,14 +657,18 @@ function ChatComposer({
               </div>
             )}
 
+            {/* Scheduled send keeps its desktop trigger; phones reach the same
+                form through the ＋ panel above. */}
             {SHOW_SCHEDULE_TRIGGER && (
-              <ScheduleMessagePopover
-                disabled={!input.trim()}
-                onSchedule={onScheduleMessage}
-                onScheduleTask={onScheduleTask}
-                supportsNativeScheduling={supportsNativeScheduling}
-                recurringEnabled={scheduledJobsEnabled}
-              />
+              <div className="hidden sm:flex">
+                <ScheduleMessagePopover
+                  disabled={!input.trim()}
+                  onSchedule={onScheduleMessage}
+                  onScheduleTask={onScheduleTask}
+                  supportsNativeScheduling={supportsNativeScheduling}
+                  recurringEnabled={scheduledJobsEnabled}
+                />
+              </div>
             )}
 
             <ComposerModelMenu
@@ -669,7 +700,7 @@ function ChatComposer({
                 disabled={isSubmitting || Boolean(attachmentBlock)}
                 aria-label={t('input.steer.button', { provider: providerLabel, defaultValue: 'Send into the running {{provider}} turn' })}
                 title={t('input.steer.button', { provider: providerLabel, defaultValue: 'Send into the running {{provider}} turn' })}
-                className="h-10 w-10 sm:h-10 sm:w-10"
+                className="h-11 w-11 sm:h-10 sm:w-10"
               >
                 <MessageSquarePlusIcon className="h-4 w-4" />
               </PromptInputButton>
@@ -685,7 +716,7 @@ function ChatComposer({
                 disabled={isSubmitting || Boolean(attachmentBlock)}
                 aria-label={t('sideQuestion.label', { defaultValue: 'Side question · not part of the session' })}
                 title={t('sideQuestion.label', { defaultValue: 'Side question · not part of the session' })}
-                className="h-10 w-10 sm:h-10 sm:w-10"
+                className="h-11 w-11 sm:h-10 sm:w-10"
               >
                 <MessagesSquareIcon className="h-4 w-4" />
               </PromptInputButton>
@@ -723,7 +754,7 @@ function ChatComposer({
               }
               aria-label={submitAriaLabel}
               title={submitAriaLabel}
-              className="h-10 w-10 sm:h-10 sm:w-10"
+              className="h-11 w-11 sm:h-10 sm:w-10"
             >
               {isSubmitting || isTranscribing ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
