@@ -1016,6 +1016,30 @@ test('listDirectories on a real filesystem refuses a symlink out of the project 
   }
 });
 
+test('browseWorkspace suggests symlinked directories and skips broken links and file links', async () => {
+  const workspaceRoot = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'file-tree-ws-'));
+  const outside = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'file-tree-outside-'));
+
+  try {
+    await fsPromises.mkdir(path.join(outside, 'linked-project'));
+    await fsPromises.writeFile(path.join(outside, 'note.txt'), '', 'utf8');
+    // The shape an external volume mounted into the workspace root takes:
+    // real project folders reached through links inside the browsed root.
+    await fsPromises.symlink(path.join(outside, 'linked-project'), path.join(workspaceRoot, 'linked-project'));
+    await fsPromises.symlink(path.join(outside, 'missing-target'), path.join(workspaceRoot, 'broken-link'));
+    await fsPromises.symlink(path.join(outside, 'note.txt'), path.join(workspaceRoot, 'file-link'));
+    await fsPromises.mkdir(path.join(workspaceRoot, 'plain-dir'));
+    const service = createRealFileSystemService(path.resolve('file-tree-test-project'), workspaceRoot);
+
+    const browsed = await service.browseWorkspace(workspaceRoot);
+
+    assert.deepEqual(browsed.suggestions.map((entry) => entry.name), ['linked-project', 'plain-dir']);
+  } finally {
+    await fsPromises.rm(workspaceRoot, { recursive: true, force: true });
+    await fsPromises.rm(outside, { recursive: true, force: true });
+  }
+});
+
 test('the temp directory can be browsed and read, but never written to', async () => {
   const temporaryDirectory = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'file-tree-tmp-'));
   const projectRoot = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'file-tree-project-'));

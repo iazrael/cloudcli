@@ -754,20 +754,35 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
         throw createFileTreeError('Directory not accessible', 404, 'DIRECTORY_NOT_ACCESSIBLE');
       }
 
-      // Only folder names are suggested, so no metadata is read. An unreadable
-      // folder suggests nothing rather than failing the browse.
+      // Only folder names are suggested. Symlinked directories are legitimate
+      // browse targets (an external volume mounted into the workspace root),
+      // so each link entry is stat-ed through and kept only when it resolves
+      // to a directory; broken or unreadable links stat-fail and drop out.
+      // This widens nothing: the names are merely candidates, and both further
+      // browsing and project registration still pass `validateWorkspacePath`.
       const directoryNames: string[] = [];
       await acquire();
       try {
         for await (const entry of fileSystem.openDirectory(resolvedPath)) {
           if (
-            entry.isDirectory()
-            && !IGNORED_DIRECTORY_NAMES.has(entry.name)
-            && !WINDOWS_SYSTEM_VOLUME_DIRECTORY_RE.test(entry.name)
+            IGNORED_DIRECTORY_NAMES.has(entry.name)
+            || WINDOWS_SYSTEM_VOLUME_DIRECTORY_RE.test(entry.name)
           ) {
-            directoryNames.push(entry.name);
-            if (directoryNames.length >= MAXIMUM_DIRECTORY_ENTRIES) break;
+            continue;
           }
+          if (entry.isDirectory()) {
+            directoryNames.push(entry.name);
+          } else if (entry.isSymbolicLink?.()) {
+            try {
+              const linkStats = await fileSystem.stat(path.join(resolvedPath, entry.name));
+              if (linkStats.isDirectory()) {
+                directoryNames.push(entry.name);
+              }
+            } catch {
+              // Broken or unreadable link: not a browsable folder.
+            }
+          }
+          if (directoryNames.length >= MAXIMUM_DIRECTORY_ENTRIES) break;
         }
       } catch (error) {
         const errorCode = readErrorCode(error);
