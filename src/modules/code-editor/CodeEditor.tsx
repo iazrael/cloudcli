@@ -275,6 +275,8 @@ export default function CodeEditor({
           zoomIn: t('filePreview.zoomIn', 'Zoom in'),
           zoomOut: t('filePreview.zoomOut', 'Zoom out'),
           resetZoom: t('filePreview.resetZoom', 'Reset zoom'),
+          prevPage: t('filePreview.prevPage', 'Previous page'),
+          nextPage: t('filePreview.nextPage', 'Next page'),
         }}
       />
     );

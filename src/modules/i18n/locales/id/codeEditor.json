@@ -39,7 +39,9 @@
   "filePreview": {
     "loading": "Memuat pratinjau...",
     "error": "File ini tidak dapat ditampilkan.",
-    "openInNewTab": "Buka di tab baru"
+    "openInNewTab": "Buka di tab baru",
+    "prevPage": "Halaman sebelumnya",
+    "nextPage": "Halaman berikutnya"
   },
   "unsavedChanges": {
     "confirmClose": "Ada perubahan yang belum disimpan. Tutup file ini dan buang perubahannya?",

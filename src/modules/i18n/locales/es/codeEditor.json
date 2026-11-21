@@ -40,7 +40,9 @@
   "filePreview": {
     "loading": "Cargando vista previa...",
     "error": "No se puede mostrar este archivo.",
-    "openInNewTab": "Abrir en una pestaña nueva"
+    "openInNewTab": "Abrir en una pestaña nueva",
+    "prevPage": "Página anterior",
+    "nextPage": "Página siguiente"
   },
   "unsavedChanges": {
     "confirmClose": "Tienes cambios sin guardar. ¿Cerrar este archivo y descartarlos?",

@@ -34,6 +34,10 @@
     "title": "バイナリファイル",
     "message": "ファイル \"{{fileName}}\" はバイナリファイルのため、テキストエディタで表示できません。"
   },
+  "filePreview": {
+    "prevPage": "前のページ",
+    "nextPage": "次のページ"
+  },
   "unsavedChanges": {
     "confirmClose": "保存されていない変更があります。このファイルを閉じて変更を破棄しますか？",
     "indicator": "未保存の変更"

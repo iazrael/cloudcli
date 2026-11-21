@@ -44,7 +44,9 @@
     "openInNewTab": "在新标签页中打开",
     "zoomIn": "放大",
     "zoomOut": "缩小",
-    "resetZoom": "重置缩放"
+    "resetZoom": "重置缩放",
+    "prevPage": "上一页",
+    "nextPage": "下一页"
   },
   "readOnly": {
     "badge": "只读"

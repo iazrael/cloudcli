@@ -36,6 +36,10 @@
     "title": "File binario",
     "message": "Il file \"{{fileName}}\" non può essere visualizzato nell'editor di testo perché è un file binario."
   },
+  "filePreview": {
+    "prevPage": "Pagina precedente",
+    "nextPage": "Pagina successiva"
+  },
   "unsavedChanges": {
     "confirmClose": "Ci sono modifiche non salvate. Chiudere questo file e scartarle?",
     "indicator": "Modifiche non salvate"

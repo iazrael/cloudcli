@@ -40,7 +40,9 @@
   "filePreview": {
     "loading": "טוען תצוגה מקדימה…",
     "error": "לא ניתן להציג את הקובץ הזה.",
-    "openInNewTab": "פתיחה בלשונית חדשה"
+    "openInNewTab": "פתיחה בלשונית חדשה",
+    "prevPage": "העמוד הקודם",
+    "nextPage": "העמוד הבא"
   },
   "unsavedChanges": {
     "confirmClose": "יש שינויים שלא נשמרו. לסגור את הקובץ ולבטל אותם?",

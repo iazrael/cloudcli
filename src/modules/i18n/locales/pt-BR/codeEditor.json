@@ -39,7 +39,9 @@
   "filePreview": {
     "loading": "Carregando visualização...",
     "error": "Não é possível exibir este arquivo.",
-    "openInNewTab": "Abrir em nova aba"
+    "openInNewTab": "Abrir em nova aba",
+    "prevPage": "Página anterior",
+    "nextPage": "Próxima página"
   },
   "unsavedChanges": {
     "confirmClose": "Você tem alterações não salvas. Fechar este arquivo e descartá-las?",

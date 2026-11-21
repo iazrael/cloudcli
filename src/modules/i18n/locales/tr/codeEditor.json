@@ -42,7 +42,9 @@
   "filePreview": {
     "loading": "Önizleme yükleniyor...",
     "error": "Bu dosya görüntülenemiyor.",
-    "openInNewTab": "Yeni sekmede aç"
+    "openInNewTab": "Yeni sekmede aç",
+    "prevPage": "Önceki sayfa",
+    "nextPage": "Sonraki sayfa"
   },
   "unsavedChanges": {
     "confirmClose": "Kaydedilmemiş değişikliklerin var. Bu dosya kapatılsın ve değişiklikler silinsin mi?",

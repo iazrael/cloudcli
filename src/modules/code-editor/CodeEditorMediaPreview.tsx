@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 
 import { useSignedMedia } from '@/shared/hooks/useSignedMedia';
 import { authenticatedFetch } from '@/shared/api';
@@ -10,6 +10,11 @@ import CodeEditorImageViewer, {
   MIN_SCALE,
   type ImageViewerHandle,
 } from '@/modules/code-editor/CodeEditorImageViewer';
+import type { PdfPageInfo, PdfViewerHandle } from '@/modules/code-editor/CodeEditorPdfViewer';
+
+// pdf.js 体量大：viewer（含 worker）只在真正打开 PDF 时才动态加载；
+// 类型走 import type，不会把 pdf.js 拉进主包。
+const CodeEditorPdfViewer = lazy(() => import('@/modules/code-editor/CodeEditorPdfViewer'));
 
 type CodeEditorMediaPreviewProps = {
   file: CodeEditorFile;
@@ -31,11 +36,13 @@ type CodeEditorMediaPreviewProps = {
     zoomIn?: string;
     zoomOut?: string;
     resetZoom?: string;
+    prevPage?: string;
+    nextPage?: string;
   };
 };
 
-// Reject a "PDF" whose bytes aren't actually a PDF before handing it to the
-// same-origin iframe, so a mislabeled HTML/SVG file can't run in the app origin.
+// Reject a "PDF" whose bytes aren't actually a PDF, so a mislabeled HTML/SVG
+// file fails fast with the standard error instead of a pdf.js parse error.
 const PDF_HEADER_SCAN_BYTES = 1024;
 
 const looksLikePdf = async (blob: Blob): Promise<boolean> => {
@@ -69,11 +76,21 @@ export default function CodeEditorMediaPreview({
   /** Imperative ref to invoke zoomIn, zoomOut, and resetZoom on the child image viewer. */
   const imageViewerRef = useRef<ImageViewerHandle | null>(null);
 
+  /** Imperative ref to jump pages on the lazy-loaded PDF viewer. */
+  const pdfViewerRef = useRef<PdfViewerHandle | null>(null);
+
   /** Current image zoom multiplier displayed in the header percentage badge. */
   const [imageScale, setImageScale] = useState<number>(1);
 
   const isExternal = Boolean(file.isReadOnlyExternal);
   const sourceKey = `${isExternal ? 'external' : (projectId ?? '')}:${file.path}:${kind}`;
+
+  // 当前 PDF 页码（viewer 上报）；null 表示文档尚未解析完成，工具栏不显示页码。
+  // 旧文件的页码无需手动清零：currentUrl 被 loadedKey 门控，加载新文件时它为
+  // null，工具栏页码随之隐藏；viewer 卸载时也会上报 null。
+  const [pdfPage, setPdfPage] = useState<PdfPageInfo | null>(null);
+  // 回调身份保持稳定，避免 viewer 因 props 变化重新加载文档。
+  const handlePdfPageInfo = useCallback((info: PdfPageInfo | null) => setPdfPage(info), []);
 
   // 图片与音频都走签名 URL 由浏览器直接加载字节（音频因此能边下边播）；其余
   // 媒体仍 fetch 整文件 blob，以支持进度条 seek 与 PDF magic-byte 校验。
@@ -198,11 +215,22 @@ export default function CodeEditorMediaPreview({
           />
         );
       case 'pdf':
-        // Not sandboxed on purpose: the browser's built-in PDF viewer refuses to
-        // load inside a sandboxed frame (any `sandbox` value yields a broken
-        // viewer). Script execution is instead prevented upstream by validating
-        // the PDF magic bytes and pinning the blob's MIME type to application/pdf.
-        return <iframe src={currentUrl} title={file.name} className="h-full w-full border-0 bg-white" />;
+        // Rendered in-app by pdf.js: the browser's built-in viewer only shows the
+        // first page of an iframe-embedded PDF under WebKit, so the other pages
+        // would be unreachable there. Script execution stays prevented upstream
+        // by validating the PDF magic bytes; pdf.js only parses bytes and never
+        // executes anything in the app origin.
+        return (
+          <Suspense fallback={null}>
+            <CodeEditorPdfViewer
+              key={currentUrl}
+              ref={pdfViewerRef}
+              srcUrl={currentUrl}
+              errorLabel={labels.error}
+              onPageInfoChange={handlePdfPageInfo}
+            />
+          </Suspense>
+        );
       case 'video':
         return (
           <video src={currentUrl} controls className="max-h-full max-w-full" autoPlay={false}>
@@ -289,6 +317,46 @@ export default function CodeEditorMediaPreview({
             <svg aria-hidden="true" className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <circle cx="11" cy="11" r="8" strokeWidth={2} />
               <path strokeLinecap="round" strokeWidth={2} d="M21 21l-4.35-4.35M11 8v6M8 11h6" />
+            </svg>
+          </button>
+          <div className="mx-1 h-3.5 w-px bg-border/60" />
+        </>
+      )}
+      {kind === 'pdf' && currentUrl && pdfPage && (
+        <>
+          <button
+            type="button"
+            disabled={pdfPage.current <= 1}
+            onClick={() => pdfViewerRef.current?.goToPage(pdfPage.current - 1)}
+            className={`flex items-center justify-center rounded-md p-1.5 ${
+              pdfPage.current > 1
+                ? 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white'
+                : 'cursor-not-allowed text-gray-400 opacity-30 dark:text-gray-600'
+            }`}
+            aria-label={labels.prevPage ?? 'Previous page'}
+            title={labels.prevPage ?? 'Previous page'}
+          >
+            <svg aria-hidden="true" className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+            </svg>
+          </button>
+          <span className="rounded px-1.5 py-0.5 font-mono text-xs font-medium text-gray-600 dark:text-gray-400">
+            {pdfPage.current} / {pdfPage.total}
+          </span>
+          <button
+            type="button"
+            disabled={pdfPage.current >= pdfPage.total}
+            onClick={() => pdfViewerRef.current?.goToPage(pdfPage.current + 1)}
+            className={`flex items-center justify-center rounded-md p-1.5 ${
+              pdfPage.current < pdfPage.total
+                ? 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white'
+                : 'cursor-not-allowed text-gray-400 opacity-30 dark:text-gray-600'
+            }`}
+            aria-label={labels.nextPage ?? 'Next page'}
+            title={labels.nextPage ?? 'Next page'}
+          >
+            <svg aria-hidden="true" className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
             </svg>
           </button>
           <div className="mx-1 h-3.5 w-px bg-border/60" />

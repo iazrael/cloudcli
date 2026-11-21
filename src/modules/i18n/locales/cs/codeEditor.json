@@ -40,6 +40,8 @@
   "filePreview": {
     "loading": "Načítání náhledu...",
     "error": "Tento soubor nelze zobrazit.",
-    "openInNewTab": "Otevřít na nové kartě"
+    "openInNewTab": "Otevřít na nové kartě",
+    "prevPage": "Předchozí stránka",
+    "nextPage": "Další stránka"
   }
 }
