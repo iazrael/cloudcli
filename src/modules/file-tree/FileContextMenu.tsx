@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode, type TouchEvent as ReactTouchEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Copy, Download, FileText, FolderPlus, Pencil, RefreshCw, Trash2, Upload, type LucideIcon } from 'lucide-react';
 
@@ -29,6 +29,10 @@ type ContextMenuAction = {
 const CONTEXT_MENU_WIDTH = 200;
 const CONTEXT_MENU_HEIGHT = 300;
 const VIEWPORT_PADDING = 10;
+// Touch devices get the same menu through a sustained press: iOS Safari never
+// dispatches contextmenu, and Android's own one carries system UI with it.
+const LONG_PRESS_DURATION_MS = 500;
+const LONG_PRESS_MOVE_THRESHOLD_PX = 10;
 
 function calculateViewportSafePosition(clientX: number, clientY: number) {
   // Keep the context menu inside the visible viewport.
@@ -76,17 +80,81 @@ export default function FileContextMenu({
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 });
   const menuRef = useRef<HTMLDivElement>(null);
+  // Long-press detection: the pending timer plus a flag marking the press that
+  // opened the menu, so the finger lifting afterwards cannot click the row
+  // through (expanding a folder or opening a file).
+  const longPressTimerRef = useRef<number | null>(null);
+  const longPressFiredRef = useRef(false);
+  const touchStartRef = useRef<{ x: number; y: number } | null>(null);
 
   const closeContextMenu = useCallback(() => {
     setIsMenuOpen(false);
+  }, []);
+
+  const openContextMenuAt = useCallback((clientX: number, clientY: number) => {
+    setMenuPosition(calculateViewportSafePosition(clientX, clientY));
+    setIsMenuOpen(true);
   }, []);
 
   const openContextMenuAtCursor = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
     event.preventDefault();
     event.stopPropagation();
 
-    setMenuPosition(calculateViewportSafePosition(event.clientX, event.clientY));
-    setIsMenuOpen(true);
+    openContextMenuAt(event.clientX, event.clientY);
+  }, [openContextMenuAt]);
+
+  const clearLongPressTimer = useCallback(() => {
+    if (longPressTimerRef.current !== null) {
+      window.clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  }, []);
+
+  const handleTouchStart = useCallback((event: ReactTouchEvent<HTMLDivElement>) => {
+    const touch = event.touches[0];
+    if (!touch) {
+      return;
+    }
+    longPressFiredRef.current = false;
+    touchStartRef.current = { x: touch.clientX, y: touch.clientY };
+    clearLongPressTimer();
+    longPressTimerRef.current = window.setTimeout(() => {
+      longPressTimerRef.current = null;
+      longPressFiredRef.current = true;
+      if (touchStartRef.current) {
+        openContextMenuAt(touchStartRef.current.x, touchStartRef.current.y);
+      }
+    }, LONG_PRESS_DURATION_MS);
+  }, [clearLongPressTimer, openContextMenuAt]);
+
+  const handleTouchMove = useCallback((event: ReactTouchEvent<HTMLDivElement>) => {
+    const start = touchStartRef.current;
+    const touch = event.touches[0];
+    if (!start || !touch) {
+      return;
+    }
+    // The finger is scrolling the tree, not holding the row.
+    if (Math.hypot(touch.clientX - start.x, touch.clientY - start.y) > LONG_PRESS_MOVE_THRESHOLD_PX) {
+      clearLongPressTimer();
+    }
+  }, [clearLongPressTimer]);
+
+  const handleTouchEnd = useCallback((event: ReactTouchEvent<HTMLDivElement>) => {
+    clearLongPressTimer();
+    // Suppress the synthesized click so opening the menu does not also
+    // activate the row; the capture-phase guard below is the second net.
+    if (longPressFiredRef.current) {
+      event.preventDefault();
+    }
+  }, [clearLongPressTimer]);
+
+  // React registers touchstart/move passively, so the touchend guard above is
+  // not enough everywhere: swallow the click in the capture phase as well.
+  const handleClickCapture = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    if (longPressFiredRef.current) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
   }, []);
 
   const runMenuActionAndClose = useCallback((action?: () => void) => {
@@ -272,7 +340,17 @@ export default function FileContextMenu({
 
   return (
     <>
-      <div onContextMenu={openContextMenuAtCursor} className={cn('contents', className)}>
+      <div
+        onContextMenu={openContextMenuAtCursor}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+        onTouchCancel={clearLongPressTimer}
+        onClickCapture={handleClickCapture}
+        // Keep the iOS press-and-hold callout from competing with the menu.
+        style={{ WebkitTouchCallout: 'none' }}
+        className={cn('contents', className)}
+      >
         {children}
       </div>
 
