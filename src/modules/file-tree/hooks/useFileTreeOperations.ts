@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import JSZip from 'jszip';
 
@@ -81,6 +81,11 @@ export function useFileTreeOperations({
   const [newItemType, setNewItemType] = useState<'file' | 'directory'>('file');
   const [newItemName, setNewItemName] = useState('');
   const [operationLoading, setOperationLoading] = useState(false);
+  // Enter and the blur fallback both confirm create/rename; the request disables
+  // the inline input, which blurs it and arms the fallback while the first
+  // request is still in flight. State checks cannot see that from stale
+  // closures, so the guard has to be a ref.
+  const confirmInFlightRef = useRef(false);
 
   // Validation
   const validateFilename = useCallback((name: string): string | null => {
@@ -112,7 +117,7 @@ export function useFileTreeOperations({
   }, []);
 
   const handleConfirmRename = useCallback(async () => {
-    if (!renamingItem || !selectedProject) return;
+    if (!renamingItem || !selectedProject || confirmInFlightRef.current) return;
 
     const error = validateFilename(renameValue);
     if (error) {
@@ -125,6 +130,7 @@ export function useFileTreeOperations({
       return;
     }
 
+    confirmInFlightRef.current = true;
     setOperationLoading(true);
     try {
       const response = await api.renameFile(selectedProject.projectId, {
@@ -143,6 +149,7 @@ export function useFileTreeOperations({
     } catch (err) {
       showToast((err as Error).message, 'error');
     } finally {
+      confirmInFlightRef.current = false;
       setOperationLoading(false);
     }
   }, [renamingItem, renameValue, selectedProject, validateFilename, showToast, t, onRefresh, handleCancelRename]);
@@ -203,7 +210,7 @@ export function useFileTreeOperations({
   }, []);
 
   const handleConfirmCreate = useCallback(async () => {
-    if (!selectedProject) return;
+    if (!selectedProject || confirmInFlightRef.current) return;
 
     const error = validateFilename(newItemName);
     if (error) {
@@ -211,6 +218,7 @@ export function useFileTreeOperations({
       return;
     }
 
+    confirmInFlightRef.current = true;
     setOperationLoading(true);
     try {
       const response = await api.createFile(selectedProject.projectId, {
@@ -235,6 +243,7 @@ export function useFileTreeOperations({
     } catch (err) {
       showToast((err as Error).message, 'error');
     } finally {
+      confirmInFlightRef.current = false;
       setOperationLoading(false);
     }
   }, [selectedProject, newItemParent, newItemType, newItemName, validateFilename, showToast, t, onRefresh, handleCancelCreate]);
