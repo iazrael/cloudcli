@@ -359,6 +359,7 @@
     "nextTaskPrompt": "Start the next task"
   },
   "message": {
+    "editBlockedByBackgroundWork": "You can't edit a sent message while background work is still running. Wait for it to finish, or stop the background task, then try again.",
     "editAndResend": "Edit and resend",
     "forkFromHere": "Fork from here",
     "answeredBy": "Answered by {{model}}"

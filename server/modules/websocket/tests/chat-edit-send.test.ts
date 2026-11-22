@@ -7,6 +7,7 @@ import test from 'node:test';
 
 import { appConfigDb, closeConnection, initializeDatabase, sessionsDb, taskContinuationDb, userDb } from '@/modules/database/index.js';
 import { sessionsService } from '@/modules/providers/index.js';
+import { AppError } from '@/shared/utils.js';
 import { handleChatConnection, runDetachedChatTurn } from '@/modules/websocket/services/chat-websocket.service.js';
 import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
 import { connectedClients } from '@/modules/websocket/services/websocket-state.service.js';
@@ -460,4 +461,61 @@ test('a known reporting session defers task delivery without creating a gateway 
     assert.equal(runs.length, 0);
     assert.equal(chatRunRegistry.getRun(SESSION_ID), undefined);
   }, CODEX_TRANSCRIPT_ROWS);
+});
+
+/**
+ * A runtime that refuses the turn because background work is still holding the
+ * engine process. Interactive frames have no retry path, so the gateway has to
+ * say so; a detached dispatch (queued/scheduled) is retried by its owner and
+ * must stay silent.
+ */
+function refuseWithBackgroundWork(dependencies: { runtime: unknown }): void {
+  const runtime = dependencies.runtime as {
+    run: () => Promise<void>;
+    supportsInputAcceptance?: (provider: string) => boolean;
+  };
+  runtime.run = async () => {
+    throw new AppError('Background work is still running; input will wait for a safe handover.', {
+      code: 'PROVIDER_INPUT_DEFERRED',
+      statusCode: 409,
+    });
+  };
+  // Detached dispatches only expose `deferred` when they wait for the input
+  // acceptance callback, which is what a provider that consumes input late
+  // declares.
+  runtime.supportsInputAcceptance = () => true;
+}
+
+test('a deferred edit from the composer reports an error instead of a silent completion', async () => {
+  await withGateway('claude', async ({ socket, dependencies }) => {
+    refuseWithBackgroundWork(dependencies);
+    socket.emit('message', JSON.stringify({
+      type: 'chat.edit-send',
+      sessionId: SESSION_ID,
+      anchorId: 'e-u2',
+      content: 'replacement',
+    }));
+    await settle();
+
+    const error = socket.frames.find((frame) => frame.kind === 'error');
+    assert.ok(error, 'the user is told why the edit did not happen');
+    assert.match(String(error?.content), /could not be edited while background work/);
+    const complete = socket.frames.find((frame) => frame.kind === 'complete');
+    assert.equal(complete?.exitCode, 1, 'the failed send is not reported as a completed engine turn');
+  });
+});
+
+test('a deferred detached dispatch stays silent for its queue to retry', async () => {
+  await withGateway('claude', async ({ dependencies }) => {
+    refuseWithBackgroundWork(dependencies);
+    // Detached dispatches have no socket; the run owner retries after the
+    // background work settles. The important part is that the deferral is not
+    // turned into a hard failure by the reporting rule for composer frames.
+    const result = await runDetachedChatTurn(
+      { sessionId: SESSION_ID, userId: 1, content: 'scheduled message' },
+      dependencies as never,
+    );
+    assert.equal(result.started, false);
+    assert.equal(result.busy, true);
+  });
 });

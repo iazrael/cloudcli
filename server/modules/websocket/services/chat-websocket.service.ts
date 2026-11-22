@@ -694,8 +694,28 @@ async function dispatchRun(
     runtimeOutcome = await dependencies.runtime.run(provider, command, runtimeOptions, run.writer);
   } catch (error) {
     failure = error instanceof Error ? error.message : String(error);
-    deferred = !inputAccepted && error instanceof AppError && error.code === 'PROVIDER_INPUT_DEFERRED';
-    if (!deferred) {
+    const engineDeferred = error instanceof AppError && error.code === 'PROVIDER_INPUT_DEFERRED';
+    // Only a dispatch with an input-acceptance callback (queued, scheduled)
+    // can be put back for a retry; for those the deferral is expected and
+    // silent so the owner can retry it.
+    deferred = !inputAccepted && engineDeferred;
+    // A queued or detached dispatch owns its own retry path, so a deferral
+    // there is expected and silent. A frame from the composer has nobody to
+    // retry it: the client already echoed the message and the user is waiting.
+    const interactive = data.type === 'chat.send' || data.type === 'chat.edit-send';
+    if (engineDeferred && interactive) {
+      // The runtime refuses a send that needs a fresh process while background
+      // work still runs. Say what blocked it instead of surfacing the engine's
+      // handover wording.
+      console.warn(`[Chat] Deferred interactive input for session ${sessionId}`, { type: data.type });
+      emitRuntimeFailureFallback(run, {
+        provider,
+        sessionId,
+        message: data.type === 'chat.edit-send'
+          ? 'This message could not be edited while background work is still running. Wait for it to finish, or stop the background task, then try again.'
+          : 'The engine could not take this message while background work is still running. Wait for it to finish, or stop the background task, then try again.',
+      });
+    } else if (!deferred) {
       console.error(`[Chat] Provider runtime "${provider}" failed`, { sessionId, error: failure });
       emitRuntimeFailureFallback(run, { provider, sessionId, message: failure });
     }

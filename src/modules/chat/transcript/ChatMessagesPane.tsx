@@ -60,6 +60,8 @@ type ChatMessagesPaneProps = {
   provider: LLMProvider;
   /** Present when the provider supports editing an already-sent message. */
   onEditMessage?: (message: ChatMessage) => void;
+  /** Why editing is unavailable right now; renders the edit control disabled with this tooltip. */
+  editDisabledReason?: string;
   /** Present when the provider supports forking the session from a message. */
   onForkFromMessage?: (message: ChatMessage) => void;
   isLoadingMoreMessages: boolean;
@@ -125,6 +127,7 @@ function ChatMessagesPane({
   selectedSession,
   provider,
   onEditMessage,
+  editDisabledReason,
   onForkFromMessage,
   isLoadingMoreMessages,
   highlightedItemIndex,
@@ -312,6 +315,7 @@ function ChatMessagesPane({
             selectedProject={selectedProject}
             provider={provider}
             onEditMessage={onEditMessage}
+            editDisabledReason={editDisabledReason}
             onForkFromMessage={onForkFromMessage}
           />
         )}
@@ -323,6 +327,7 @@ function ChatMessagesPane({
     highlightedItemIndex,
     isProcessing,
     onEditMessage,
+    editDisabledReason,
     onFileOpen,
     onForkFromMessage,
     provider,

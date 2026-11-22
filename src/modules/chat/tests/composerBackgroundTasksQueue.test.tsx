@@ -211,6 +211,58 @@ test('cancelling returns the message to the composer without queueing', async ()
   assert.deepEqual(serverDrafts, [], 'nothing reached the server queue');
 });
 
+test('editing a sent message while background work runs is refused without clearing the edit', async () => {
+  const { useChatComposerState } = await import('@/modules/chat/hooks/useChatComposerState');
+
+  const sent: Array<Record<string, unknown>> = [];
+  const added: Array<{ type?: string; content?: string }> = [];
+
+  const { result } = renderHook(() =>
+    useChatComposerState({
+      selectedProject,
+      selectedSession,
+      currentSessionId: 'session-1',
+      provider: 'claude',
+      permissionMode: 'bypassPermissions',
+      cyclePermissionMode: () => undefined,
+      resolvePermissionModeForProvider: () => 'bypassPermissions',
+      currentProviderModel: 'claude-3-7-sonnet',
+      currentProviderEffort: 'default',
+      isLoading: false,
+      hasActiveBackgroundTasks: true,
+      backgroundTasks: [{ id: 't1', toolName: 'Bash', command: 'npm run build', startedAt: Date.now() }],
+      canAbortSession: false,
+      tokenBudget: null,
+      sendMessage: (payload) => sent.push(payload as Record<string, unknown>),
+      stickToBottomAfterSend: () => undefined,
+      addMessage: (message) => added.push(message as never),
+      setPendingPermissionRequests: () => undefined,
+    }),
+  );
+
+  act(() => {
+    result.current.beginEditMessage({
+      type: 'user',
+      content: 'the correction',
+      transcriptAnchorId: 'anchor-1',
+      timestamp: new Date(),
+    } as never);
+  });
+
+  let accepted = true;
+  await act(async () => {
+    accepted = await result.current.handleSubmit(submitEvent);
+  });
+
+  assert.equal(accepted, false);
+  assert.equal(sent.length, 0, 'the edit never reaches the websocket');
+  assert.equal(result.current.input, 'the correction', 'the edited text stays in the composer');
+  assert.equal(result.current.editingAnchorId, 'anchor-1', 'the composer stays in edit mode');
+  const error = added.at(-1);
+  assert.equal(error?.type, 'error');
+  assert.match(String(error?.content), /background work/);
+});
+
 test('"Send anyway" sends now with forceInterrupt instead of queueing', async () => {
   const { useChatComposerState } = await import('@/modules/chat/hooks/useChatComposerState');
 
