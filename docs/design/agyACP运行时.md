@@ -49,6 +49,8 @@ antigravity 运行时从 print 单回合 spawn（`-p --input-format stream-json 
   - 权限挂起：prompt 在途（未 resolve）+ `request_permission` 未决 → 权限卡 → resolve 后回合继续。
   - 提问挂起：prompt 已 `end_turn` + ask_question 卡 pending → 问题卡；**用户的下一条 send 就是答案**（引擎语义如此，即便内容是新指令）；turn 2 先行 `tool_call_update: completed`，随后正常直播文本。
 - **回合外消息**：后台任务完成事件在无活动回合时到达 → 作为系统/助手行入时间线尾部并广播（print 模式进程已死收不到，此为新行为）。
+- **早到的 end_turn 与排空（真机回归修复，2026-11-22）**：ACP 的 `session/prompt` 不像 print 那样等子 agent 汇报完才返回——模型可以先回 end_turn，子 agent（及其后的父汇总）继续在流上推帧。回合循环在 end_turn 时若仍有未绑定的 spawn 调用或已登记未汇报的 agent，就进入**排空**：保持泵与 writer 不结算，等汇报结算把登记簿清空（exit/取消随时打断），再走正常收尾；期间帧照常直播、会话保持 processing。这也让 agent 卡按真实汇报结算，而不是在早到的结算里被判 stopped。
+- **提问回显抑制（真机回归修复）**：引擎在 ask_question 卡旁边会把问题原文作为 agent_message_chunk 再回显一遍（只存在于直播流，不进转录——刷新后不重复）。翻译器在卡挂起期间丢弃消息 chunk，运行时在发出答案 prompt 时解除。
 - 后台任务注册表：从 `backgroundKeyAliases` 进程别名映射改为 ACP 事件驱动；通知链路复用 antigravity-background-work。
 - abort：杀进程 → `session/cancel`，5 秒未结束时关连接并停止进程。
 - 看门狗：pending 权限/提问不算静默。卡片 30 分钟到期后主动结算。
