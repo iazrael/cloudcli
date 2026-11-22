@@ -508,6 +508,9 @@ test('a parked question answers through the card and continues on the same run',
   assert.ok(messages.some((message) => message.kind === 'permission_cancelled'), 'question card retracted');
   assert.ok(messages.some((message) => message.kind === 'stream_delta'), 'answer turn streamed on the same run (chunk frames arrive as stream deltas)');
   assert.ok(messages.some((message) => message.kind === 'tool_result' && message.toolId === 'call_ask'), 'ask completed after the answer');
+  const askResult = messages.find((message) => message.kind === 'tool_result' && message.toolId === 'call_ask');
+  assert.match(String(askResult?.content), /User has answered your questions:/, 'the live card folds the picked answers from this acknowledgement');
+  assert.match(String(askResult?.content), /A: PostgreSQL/);
 
   // The log is shared across this file's tests; the question run's own turns
   // are its last two entries.
@@ -618,4 +621,22 @@ test('a turn can be aborted while its model catalog is loading', async () => {
   } finally {
     unblock();
   }
+});
+
+test('isReplayTailMatch classifies replayed versus novel text', async () => {
+  const { isReplayTailMatch } = await import('../list/antigravity/antigravity-runtime.provider.js');
+  const tail = '已完成全部 9 组 Godot 无头测试与核心变更静态排查，正在汇总并行的评审结果。\n标准评审已返回，正等待最后一份独立产品评审结果。';
+  assert.equal(isReplayTailMatch(tail, '标准评审已返回，正等待最后一份'), true, 'tail-quoted chunk is replay');
+  assert.equal(isReplayTailMatch(tail, '这是全新回复的开头，转录里没有出现过'), false, 'novel reply text is live');
+  assert.equal(isReplayTailMatch('', 'anything'), false, 'no tail means nothing is replay');
+  assert.equal(isReplayTailMatch(tail, '   '), true, 'whitespace holds the guard');
+});
+
+test('isReplayTailMatch classifies replayed versus novel text', async () => {
+  const { isReplayTailMatch } = await import('../list/antigravity/antigravity-runtime.provider.js');
+  const tail = '已完成全部 9 组 Godot 无头测试与核心变更静态排查，正在汇总并行的评审结果。\n标准评审已返回，正等待最后一份独立产品评审结果。';
+  assert.equal(isReplayTailMatch(tail, '标准评审已返回，正等待最后一份'), true, 'tail-quoted chunk is replay');
+  assert.equal(isReplayTailMatch(tail, '这是全新回复的开头，转录里没有出现过'), false, 'novel reply text is live');
+  assert.equal(isReplayTailMatch('', 'anything'), false, 'no tail means nothing is replay');
+  assert.equal(isReplayTailMatch(tail, '   '), true, 'whitespace holds the guard');
 });

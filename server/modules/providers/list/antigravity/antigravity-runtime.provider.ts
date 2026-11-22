@@ -246,6 +246,19 @@ const isStreamInterruptedNotice = (message: string | null | undefined): boolean 
 };
 
 /**
+ * True when `chunkText` is still part of the transcript tail a resumed
+ * session replays on load. The tail is the last few transcript rows'
+ * content; replayed chunks quote it, the model's fresh reply does not.
+ * Exported for the runtime tests (consumer: antigravity-acp-runtime.test).
+ */
+export function isReplayTailMatch(tailText: string, chunkText: string): boolean {
+  if (!tailText) return false;
+  const probe = chunkText.length > 120 ? chunkText.slice(0, 120) : chunkText;
+  if (!probe.trim()) return true; // whitespace-only chunk: cannot classify, keep holding
+  return tailText.includes(probe) || tailText.endsWith(probe.slice(0, 40));
+}
+
+/**
  * The ACP runtime is the default since its real-machine acceptance; setting
  * `CLOUDCLI_ANTIGRAVITY_ACP=0` falls back to the print path below (kept as
  * the untouched fallback; docs/design/agyACP运行时.md 灰度开关).
@@ -1388,6 +1401,22 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
       });
       release = () => manager.release(sessionKey, handle);
       capturedSessionId = handle.sessionId;
+
+      // agy's session/load replays the whole conversation history as live
+      // session/update frames (probes: dozens of tool frames plus every old
+      // reply, streaming for a long time). The client already shows that
+      // history from its own fetch, so replayed text would glue the previous
+      // replies into the new turn's bubble. Guard: buffer resumed-turn text
+      // until the transcript tail is known, then drop everything that
+      // matches the tail and stream the rest.
+      let replayGuard: {
+        tailText: string | null;
+        tailReady: boolean;
+        bufferText: string;
+        mode: 'buffering' | 'replay' | 'live';
+      } | null = handle.continuity === 'resumed'
+        ? { tailText: null, tailReady: false, bufferText: '', mode: 'buffering' }
+        : null;
       cancellation.signal.throwIfAborted();
       installAcpSessionRouter(sessionKey, context, handle.client);
 
@@ -1559,6 +1588,26 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
         pendingSpawnCalls.size > 0
         || antigravityBackgroundWork.list().some((entry) => entry.sessionId === sessionKey && entry.tasks.length > 0);
       const historyReader = new AntigravitySessionsProvider();
+      if (replayGuard) {
+        void (async () => {
+          try {
+            const history = await historyReader.fetchHistory(capturedSessionId, { limit: 6 });
+            const tail = history.messages
+              .slice(-4)
+              .map((message) => String(message.content ?? ''))
+              .filter((text) => text.length > 0)
+              .join('\n')
+              .slice(-12_000);
+            if (replayGuard) {
+              replayGuard.tailText = tail;
+              replayGuard.tailReady = true;
+            }
+          } catch (error) {
+            console.warn('[AntigravityAcp] transcript tail for the replay guard unavailable:', error);
+            if (replayGuard) replayGuard.tailReady = true;
+          }
+        })();
+      }
       const agentTail = createAgentTranscriptTail({
         readTimeline: async (conversationId) => (await historyReader.fetchHistory(conversationId, {})).messages,
         emit: (message) => { if (!settled) writer.send(message); },
@@ -1688,6 +1737,8 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
        * turn then continues on this run's writer.
        */
       const seenQuestions = new Set<string>();
+      const askAcknowledgements = new Map<string, string>();
+      let pendingAskCallId: string | null = null;
       let replyText = '';
       const pendingAskHolder: { current: Promise<AcpCardOutcome> | null } = { current: null };
       acpLiveRunPumps.add(sessionKey);
@@ -1706,6 +1757,64 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
         }
         const translation = translator.translate(notification);
         for (const message of translation.messages) {
+          // Replay-guard buffering: resumed sessions replay history text
+          // before the model's real output; hold the text until the guard
+          // can tell them apart.
+          if (
+            replayGuard
+            && !replayGuard.tailReady
+            && message.kind === 'stream_delta'
+            && typeof message.content === 'string'
+          ) {
+            replayGuard.bufferText += message.content;
+            continue;
+          }
+          if (replayGuard && message.kind === 'stream_delta' && typeof message.content === 'string' && message.content) {
+            if (replayGuard.mode === 'buffering' && replayGuard.tailReady) {
+              // Tail known: the buffered text is replay when it quotes the
+              // transcript tail; otherwise it was the model's real prose
+              // that arrived while the tail was being read.
+              const bufferedProbe = replayGuard.bufferText.slice(-400);
+              if (isReplayTailMatch(replayGuard.tailText ?? '', bufferedProbe)) {
+                replayGuard.mode = 'replay';
+                replayGuard.bufferText = '';
+              } else {
+                replayGuard.mode = 'live';
+                writer.send(createNormalizedMessage({
+                  id: generateMessageId(PROVIDER),
+                  kind: 'stream_delta',
+                  content: replayGuard.bufferText,
+                  sessionId: capturedSessionId,
+                  provider: PROVIDER,
+                }));
+                replyText += replayGuard.bufferText;
+                rememberSessionReplyPreview(sessionKey, replyText);
+                replayGuard.bufferText = '';
+              }
+            }
+            if (replayGuard.mode === 'replay') {
+              if (!isReplayTailMatch(replayGuard.tailText ?? '', message.content)) {
+                replayGuard.mode = 'live'; // first novel chunk: live from here
+              } else {
+                continue;
+              }
+            }
+            if (replayGuard && replayGuard.mode === 'live') {
+              replayGuard = null; // everything after is the model's real output
+            }
+          }
+          // The engine's own ask_question result does not match the
+          // acknowledgement format the question card folds, so the live card
+          // would keep showing unanswered radio options after the user
+          // picked answers. Rewrite it with the exact acknowledgement text
+          // the answer prompt carried.
+          if (message.kind === 'tool_result' && askAcknowledgements.has(String(message.toolId))) {
+            const ack = askAcknowledgements.get(String(message.toolId));
+            askAcknowledgements.delete(String(message.toolId));
+            if (!message.isError) {
+              message.content = ack ?? '';
+            }
+          }
           writer.send(message);
           // The terminal push carries the run's last reply text. antigravity
           // streams reply prose as stream_delta rows, which the shared
@@ -1778,6 +1887,7 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
           const { toolCallId, cardInput } = pendingTool;
           if (!pendingAskHolder.current && !seenQuestions.has(toolCallId) && !cancellation.signal.aborted) {
             seenQuestions.add(toolCallId);
+            pendingAskCallId = toolCallId;
             const requestId = generateMessageId('acp_ask');
             const questionFrame = createNormalizedMessage({
               id: generateMessageId(PROVIDER),
@@ -2040,12 +2150,16 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
           }
           const outcome = parkRace.outcome;
           translator.releaseQuestionEcho();
+          const settledAskCallId = pendingAskCallId;
+          pendingAskCallId = null;
+          const denialText = formatQuestionAnswers({});
+          if (settledAskCallId) askAcknowledgements.set(settledAskCallId, denialText);
           if (outcome.expired || !outcome.allow) {
             // Denied or timed out: the engine's next input would be read as
             // the answer, so tell it the user declined and let it finish on
             // its own judgment instead of leaving the ask parked under the
             // session. The judgment turn streams here and settles the run.
-            promptPromise = sendPrompt(formatQuestionAnswers({}));
+            promptPromise = sendPrompt(denialText);
             race = await awaitTurnEnd();
             continue;
           }
@@ -2057,6 +2171,7 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
           // the parked ask and continues the same conversation, so this loop
           // round streams the continuation's frames through the same writer.
           translator.releaseQuestionEcho();
+          if (settledAskCallId) askAcknowledgements.set(settledAskCallId, answerText);
           promptPromise = sendPrompt(answerText);
           race = await awaitTurnEnd();
           continue;

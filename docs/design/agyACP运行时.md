@@ -70,6 +70,11 @@ antigravity 运行时从 print 单回合 spawn（`-p --input-format stream-json 
 
 ACP 默认**开启**；`CLOUDCLI_ANTIGRAVITY_ACP=0` 回退 print 老路径（保留为未动回退，删除另行拍板）；空闲回收 `CLOUDCLI_ANTIGRAVITY_ACP_IDLE_MINUTES`（默认 10）。
 
+### 直播拼接与提问卡答案回填（2026-11-22 真机修复）
+
+- **直播拼接**：agy 在 `session/load` 后按 ACP 语义重放整段历史（几十个工具帧+全部旧回复作为 message_chunk 涌出，流式跨过 load 响应）。运行时对 resumed 会话启用**重放守卫**：缓冲 load 后的文本流，与转录尾部（最近几行内容）比对——命中尾部引用的重放块丢弃，首个"新文本"块起转直播；tail 未就绪前只缓冲不外发（tail 读取失败则按直播放行）。
+- **提问卡答案回填**：agy 的 ask_question 完成结果是它自己的格式，前端折叠逻辑认不出，直播卡片在用户作答后仍显示未选状态。运行时把该工具结果改写为确认句式（`User has answered your questions:` + Q/A，与答案 prompt 同文），直播卡即时回填所选答案。
+
 ### 通知预览（2026-11-22）
 
 回合结束推送原先只有"provider: completed"——预览捕获在 writer 侧只认 `kind:'text'` 行，而 zcode 是唯一发 text 行的引擎，antigravity 的回复全走 `stream_delta`，预览从未生效。运行时泵现在累积回复文本并按会话 id 写入通知预览注册表（回显抑制期间不计入），排空期的后续播报也覆盖。
