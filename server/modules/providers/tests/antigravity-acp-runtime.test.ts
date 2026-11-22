@@ -15,13 +15,13 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
+import { getSessionReplyPreview } from '@/modules/notifications/index.js';
 import type {
   NormalizedMessage,
   ProviderRuntimeContext,
   ProviderRuntimeWriter,
 } from '@/shared/types.js';
 
-import { getSessionReplyPreview } from '@/modules/notifications/index.js';
 import { AntigravityRuntimeProvider, closeAntigravityAcpSessions } from '../list/antigravity/antigravity-runtime.provider.js';
 
 process.env.CLOUDCLI_ANTIGRAVITY_ACP = '1';
@@ -101,6 +101,18 @@ function handle(frame) {
       setTimeout(() => {
         send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'tool_call_update', toolCallId: 'call_spawn', name: 'invoke_subagent', status: 'completed' } } });
         send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '评审已汇总。' } } } });
+      }, 1500);
+      return;
+    }
+    if (mode === 'acp-daemon') {
+      // A backgrounded command is still running when the model yields
+      // end_turn; the run must hold until the command completes.
+      send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'tool_call', toolCallId: 'call_bg', name: 'run_command', args: { CommandLine: 'sleep 2 && echo done', IsDaemon: true, toolSummary: 'Run regression suites' }, status: 'in_progress' } } });
+      send({ jsonrpc: '2.0', id: promptId, result: { stopReason: 'end_turn', usage: { totalTokens: 3 } } });
+      promptId = null;
+      setTimeout(() => {
+        send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'tool_call_update', toolCallId: 'call_bg', name: 'run_command', status: 'completed', content: [{ type: 'content', content: { type: 'text', text: 'done' } }] } } });
+        send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '回归测试全部通过。' } } } });
       }, 1500);
       return;
     }
@@ -366,6 +378,31 @@ test('end_turn with an outstanding spawn drains instead of settling early', asyn
   assert.ok(messages.some((message) => message.kind === 'stream_delta' && String(message.content).includes('评审已汇总')), 'post-end_turn frames streamed through the pump');
 });
 
+test('a backgrounded command shows on the strip and holds the run until it completes', async () => {
+  process.env.AGY_ACP_STUB_MODE = 'acp-daemon';
+  const { messages, writer } = createWriter();
+  const startedAt = Date.now();
+  const runPromise = runtime.run('run the suites', { sessionId: 'sess-acp-strip', cwd: workspaceDir }, writer, context);
+
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  assert.ok(!messages.some((message) => message.kind === 'complete'), 'early end_turn must not settle while a daemon command runs');
+  const strips = messages.filter((message) => message.kind === 'status' && message.text === 'background_tasks');
+  assert.ok(strips.length > 0, 'the strip broadcast went out');
+  const running = strips[strips.length - 1].backgroundTasks as Array<{ toolName: string; description: string }>;
+  assert.ok(running.some((task) => task.toolName === 'Bash' && task.description === 'Run regression suites'), 'daemon command shows as a Bash entry');
+
+  const result = await runPromise;
+  assert.ok(Date.now() - startedAt >= 1500, 'the run drained until the command completed');
+  assert.deepEqual(result, { sessionId: 'acp-conv-1', success: true });
+
+  const settle = messages.find((message) => message.kind === 'task_status' && message.taskId === 'call_bg');
+  assert.ok(settle, 'command completion settled its strip entry');
+  const finalStrip = messages.filter((message) => message.kind === 'status' && message.text === 'background_tasks').slice(-1)[0];
+  assert.deepEqual(finalStrip?.backgroundTasks, [], 'strip cleared after completion');
+  assert.ok(messages.some((message) => message.kind === 'stream_delta' && String(message.content).includes('回归测试全部通过')), 'post-end_turn prose streamed');
+  assert.match(getSessionReplyPreview('sess-acp-strip') ?? '', /回归测试全部通过/, 'the completion prose is what the stop push carries');
+});
+
 test('a prompt rejected by the engine fails the run instead of settling as success', async () => {
   process.env.AGY_ACP_STUB_MODE = 'acp-prompt-error';
   const { messages, writer } = createWriter();
@@ -505,20 +542,24 @@ test('an answer sent before end_turn still becomes the next prompt', async () =>
   assert.match(fs.readFileSync(promptsLog, 'utf8'), /early-answer-42/);
 });
 
-test('a background command keeps its process and blocks a permissions change until completion', async () => {
+test('a background command holds its run draining, and a permissions switch is refused while it runs', async () => {
   await closeAntigravityAcpSessions();
   process.env.CLOUDCLI_ANTIGRAVITY_ACP_IDLE_MINUTES = '0.002';
   process.env.AGY_ACP_STUB_MODE = 'acp-bg';
   const sessionId = 'sess-acp-bg-recycle';
-  const { writer } = createWriter();
+  const { messages, writer } = createWriter();
   try {
-    await runtime.run('start a long daemon', { sessionId, cwd: workspaceDir }, writer, context);
+    // The drain keeps this run busy until the daemon command completes.
+    const runPromise = runtime.run('start a long daemon', { sessionId, cwd: workspaceDir }, writer, context);
+    await waitFor(() => messages.some((message) => message.kind === 'tool_result' && message.toolId === 'call_bg'));
+    // While the daemon command runs, a permissions switch cannot start.
     await assert.rejects(runtime.run('switch now', {
       sessionId, cwd: workspaceDir, permissionMode: 'bypassPermissions',
-    }, writer, context), /background commands are running/);
-    await waitFor(() => published.some((entry) => entry.appSessionId === sessionId && entry.message.kind === 'tool_result'));
+    }, writer, context), /busy with another turn/);
+    const result = await runPromise;
+    assert.deepEqual(result, { sessionId: 'acp-conv-1', success: true });
   } finally {
-    delete process.env.CLOUDCLI_ANTIGRAVITY_ACP_IDLE_MINUTES;
+    delete process.env.CLOUDCLI_ANTIGRAVITY_IDLE_MINUTES;
     await closeAntigravityAcpSessions();
   }
 });

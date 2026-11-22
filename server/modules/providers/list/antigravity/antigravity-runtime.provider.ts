@@ -22,6 +22,7 @@ import {
 } from '@/shared/image-attachments.js';
 import {
   LOCAL_AGENT_TASK_TYPE,
+  LOCAL_BASH_TASK_TYPE,
   createBackgroundTasksStatusMessage,
   createTaskStatusMessage,
 } from '@/modules/providers/shared/background-work/task-status.js';
@@ -1550,6 +1551,13 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
       const pendingSpawnCalls = new Map<string, { specs: ReturnType<typeof readInvokedAgentSpecs> }>();
       const boundSpawnIds = acpBoundSpawnIds.get(capturedSessionId) ?? new Set<string>();
       acpBoundSpawnIds.set(capturedSessionId, boundSpawnIds);
+      const isDaemonCommandCall = (message: NormalizedMessage): boolean =>
+        message.toolName === 'run_command'
+        && readObjectRecord(message.toolInput)?.IsDaemon === true
+        && !antigravityBackgroundWork.get(sessionKey, String(message.toolId));
+      const outstandingBackgroundWork = (): boolean =>
+        pendingSpawnCalls.size > 0
+        || antigravityBackgroundWork.list().some((entry) => entry.sessionId === sessionKey && entry.tasks.length > 0);
       const historyReader = new AntigravitySessionsProvider();
       const agentTail = createAgentTranscriptTail({
         readTimeline: async (conversationId) => (await historyReader.fetchHistory(conversationId, {})).messages,
@@ -1706,6 +1714,60 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
           if (message.kind === 'stream_delta' && typeof message.content === 'string' && message.content) {
             replyText += message.content;
             rememberSessionReplyPreview(sessionKey, replyText);
+          }
+          // Backgrounded commands (run_command IsDaemon) are tracked like
+          // subagents: the strip shows them while they run, their completion
+          // settles the strip entry, and an end_turn that leaves one
+          // outstanding holds the run open (drain below) — without this a
+          // daemon-only wait looked like a finished turn on the client.
+          if (message.kind === 'tool_use' && isDaemonCommandCall(message)) {
+            const callId = String(message.toolId);
+            if (!antigravityBackgroundWork.get(sessionKey, callId)) {
+              const input = readObjectRecord(message.toolInput);
+              antigravityBackgroundWork.start(sessionKey, {
+                taskId: callId,
+                toolUseId: callId,
+                taskType: LOCAL_BASH_TASK_TYPE,
+                description: readOptionalString(input?.toolSummary)
+                  ?? readOptionalString(input?.CommandLine)
+                  ?? 'Background command',
+              });
+              broadcastBackgroundTasks();
+            }
+          }
+          if (message.kind === 'tool_result' && !message.isError && antigravityBackgroundWork.get(sessionKey, String(message.toolId))?.taskType === LOCAL_BASH_TASK_TYPE) {
+            const callId = String(message.toolId);
+            const task = antigravityBackgroundWork.get(sessionKey, callId);
+            if (task && antigravityBackgroundWork.end(sessionKey, callId)) {
+              writer.send(createTaskStatusMessage(
+                {
+                  provider: PROVIDER,
+                  sessionId: capturedSessionId,
+                  taskId: callId,
+                  toolUseId: task.toolUseId,
+                  taskType: LOCAL_BASH_TASK_TYPE,
+                },
+                { event: 'notification', status: 'completed' },
+              ));
+              broadcastBackgroundTasks();
+            }
+          }
+          if (message.kind === 'tool_result' && message.isError && antigravityBackgroundWork.get(sessionKey, String(message.toolId))?.taskType === LOCAL_BASH_TASK_TYPE) {
+            const callId = String(message.toolId);
+            const task = antigravityBackgroundWork.get(sessionKey, callId);
+            if (task && antigravityBackgroundWork.end(sessionKey, callId)) {
+              writer.send(createTaskStatusMessage(
+                {
+                  provider: PROVIDER,
+                  sessionId: capturedSessionId,
+                  taskId: callId,
+                  toolUseId: task.toolUseId,
+                  taskType: LOCAL_BASH_TASK_TYPE,
+                },
+                { event: 'notification', status: 'failed' },
+              ));
+              broadcastBackgroundTasks();
+            }
           }
         }
         if (translation.spawnStarted) pendingSpawnCalls.set(translation.spawnStarted.toolCallId, { specs: translation.spawnStarted.specs });
@@ -2012,16 +2074,19 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
       // wait-for-agents behaviour, adapted to the early end_turn. The engine
       // keeps streaming during the drain, so the watchdog stays armed and an
       // abort or engine exit ends it immediately.
-      const outstandingSubagentWork = (): boolean =>
-        pendingSpawnCalls.size > 0
-        || antigravityBackgroundWork.list().some((entry) => entry.sessionId === sessionKey && entry.tasks.length > 0);
-      if (!wasCancelled && endedWithEndTurn && outstandingSubagentWork()) {
-        console.info(`[AntigravityAcp] end_turn with outstanding subagent work; draining session ${sessionKey}`);
+          if (!wasCancelled && endedWithEndTurn && outstandingBackgroundWork()) {
+        console.info(`[AntigravityAcp] end_turn with outstanding background work; draining session ${sessionKey}`);
         while (
-          outstandingSubagentWork()
+          outstandingBackgroundWork()
           && !handle.client.isClosed()
           && !cancellation.signal.aborted
         ) {
+          // A daemon wait is silent by design; each poll counts as activity
+          // so the idle watchdog cannot kill a long background run (Godot
+          // import + full regression suites routinely outlast 30 quiet
+          // minutes). A truly wedged daemon shows as a running strip entry
+          // the user can abort.
+          touchWatchdog();
           await new Promise<void>((resolve) => {
             const timer = setTimeout(resolve, AGENT_REPORT_POLL_INTERVAL_MS);
             timer.unref?.();
