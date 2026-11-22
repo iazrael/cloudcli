@@ -520,6 +520,9 @@ export const chatRunRegistry = {
       sessionName: input.sessionName,
       provider: input.provider,
       providerSessionId: input.providerSessionId,
+      // Run writers track the notification reply preview; the session-channel
+      // writer (created without this) deliberately records nothing.
+      appSessionId: input.appSessionId,
       onProviderSessionId: (providerSessionId, replacement) => {
         recordProviderSessionId(run, providerSessionId, replacement);
       },

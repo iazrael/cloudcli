@@ -16,6 +16,12 @@ export {
 } from '@/modules/notifications/services/notification-orchestrator.service.js';
 // The event type settings re-publishes through its boundary.
 export type { NotificationEvent } from '@/modules/notifications/services/notification-orchestrator.service.js';
+// Reply preview registry: the chat session writer records each run's last assistant text here, and notification payloads spend it as the push body.
+export {
+  clearSessionReplyPreview,
+  getSessionReplyPreview,
+  rememberSessionReplyPreview,
+} from '@/modules/notifications/services/run-notification-content.service.js';
 export {
   registerDesktopNotificationClient,
   sendDesktopNotification,

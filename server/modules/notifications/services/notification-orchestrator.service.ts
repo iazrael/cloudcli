@@ -1,8 +1,15 @@
 import webPush from 'web-push';
 import { webhookNotificationsService } from '@/modules/notifications/services/webhook-notifications.service.js';
 
-import { notificationPreferencesDb, pushSubscriptionsDb, sessionsDb } from '@/modules/database/index.js';
+import {
+  hasConnection,
+  notificationPreferencesDb,
+  pushSubscriptionsDb,
+  sessionTurnFailuresDb,
+  sessionsDb,
+} from '@/modules/database/index.js';
 import { sendDesktopNotification as sendDesktopNotificationToClients } from '@/modules/notifications/services/desktop-notification-clients.service.js';
+import { getSessionReplyPreview } from '@/modules/notifications/services/run-notification-content.service.js';
 
 //----------------- NOTIFICATION ORCHESTRATOR TYPES ------------
 
@@ -71,6 +78,9 @@ const PROVIDER_LABELS: Record<string, string> = {
   claude: 'Claude',
   cursor: 'Cursor',
   codex: 'Codex',
+  antigravity: 'Antigravity',
+  zcode: 'ZCode',
+  opencode: 'OpenCode',
   system: 'System'
 };
 
@@ -229,6 +239,41 @@ function resolveSessionName(event: NotificationEventInput): string | null {
   return normalizeSessionName(sessionsDb.getSessionName(event.sessionId, event.provider));
 }
 
+/** Final-body cap for reply snippets: roughly what an iOS lock screen shows. */
+const MAX_PAYLOAD_PREVIEW_LENGTH = 160;
+
+/**
+ * Collapses a remembered reply snippet into a one-line push body, or null
+ * when there is nothing usable to show.
+ */
+function formatReplyPreview(preview: string | null): string | null {
+  if (!preview) {
+    return null;
+  }
+  const collapsed = preview.replace(/\s+/g, ' ').trim();
+  if (!collapsed) {
+    return null;
+  }
+  return collapsed.length > MAX_PAYLOAD_PREVIEW_LENGTH
+    ? `${collapsed.slice(0, MAX_PAYLOAD_PREVIEW_LENGTH)}…`
+    : collapsed;
+}
+
+/**
+ * Builds the "run stopped" body from the session's remembered reply: a
+ * completed push carries the reply itself — "completed" alone told the user
+ * nothing the timeline wouldn't — and an aborted one says so. Null when the
+ * run produced no assistant text (pure tool runs), which falls back to the
+ * legacy stop-reason word.
+ */
+function buildRunStoppedBody(event: NotificationEventInput): string | null {
+  const preview = formatReplyPreview(getSessionReplyPreview(event.sessionId));
+  if (!preview) {
+    return null;
+  }
+  return event.meta?.stopReason === 'aborted' ? `Stopped — ${preview}` : preview;
+}
+
 /** Used by notification tests and delivery workflows to create channel payloads. */
 export function buildNotificationPayload(event: NotificationEventInput): NotificationPayload {
   const normalizedEvent = normalizeNotificationSession(event);
@@ -248,11 +293,14 @@ export function buildNotificationPayload(event: NotificationEventInput): Notific
   };
   const providerLabel = PROVIDER_LABELS[normalizedEvent.provider] || 'Assistant';
   const sessionName = resolveSessionName(normalizedEvent);
+  // A reply-carrying stop is the full body: the snippet speaks for itself
+  // and the session name is already the push title.
+  const stoppedBody = normalizedEvent.code === 'run.stopped' ? buildRunStoppedBody(normalizedEvent) : null;
   const message = CODE_MAP[normalizedEvent.code] || 'You have a new notification';
 
   return {
     title: sessionName || 'CloudCLI',
-    body: `${providerLabel}: ${message}`,
+    body: stoppedBody ?? `${providerLabel}: ${message}`,
     data: {
       sessionId: normalizedEvent.sessionId || null,
       code: normalizedEvent.code,
@@ -459,6 +507,29 @@ export function notifyRunFailed({
   sessionName = null
 }: NotificationTarget & { error: unknown }): void {
   const errorMessage = normalizeErrorMessage(error);
+
+  // The final failure text is data, not a notification: engine transcripts
+  // rarely keep it (antigravity keeps only per-attempt rows), so record it
+  // here — keyed by the app session id, regardless of the push preference
+  // switches — for history readers to overlay onto reloaded timelines. Only
+  // an id that resolves to a real session row is stored (either id space);
+  // anything else would be a row no reader can address. A missing DB (tests,
+  // pre-init paths) or a storage error never blocks the push itself.
+  if (hasConnection()) {
+    try {
+      const appSessionId = sessionId ? resolveSessionRow(sessionId, provider)?.session_id : null;
+      if (appSessionId) {
+        sessionTurnFailuresDb.recordTurnFailure({
+          sessionId: appSessionId,
+          provider,
+          errorText: errorMessage,
+          failedAt: new Date().toISOString(),
+        });
+      }
+    } catch (storageError) {
+      console.error('Failed to persist the session turn failure:', storageError);
+    }
+  }
 
   notifyUserIfEnabled({
     userId,

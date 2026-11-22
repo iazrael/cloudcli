@@ -90,6 +90,7 @@ docs/
 | 插件本体与启用状态 | `~/.cloudcli/plugins` + `~/.cloudcli/plugins.json` | `server/modules/plugins`（注册表扫描 + 子进程管理）；首次访问时从旧 `~/.claude-code-ui` 一次性自动迁移（`migrateLegacyPluginPaths`） |
 | 各引擎会话原件 | `~/.claude` / `~/.codex` / `~/.cursor` / `~/.local/share/opencode` / `~/.zcode` / `~/.gemini/antigravity*` | 云 CLI 不复制、不改写；同步器只读解析后把元数据 upsert进 SQLite（`sessions` 表含 `jsonl_path`）；会话名跟随引擎标题，用户在应用内改过名的行带 `name_locked=1` 永不被引擎覆盖；用户置顶的行带 `isPinned=1`，项目内会话分页和跨项目「对话」流都由服务端按「置顶优先、再按活跃时间倒序」分页，前端排序必须与之一致，否则翻页会错位。fork 出的会话带祖先链上下文（`getForkAncestors` 递归 CTE 沿 `forked_from_session_id` 同项目同 provider 上溯，止于归档、缺失、跨项目或跨 provider 的祖先，UNION 去重防环）；项目会话接口与 WS 摘要携带该上下文，侧栏把 fork 会话缩进挂到祖先树下，祖先不占分页位；祖先被删除、改名或行 upsert 时上下文实时保活 |
 | 运行结束记录 | 服务进程内存（有界，约百条） | `server/modules/diagnostics`：每个 run 为什么结束（见 [chat.md](./chat.md)）。刻意不入库——它服务于"刚刚出了什么事"，重启即弃；`GET /api/diagnostics/runs` 读出，前端诊断报告把它和浏览器侧证据合成一份文件 |
+| 回合失败最终错误（每会话一行） | `session_turn_failures` 表 | 通知编排层 `notifyRunFailed` 落库（引擎转录普遍只留逐次重试行、不留最终错误）；agy 历史读取用它把重载后时间线末尾的折叠错误行改写为用户在推送里看到的最终错误（`antigravity-sessions.provider.ts` 的 `overlayStoredTurnFailure`，仅末行为错误且记录更新时生效）；会话删除不级联清理，孤儿行无害 |
 | 前端构建产物 | `dist/`（vite build） | Express 静态托管 + SPA fallback |
 | 服务端构建产物 | `dist-server/` | `tsc + tsc-alias` 先产出 `dist-server.next`，`scripts/promote-dist-server.mjs` 原子晋升（保留 `dist-server.old`；`preserver` 钩子启动前自愈） |
 

@@ -5,11 +5,16 @@ import type {
   ProviderSessionIdReplacement,
   RealtimeClientConnection,
 } from '@/shared/types.js';
-import { notifyPermissionRequired } from '@/modules/notifications/index.js';
+import {
+  clearSessionReplyPreview,
+  notifyPermissionRequired,
+  rememberSessionReplyPreview,
+} from '@/modules/notifications/index.js';
 import { enforceNormalizedMessageContract } from '@/shared/normalized-message-contract.js';
 import {
   createCompleteMessage,
   compactProviderPayload,
+  hasVisibleText,
 } from '@/shared/utils.js';
 
 type ChatSessionWriterOptions = {
@@ -49,6 +54,15 @@ type ChatSessionWriterOptions = {
    * session has no stored name yet, so the run's creator passes what it knows.
    */
   sessionName?: string | null;
+  /**
+   * The stable app session id this run belongs to, passed only by the run
+   * registry (the session-channel writer omits it and records nothing).
+   * Construction clears the session's notification reply preview — a new run
+   * must not push the previous run's reply — and `send` keeps the preview
+   * pointed at this run's last assistant text so the terminal push can carry
+   * what the run actually said.
+   */
+  appSessionId?: string | null;
   /**
    * Raises the push notification for an approval card. Defaults to the
    * notification service; tests inject their own.
@@ -120,6 +134,11 @@ export class ChatSessionWriter {
     }
     this.userId = options.userId;
     this.providerSessionId = options.providerSessionId;
+    // A new run starts from a clean notification slate: without this, a
+    // text-less follow-up run would push the previous run's reply.
+    if (options.appSessionId) {
+      clearSessionReplyPreview(options.appSessionId);
+    }
   }
 
   send(data: unknown): void {
@@ -167,6 +186,19 @@ export class ChatSessionWriter {
     const outbound = this.options.decorateOutboundEvent(message);
     if (outbound) {
       this.forward(outbound);
+      // Every engine's reply text crosses this one point, so this is where
+      // the notification reply preview stays current for the run's terminal
+      // push — whatever the engine, and without each runtime having to track
+      // it. Same-id re-sends (streaming upserts) overwrite, so the preview
+      // ends up holding the last segment's final body.
+      if (
+        this.options.appSessionId
+        && outbound.kind === 'text'
+        && outbound.role === 'assistant'
+        && hasVisibleText(outbound.content ?? '')
+      ) {
+        rememberSessionReplyPreview(this.options.appSessionId, outbound.content ?? '');
+      }
       // Every engine's approval and question cards pass through here, so this
       // is the one place that tells the user something waits for them, whether
       // or not a page is open.

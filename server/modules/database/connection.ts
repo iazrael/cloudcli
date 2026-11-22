@@ -132,6 +132,17 @@ export function getDatabasePath(): string {
 }
 
 /**
+ * Whether the shared connection already exists. Read paths that can
+ * legitimately run before/without `initializeDatabase` (provider history
+ * readers exercised by DB-less tests) consult this to skip their lookups
+ * rather than calling `getConnection` and spinning up a database file as a
+ * side effect.
+ */
+export function hasConnection(): boolean {
+  return instance !== null;
+}
+
+/**
  * Closes the database connection and clears the singleton.
  * Primarily used for graceful shutdown or testing.
  */

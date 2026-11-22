@@ -415,6 +415,26 @@ CREATE TABLE IF NOT EXISTS task_continuation_manual_actions (
 );
 `;
 
+/**
+ * The final error of each session's latest failed run.
+ *
+ * Engine transcripts do not always keep a turn's terminal failure (antigravity
+ * writes per-attempt retry rows but never the final message), so the
+ * notification orchestrator records it here as data — independent of the push
+ * preference switches — and history readers overlay it onto reloaded
+ * timelines. One row per session (latest failure wins); keyed by the stable
+ * app session id, with `failed_at` an explicit ISO instant so readers can
+ * order it against engine row timestamps without timezone guessing.
+ */
+export const SESSION_TURN_FAILURES_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS session_turn_failures (
+    session_id TEXT PRIMARY KEY NOT NULL,
+    provider TEXT NOT NULL,
+    error_text TEXT NOT NULL,
+    failed_at TEXT NOT NULL
+);
+`;
+
 export const INIT_SCHEMA_SQL = `
 -- Initialize authentication database
 PRAGMA foreign_keys = ON;
@@ -475,4 +495,6 @@ ${TASK_CONTINUATION_EVENTS_TABLE_SCHEMA_SQL}
 ${TASK_CONTINUATION_MANUAL_ACTIONS_TABLE_SCHEMA_SQL}
 CREATE INDEX IF NOT EXISTS idx_continuation_events_status_lease ON task_continuation_events(status, lease_expires_at);
 CREATE INDEX IF NOT EXISTS idx_continuation_events_session ON task_continuation_events(session_id);
+
+${SESSION_TURN_FAILURES_TABLE_SCHEMA_SQL}
 `;

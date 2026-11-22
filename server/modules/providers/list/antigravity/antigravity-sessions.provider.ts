@@ -15,6 +15,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 
 import { parseFilesInputTag, parseImagesInputTag } from '@/shared/image-attachments.js';
+import { hasConnection, sessionTurnFailuresDb } from '@/modules/database/index.js';
 import type { IProviderSessions } from '@/shared/interfaces.js';
 import type {
   AnyRecord,
@@ -168,6 +169,49 @@ function planAntigravityErrorRows(entries: AnyRecord[]): { skip: Set<number>; em
   }
 
   return { skip, emitAt };
+}
+
+/**
+ * Rewrites the trailing collapsed error row with the failure the live run
+ * actually reported, when one is stored for this app session.
+ *
+ * agy never writes a turn's final error into its transcript — only the
+ * per-attempt `API error (attempt N)` rows the collapse above reassembles.
+ * The notification orchestrator persists the real final message, so a
+ * reloaded timeline can say what the push the user already received said.
+ * Guards keep the overlay conservative: only the last message overall is a
+ * candidate (a later successful turn owns the tail), and a stored failure
+ * older than that row's transcript timestamp is not this turn's failure.
+ * Skipped entirely without an open DB (tests and pre-init paths): the raw
+ * collapsed row is then exactly what history always showed.
+ */
+function overlayStoredTurnFailure(appSessionId: string, messages: NormalizedMessage[]): void {
+  if (!hasConnection() || messages.length === 0) {
+    return;
+  }
+
+  const failure = sessionTurnFailuresDb.getTurnFailure(appSessionId);
+  if (!failure) {
+    return;
+  }
+
+  const last = messages[messages.length - 1];
+  if (last.kind !== 'error') {
+    return;
+  }
+
+  const rowTime = Date.parse(last.timestamp);
+  const failureTime = Date.parse(failure.failedAt);
+  if (!Number.isFinite(rowTime) || !Number.isFinite(failureTime) || failureTime < rowTime) {
+    return;
+  }
+
+  // Keep the retry count the collapse computed: the stored text already
+  // wraps the raw error, so the suffix is the only lost detail.
+  const attempts = /\(failed after (\d+) attempts\)$/.exec(String(last.content ?? ''));
+  last.content = attempts
+    ? `${failure.errorText} (failed after ${attempts[1]} attempts)`
+    : failure.errorText;
 }
 
 /**
@@ -1019,6 +1063,8 @@ export class AntigravitySessionsProvider implements IProviderSessions {
       }
 
       await this.settleSpawnCalls(sessionId, providerSessionId, spawnCalls, canonicalRows.map((row) => readOptionalString(row.entry.content) ?? ''));
+
+      overlayStoredTurnFailure(sessionId, normalizedMessages);
 
       const total = normalizedMessages.length;
       const { page, hasMore } = sliceTailPage(normalizedMessages, limit, offset);

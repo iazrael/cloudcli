@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { getSessionReplyPreview } from '@/modules/notifications/index.js';
 import { ChatSessionWriter } from '@/modules/websocket/services/chat-session-writer.service.js';
 import type { NormalizedMessage } from '@/shared/types.js';
 
@@ -47,4 +48,53 @@ test('a card the registry drops is not notified', () => {
   });
   writer.send({ id: 'm1', kind: 'permission_request', requestId: 'per_1', toolName: 'Bash', input: {}, sessionId: 's', provider: 'zcode', timestamp: '2026-01-01T00:00:00.000Z' });
   assert.deepEqual(notified, []);
+});
+
+test('a run writer remembers the last assistant text as the notification reply preview', () => {
+  const notified: unknown[] = [];
+  const writer = new ChatSessionWriter({
+    connection: null, userId: 7, provider: 'codex', providerSessionId: null, onProviderSessionId: () => {},
+    appSessionId: 'app-preview-run',
+    decorateOutboundEvent: (message: NormalizedMessage) => ({ ...message, sessionId: 'app-preview-run', seq: 1 }),
+    notifyPermissionRequest: (info) => { notified.push(info); },
+  });
+
+  writer.send({ id: 'm1', kind: 'text', role: 'user', content: 'user text must not become the preview', sessionId: 'n', provider: 'codex', timestamp: '2026-01-01T00:00:00.000Z' });
+  writer.send({ id: 'm2', kind: 'error', content: 'an error row is not a reply either', sessionId: 'n', provider: 'codex', timestamp: '2026-01-01T00:00:00.000Z', isError: true });
+  assert.equal(getSessionReplyPreview('app-preview-run'), null);
+
+  writer.send({ id: 'm3', kind: 'text', role: 'assistant', content: '第一段回复', sessionId: 'n', provider: 'codex', timestamp: '2026-01-01T00:00:00.000Z' });
+  writer.send({ id: 'm3', kind: 'text', role: 'assistant', content: '第一段回复，随后补全成完整回复。', sessionId: 'n', provider: 'codex', timestamp: '2026-01-01T00:00:00.000Z' });
+  assert.equal(getSessionReplyPreview('app-preview-run'), '第一段回复，随后补全成完整回复。');
+});
+
+test('a new run on the same session resets the reply preview instead of inheriting the previous turn', () => {
+  const first = new ChatSessionWriter({
+    connection: null, userId: 7, provider: 'codex', providerSessionId: null, onProviderSessionId: () => {},
+    appSessionId: 'app-preview-reset',
+    decorateOutboundEvent: (message: NormalizedMessage) => ({ ...message, sessionId: 'app-preview-reset', seq: 1 }),
+  });
+  first.send({ id: 'm1', kind: 'text', role: 'assistant', content: '上一回合的回复', sessionId: 'n', provider: 'codex', timestamp: '2026-01-01T00:00:00.000Z' });
+  assert.equal(getSessionReplyPreview('app-preview-reset'), '上一回合的回复');
+
+  // Constructing the next run's writer clears the stale snippet: a text-less
+  // follow-up turn must not push the previous turn's reply again.
+  new ChatSessionWriter({
+    connection: null, userId: 7, provider: 'codex', providerSessionId: null, onProviderSessionId: () => {},
+    appSessionId: 'app-preview-reset',
+    decorateOutboundEvent: (message: NormalizedMessage) => ({ ...message, sessionId: 'app-preview-reset', seq: 1 }),
+  });
+  assert.equal(getSessionReplyPreview('app-preview-reset'), null);
+});
+
+test('a writer without an app session id (session-channel writer) records no preview', () => {
+  const { writer } = (() => {
+    const writer = new ChatSessionWriter({
+      connection: null, userId: 7, provider: 'codex', providerSessionId: null, onProviderSessionId: () => {},
+      decorateOutboundEvent: (message: NormalizedMessage) => ({ ...message, sessionId: 'app-preview-channel', seq: 1 }),
+    });
+    return { writer };
+  })();
+  writer.send({ id: 'm1', kind: 'text', role: 'assistant', content: 'leak candidate', sessionId: 'n', provider: 'codex', timestamp: '2026-01-01T00:00:00.000Z' });
+  assert.equal(getSessionReplyPreview('app-preview-channel'), null);
 });

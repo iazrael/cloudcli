@@ -132,6 +132,8 @@ flowchart TD
 
 权限卡片的推送通知由网关统一发（`ChatSessionWriter.send` 看到 `permission_request` 就调用通知服务），各引擎适配器不再各自发一份；没有前台回复在跑时到达的卡片（后台 agent 在一轮结束后发出的请求）不会把会话记成“处理中”，只记成后台工作。
 
+回合结束的推送正文也由 writer 统一供料：run writer 构造时清掉该会话的通知回复预览，之后每条 `text`+`assistant` 帧都刷新它（五家引擎的出站消息都过这一处，runtime 零改动）；回合终止通知（completed/aborted）把预览作为推送正文。失败的最终错误文本由通知编排层落 `session_turn_failures` 表（见 [overview.md](./overview.md)），历史读取方据此让重载后的时间线与推送一致。
+
 ## 后台任务与输入排队
 
 - **跨轮常驻的开关**：网关组装运行参数时带 `residentBetweenTurns: true`，告诉运行时这个会话的后续轮次也从这里进来，可以把引擎进程留到下一轮（Claude 的空闲常驻，见 providers.md「Claude 后台任务生命周期」）。`/api/agent`、提交信息生成这类一次性调用方不带这个参数，进程照旧在回合结束时退出。

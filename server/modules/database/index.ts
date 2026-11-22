@@ -1,5 +1,7 @@
 export { initializeDatabase } from '@/modules/database/init-db.js';
 export { closeConnection, getConnection, getDatabasePath } from '@/modules/database/connection.js';
+// hasConnection: lets read paths that run before/without DB init (provider history tests, pre-startup calls) skip their DB lookups instead of spinning up a connection as a side effect.
+export { hasConnection } from '@/modules/database/connection.js';
 export { apiKeysDb } from '@/modules/database/repositories/api-keys.js';
 export { appConfigDb } from '@/modules/database/repositories/app-config.js';
 export { credentialsDb } from '@/modules/database/repositories/credentials.js';
@@ -20,6 +22,8 @@ export type {
 } from '@/modules/database/repositories/session-drafts.db.js';
 export { sessionsDb } from '@/modules/database/repositories/sessions.db.js';
 export type { ArchivedSessionRow } from '@/modules/database/repositories/sessions.db.js';
+// sessionTurnFailuresDb: used by the notification orchestrator to persist each session's latest failed-run error, and by history readers to keep reloaded timelines consistent with the pushes the user received.
+export { sessionTurnFailuresDb } from '@/modules/database/repositories/session-turn-failures.js';
 export { userDb } from '@/modules/database/repositories/users.js';
 // userPreferencesDb: used by the User module to persist the settings that used to live in browser localStorage.
 export { userPreferencesDb } from '@/modules/database/repositories/user-preferences.db.js';
