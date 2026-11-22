@@ -72,6 +72,17 @@ function handle(frame) {
       return;
     }
     if (mode === 'acp-cancel') return; // wait for session/cancel
+    if (mode === 'acp-bg') {
+      // Turn ends, then the engine announces a finished daemon command on its
+      // own — the frames arrive with no run pump subscribed.
+      send({ jsonrpc: '2.0', id: promptId, result: { stopReason: 'end_turn', usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 } } });
+      promptId = null;
+      setTimeout(() => {
+        send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'tool_call_update', toolCallId: 'call_bg', name: 'run_command', status: 'completed', content: [{ type: 'content', content: { type: 'text', text: 'BG-DONE-42' } }] } } });
+        send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '后台任务已完成（退出码 0），输出为：BG-DONE-42' } } } });
+      }, 250);
+      return;
+    }
     if (mode === 'acp-permission') {
       if (promptCount === 1) {
         send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'tool_call', toolCallId: 'call_write', name: 'write_file', args: { Path: 'x.txt' }, status: 'in_progress', kind: 'edit' } } });
@@ -153,12 +164,16 @@ const stubFinal = STUB_SCRIPT.replace(`function handle(frame) {
   const mode = process.env.AGY_ACP_STUB_MODE;`);
 fs.writeFileSync(stubPath, stubFinal, { mode: 0o755 });
 
+const published: Array<{ appSessionId: string; message: NormalizedMessage }> = [];
 const context = {
   resolveProviderSessionId: () => null,
   resolveResumeModel: async () => undefined,
   getProviderModels: async () => ({ OPTIONS: [], DEFAULT: 'gemini-4-neon-high' }),
   normalizeMessage: () => [],
   isProviderInstalled: async () => true,
+  publishSessionEvent: (appSessionId: string, message: NormalizedMessage) => {
+    published.push({ appSessionId, message });
+  },
 } as unknown as ProviderRuntimeContext;
 
 const createWriter = (): { messages: NormalizedMessage[]; writer: ProviderRuntimeWriter } => {
@@ -239,6 +254,34 @@ test('a mid-turn engine crash fails the run', async () => {
   );
   assert.ok(messages.some((message) => message.kind === 'error'), 'failure surfaced as an error row');
   assert.ok(messages.some((message) => message.kind === 'complete'), 'run still settles with complete');
+});
+
+test('background-task completions published between turns reach the session channel', async () => {
+  process.env.AGY_ACP_STUB_MODE = 'acp-bg';
+  const { messages, writer } = createWriter();
+  const result = await runtime.run('start a daemon', { sessionId: 'sess-acp-bg', cwd: workspaceDir }, writer, context);
+  assert.deepEqual(result, { sessionId: 'acp-conv-1', success: true });
+
+  // The completion frames land after the run settled; whichever leg owns them
+  // (the tail of the run's pump or the between-turns router), they must reach
+  // the session channel.
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  const channelFrames = published.filter((entry) => entry.appSessionId === 'sess-acp-bg').map((entry) => entry.message);
+  const allFrames = [...messages, ...channelFrames];
+  assert.ok(
+    allFrames.some((message) => message.kind === 'tool_result' && message.toolId === 'call_bg'),
+    'daemon command completion rendered as its tool result',
+  );
+  assert.ok(
+    allFrames.some((message) => message.kind === 'stream_delta' && String(message.content).includes('BG-DONE-42')),
+    'the engine completion notice reached the timeline',
+  );
+  if (channelFrames.length > 0) {
+    assert.ok(
+      channelFrames.every((message) => message.sessionId === 'acp-conv-1'),
+      'between-turns frames carry the engine conversation id',
+    );
+  }
 });
 
 test('a permission request parks on the card and the gateway answer continues the turn', async () => {

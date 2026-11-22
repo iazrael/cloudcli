@@ -262,6 +262,10 @@ const getAcpManager = (): AntigravityAcpSessionManager => {
     acpManagerInstance = new AntigravityAcpSessionManager({
       onSessionExit: (appSessionId, info) => {
         console.info(`[AntigravityAcp] Session ${appSessionId} engine exited (code: ${info.code}, signal: ${info.signal})`);
+        // The router subscription died with the process; a respawned session
+        // must reinstall it.
+        acpRoutedSessions.delete(appSessionId);
+        acpRoutedTranslators.delete(appSessionId);
       },
     }, enginePath);
   }
@@ -281,6 +285,47 @@ const acpBoundSpawnIds = new Map<string, Set<string>>();
  * opened a different conversation re-announces so clients rebind.
  */
 const acpAnnouncedSessionIds = new Map<string, string>();
+
+/**
+ * Sessions whose between-turns listener is installed, and the ones holding a
+ * live run pump. The engine keeps streaming after a turn ends — a daemon
+ * `run_command` completing is announced only there — so a resident listener
+ * forwards those frames onto the session channel (through the run context's
+ * `publishSessionEvent`, which the composition root wires to the websocket
+ * layer) while no run owns the session's writer.
+ */
+const acpRoutedSessions = new Set<string>();
+const acpLiveRunPumps = new Set<string>();
+const acpRoutedTranslators = new Map<string, AntigravityAcpTranslator>();
+const acpSessionSinks = new Map<string, NonNullable<ProviderRuntimeContext['publishSessionEvent']>>();
+
+/**
+ * Installs the between-turns router once per session: every frame the engine
+ * pushes while no run pump is subscribed is translated and published through
+ * the first run's context, so background-task completions reach a connected
+ * client the same way the turn's own frames do.
+ */
+function installAcpSessionRouter(manager: AntigravityAcpSessionManager, sessionKey: string, context: ProviderRuntimeContext): void {
+  if (acpRoutedSessions.has(sessionKey)) return;
+  if (!context.publishSessionEvent) return;
+  acpRoutedSessions.add(sessionKey);
+  acpSessionSinks.set(sessionKey, context.publishSessionEvent);
+  manager.onNotification(sessionKey, (notification) => {
+    if (acpLiveRunPumps.has(sessionKey)) return;
+    if (notification.method !== 'session/update') return;
+    let translator = acpRoutedTranslators.get(sessionKey);
+    if (!translator) {
+      translator = new AntigravityAcpTranslator();
+      const frameSessionId = readOptionalString(readObjectRecord(notification.params)?.sessionId) ?? null;
+      translator.setSessionId(frameSessionId);
+      acpRoutedTranslators.set(sessionKey, translator);
+    }
+    const publish = acpSessionSinks.get(sessionKey);
+    for (const message of translator.translate(notification).messages) {
+      publish?.(sessionKey, message);
+    }
+  });
+}
 
 /**
  * Kills every resident ACP session process. Server shutdown and the tests
@@ -1311,6 +1356,8 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
         skipPermissions: skipPermissions || permissionMode === 'bypassPermissions',
       });
       manager.setBusy(sessionKey, true);
+      installAcpSessionRouter(manager, sessionKey, context);
+      acpLiveRunPumps.add(sessionKey);
 
       const capturedSessionId = handle.sessionId;
       writer.setSessionId?.(capturedSessionId);
@@ -1908,6 +1955,10 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
       // the TTL; take them down with the run. Cards the flow already settled
       // are gone, so this is a no-op on the happy paths.
       antigravityAcpCards.retractAllForSession(sessionKey, { allow: false, message: 'The session was closed.' });
+      acpLiveRunPumps.delete(sessionKey);
+      // The run's translator closed its segment; the router starts fresh so
+      // an outside-turn text chunk opens its own segment.
+      acpRoutedTranslators.delete(sessionKey);
       manager.setBusy(sessionKey, false);
     }
   }
