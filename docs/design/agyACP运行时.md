@@ -1,6 +1,6 @@
 # agy ACP 运行时（提问+权限双桥接）
 
-> 状态：设计已批准（2026-11-22），实施中——步骤 1
+> 状态：步骤 1-5 已实现（本地提交，含独立审查流程），步骤 6 真机验收待做
 > 基准：v2.23.0 / 2026-11-15
 > 分支：`feat/antigravity-acp-runtime`
 
@@ -60,13 +60,15 @@ antigravity 运行时从 print 单回合 spawn（`-p --input-format stream-json 
 
 ## 分步实施
 
-1. 设计文档 + acp 客户端原语模块（假 stdio 服务器桩单测）。
-2. 持久会话管理器：spawn/复用/空闲回收/abort（cancel）/崩溃兜底/看门狗；runtime 内核替换；行为对齐（流式文本/工具卡/思考块/标题/agent tail）。
-2.5 后台任务事件化（跨回合完成事件 → 通知 + 卡片；`supportsInputAcceptance`/`isPending`/`canInterrupt` 契约重对齐）。
-3. 权限桥（approve/deny 全路径、撤帧、TTL）。
-4. 提问桥（挂起状态机、答案回合标记、连环提问）。
-5. 模式/模型映射 + 转录联动（data-root 双根）+ 能力矩阵文档同步。
-6. 端到端真机验收；灰度开关翻转。
+1. ✅ 设计文档 + acp 客户端原语模块（假 stdio 服务器桩单测，9 用例）。
+2. ✅ 持久会话管理器（spawn/复用/空闲回收/abort=cancel/崩溃兜底/看门狗）+ ACP 步骤翻译器 + runtime 内核替换；子代理卡从父 transcript 的 spawn 回执轮询绑定（ACP 帧不带 conversationId）。
+2.5 ✅ 后台任务事件化：会话级 between-turns 路由把 run 外帧（IsDaemon 命令完成）经 `context.publishSessionEvent` 发到会话频道。
+3. ✅ 权限桥（approve/deny、撤帧、TTL 僵尸清扫；agy 无限等答，无重发竞态）。
+4. ✅ 提问桥（挂起循环：allow→答案 prompt 同 run 续跑；deny/过期→回合完成收场；abort→唤醒并按 aborted 结算）。
+5. ✅ 模式映射（set_mode；bypass 走 spawn flag）+ 模型映射（family-tier 拼 id 对 availableModels 匹配，尽力而为）+ data-root 双根（转录/brain/token 持久化覆盖 `~/.gemini/cloudcli-acp`）+ providers.md 能力条目。
+6. ⬜ 端到端真机验收（worktree dev 实例，端口 3021）；灰度开关翻转。
+
+**已知残留（验收段处理）**：①引擎会话列表的 summaries db 仍在用户自有根——引擎侧（终端 agy acp）创建的会话不会自动进侧栏，应用内创建的会话不受影响；双 db 同步是同步器框架级改动，验收后按需排期。②`session/set_model` 的实际生效未验证（RPC 被接受 ≠ 生效）。③plan 模式自动批准回归在 ACP 下是否消失待复验。④问答卡的答案不进引擎转录的 ask 工具结果（引擎自己折叠，刷新后以转录为准）。
 
 ## 验证
 
