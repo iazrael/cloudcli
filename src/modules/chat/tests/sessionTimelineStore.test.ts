@@ -609,6 +609,48 @@ test('a truncated persisted row yields to the fuller unkeyed ACP stream', async 
   );
 });
 
+test('a persisted twin trimmed of trailing whitespace still retires its unkeyed segment', async () => {
+  // The transcript reader trims every body it stores while the placeholder
+  // holds the deltas as they arrived, so the comparison must not hinge on
+  // edge whitespace.
+  const streamedContent = 'A segment the engine streamed with a trailing newline.\n';
+  const initialUser = msg(1, { provider: 'antigravity', content: 'review the streaming path' });
+  const persistedReply = msg(2, {
+    id: 'msg_session_12',
+    provider: 'antigravity',
+    content: streamedContent.trim(),
+    providerRowKey: 'assistant-step:5',
+  });
+  const fetchPage = scriptedFetcher([
+    {
+      params: { limit: SESSION_MESSAGES_PAGE_SIZE, offset: 0 },
+      page: { messages: [initialUser], total: 1, hasMore: false },
+    },
+    {
+      params: { limit: SESSION_MESSAGES_PAGE_SIZE, offset: 0 },
+      page: { messages: [initialUser, persistedReply], total: 2, hasMore: false },
+    },
+  ]);
+  const store = new SessionTimelineStore({ fetchPage });
+
+  await store.fetchFromServer(SESSION_ID, { limit: SESSION_MESSAGES_PAGE_SIZE, offset: 0 });
+  emitAntigravity(store, { kind: 'stream_delta', sessionId: SESSION_ID, content: streamedContent });
+  emitAntigravity(store, { kind: 'stream_end', sessionId: SESSION_ID });
+  emitAntigravity(store, { kind: 'complete', sessionId: SESSION_ID });
+
+  await store.refreshLatestFromServer(SESSION_ID);
+
+  assert.deepEqual(
+    store.getMessages(SESSION_ID)
+      .filter((row) => (row.content ?? '').trim() === streamedContent.trim())
+      .map((row) => row.id),
+    ['msg_session_12'],
+  );
+  assert.equal(store.getSessionSlot(SESSION_ID)!.realtimeMessages.length, 0);
+  assert.equal(store.getSessionSlot(SESSION_ID)!.streamingPlaceholderId, null,
+    'retiring the placeholder must clear the adoption pointer');
+});
+
 test('a near-identical keyed Antigravity history row yields to richer markdown-formatted stream text', async () => {
   const providerRowKey = 'assistant-step:7b';
   const shared = '游戏世界与界面分工协作是现代 Web 游戏的常见架构。'.repeat(18);

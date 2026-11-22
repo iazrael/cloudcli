@@ -415,7 +415,11 @@ function reconcileStreamedPlaceholderByContent(
   placeholder: NormalizedMessage,
   serverTurnRows: NormalizedMessage[],
 ): StreamedPlaceholderReconciliation {
-  const liveContent = placeholder.content || '';
+  // The persisted reader trims every body it stores, while the placeholder
+  // holds the deltas as they arrived; comparing the raw live text would fail
+  // every shape test on a segment that merely ends in whitespace, and the
+  // trimmed persisted twin could never claim it.
+  const liveContent = (placeholder.content || '').trim();
   if (!liveContent) return { verdict: 'retain' };
   const candidates = serverTurnRows.filter((row) =>
     row.kind === 'text'
@@ -425,11 +429,11 @@ function reconcileStreamedPlaceholderByContent(
   );
   // Exact twin first, so a truncated sibling can never steal a segment whose
   // complete persisted copy is also in the turn.
-  if (candidates.some((row) => row.content === liveContent)) {
+  if (candidates.some((row) => (row.content || '').trim() === liveContent)) {
     return { verdict: 'retire' };
   }
   for (const row of candidates) {
-    const serverContent = row.content || '';
+    const serverContent = (row.content || '').trim();
     if ((row.contentCompleteness ?? 'complete') === 'complete') {
       if (serverContent.startsWith(liveContent)) return { verdict: 'retire' };
     } else if (liveContent.startsWith(serverContent)) {
@@ -463,7 +467,7 @@ function reconcileStreamedPlaceholderByContent(
 function pruneRealtimeSupersededByServer(
   serverMessages: NormalizedMessage[],
   realtimeMessages: NormalizedMessage[],
-  slot: Pick<SessionSlot, 'pendingPrompts' | 'retiredOptimisticUserAnchors' | 'runEnded'>,
+  slot: Pick<SessionSlot, 'pendingPrompts' | 'retiredOptimisticUserAnchors' | 'runEnded' | 'streamingPlaceholderId'>,
 ): NormalizedMessage[] {
   if (realtimeMessages.length === 0) {
     return realtimeMessages;
@@ -544,12 +548,19 @@ function pruneRealtimeSupersededByServer(
       .filter((message) => message.kind === 'tool_use' && message.toolId)
       .map((message) => message.toolId as string),
   );
-  return retained.filter((message) => {
+  const pruned = retained.filter((message) => {
     if (message.kind === 'tool_result' && message.id.startsWith('__finalized_')) {
       return message.toolId !== undefined && retainedToolUseIds.has(message.toolId);
     }
     return true;
   });
+  // A prune that retired the placeholder the adoption pointer names must
+  // clear the pointer, or the next engine row appends beside the gap instead
+  // of taking its place and its segment-start timestamp.
+  if (slot.streamingPlaceholderId && !pruned.some((row) => row.id === slot.streamingPlaceholderId)) {
+    slot.streamingPlaceholderId = null;
+  }
+  return pruned;
 }
 
 /**
