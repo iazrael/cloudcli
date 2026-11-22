@@ -542,8 +542,8 @@ export class AppError extends Error {
  * `statusCode` field (raw fs errors, wrapped route failures) and falls back
  * to 500.
  *
- * Used by the media and file-tree failure paths to map per-item batch errors
- * onto batch response statuses.
+ * Used by the global error middleware and by the media and file-tree failure
+ * paths to map per-item batch errors onto response statuses.
  */
 export function errorStatusCode(error: unknown): number {
   return error instanceof AppError ? error.statusCode : Number((error as { statusCode?: number }).statusCode) || 500;
