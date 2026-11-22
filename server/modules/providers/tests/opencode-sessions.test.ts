@@ -650,7 +650,7 @@ test('getTokenUsage reads the token columns for the provider-native session', as
         inputTokens: 13,
         outputTokens: 20,
         cumulative: { used: 42, inputTokens: 13, outputTokens: 20 },
-        breakdown: { input: 13, output: 20 },
+        total: 200000, breakdown: { input: 13, output: 20 },
       },
     );
   } finally {

@@ -56,6 +56,10 @@ import {
   toClientToolName,
 } from './opencode-subagent.js';
 import { isOpenCodeQuestionTool, toQuestionCardInput } from './opencode-question.js';
+import {
+  DEFAULT_OPENCODE_CONTEXT_WINDOW,
+  readOpenCodeModelContextLimit,
+} from './opencode-models.provider.js';
 
 const PROVIDER = 'opencode';
 
@@ -194,6 +198,7 @@ const isUserTextEcho = (raw: AnyRecord): boolean => {
 const buildTokenUsage = (
   totals: OpenCodeTokenTotals | undefined,
   context?: OpenCodeTokenTotals,
+  contextWindow?: number | null,
 ): ProviderTokenUsageResult | undefined => {
   if (!totals) {
     return undefined;
@@ -219,6 +224,10 @@ const buildTokenUsage = (
 
   return {
     used: usedContext,
+    // The model's declared window: the denominator the composer's usage bar
+    // and the Token Usage modal's context-window field display. Omitted when
+    // unknown so consumers' "unknown" rendering keeps working.
+    ...(contextWindow && contextWindow > 0 ? { total: contextWindow } : {}),
     inputTokens: displayInputTokens,
     outputTokens: current.outputTokens,
     cumulative: {
@@ -690,6 +699,38 @@ const openOpenCodeDatabaseForLiveEvent = (): Database.Database | null => {
     return null;
   }
 };
+
+/**
+ * Reads the context window the session's model declares in the models.dev
+ * catalog (the session row carries `{providerID, id}`), for callers outside
+ * this provider — the runtime's token budget frame uses it as the usage
+ * denominator. Returns null when the row, the catalog or the model is
+ * missing or silent.
+ */
+export async function readOpenCodeSessionContextWindow(nativeSessionId: string): Promise<number | null> {
+  try {
+    const databasePath = getOpenCodeDatabasePath();
+    if (!fsSync.existsSync(databasePath)) {
+      return null;
+    }
+    const database = new Database(databasePath, { readonly: true, fileMustExist: true });
+    try {
+      const table = resolveOpenCodeSessionTableName(database);
+      if (!table) return null;
+      const row = database.prepare(`SELECT model FROM ${table} WHERE id = ?`)
+        .get(nativeSessionId) as { model?: string } | undefined;
+      const model = readJsonRecord(row?.model) ?? {};
+      const providerID = String(model.providerID ?? '');
+      const id = String(model.id ?? '');
+      if (!providerID || !id) return null;
+      return readOpenCodeModelContextLimit({ providerID, id });
+    } finally {
+      database.close();
+    }
+  } catch {
+    return null;
+  }
+}
 
 export class OpenCodeSessionsProvider implements IProviderSessions {
   /**
@@ -1309,10 +1350,11 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
           tokens_output AS outputTokens,
           tokens_reasoning AS reasoningTokens,
           tokens_cache_read AS cacheReadTokens,
-          tokens_cache_write AS cacheWriteTokens
+          tokens_cache_write AS cacheWriteTokens,
+          model AS sessionModel
         FROM ${table}
         WHERE id = ?
-      `).get(input.nativeSessionId) as OpenCodeTokenTotals | undefined;
+      `).get(input.nativeSessionId) as (OpenCodeTokenTotals & { sessionModel?: string | null }) | undefined;
 
       if (!row) {
         throw new AppError('OpenCode session was not found.', {
@@ -1320,6 +1362,17 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
           statusCode: 404,
         });
       }
+
+      // The window the session's model declares (models.dev catalog cached in
+      // this database) — the denominator the composer and the usage modal
+      // display. Absent or silent model: DEFAULT (mirrors the ZCode reader).
+      const sessionModel = readJsonRecord(row.sessionModel);
+      const contextWindow = sessionModel
+        ? readOpenCodeModelContextLimit({
+          providerID: String(sessionModel.providerID ?? ''),
+          id: String(sessionModel.id ?? ''),
+        }) ?? DEFAULT_OPENCODE_CONTEXT_WINDOW
+        : DEFAULT_OPENCODE_CONTEXT_WINDOW;
 
       // The session row is the cumulative spend; the newest assistant message
       // is the context reading. `buildTokenUsage` reports the former in the
@@ -1333,6 +1386,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
           cacheWriteTokens: readUsageNumber(row.cacheWriteTokens),
         },
         readOpenCodeLatestMessageTokenUsage(database, input.nativeSessionId),
+        contextWindow,
       ) ?? {
         used: 0,
         inputTokens: 0,
