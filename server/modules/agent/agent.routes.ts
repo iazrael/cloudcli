@@ -60,7 +60,7 @@ type AgentRouterDependencies = {
     ): Promise<FetchHistoryResult>;
   };
   /** The live-run registry the chat socket uses; registering here is what puts an API run on the running-sessions list. */
-  runs: Pick<typeof import('../websocket/index.js').chatRunRegistry, 'startRun' | 'completeRunIfCurrent' | 'isProcessing' | 'getRun'>;
+  runs: Pick<typeof import('../websocket/index.js').chatRunRegistry, 'startRun' | 'completeRunIfCurrent' | 'isProcessing' | 'getRun' | 'getRunById' | 'replayEvents'>;
   /** The provider runtime's stop path, shared with the chat socket's `chat.abort`. */
   runtime: Pick<typeof import('../providers/index.js').providerRuntimeService, 'abort' | 'hasBackgroundWork'>;
   queryClaude: ProviderRunFunction;
@@ -732,7 +732,7 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
     const background = !running && runtime.hasBackgroundWork(sessionRow.session_id);
     return {
       status: running ? 'running' : background ? 'background' : 'idle',
-      run: running ? { startedAt: new Date(run.startedAt).toISOString(), lastSeq: run.lastSeq } : null,
+      run: running ? { runId: run.runId, startedAt: new Date(run.startedAt).toISOString(), lastSeq: run.lastSeq } : null,
     };
   }
 
@@ -825,6 +825,45 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
       run: state.run,
       createdAt: sessionRow.created_at ?? null,
       updatedAt: sessionRow.updated_at ?? null,
+    });
+  });
+
+  /**
+   * GET /api/agent/runs/:runId/events?after=<seq>
+   *
+   * One run's buffered events after a cursor, with the authoritative last
+   * sequence. Poll with `after=lastSeq` to continue a run after a dropped
+   * connection or a killed request; stop when `terminal` is true. `stale`
+   * means the buffer no longer reaches back to `after` (the run ran long
+   * enough to drop old events) and the caller must use `/result` instead.
+   *
+   * A completed run stays readable for the registry's retention window
+   * (5 minutes); afterwards this returns 404 and `/result` is the durable
+   * answer. This is a poll page rather than a long-lived stream, matching
+   * `wait:false`: no connection has to survive the run.
+   */
+  router.get('/runs/:runId/events', validateExternalApiKey, (req, res) => {
+    const run = runRegistry.getRunById(String(req.params.runId));
+    if (!run) {
+      return res.status(404).json({ error: `Run "${req.params.runId}" was not found` });
+    }
+
+    const requestedAfter = Number.parseInt(String(req.query.after ?? ''), 10);
+    const after = Number.isFinite(requestedAfter) && requestedAfter >= 0 ? requestedAfter : 0;
+    const replay = runRegistry.replayEvents(run.appSessionId, after);
+
+    return res.json({
+      success: true,
+      runId: run.runId,
+      sessionId: run.appSessionId,
+      provider: run.provider,
+      status: run.status,
+      terminal: run.status === 'completed',
+      events: replay.events,
+      lastSeq: replay.lastSeq,
+      replayFromSeq: replay.replayFromSeq,
+      streamEpoch: replay.streamEpoch,
+      stale: replay.stale,
     });
   });
 
@@ -1094,7 +1133,7 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
    *   Content-Type: text/event-stream
    *   Events:
    *     - { type: "status", message: "...", projectPath: "..." }
-   *     - { type: "session-id", sessionId: "..." }   // the app session id, usable as `sessionId` later
+   *     - { type: "session-id", sessionId: "...", runId: "...", lastSeq: 0 }   // app session id + this round's event cursor
    *     - { kind: "text" | "tool_use" | ... , sessionId, seq, ... }   // the provider's normalized events
    *     - { kind: "complete", ... }
    *     - { type: "status", message: "Run aborted", aborted: true }   // only when a tab aborted the run; no branch/PR follows
@@ -1108,6 +1147,7 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
    *   {
    *     success: true,          // false, with aborted: true, when a tab aborted the run
    *     sessionId: "session-123",          // the app session id; pass it back as `sessionId` to continue
+   *     runId: "uuid",          // this round's event cursor; see GET /api/agent/runs/:runId/events
    *     providerSessionId: "native-id",    // the provider's own id, for tooling that drives the CLI directly
    *     messages: [...],        // The assistant's replies: the run's normalized `text` events.
    *                             // A provider that streams its reply as `stream_delta` frames
@@ -1140,12 +1180,14 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
    *     providerSessionId: null,   // a new session learns its native id during the run
    *     projectPath: "/path/to/project",
    *     status: "running",
-   *     run: { startedAt: "2026-...Z", lastSeq: 0 }
+   *     run: { runId: "uuid", startedAt: "2026-...Z", lastSeq: 0 }
    *   }
    *   Poll GET /api/agent/:sessionId until status is "idle", then read
    *   GET /api/agent/:sessionId/result for the assistant reply, tokens and the
-   *   provider-native id. Both are API-key routes and both survive a dropped
-   *   connection, so a caller never has to hold one request open for the run.
+   *   provider-native id. To follow the run's events instead, poll
+   *   GET /api/agent/runs/:runId/events?after=<lastSeq> until `terminal`.
+   *   All are API-key routes and survive a dropped connection, so a caller
+   *   never has to hold one request open for the run.
    *
    * Error Response:
    *   HTTP Status: 400, 401, 404 (unknown sessionId), 409 (session already mid-run), 500
@@ -1360,7 +1402,7 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
             providerSessionId: currentRun.writer.getSessionId() ?? currentRun.providerSessionId ?? null,
             projectPath: finalProjectPath,
             status: 'running',
-            run: { startedAt: new Date(currentRun.startedAt).toISOString(), lastSeq: currentRun.lastSeq },
+            run: { runId: currentRun.runId, startedAt: new Date(currentRun.startedAt).toISOString(), lastSeq: currentRun.lastSeq },
           });
         }
         if (cleanup && githubUrl && clonedProjectCreated) {
@@ -1386,7 +1428,7 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
         message: githubUrl ? 'Repository cloned and session started' : 'Session started',
         projectPath: finalProjectPath
       });
-      writer.send({ type: 'session-id', sessionId: appSessionId });
+      writer.send({ type: 'session-id', sessionId: appSessionId, runId: run.runId, lastSeq: run.lastSeq });
 
       // A request without `model` runs on the catalog's DEFAULT, the value
       // /api/providers/:provider/models and the API docs advertise. It is the
@@ -1499,7 +1541,7 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
           providerSessionId: run.writer.getSessionId() ?? sessionRow?.provider_session_id ?? null,
           projectPath: finalProjectPath,
           status: 'running',
-          run: { startedAt: new Date(run.startedAt).toISOString(), lastSeq: run.lastSeq },
+          run: { runId: run.runId, startedAt: new Date(run.startedAt).toISOString(), lastSeq: run.lastSeq },
         });
         void Promise.resolve()
           .then(startProviderRun)
@@ -1717,6 +1759,7 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
           success: !aborted,
           ...(aborted ? { aborted: true } : {}),
           sessionId: appSessionId,
+          runId: run.runId,
           // The provider-native id, for a caller that drives the CLI itself
           // (`claude --resume`); `sessionId` is what this API and the UI use.
           providerSessionId: run.writer.getSessionId(),

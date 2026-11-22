@@ -51,6 +51,10 @@ function createDependencies(
       completeRunIfCurrent: () => undefined,
       isProcessing: () => false,
       getRun: () => undefined,
+      getRunById: () => undefined,
+      replayEvents: () => ({
+        events: [], lastSeq: 0, stale: false, streamEpoch: 'test-epoch', replayFromSeq: 1,
+      }),
     },
     runtime: {
       abort: async () => true,

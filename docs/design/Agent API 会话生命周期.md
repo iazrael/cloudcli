@@ -43,7 +43,7 @@
   "name": "会话名",
   "archived": false,
   "status": "running | background | idle",
-  "run": { "startedAt": "2026-11-14T...Z", "lastSeq": 12 },
+  "run": { "runId": "uuid", "startedAt": "2026-11-14T...Z", "lastSeq": 12 },
   "createdAt": "2026-11-14T...Z",
   "updatedAt": "2026-11-14T...Z"
 }
@@ -66,7 +66,7 @@
   "providerSessionId": null,
   "projectPath": "/path/to/project",
   "status": "running",
-  "run": { "startedAt": "2026-11-22T...Z", "lastSeq": 0 }
+  "run": { "runId": "uuid", "startedAt": "2026-11-22T...Z", "lastSeq": 0 }
 }
 ```
 
@@ -81,24 +81,49 @@ provider 在后台继续跑，调用方用两个 API-key 路由收尾：
 
 `clientRequestId` 是可选的幂等键：新会话的第一次请求把 app 会话 id 记在内存（与 `POST /api/providers/sessions` 同一套）。`wait:false` 的重试落在原 run 仍在跑时，直接再回一次 202 和同一个 run；原 run 已经结束时不会自动重放，调用方应先查状态/结果再决定是否重派。
 
+### 事件续读
+
+`GET /api/agent/runs/:runId/events?after=<seq>` 返回这一轮从游标之后的事件页：
+
+```json
+{
+  "success": true,
+  "runId": "uuid",
+  "sessionId": "app-...",
+  "provider": "opencode",
+  "status": "running | completed",
+  "terminal": false,
+  "events": [ { "kind": "text", "seq": 1, "content": "..." } ],
+  "lastSeq": 7,
+  "replayFromSeq": 1,
+  "streamEpoch": "...",
+  "stale": false
+}
+```
+
+调用方用 `after=lastSeq` 继续轮询，`terminal: true` 后停止；`stale: true` 表示游标落在缓冲窗口之前（5000 条 / 约 5 分钟），中间有缺口，应改用 `/result` 或会话历史。run registry 的会话 `seq` 与 `chat.subscribe` 共用同一水位，`runId` 只负责定位这一轮；202 里的 `run.lastSeq` 是本轮起点的水位，拿它当初始 `after` 就只读本轮。
+
+这是**轮询页**而不是长连接：`wait:false` 的语义就是“不需要一条连接活到 run 结束”，所以续读也按页取。完成态的 run 保留约 5 分钟供补发，之后 `404`，持久化的 `/result` 仍是权威答案。
+
 ### sessionId 单独续聊
 
 `sessionId` 与 `githubUrl`/`projectPath` 都不传时返回 400。只传 `sessionId` 时用会话行的 `project_path` 作为工作目录；会话没有项目路径则返回 400。传了 `projectPath` 时仍按原逻辑校验它与会话行一致。
 
 ## 验证
 
-- `server/modules/agent/tests/agent-run-registration.test.ts` 增加：abort 终止 held run 且原响应报告 aborted；无活动 run 幂等；未知会话 404；状态查询 running/idle；`sessionId` 单独续聊；`wait:false` 立即返回 id 且 run 继续，`result` 在运行中/结束后都能读最后一轮，`wait:false` 拒绝分支/PR，`result` 404。
+- `server/modules/agent/tests/agent-run-registration.test.ts` 增加：abort 终止 held run 且原响应报告 aborted；无活动 run 幂等；未知会话 404；状态查询 running/idle；`sessionId` 单独续聊；`wait:false` 立即返回 id 且 run 继续，`result` 在运行中/结束后都能读最后一轮，`wait:false` 拒绝分支/PR，`result` 404；`runs/:runId/events` 从游标续读、`terminal` 与未知 run 404。
 - 运行 `npx tsx --tsconfig server/tsconfig.json --test server/modules/agent/tests/agent-run-registration.test.ts server/modules/agent/tests/agent.routes.test.ts`。
 - 运行 `npx tsc --noEmit -p server/tsconfig.json` 和 `npx oxlint server/modules/agent`。
 
-实施后结果：agent 两个测试文件 37 项全部通过；server typecheck 通过；`npm run build:server` 通过；`oxlint` 只剩既有的 `no-async-promise-executor` 警告。
+实施后结果：agent 两个测试文件 38 项全部通过；server typecheck 通过；`npm run build:server` 通过；`oxlint` 只剩既有的 `no-async-promise-executor` 警告。
 
 ## 风险与边界
 
 - abort 与 run 自然结束存在竞态：`completeRunIfCurrent` 只终止当前 run，不会误杀同会话的后继 run；provider 已自行发终止帧时该调用为 no-op。
-- 断开的 SSE 连接不会阻止 run 继续；`wait:false` + `/result` 覆盖了结果读取，但不提供事件流的断线续传（后续可加 `GET /api/agent/runs/:runId/events?after=`）。
+- 断开的 SSE 连接不会阻止 run 继续；`wait:false` + `/result` + `runs/:runId/events` 覆盖了结果和事件级续读，但事件缓冲只保留约 5 分钟，过期后事件页 404，`/result` 与历史仍可查。
 - `wait:false` 不支持分支/PR，因为回答早于它们产生；需要时用 `wait:true`。
 - `/result` 从 provider transcript 读，运行中可能只有部分回复；以 `status: idle` 后的读数为准。transcript 尚未落盘的极端窗口由调用方重试几次覆盖。
 - `wait:false` 的新会话在 202 里的 `providerSessionId` 可能为 `null`；最终 id 以 `/result` 或状态查询为准。
 - `clientRequestId` 的幂等表在进程内存里，服务重启后同一 id 可能重新开会话；它防的是短时间重试，不是跨重启去重。
+- 事件页与会话通道共用缓冲：同一会话的后一轮会继续使用同一 `seq` 水位，轮询旧 `runId` 的调用方看到 `terminal` 就应停止；`stale` 时用 `/result` 对账。
 - 现有会话表没有用户归属，API key 的权限边界与当前续聊接口一致（单用户/自托管假设）。

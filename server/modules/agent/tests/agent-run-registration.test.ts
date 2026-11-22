@@ -141,6 +141,9 @@ const getSessionStatus = (baseUrl: string, sessionId: string) =>
 const getSessionResult = (baseUrl: string, sessionId: string) =>
   fetch(`${baseUrl}/api/agent/${encodeURIComponent(sessionId)}/result`);
 
+const getRunEvents = (baseUrl: string, runId: string, after = 0) =>
+  fetch(`${baseUrl}/api/agent/runs/${encodeURIComponent(runId)}/events?after=${after}`);
+
 /** Polls the status route until it reports `expected`, as a `wait:false` caller does. */
 async function waitForSessionStatus(baseUrl: string, sessionId: string, expected: string): Promise<Record<string, unknown>> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -401,10 +404,11 @@ test('wait:false answers with the session id before the run ends, and the result
         success: boolean;
         sessionId: string;
         status: string;
-        run: { startedAt: string; lastSeq: number } | null;
+        run: { runId: string; startedAt: string; lastSeq: number } | null;
       };
       assert.equal(body.success, true);
       assert.match(body.sessionId, /^app-/);
+      assert.match(body.run?.runId ?? '', /^[0-9a-f-]{36}$/, 'the answer names the run it just registered');
       assert.equal(body.status, 'running');
       assert.ok(body.run, 'the answer names the run it just registered');
 
@@ -433,6 +437,54 @@ test('wait:false answers with the session id before the run ends, and the result
       assert.equal(done.reply, 'hello');
       assert.deepEqual(done.messages.map((message) => message.content), ['hello']);
       assert.equal(done.providerSessionId, 'native-1');
+    });
+  });
+});
+
+test('a run\'s events replay from a cursor and report the terminal state', async () => {
+  await withIsolatedDatabase(async () => {
+    const runtime = createHeldRuntime();
+    await withAgentServer(createDependencies(runtime.queryClaude), async (baseUrl) => {
+      const response = await post(baseUrl, { projectPath: PROJECT_PATH, message: 'Run it', wait: false });
+      assert.equal(response.status, 202);
+      const body = await response.json() as { sessionId: string; run: { runId: string } };
+
+      for (let i = 0; i < 50 && runtime.seen.length === 0; i += 1) {
+        await new Promise((resolve) => { setTimeout(resolve, 20); });
+      }
+
+      const first = await getRunEvents(baseUrl, body.run.runId, 0);
+      assert.equal(first.status, 200);
+      const firstBody = await first.json() as {
+        status: string;
+        terminal: boolean;
+        events: Array<{ kind: string; seq?: number; content?: string }>;
+        lastSeq: number;
+        stale: boolean;
+      };
+      assert.equal(firstBody.status, 'running');
+      assert.equal(firstBody.terminal, false);
+      assert.deepEqual(firstBody.events.map((event) => event.kind), ['text']);
+      assert.equal(firstBody.events[0]?.content, 'hello');
+      assert.equal(firstBody.stale, false);
+
+      runtime.release();
+      await waitForSessionStatus(baseUrl, body.sessionId, 'idle');
+
+      const rest = await getRunEvents(baseUrl, body.run.runId, firstBody.lastSeq);
+      const restBody = await rest.json() as {
+        status: string;
+        terminal: boolean;
+        events: Array<{ kind: string }>;
+        lastSeq: number;
+      };
+      assert.equal(restBody.status, 'completed');
+      assert.equal(restBody.terminal, true);
+      assert.deepEqual(restBody.events.map((event) => event.kind), ['complete']);
+      assert.ok(restBody.lastSeq > firstBody.lastSeq);
+
+      const missing = await getRunEvents(baseUrl, 'missing');
+      assert.equal(missing.status, 404);
     });
   });
 });
