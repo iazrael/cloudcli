@@ -10,7 +10,7 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import cors from 'cors';
 import compression from 'compression';
 
-import { AppError, findApplicationRoot, getModuleDirectory, IS_PLATFORM, terminalTextStyles } from '@/shared/utils.js';
+import { findApplicationRoot, getModuleDirectory, IS_PLATFORM, terminalTextStyles } from '@/shared/utils.js';
 import {
     closeSessionsWatcher,
     initializeSessionsWatcher,
@@ -30,6 +30,7 @@ import { chatRunRegistry, createWebSocketServer } from '@/modules/websocket/inde
 import { getConnectableHost } from '../shared/networkHosts.js';
 
 import { configureHttpTimeouts } from './http-timeouts.js';
+import { createErrorResponse } from './error-response.js';
 import { createGitModule } from './modules/git/index.js';
 import {
     authenticateToken,
@@ -393,27 +394,13 @@ app.get('*', (req, res) => {
 });
 
 // global error middleware must be last
-app.use((err: unknown, req: Request, res: Response, next: NextFunction) => {
-  if (err instanceof AppError) {
-    return res.status(err.statusCode).json({
-      success: false,
-      error: {
-        code: err.code,
-        message: err.message,
-        details: err.details,
-      },
-    });
+app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+  const { statusCode, body } = createErrorResponse(err);
+  if (statusCode >= 500) {
+    console.error(err);
   }
 
-  console.error(err);
-
-  return res.status(500).json({
-    success: false,
-    error: {
-      code: 'INTERNAL_ERROR',
-      message: 'Internal server error',
-    },
-  });
+  return res.status(statusCode).json(body);
 });
 
 const SERVER_PORT = Number.parseInt(process.env.SERVER_PORT || '3001', 10);
