@@ -1536,3 +1536,37 @@ test('gateway frames that are not about the timeline add no rows to the viewed s
 
   assert.deepEqual(store.getMessages('session-1').map((message) => message.id), ['u1']);
 });
+
+// ─── Gateway frames that are not timeline rows ───────────────────────────────
+
+test('a sidebar-global session_removed frame never enters the timeline', async () => {
+  const fetchPage = scriptedFetcher([
+    { params: { limit: 20, offset: 0 }, page: { messages: [msg(1), msg(2)], total: 2, hasMore: false } },
+  ]);
+  const store = new SessionTimelineStore({ fetchPage });
+
+  await store.fetchFromServer(SESSION_ID, { limit: 20, offset: 0 });
+  const slot = store.getSessionSlot(SESSION_ID)!;
+  const mergedBefore = slot.merged;
+
+  store.applyServerEvent(
+    { kind: 'session_removed', sessionIds: ['sess-archived-elsewhere'] } as ServerEvent,
+    { fallbackSessionId: SESSION_ID, provider: 'claude' },
+  );
+
+  assert.equal(slot.realtimeMessages.length, 0, 'global frames must not become realtime rows');
+  assert.equal(slot.merged, mergedBefore, 'merged must not be recomputed');
+});
+
+test('appendRealtime drops a frame whose id is missing instead of poisoning the slot', () => {
+  const store = new SessionTimelineStore();
+
+  store.appendRealtime(SESSION_ID, { ...msg(1), id: undefined as unknown as string });
+  store.appendRealtime(SESSION_ID, msg(2));
+
+  assert.deepEqual(
+    store.getMessages(SESSION_ID).map((row) => row.id),
+    ['m2'],
+    'the id-less frame is ignored and the following append still works',
+  );
+});
