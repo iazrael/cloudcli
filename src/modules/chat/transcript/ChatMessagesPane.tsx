@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { memo, useCallback, useEffect, useMemo } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 import { Virtualizer } from 'virtua';
 import type { VirtualizerHandle } from 'virtua';
@@ -21,6 +21,24 @@ import { MarkdownWorkspaceContext } from '@/modules/chat/context/MarkdownWorkspa
  * thousands of pixels without waiting for JS, outruns it and shows a blank band.
  */
 const TRANSCRIPT_BUFFER_PX = 1200;
+
+/**
+ * Viewports of rows kept mounted around the reading position. virtua applies
+ * its buffer only on the side being scrolled toward: reading downward drops
+ * everything above the viewport the moment it leaves the edge, so scrolling
+ * back a few hundred pixels to re-read lands in unmounted rows, and remounting
+ * heavy transcript rows takes seconds on a phone. `keepMounted` is unioned into
+ * the mounted range on every render, so a window of indexes slid along behind
+ * the scroll offset keeps those rows alive. Retention only postpones unmount
+ * (the rows were already mounted) — it never mounts rows ahead of the scroll.
+ */
+const RETAIN_VIEWPORTS = 3;
+
+/**
+ * Minimum time between retention window updates. Each update is one pane
+ * render; scrolling fires events far faster than the window needs to slide.
+ */
+const RETAIN_UPDATE_INTERVAL_MS = 250;
 
 type ChatMessagesPaneProps = {
   /** The scroll container, owned by `useTranscriptViewport`. */
@@ -122,6 +140,69 @@ function ChatMessagesPane({
     () => ({ projectId: selectedProject.projectId, worktreePath: selectedSession?.worktreePath ?? null }),
     [selectedProject.projectId, selectedSession?.worktreePath],
   );
+
+  // Rows [lo, hi] retained around the last tracked reading position, fed to
+  // keepMounted so virtua unions them into the mounted range (see
+  // RETAIN_VIEWPORTS above). Null before the first scroll.
+  const [retainedRange, setRetainedRange] = useState<[number, number] | null>(null);
+  const lastRetainUpdateRef = useRef(0);
+
+  // A session switch replaces transcriptItems wholesale; stale indexes would
+  // pin the wrong rows until the next scroll, so drop the window instead. The
+  // reset runs during render (React's derived-state pattern) so the very first
+  // render of the new session is already clean.
+  const sessionId = selectedSession?.id ?? null;
+  const [renderedSessionId, setRenderedSessionId] = useState(sessionId);
+  if (renderedSessionId !== sessionId) {
+    setRenderedSessionId(sessionId);
+    setRetainedRange(null);
+  }
+
+  const trackRetention = useCallback(
+    (offset: number) => {
+      const virtualizer = virtualizerRef.current;
+      if (!virtualizer) return;
+      const now = Date.now();
+      if (now - lastRetainUpdateRef.current < RETAIN_UPDATE_INTERVAL_MS) return;
+      const viewportSize = virtualizer.viewportSize;
+      const count = transcriptItems.length;
+      if (!viewportSize || count === 0) return;
+      lastRetainUpdateRef.current = now;
+
+      const anchor = virtualizer.findItemIndex(offset);
+      const retainPx = viewportSize * RETAIN_VIEWPORTS;
+      let lo = anchor;
+      // getItemOffset is ascending, so walk out while the previous row starts
+      // inside the window. Offsets of never-measured rows are estimates; that
+      // only skews the window size, never correctness.
+      while (lo > 0 && virtualizer.getItemOffset(lo - 1) > offset - retainPx) lo--;
+      const windowEnd = offset + viewportSize + retainPx;
+      let hi = anchor;
+      while (hi < count - 1 && virtualizer.getItemOffset(hi + 1) < windowEnd) hi++;
+
+      // Returning the previous range when it is unchanged skips the render.
+      setRetainedRange((previous) =>
+        previous && previous[0] === lo && previous[1] === hi ? previous : [lo, hi],
+      );
+    },
+    [transcriptItems.length, virtualizerRef],
+  );
+
+  const handlePaneScroll = useCallback(
+    (offset: number) => {
+      trackRetention(offset);
+      onScroll(offset);
+    },
+    [onScroll, trackRetention],
+  );
+
+  const keepMounted = useMemo(() => {
+    if (!retainedRange) return undefined;
+    const [lo, hi] = retainedRange;
+    const indexes: number[] = [];
+    for (let index = lo; index <= hi; index++) indexes.push(index);
+    return indexes;
+  }, [retainedRange]);
 
   // Screens the touches that should have scrolled the transcript but did not,
   // so a report taken after "the list won't scroll" says which cause it was.
@@ -291,7 +372,8 @@ function ChatMessagesPane({
             scrollRef={scrollRef}
             shift={shiftOnPrepend}
             bufferSize={TRANSCRIPT_BUFFER_PX}
-            onScroll={onScroll}
+            keepMounted={keepMounted}
+            onScroll={handlePaneScroll}
             data={transcriptItems}
           >
             {renderRow}

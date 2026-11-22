@@ -258,7 +258,7 @@ flowchart LR
 
 - 思考块按稳定 id 归组 upsert（`src/modules/chat/utils/sessionThinkingRows.ts`）。
 - 流式文本由 `transcript/StreamingMarkdown.tsx` 渲染：按 `streamingMarkdown.ts` 切"已定稿前缀 + 待定尾块"两段 `MarkdownBody`，前缀字节稳定命中 memo，每 100ms tick 只重解析尾块。
-- **转录是虚拟列表**：`ChatMessagesPane` 用 virtua 的 `Virtualizer` 渲染，只有视口附近的行在 DOM 里；行高由 virtua 实测，估高与真高的差值由它改写滚动偏移吸收。这取代了原先「服务端分页 + `visibleMessageCount` 切片 + 懒挂载占位」三层各管一段、互相错拍的结构——现在「渲染哪些行」只有 `transcriptItems` 一个来源。视口外预渲染余量（`bufferSize`）是 1200px，不用 virtua 默认的 200px：消息行渲染重，iOS 惯性滑动由合成线程推进、一次能走几千 px，余量太小就会划进还没挂载的区域，露出一块空白。
+- **转录是虚拟列表**：`ChatMessagesPane` 用 virtua 的 `Virtualizer` 渲染，只有视口附近的行在 DOM 里；行高由 virtua 实测，估高与真高的差值由它改写滚动偏移吸收。这取代了原先「服务端分页 + `visibleMessageCount` 切片 + 懒挂载占位」三层各管一段、互相错拍的结构——现在「渲染哪些行」只有 `transcriptItems` 一个来源。视口外预渲染余量（`bufferSize`）是 1200px，不用 virtua 默认的 200px：消息行渲染重，iOS 惯性滑动由合成线程推进、一次能走几千 px，余量太小就会划进还没挂载的区域，露出一块空白。另外 virtua 的余量只作用于滚动前进侧——向下读时视口上侧是零余量，行一出视口就被卸载，回滚重读要在慢设备上花数秒重挂载重行。所以 `ChatMessagesPane` 再叠一层**读位保留窗口**：滚动回调里按 virtua 句柄把「当前读位 ±3 个视口」覆盖到的行下标经 `keepMounted` 并入挂载范围（250ms 节流，只推迟卸载不新增挂载），回滚重读时行还在 DOM 里，不再出现空白带。
 - 视口行为归 `hooks/useTranscriptViewport`：贴底跟随、距顶两屏预取旧页、按下标跳转。它不做任何位置补偿——补偿是 virtua 的职责，业务层再补一次只会打架。前插旧页的那一次提交带 `shift`，请求发出时置位、请求结束且该次提交渲染后复位（只按行数复位会在空页时卡住，把下一次追加误当历史）。
 - 搜索跳转按 `searchTargetLocator.ts` 在**分组后的行**上解析命中下标（-1 即确定性放弃），再交给 `scrollToIndex` 居中；不再需要渲染窗口，也不再有 DOM 查找和多段定时器。分组会折叠工具行、丢弃隐藏行，所以消息下标与行下标不是一回事，定位必须在行空间做。
 - 工具卡片按 toolId upsert，服务端把引擎的流式参数增量累积成稳定快照再发。
