@@ -1660,6 +1660,12 @@ export class SessionTimelineStore {
    * This works regardless of which session is actively viewed.
    */
   appendRealtime(sessionId: string, msg: NormalizedMessage): void {
+    // A frame with no id is not a renderable timeline row — gateway frames
+    // such as `session_removed` carry only their own payload. Admitting one
+    // made every later recompute throw in the optimistic-echo pass.
+    if (typeof msg.id !== 'string' || msg.id.length === 0) {
+      return;
+    }
     const slot = this.getSlot(sessionId);
     const message =
       msg.sessionId === sessionId
