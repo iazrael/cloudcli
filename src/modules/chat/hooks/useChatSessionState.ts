@@ -261,7 +261,15 @@ export function useChatSessionState({
     setHasMoreMessages(slot.hasMore);
     setTotalMessages(slot.total);
     if (slot.tokenUsage && typeof slot.tokenUsage === 'object') {
-      setTokenBudget(slot.tokenUsage as Record<string, unknown>);
+      const incoming = slot.tokenUsage as Record<string, unknown>;
+      setTokenBudget((previous) => {
+        const incomingWindow = Number(incoming.total ?? 0);
+        const previousWindow = Number(previous?.total ?? 0);
+        if (incomingWindow > 0 || previousWindow <= 0) {
+          return incoming;
+        }
+        return previous;
+      });
     }
   }, []);
 
