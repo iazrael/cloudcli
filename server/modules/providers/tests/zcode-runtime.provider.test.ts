@@ -234,10 +234,13 @@ rl.on('line', (line) => {
     createdSessions.add(sessionId);
     writtenSessions.delete(sessionId);
     // ZCode 0.16.9 validates create params strictly and no longer accepts the
-    // runtimeModel catalog here. Keep this boundary aligned with the real
-    // engine so a provider upgrade cannot silently reintroduce the breakage.
+    // runtimeModel catalog here. The engine also accepts an initial model
+    // selection ({providerId, modelId, options?}) that seeds the session-level
+    // selection (0.17.1 behavior the runtime relies on for turn-0 title
+    // generation). Keep this boundary aligned with the real engine so a
+    // provider upgrade cannot silently reintroduce the breakage.
     for (const key of Object.keys(msg.params ?? {})) {
-      if (key !== 'workspace') {
+      if (key !== 'workspace' && key !== 'model') {
         send({ id: msg.id, error: { code: -32602, message: 'Invalid params — (root): Unrecognized key: "' + key + '"' } });
         return;
       }
@@ -723,6 +726,14 @@ test('runtime configures model and reasoning effort variant', async () => {
     workspace: {
       workspacePath: stubDir,
       workspaceKey: stubDir,
+    },
+    // The create seeds the session-level selection with the run's resolved
+    // model so the engine's turn-0 title generation (and subagent spawns)
+    // resolve a usable provider instead of the engine default.
+    model: {
+      providerId: 'bigmodel-coding-plan',
+      modelId: 'GLM-5.3',
+      options: { reasoningLevel: 'high' },
     },
   });
 

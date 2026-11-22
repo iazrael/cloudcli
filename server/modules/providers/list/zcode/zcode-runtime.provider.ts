@@ -805,7 +805,8 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
    *    mapping, so the replacement is sticky across subsequent sends.
    *
    * ZCode 0.16.9 validates all session requests strictly. Resume sends only
-   * the session id, while create sends only the workspace descriptor.
+   * the session id, while create sends the workspace descriptor plus the
+   * run's model selection (see below).
    */
   private async resolveOrCreateSession(
     appSessionId: string | null,
@@ -848,6 +849,26 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
 
     console.info(`[ZCodeRuntime] Creating new session for workspace: ${workspacePath}`);
 
+    // A fresh engine session seeds its session-level model selection from the
+    // engine default (`cloudcli-provider-config.json`'s `defaultModelSelection` —
+    // the user's legacy cli-config provider). Conversation turns carry this
+    // run's per-turn selection, but the engine's turn-0 session-title
+    // generation resolves its model from the SESSION-level selection: a stale
+    // default points the title call at a provider whose stored key no longer
+    // authenticates, so the generated title never lands and the sidebar stays
+    // on the raw first input. Hand the create the same selection the turn is
+    // about to use — best-effort, like the resume-side repair: a resolution
+    // failure must not block the create, it only lets the engine default apply.
+    let createModelSelection: ReturnType<typeof buildZCodeSendModelParams> | null = null;
+    try {
+      createModelSelection = await this.resolveSendModelParams(options, context);
+    } catch (error) {
+      console.warn(
+        '[ZCodeRuntime] Resolving the run model for the new session failed; the engine default selection applies:',
+        error,
+      );
+    }
+
     try {
       const result = await protocolClient.sendRequest<AnyRecord>(
         'session/create',
@@ -856,6 +877,9 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
             workspacePath,
             workspaceKey: workspacePath,
           },
+          ...(createModelSelection?.modelSelection
+            ? { model: createModelSelection.modelSelection }
+            : {}),
         }
       );
 

@@ -89,6 +89,7 @@ rl.on('line', (line) => {
   }
 
   if (msg.method === 'session/create') {
+    log('session_create_attempt', msg.params);
     pendingCreateId = msg.id;
     send({ id: 'server-1', method: 'session/requestRuntimePreferences', params: { sessionId, scope: 'runtime-materialization' } });
     return;
@@ -230,4 +231,66 @@ test('strict task resume refuses a missing native mapping', async () => {
   const { messages, writer } = createWriter();
   await assert.rejects(runtime.run('hello', { sessionId: 'app-strict-unmapped', cwd: stubDir, strictResume: true }, writer, { ...resumedContext, resolveProviderSessionId: () => null }), /原会话/);
   assert.equal(messages.some((message) => message.kind === 'session_created'), false);
+});
+
+/** Last `session_create_attempt` entry the stub recorded, if any. */
+function readLastCreateAttempt(): Record<string, unknown> | undefined {
+  return fsSync.readFileSync(logFilePath, 'utf8')
+    .split('\n')
+    .filter((line) => line.trim())
+    .map((line) => JSON.parse(line) as { name: string; value: Record<string, unknown> })
+    .filter((entry) => entry.name === 'session_create_attempt')
+    .at(-1)?.value;
+}
+
+test('a fresh create seeds the session-level model selection for the engine title call', async () => {
+  fsSync.writeFileSync(modeFilePath, 'ok\n');
+  const runtime = new ZCodeRuntimeProvider();
+  const { writer } = createWriter();
+  // The engine's turn-0 title generation resolves its model from the
+  // session-level selection, so the create must carry the run's resolved
+  // selection instead of letting the engine default (the legacy
+  // cli-config provider) apply.
+  const freshContext: ProviderRuntimeContext = {
+    ...resumedContext,
+    resolveProviderSessionId: () => null,
+    resolveResumeModel: async () => 'bigmodel-coding-plan/GLM-5.3-Flash',
+  };
+
+  const result = await runtime.run('hello', { sessionId: 'app-sess-create-model', cwd: stubDir }, writer, freshContext);
+
+  assert.deepEqual(result, { sessionId: 'sess_stub_resume', success: true });
+  assert.deepEqual(readLastCreateAttempt(), {
+    workspace: {
+      workspacePath: stubDir,
+      workspaceKey: stubDir,
+    },
+    model: {
+      providerId: 'bigmodel-coding-plan',
+      modelId: 'GLM-5.3-Flash',
+      options: { reasoningLevel: 'max' },
+    },
+  });
+});
+
+test('a fresh create with no resolvable model succeeds and omits the model field', async () => {
+  fsSync.writeFileSync(modeFilePath, 'ok\n');
+  const runtime = new ZCodeRuntimeProvider();
+  const { writer } = createWriter();
+  const noModelContext: ProviderRuntimeContext = {
+    ...resumedContext,
+    resolveProviderSessionId: () => null,
+    resolveResumeModel: async () => undefined,
+    getProviderModels: async () => ({ OPTIONS: [], DEFAULT: '' }),
+  };
+
+  const result = await runtime.run('hello', { sessionId: 'app-sess-create-nomodel', cwd: stubDir }, writer, noModelContext);
+
+  assert.deepEqual(result, { sessionId: 'sess_stub_resume', success: true });
+  assert.deepEqual(readLastCreateAttempt(), {
+    workspace: {
+      workspacePath: stubDir,
+      workspaceKey: stubDir,
+    },
+  });
 });
