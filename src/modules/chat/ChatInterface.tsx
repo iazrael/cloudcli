@@ -496,6 +496,10 @@ function ChatInterface({
   );
 
   const selectedProviderLabel = getProviderDisplayName(provider);
+  // Claude cannot replace a sent message while its held CLI process runs
+  // background work: the edit needs a fresh process, which would kill that
+  // work. Say so on the edit affordance instead of letting the send fail.
+  const messageEditingBlockedByBackgroundWork = provider === 'claude' && hasActiveBackgroundTasks;
 
   if (!selectedProject) {
     return (
@@ -552,7 +556,12 @@ function ChatInterface({
           chatMessages={chatMessages}
           selectedSession={selectedSession}
           provider={provider}
-          onEditMessage={supportsMessageEditing && !isProcessing ? beginEditMessage : undefined}
+          onEditMessage={supportsMessageEditing && !isProcessing && !messageEditingBlockedByBackgroundWork ? beginEditMessage : undefined}
+          editDisabledReason={supportsMessageEditing && messageEditingBlockedByBackgroundWork
+            ? t('message.editBlockedByBackgroundWork', {
+              defaultValue: "You can't edit a sent message while background work is still running. Wait for it to finish, or stop the background task, then try again.",
+            })
+            : undefined}
           onForkFromMessage={supportsSessionForking ? handleForkFromMessage : undefined}
           isLoadingMoreMessages={isLoadingMoreMessages}
           createDiff={createDiff}

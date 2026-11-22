@@ -49,6 +49,8 @@ type MessageComponentProps = {
   selectedProject?: Project | null;
   provider: Provider | string;
   onEditMessage?: (message: ChatMessage) => void;
+  /** Why the edit control is disabled right now; shown as its tooltip. */
+  editDisabledReason?: string;
   onForkFromMessage?: (message: ChatMessage) => void;
 };
 
@@ -75,7 +77,7 @@ function SideQuestionDismissButton({ label, onDismiss }: { label: string; onDism
   );
 }
 
-const MessageComponent = memo(({ message, prevMessage, turnAnchorMessage, isTurnFinalAssistant = true, createDiff, onFileOpen, showRawParameters, showThinking, isThinkingStreaming, selectedProject, provider, onEditMessage, onForkFromMessage }: MessageComponentProps) => {
+const MessageComponent = memo(({ message, prevMessage, turnAnchorMessage, isTurnFinalAssistant = true, createDiff, onFileOpen, showRawParameters, showThinking, isThinkingStreaming, selectedProject, provider, onEditMessage, editDisabledReason, onForkFromMessage }: MessageComponentProps) => {
   const { t } = useTranslation('chat');
   // Folds (thinking, compaction summary) render as native <details> here so
   // they stay expandable in the statically rendered exported document.
@@ -215,6 +217,17 @@ const MessageComponent = memo(({ message, prevMessage, turnAnchorMessage, isTurn
                       title={t('message.editAndResend', { defaultValue: 'Edit and resend' })}
                       aria-label={t('message.editAndResend', { defaultValue: 'Edit and resend' })}
                       className="rounded p-1 opacity-70 transition-opacity hover:bg-muted hover:opacity-100 focus-visible:opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
+                    >
+                      <PencilIcon className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                  {!onEditMessage && editDisabledReason && message.transcriptAnchorId && (
+                    <button
+                      type="button"
+                      disabled
+                      title={editDisabledReason}
+                      aria-label={editDisabledReason}
+                      className="cursor-not-allowed rounded p-1 opacity-40"
                     >
                       <PencilIcon className="h-3.5 w-3.5" />
                     </button>
