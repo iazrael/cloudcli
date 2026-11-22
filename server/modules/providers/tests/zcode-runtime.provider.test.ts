@@ -23,6 +23,7 @@ import type {
   ProviderRuntimeWriter,
 } from '@/shared/types.js';
 import { closeConnection, initializeDatabase } from '@/modules/database/index.js';
+import { clearSessionReplyPreview, getSessionReplyPreview } from '@/modules/notifications/index.js';
 
 import { protocolClient } from '../list/zcode/zcode-protocol.client.js';
 import { ZCODE_CANCELLED_NOTICE, ZCODE_CANCELLED_NOTICE_KEY } from '../list/zcode/zcode-live-event-normalizer.js';
@@ -671,6 +672,21 @@ test('runtime completes a run when the engine asks for runtime preferences mid-c
   assert.equal(delta?.content, 'hi there');
   const complete = messages.find((msg) => msg.kind === 'complete');
   assert.equal(complete?.tokens, 7);
+});
+
+test('a completed run leaves its streamed reply in the notification preview registry', async () => {
+  fsSync.writeFileSync(modeFilePath, 'ok\n');
+  const runtime = new ZCodeRuntimeProvider();
+  const { writer } = createWriter();
+
+  // The completed push body reads this registry. zcode streams reply prose as
+  // stream_delta rows, which the shared writer-side capture (text rows only)
+  // never sees, so the runtime itself must record the accumulated reply —
+  // the stop push would otherwise fall back to the bare "ZCode: completed".
+  clearSessionReplyPreview('app-sess-preview');
+  await runtime.run('hello', { sessionId: 'app-sess-preview', cwd: stubDir }, writer, context);
+
+  assert.equal(getSessionReplyPreview('app-sess-preview'), 'hi there');
 });
 
 test('runtime surfaces session/create failures as error messages', async () => {

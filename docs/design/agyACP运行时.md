@@ -77,7 +77,7 @@ ACP 默认**开启**；`CLOUDCLI_ANTIGRAVITY_ACP=0` 回退 print 老路径（保
 
 ### 通知预览（2026-11-22）
 
-回合结束推送原先只有"provider: completed"——预览捕获在 writer 侧只认 `kind:'text'` 行，而 zcode 是唯一发 text 行的引擎，antigravity 的回复全走 `stream_delta`，预览从未生效。运行时泵现在累积回复文本并按会话 id 写入通知预览注册表（回显抑制期间不计入），排空期的后续播报也覆盖。
+回合结束推送原先只有"provider: completed"——预览捕获在 writer 侧只认 `kind:'text'` 行，而 antigravity 的回复全走 `stream_delta`（zcode 同样如此，其 `text` 行仅压缩摘要），预览从未生效。运行时泵现在累积回复文本并按会话 id 写入通知预览注册表（回显抑制期间不计入），排空期的后续播报也覆盖。zcode 的同款补丁见 [[通知内容接线]] 后续补丁一节。
 
 ## 分步实施
 

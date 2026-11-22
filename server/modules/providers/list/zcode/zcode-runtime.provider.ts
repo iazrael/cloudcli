@@ -44,7 +44,7 @@ import type {
   ProviderRuntimeWriter,
 } from '@/shared/types.js';
 import { createCompleteMessage, createNormalizedMessage, generateMessageId, readObjectRecord, readOptionalString } from '@/shared/utils.js';
-import { notifyRunFailed, notifyRunStopped } from '@/modules/notifications/index.js';
+import { notifyRunFailed, notifyRunStopped, rememberSessionReplyPreview } from '@/modules/notifications/index.js';
 import { sessionsDb } from '@/modules/database/index.js';
 import {
   LOCAL_AGENT_TASK_TYPE,
@@ -1306,6 +1306,14 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
     writer: ProviderRuntimeWriter,
     context: ProviderRuntimeContext,
   ): (notification: AnyRecord) => void {
+    // The terminal push carries the run's last reply text. zcode streams
+    // reply prose as stream_delta rows, which the shared writer-side capture
+    // (text rows only) never sees, so the runtime accumulates the reply and
+    // records it itself — the same arrangement the antigravity runtime uses.
+    // The late output a silenced run's background watcher forwards crosses
+    // this same closure, so the preview stays current until the real
+    // completion notification fires.
+    let runReplyText = '';
     return (notification: AnyRecord) => {
       try {
         const method = readOptionalString(notification.method);
@@ -1379,6 +1387,12 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
               }
             });
             continue;
+          }
+          if (message.kind === 'stream_delta' && typeof message.content === 'string' && message.content) {
+            runReplyText += message.content;
+            if (handle.appSessionId) {
+              rememberSessionReplyPreview(handle.appSessionId, runReplyText);
+            }
           }
           this.deliverRunMessage(handle, message, sessionEvent, writer);
         }
