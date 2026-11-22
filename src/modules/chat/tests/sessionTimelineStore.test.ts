@@ -451,6 +451,164 @@ test('a keyed history prefix yields to the complete Antigravity stream', async (
   );
 });
 
+// ─── Unkeyed ACP streams: the frames name no transcript step, so the live
+// segment can carry no row key and its placeholder must reconcile by content.
+
+test('an unkeyed ACP stream retires once history lands its persisted twin', async () => {
+  const streamedContent = 'ACP frames name no transcript step, so the live segment carries no row key.';
+  const initialUser = msg(1, { provider: 'antigravity', content: 'review the streaming path' });
+  const persistedReply = msg(2, {
+    id: 'msg_session_8',
+    provider: 'antigravity',
+    content: streamedContent,
+    providerRowKey: 'assistant-step:3',
+  });
+  const fetchPage = scriptedFetcher([
+    {
+      params: { limit: SESSION_MESSAGES_PAGE_SIZE, offset: 0 },
+      page: { messages: [initialUser], total: 1, hasMore: false },
+    },
+    {
+      params: { limit: SESSION_MESSAGES_PAGE_SIZE, offset: 0 },
+      page: { messages: [initialUser, persistedReply], total: 2, hasMore: false },
+    },
+  ]);
+  const store = new SessionTimelineStore({ fetchPage });
+
+  await store.fetchFromServer(SESSION_ID, { limit: SESSION_MESSAGES_PAGE_SIZE, offset: 0 });
+  emitAntigravity(store, { kind: 'stream_delta', sessionId: SESSION_ID, content: streamedContent.slice(0, 40) });
+  emitAntigravity(store, { kind: 'stream_delta', sessionId: SESSION_ID, content: streamedContent.slice(40) });
+  emitAntigravity(store, { kind: 'stream_end', sessionId: SESSION_ID });
+  emitAntigravity(store, { kind: 'complete', sessionId: SESSION_ID });
+
+  await store.refreshLatestFromServer(SESSION_ID);
+
+  assert.deepEqual(
+    store.getMessages(SESSION_ID).filter((row) => row.content === streamedContent).map((row) => row.id),
+    ['msg_session_8'],
+  );
+  assert.equal(store.getSessionSlot(SESSION_ID)!.realtimeMessages.length, 0);
+});
+
+test('an unkeyed ACP placeholder with no persisted twin survives a refresh', async () => {
+  const orphanText = 'This streamed segment exists nowhere in the persisted transcript.';
+  const initialUser = msg(1, { provider: 'antigravity', content: 'say something' });
+  const persistedReply = msg(2, {
+    id: 'msg_session_9',
+    provider: 'antigravity',
+    content: 'A different persisted reply.',
+  });
+  const fetchPage = scriptedFetcher([
+    {
+      params: { limit: SESSION_MESSAGES_PAGE_SIZE, offset: 0 },
+      page: { messages: [initialUser], total: 1, hasMore: false },
+    },
+    {
+      params: { limit: SESSION_MESSAGES_PAGE_SIZE, offset: 0 },
+      page: { messages: [initialUser, persistedReply], total: 2, hasMore: false },
+    },
+  ]);
+  const store = new SessionTimelineStore({ fetchPage });
+
+  await store.fetchFromServer(SESSION_ID, { limit: SESSION_MESSAGES_PAGE_SIZE, offset: 0 });
+  emitAntigravity(store, { kind: 'stream_delta', sessionId: SESSION_ID, content: orphanText });
+  emitAntigravity(store, { kind: 'stream_end', sessionId: SESSION_ID });
+  emitAntigravity(store, { kind: 'complete', sessionId: SESSION_ID });
+
+  await store.refreshLatestFromServer(SESSION_ID);
+
+  // Survival, not placement: the placeholder sorts by its own arrival clock.
+  assert.deepEqual(
+    store.getMessages(SESSION_ID)
+      .filter((row) => row.role === 'assistant')
+      .map((row) => row.content)
+      .sort(),
+    [orphanText, persistedReply.content].sort(),
+  );
+});
+
+test('an unproven turn keeps its unkeyed placeholder beside an older identical persisted reply', async () => {
+  const repeated = 'The model repeats this exact sentence in two turns of one session.';
+  const olderReply = msg(2, {
+    id: 'msg_session_10_old',
+    provider: 'antigravity',
+    content: repeated,
+  });
+  const initialUser = msg(1, { provider: 'antigravity', content: 'first question' });
+  const fetchPage = scriptedFetcher([
+    {
+      params: { limit: SESSION_MESSAGES_PAGE_SIZE, offset: 0 },
+      page: { messages: [initialUser, olderReply], total: 2, hasMore: false },
+    },
+    {
+      params: { limit: SESSION_MESSAGES_PAGE_SIZE, offset: 0 },
+      page: { messages: [initialUser, olderReply], total: 2, hasMore: false },
+    },
+  ]);
+  const store = new SessionTimelineStore({ fetchPage });
+
+  await store.fetchFromServer(SESSION_ID, { limit: SESSION_MESSAGES_PAGE_SIZE, offset: 0 });
+  store.appendRealtime(SESSION_ID, {
+    id: 'local_prompt_2',
+    sessionId: SESSION_ID,
+    timestamp: new Date(BASE_TIME + 9000).toISOString(),
+    provider: 'antigravity',
+    kind: 'text',
+    role: 'user',
+    content: 'second question',
+  });
+  emitAntigravity(store, { kind: 'stream_delta', sessionId: SESSION_ID, content: repeated });
+  emitAntigravity(store, { kind: 'stream_end', sessionId: SESSION_ID });
+  emitAntigravity(store, { kind: 'complete', sessionId: SESSION_ID });
+
+  await store.refreshLatestFromServer(SESSION_ID);
+
+  // The live turn is not provable yet (its prompt has no persisted copy), so
+  // the older turn's identical reply must not be treated as the placeholder's
+  // twin: the placeholder stays, and the older row stays.
+  assert.equal(store.getMessages(SESSION_ID).filter((row) => row.content === repeated).length, 2);
+});
+
+test('a truncated persisted row yields to the fuller unkeyed ACP stream', async () => {
+  const completeReply = `${'A detailed implementation step with concrete safeguards. '.repeat(8)}Final verification.`;
+  const persistedPrefix = completeReply.slice(0, Math.floor(completeReply.length * 0.3));
+  const initialUser = msg(1, { provider: 'antigravity', content: 'write the complete plan' });
+  const fetchPage = scriptedFetcher([
+    {
+      params: { limit: SESSION_MESSAGES_PAGE_SIZE, offset: 0 },
+      page: { messages: [initialUser], total: 1, hasMore: false },
+    },
+    {
+      params: { limit: SESSION_MESSAGES_PAGE_SIZE, offset: 0 },
+      page: {
+        messages: [initialUser, msg(2, {
+          id: 'msg_session_11',
+          provider: 'antigravity',
+          content: persistedPrefix,
+          contentCompleteness: 'truncated',
+        })],
+        total: 2,
+        hasMore: false,
+      },
+    },
+  ]);
+  const store = new SessionTimelineStore({ fetchPage });
+
+  await store.fetchFromServer(SESSION_ID, { limit: SESSION_MESSAGES_PAGE_SIZE, offset: 0 });
+  emitAntigravity(store, { kind: 'stream_delta', sessionId: SESSION_ID, content: completeReply });
+  emitAntigravity(store, { kind: 'stream_end', sessionId: SESSION_ID });
+  emitAntigravity(store, { kind: 'complete', sessionId: SESSION_ID });
+
+  await store.refreshLatestFromServer(SESSION_ID);
+
+  assert.deepEqual(
+    store.getMessages(SESSION_ID)
+      .filter((row) => row.role === 'assistant')
+      .map((row) => row.content),
+    [completeReply],
+  );
+});
+
 test('a near-identical keyed Antigravity history row yields to richer markdown-formatted stream text', async () => {
   const providerRowKey = 'assistant-step:7b';
   const shared = '游戏世界与界面分工协作是现代 Web 游戏的常见架构。'.repeat(18);
