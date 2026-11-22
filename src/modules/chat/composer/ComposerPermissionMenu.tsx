@@ -134,7 +134,7 @@ export function ComposerPermissionMenu({
           updateAnchor();
           setIsOpen((current) => !current);
         }}
-        className={`flex h-8 min-w-8 max-w-40 shrink-0 items-center justify-center gap-1.5 rounded-lg border text-xs font-medium transition-colors sm:max-w-48 ${isNameShown ? 'px-2' : 'w-8'} ${activeAppearance.trigger}`}
+        className={`flex h-8 min-w-8 max-w-40 shrink-0 items-center justify-center gap-1.5 rounded-lg border text-xs font-medium transition-colors sm:max-w-48 ${isNameShown ? 'w-8 sm:w-auto sm:px-2' : 'w-8'} ${activeAppearance.trigger}`}
         aria-haspopup="menu"
         aria-expanded={isOpen}
         // The mode name leads the accessible name, so what a screen reader
@@ -147,8 +147,10 @@ export function ComposerPermissionMenu({
         title={t('input.clickToChangeMode')}
       >
         <ActiveIcon className="h-4 w-4 shrink-0" />
-        {/* Named, not just drawn: the mode decides what the next message may change. */}
-        {isNameShown && <span className="truncate">{activeModeLabel}</span>}
+        {/* Named, not just drawn: the mode decides what the next message may
+            change. The name is a desktop affordance only — phones keep the
+            colored icon alone, the accessible name still carries the mode. */}
+        {isNameShown && <span className="hidden truncate sm:inline">{activeModeLabel}</span>}
       </button>
 
       {isOpen && anchor && createPortal(

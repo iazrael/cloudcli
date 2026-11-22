@@ -509,6 +509,50 @@ export function readZCodeSessionModelInfoFromDb(providerSessionId: string): { mo
 }
 
 /**
+ * Fallback context window for a ZCode session whose model declares none in
+ * the engine config (user-picked default, 2026-11-22).
+ */
+export const DEFAULT_ZCODE_CONTEXT_WINDOW = 200_000;
+
+/**
+ * Reads the context window one configured ZCode model declares in the engine
+ * config (`provider.<id>.models.<key>.limit.context`, first enabled provider
+ * listing the key — the same field the model menu's description quotes).
+ *
+ * Consumer: zcode-sessions.provider's token usage readers, which need the
+ * window as the usage denominator (composer panel bar, badge thresholds).
+ * Returns null when the config, the provider or the model is missing or
+ * silent — callers fall back to DEFAULT_ZCODE_CONTEXT_WINDOW.
+ */
+export function readZCodeModelContextLimit(modelId: string): number | null {
+  try {
+    const config = readObjectRecord(JSON.parse(
+      fsSync.readFileSync(path.join(getZCodeStorageDir(), 'cli', 'config.json'), 'utf8')
+    ));
+    const providers = readObjectRecord(config?.provider);
+    if (!providers) {
+      return null;
+    }
+
+    for (const providerConfig of Object.values(providers)) {
+      const providerRecord = readObjectRecord(providerConfig);
+      if (!providerRecord || providerRecord.enabled === false) continue;
+      const models = readObjectRecord(providerRecord.models);
+      const modelRecord = models ? readObjectRecord(models[modelId]) : null;
+      if (!modelRecord) continue;
+      const limits = readObjectRecord(modelRecord.limit);
+      const context = Number(limits?.context);
+      if (Number.isFinite(context) && context > 0) {
+        return context;
+      }
+    }
+  } catch {
+    // Missing or unreadable engine config: caller falls back to the default.
+  }
+  return null;
+}
+
+/**
  * Resolves a model name/key string into ZCode 0.16.9's model selection.
  *
  * Handles:

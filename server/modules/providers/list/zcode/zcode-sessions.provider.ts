@@ -40,6 +40,11 @@ import { resolveAttachmentAssetFile } from '@/modules/assets/index.js';
 
 import { zcodeBackgroundWork } from './zcode-background-work.js';
 import { getZCodeAgentSidecarDir, getZCodeDatabasePath, getZCodeStorageDir } from './zcode-data-root.js';
+import {
+  DEFAULT_ZCODE_CONTEXT_WINDOW,
+  readZCodeModelContextLimit,
+  readZCodeSessionModelInfoFromDb,
+} from './zcode-models.provider.js';
 import { ZCodeProtocolClient } from './zcode-protocol.client.js';
 import {
   buildZCodeTextRowKey,
@@ -86,19 +91,27 @@ type ZCodeHistoryRow = {
 
 /**
  * Token usage totals in ZCode's internal vocabulary.
+ *
+ * `total` is the engine's own per-message sum — real transcripts show the
+ * engine already folds the cache read into `input` (12/12 sampled messages:
+ * `total = input + output + reasoning + cache.write`), so recomputing the sum
+ * by adding `cacheRead` again doubles the number. Absent on older messages;
+ * callers then recompute the same sum.
  */
 type ZCodeTokenTotals = {
   input: number;
   output: number;
   reasoning: number;
-  cache: number;
+  cacheRead: number;
+  cacheWrite: number;
+  total?: number;
 };
 
 /**
  * Reads token usage from either the streaming shape
  * (`{inputTokens, outputTokens, reasoningTokens, cacheReadTokens, cacheWriteTokens}`)
  * or the SQLite `message.data.tokens` shape
- * (`{input, output, reasoning, cache: {read, write}}`).
+ * (`{input, output, reasoning, cache: {read, write}, total}`).
  * Returns null when no positive count is present in either shape.
  */
 function readTokenTotals(value: unknown): ZCodeTokenTotals | null {
@@ -112,52 +125,55 @@ function readTokenTotals(value: unknown): ZCodeTokenTotals | null {
     input: Number(record.inputTokens ?? record.input ?? 0),
     output: Number(record.outputTokens ?? record.output ?? 0),
     reasoning: Number(record.reasoningTokens ?? record.reasoning ?? 0),
-    cache: cacheRecord
-      ? Number(cacheRecord.read ?? 0) + Number(cacheRecord.write ?? 0)
-      : Number(record.cacheReadTokens ?? 0) + Number(record.cacheWriteTokens ?? 0),
+    cacheRead: Number(cacheRecord?.read ?? record.cacheReadTokens ?? 0),
+    cacheWrite: Number(cacheRecord?.write ?? record.cacheWriteTokens ?? 0),
   };
+  const engineTotal = Number(record.total);
+  if (Number.isFinite(engineTotal) && engineTotal > 0) {
+    totals.total = engineTotal;
+  }
 
-  const used = totals.input + totals.output + totals.reasoning + totals.cache;
-  return used > 0 ? totals : null;
+  return zcodeMessageOccupancy(totals) > 0 ? totals : null;
 }
 
 /**
- * Total tokens ZCode recorded for one message, in the app's counting rule.
- *
- * The engine separates cache hits from fresh input, so both are added: the
- * app treats "input" as the whole prompt, the way every other provider
- * reports it.
+ * Tokens one ZCode message put into (or spent inside) the context: the
+ * engine's own `total` when the message carried one, the same sum recomputed
+ * otherwise. `cacheRead` deliberately stays out — the engine's `input`
+ * already includes it.
  */
-function sumZCodeTokenTotals(totals: ZCodeTokenTotals): number {
-  return totals.input + totals.output + totals.reasoning + totals.cache;
+function zcodeMessageOccupancy(totals: ZCodeTokenTotals): number {
+  return totals.total ?? totals.input + totals.output + totals.reasoning + totals.cacheWrite;
 }
 
 /**
  * Builds the shared token usage summary from ZCode token totals.
  *
- * `context` is the newest message that recorded usage — that turn's whole
- * prompt, i.e. what the context window currently holds — while `totals` is the
- * sum over every message, the session's cumulative spend. Shape matches the
- * `token_budget` summaries other providers report.
+ * `context` is the newest message that recorded usage — its occupancy is what
+ * the context window currently holds — while `cumulative` sums that occupancy
+ * over every message. `contextWindow` is the configured window of the model
+ * the session last ran with, the denominator the composer derives its usage
+ * percentage and badge thresholds from. Shape matches the `token_budget`
+ * summaries other providers report.
  */
 function buildTokenUsage(
-  context: ZCodeTokenTotals | null,
-  totals: ZCodeTokenTotals,
+  context: ZCodeTokenTotals,
+  cumulative: { used: number; inputTokens: number; outputTokens: number },
+  contextWindow: number | null,
 ): ProviderTokenUsageResult {
-  const current = context ?? totals;
-
   return {
-    used: sumZCodeTokenTotals(current),
-    inputTokens: current.input,
-    outputTokens: current.output,
+    used: zcodeMessageOccupancy(context),
+    total: contextWindow && contextWindow > 0 ? contextWindow : DEFAULT_ZCODE_CONTEXT_WINDOW,
+    inputTokens: context.input,
+    outputTokens: context.output,
     cumulative: {
-      used: sumZCodeTokenTotals(totals),
-      inputTokens: totals.input,
-      outputTokens: totals.output,
+      used: cumulative.used,
+      inputTokens: cumulative.inputTokens,
+      outputTokens: cumulative.outputTokens,
     },
     breakdown: {
-      input: current.input,
-      output: current.output,
+      input: context.input,
+      output: context.output,
     },
   };
 }
@@ -471,16 +487,19 @@ function buildZCodeTurnAnchors(rows: ZCodeHistoryRow[]): Map<string, string> {
  *
  * Returns the last usage-bearing message (append order) as the context
  * reading and the sum over every message as the cumulative block; the composer
- * shows the former, the `/cost` detail the latter.
+ * shows the former, the `/cost` detail the latter. `contextWindow` is the
+ * session model's configured limit — the denominator every consumer derives
+ * its ratio from; null falls back to DEFAULT_ZCODE_CONTEXT_WINDOW.
  */
 function aggregateZCodeSessionTokenUsage(
   db: Database.Database,
   sessionId: string,
+  contextWindow: number | null,
 ): ProviderTokenUsageResult | undefined {
   const rows = db.prepare('SELECT data FROM message WHERE session_id = ?').iterate(sessionId) as Iterable<{ data: string }>;
 
-  const totals: ZCodeTokenTotals = { input: 0, output: 0, reasoning: 0, cache: 0 };
   let latestContext: ZCodeTokenTotals | null = null;
+  let cumulative = { used: 0, inputTokens: 0, outputTokens: 0 };
   let hasAnyUsage = false;
 
   for (const row of rows) {
@@ -491,14 +510,29 @@ function aggregateZCodeSessionTokenUsage(
     }
 
     hasAnyUsage = true;
-    totals.input += messageTotals.input;
-    totals.output += messageTotals.output;
-    totals.reasoning += messageTotals.reasoning;
-    totals.cache += messageTotals.cache;
+    cumulative.used += zcodeMessageOccupancy(messageTotals);
+    cumulative.inputTokens += messageTotals.input;
+    cumulative.outputTokens += messageTotals.output;
     latestContext = messageTotals;
   }
 
-  return hasAnyUsage ? buildTokenUsage(latestContext, totals) : undefined;
+  return hasAnyUsage && latestContext
+    ? buildTokenUsage(latestContext, cumulative, contextWindow)
+    : undefined;
+}
+
+/**
+ * Resolves the context window of the model a ZCode session last ran with:
+ * the session's `modelID` mapped through the engine config's model limits.
+ * Opens its own short-lived read-only connection (the model reader owns that
+ * path); null when either side is unknown — callers fall back to the default.
+ */
+function readSessionContextWindow(nativeSessionId: string): number | null {
+  const modelId = readZCodeSessionModelInfoFromDb(nativeSessionId)?.modelId;
+  if (!modelId) {
+    return null;
+  }
+  return readZCodeModelContextLimit(modelId);
 }
 
 /**
@@ -716,7 +750,7 @@ export class ZCodeSessionsProvider implements IProviderSessions {
 
       const normalized = this.normalizeHistoryRows(rows, sessionId, turnAnchors);
       await this.attachSubagents(db, normalized, providerSessionId);
-      const tokenUsage = aggregateZCodeSessionTokenUsage(db, providerSessionId);
+      const tokenUsage = aggregateZCodeSessionTokenUsage(db, providerSessionId, readSessionContextWindow(providerSessionId));
 
       // The same unification pass Claude and Codex run on their histories: it
       // folds the user's AskUserQuestion answer out of the result prose into
@@ -1184,7 +1218,7 @@ export class ZCodeSessionsProvider implements IProviderSessions {
     }
 
     try {
-      const usage = aggregateZCodeSessionTokenUsage(db, input.nativeSessionId);
+      const usage = aggregateZCodeSessionTokenUsage(db, input.nativeSessionId, readSessionContextWindow(input.nativeSessionId));
       if (usage) {
         return usage;
       }
@@ -1201,6 +1235,7 @@ export class ZCodeSessionsProvider implements IProviderSessions {
 
       return {
         used: 0,
+        total: readSessionContextWindow(input.nativeSessionId) ?? DEFAULT_ZCODE_CONTEXT_WINDOW,
         inputTokens: 0,
         outputTokens: 0,
         breakdown: { input: 0, output: 0 },

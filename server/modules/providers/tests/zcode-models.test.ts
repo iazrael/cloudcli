@@ -11,6 +11,7 @@ import { clearEnginePathCache } from '@/modules/providers/list/zcode/zcode-engin
 import {
   ZCodeProviderModels,
   buildZCodeSendModelParams,
+  readZCodeModelContextLimit,
   resolveZCodeModelRef,
 } from '@/modules/providers/list/zcode/zcode-models.provider.js';
 
@@ -892,5 +893,37 @@ test('getSupportedModels enforces personal whitelist and keeps custom provider g
     const customModel = definition.OPTIONS.find((opt) => opt.value === 'custom-model-x');
     assert.ok(customModel);
     assert.equal(customModel.group, 'Custom Provider');
+  });
+});
+
+test('readZCodeModelContextLimit reads limit.context from the engine config', async () => {
+  await withZCodeStorage(async (storageDir) => {
+    const cliDir = path.join(storageDir, 'cli');
+    await mkdir(cliDir, { recursive: true });
+    await writeFile(
+      path.join(cliDir, 'config.json'),
+      JSON.stringify({
+        provider: {
+          'bigmodel-coding-plan': {
+            models: { 'GLM-5.3': { limit: { context: 1_000_000, output: 128_000 } } },
+          },
+          'custom-provider': {
+            enabled: false,
+            models: { 'GLM-5.3': { limit: { context: 1 } } },
+          },
+        },
+      }),
+      'utf8'
+    );
+
+    assert.equal(readZCodeModelContextLimit('GLM-5.3'), 1_000_000);
+    // Disabled providers are skipped; an unknown model has no window to read.
+    assert.equal(readZCodeModelContextLimit('unknown-model'), null);
+  });
+});
+
+test('readZCodeModelContextLimit returns null without an engine config', async () => {
+  await withZCodeStorage(async () => {
+    assert.equal(readZCodeModelContextLimit('GLM-5.3'), null);
   });
 });

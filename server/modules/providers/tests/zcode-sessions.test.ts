@@ -826,6 +826,100 @@ test('fetchHistory folds a message reasoning parts into one row the live path na
   });
 });
 
+test('fetchHistory token usage reads the engine total and the configured window', async () => {
+  await withZCodeStorage(async (storageDir) => {
+    await createFixtureDatabase(storageDir, 'sess_usage');
+    // The engine folds the cache read into `input` and reports its own
+    // per-message total; recording that total must not be doubled by the
+    // aggregation, and the denominator comes from the model's config limit.
+    await writeFile(
+      path.join(storageDir, 'cli', 'config.json'),
+      JSON.stringify({
+        provider: {
+          'bigmodel-coding-plan': {
+            models: { 'GLM-5.3': { limit: { context: 1_000_000, output: 128_000 } } },
+          },
+        },
+      }),
+      'utf8'
+    );
+    const db = new Database(path.join(storageDir, 'cli', 'db', 'db.sqlite'));
+    try {
+      const insertMessage = db.prepare(
+        'INSERT INTO message (id, session_id, time_created, time_updated, data, sequence) VALUES (?, ?, ?, ?, ?, ?)'
+      );
+      insertMessage.run(
+        'msg_usage',
+        'sess_usage',
+        3000,
+        3000,
+        JSON.stringify({
+          role: 'assistant',
+          modelID: 'GLM-5.3',
+          tokens: { total: 249_287, input: 249_128, output: 159, reasoning: 0, cache: { read: 248_512, write: 0 } },
+        }),
+        1
+      );
+    } finally {
+      db.close();
+    }
+
+    const provider = new ZCodeSessionsProvider();
+    const result = await provider.fetchHistory('sess_usage');
+    const tokenUsage = result.tokenUsage as {
+      used: number;
+      total: number;
+      inputTokens: number;
+      cumulative?: { used: number };
+    };
+
+    // The engine's own total wins — adding cacheRead again would double it.
+    assert.equal(tokenUsage.used, 249_287);
+    assert.equal(tokenUsage.inputTokens, 249_128);
+    // Denominator: the model's limit.context from the engine config.
+    assert.equal(tokenUsage.total, 1_000_000);
+    // Cumulative sums each message's occupancy: fixture turn (100+20+5+0) plus this one.
+    assert.equal(tokenUsage.cumulative?.used, 125 + 249_287);
+  });
+});
+
+test('fetchHistory token usage falls back to the recomputed sum and the default window', async () => {
+  await withZCodeStorage(async (storageDir) => {
+    await createFixtureDatabase(storageDir, 'sess_usage_legacy');
+    // No config.json: the model's window is unknown, the default applies.
+    const db = new Database(path.join(storageDir, 'cli', 'db', 'db.sqlite'));
+    try {
+      const insertMessage = db.prepare(
+        'INSERT INTO message (id, session_id, time_created, time_updated, data, sequence) VALUES (?, ?, ?, ?, ?, ?)'
+      );
+      insertMessage.run(
+        'msg_legacy',
+        'sess_usage_legacy',
+        3000,
+        3000,
+        JSON.stringify({
+          role: 'assistant',
+          modelID: 'unknown-model',
+          // Older engine message without the engine-computed total.
+          tokens: { input: 100, output: 20, reasoning: 5, cache: { read: 10, write: 2 } },
+        }),
+        1
+      );
+    } finally {
+      db.close();
+    }
+
+    const provider = new ZCodeSessionsProvider();
+    const result = await provider.fetchHistory('sess_usage_legacy');
+    const tokenUsage = result.tokenUsage as { used: number; total: number; cumulative?: { used: number } };
+
+    // No engine total: input + output + reasoning + cache.write, cache read excluded.
+    assert.equal(tokenUsage.used, 127);
+    assert.equal(tokenUsage.total, 200_000);
+    assert.equal(tokenUsage.cumulative?.used, 125 + 127);
+  });
+});
+
 test('fetchHistory hides model-only injections and surfaces compaction summaries', async () => {
   await withZCodeStorage(async (storageDir) => {
     await createFixtureDatabase(storageDir, 'sess_hidden');
@@ -1307,12 +1401,16 @@ test('getTokenUsage aggregates message token totals from the fixture database', 
         projectPath: null,
       }),
       // msg_asst carries tokens {input: 100, output: 20, reasoning: 5, cache.read: 10}
-      // — one message, so its own reading is also the session total.
+      // — one message, so its own reading is also the session total. The
+      // engine's input already includes the cache read, so it stays out of
+      // the sum, and the denominator falls back to the default window (no
+      // config.json in this fixture).
       {
-        used: 135,
+        used: 125,
+        total: 200_000,
         inputTokens: 100,
         outputTokens: 20,
-        cumulative: { used: 135, inputTokens: 100, outputTokens: 20 },
+        cumulative: { used: 125, inputTokens: 100, outputTokens: 20 },
         breakdown: { input: 100, output: 20 },
       },
     );
@@ -1341,7 +1439,9 @@ test('getTokenUsage reports zeros for a known session without usage and 404s unk
         jsonlPath: null,
         projectPath: null,
       }),
-      { used: 0, inputTokens: 0, outputTokens: 0, breakdown: { input: 0, output: 0 } },
+      // A known session without usage still reports the denominator (fixture
+      // has no config.json, so the default window applies).
+      { used: 0, total: 200_000, inputTokens: 0, outputTokens: 0, breakdown: { input: 0, output: 0 } },
     );
 
     await assert.rejects(
