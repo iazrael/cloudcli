@@ -90,6 +90,19 @@ function handle(frame) {
       return;
     }
     if (mode === 'acp-cancel') return; // wait for session/cancel
+    if (mode === 'acp-drain') {
+      // The model yields end_turn while its spawned subagent is still out:
+      // the run must drain instead of settling, and complete only after the
+      // spawn call settles.
+      send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'tool_call', toolCallId: 'call_spawn', name: 'invoke_subagent', args: { Prompt: 'review', Role: 'Reviewer' }, status: 'in_progress' } } });
+      send({ jsonrpc: '2.0', id: promptId, result: { stopReason: 'end_turn', usage: { totalTokens: 3 } } });
+      promptId = null;
+      setTimeout(() => {
+        send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'tool_call_update', toolCallId: 'call_spawn', name: 'invoke_subagent', status: 'completed' } } });
+        send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '评审已汇总。' } } } });
+      }, 1500);
+      return;
+    }
     if (mode === 'acp-prompt-error') {
       send({ jsonrpc: '2.0', id: frame.id, error: { code: -32000, message: 'conversation not found' } });
       promptId = null;
@@ -332,6 +345,23 @@ test('background-task completions published between turns reach the session chan
       'between-turns frames carry the engine conversation id',
     );
   }
+});
+
+test('end_turn with an outstanding spawn drains instead of settling early', async () => {
+  process.env.AGY_ACP_STUB_MODE = 'acp-drain';
+  const { messages, writer } = createWriter();
+  const startedAt = Date.now();
+  const runPromise = runtime.run('review it', { sessionId: 'sess-acp-drain', cwd: workspaceDir }, writer, context);
+
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  assert.ok(!messages.some((message) => message.kind === 'complete'), 'early end_turn must not settle while a spawn is outstanding');
+
+  const result = await runPromise;
+  assert.deepEqual(result, { sessionId: 'acp-conv-1', success: true });
+  const drainedFor = Date.now() - startedAt;
+  assert.ok(drainedFor >= 1500, `run drained until the spawn settled (drained ${drainedFor}ms)`);
+  assert.ok(messages.some((message) => message.kind === 'complete'), 'drained run still settles with complete');
+  assert.ok(messages.some((message) => message.kind === 'stream_delta' && String(message.content).includes('评审已汇总')), 'post-end_turn frames streamed through the pump');
 });
 
 test('a prompt rejected by the engine fails the run instead of settling as success', async () => {

@@ -91,6 +91,24 @@ type AcpTranslation = {
 
 /** Translates notifications for the Antigravity runtime and its session event publisher. */
 export class AntigravityAcpTranslator {
+  /**
+   * While a question card is parked, the engine echoes the question text as
+   * an agent_message_chunk right beside the card (stream-only; it never
+   * reaches the transcript, so a refresh never duplicates it). The hold drops
+   * those chunks; the runtime releases it when the answer prompt goes out.
+   */
+  private questionEchoHold = false;
+
+  /** Starts dropping message chunks (call when a question card is emitted). */
+  holdQuestionEcho(): void {
+    this.questionEchoHold = true;
+  }
+
+  /** Resumes message chunks (call when the answer prompt is sent). */
+  releaseQuestionEcho(): void {
+    this.questionEchoHold = false;
+  }
+
   /** Mirrors the print runtime's `agentResponseSegmentOpen` flag. */
   private segmentOpen = false;
   /** Tool calls already emitted as rows, so a stray pending update can still render. */
@@ -130,6 +148,10 @@ export class AntigravityAcpTranslator {
 
     switch (kind) {
       case 'agent_message_chunk':
+        if (this.questionEchoHold) {
+          // The question echo beside a parked card, dropped (class comment).
+          return { messages: closedByThisUpdate ? [closedByThisUpdate] : [] };
+        }
         return { messages: [...(closedByThisUpdate ? [closedByThisUpdate] : []), ...this.translateTextChunk(update)] };
       case 'agent_thought_chunk':
         // Dropped for print parity (module comment).

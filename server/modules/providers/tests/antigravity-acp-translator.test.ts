@@ -210,3 +210,29 @@ test('streaming preserves spaces, newlines and indentation at chunk boundaries',
   })).messages);
   assert.equal(received.map((message) => message.content).join(''), 'The  next\n\n  indent\n');
 });
+
+test('message chunks are held while a question card is parked and resume on release', () => {
+  const translator = new AntigravityAcpTranslator();
+  translator.setSessionId('conv-1');
+  translator.translate(update({
+    sessionUpdate: 'tool_call',
+    toolCallId: 'call_ask',
+    name: 'ask_question',
+    status: 'in_progress',
+    args: { questions: JSON.stringify([{ question: 'q?', options: ['a'], is_multi_select: false }]) },
+  }));
+  translator.holdQuestionEcho();
+
+  const echo = translator.translate(update({
+    sessionUpdate: 'agent_message_chunk',
+    content: { type: 'text', text: 'q?\n- [1] a' },
+  }));
+  assert.deepEqual(echo.messages, [], 'the question echo is dropped while parked');
+
+  translator.releaseQuestionEcho();
+  const real = translator.translate(update({
+    sessionUpdate: 'agent_message_chunk',
+    content: { type: 'text', text: '收到，用 PostgreSQL。' },
+  }));
+  assert.equal(real.messages.length, 1, 'answer-turn prose streams again');
+});

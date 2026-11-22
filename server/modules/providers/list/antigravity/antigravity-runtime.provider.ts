@@ -1720,6 +1720,9 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
             });
             cardHold += 1;
             clearWatchdog();
+            // The engine echoes the question text as a message chunk beside
+            // the card; hold those chunks until the answer prompt goes out.
+            translator.holdQuestionEcho();
             pendingAskHolder.current = new Promise<AcpCardOutcome>((resolveAnswer) => {
               antigravityAcpCards.add({
                 requestId,
@@ -1890,6 +1893,7 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
       // its frames stream through the writer that showed the card.
       let race = await awaitTurnEnd();
       let wasCancelled = false;
+      let endedWithEndTurn = false;
       let resultUsage = { used: 0, inputTokens: 0, outputTokens: 0 };
       for (;;) {
         if (cancellation.signal.aborted && (race.ended === 'exit' || promptFailure.error)) {
@@ -1912,6 +1916,7 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
         const response = readObjectRecord(race.result);
         const stopReason = readOptionalString(response?.stopReason);
         wasCancelled = stopReason === 'cancelled';
+        endedWithEndTurn = stopReason === 'end_turn';
 
         // Any stop reason outside the two known ones (an engine upgrade
         // inventing a new terminal state, a refusal) is not a success.
@@ -1961,6 +1966,7 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
             throw new Error('unreachable: settleFromEngineExit always throws');
           }
           const outcome = parkRace.outcome;
+          translator.releaseQuestionEcho();
           if (outcome.expired || !outcome.allow) {
             // Denied or timed out: the engine's next input would be read as
             // the answer, so tell it the user declined and let it finish on
@@ -1977,12 +1983,48 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
           // The answer travels as the next prompt; the engine folds it into
           // the parked ask and continues the same conversation, so this loop
           // round streams the continuation's frames through the same writer.
+          translator.releaseQuestionEcho();
           promptPromise = sendPrompt(answerText);
           race = await awaitTurnEnd();
           continue;
         }
 
         break;
+      }
+
+      // agy's ACP prompt response does not wait for spawned subagents the
+      // way print mode does: the model may yield end_turn while its reviewer
+      // agents are still running, and their reports (plus the parent's own
+      // follow-up prose) keep arriving on the stream afterwards. When spawn
+      // calls or bound agents are still outstanding, hold the run open until
+      // the report reconciliation empties the registry — print's
+      // wait-for-agents behaviour, adapted to the early end_turn. The engine
+      // keeps streaming during the drain, so the watchdog stays armed and an
+      // abort or engine exit ends it immediately.
+      const outstandingSubagentWork = (): boolean =>
+        pendingSpawnCalls.size > 0
+        || antigravityBackgroundWork.list().some((entry) => entry.sessionId === sessionKey && entry.tasks.length > 0);
+      if (!wasCancelled && endedWithEndTurn && outstandingSubagentWork()) {
+        console.info(`[AntigravityAcp] end_turn with outstanding subagent work; draining session ${sessionKey}`);
+        while (
+          outstandingSubagentWork()
+          && !handle.client.isClosed()
+          && !cancellation.signal.aborted
+        ) {
+          await new Promise<void>((resolve) => {
+            const timer = setTimeout(resolve, AGENT_REPORT_POLL_INTERVAL_MS);
+            timer.unref?.();
+          });
+        }
+        cancellation.signal.throwIfAborted();
+        // A short grace for the parent's final summary prose, which trails
+        // the last report on the same stream.
+        if (!handle.client.isClosed()) {
+          await new Promise<void>((resolve) => {
+            const timer = setTimeout(resolve, 3_000);
+            timer.unref?.();
+          });
+        }
       }
 
       const closed = translator.closeOpenSegment();
