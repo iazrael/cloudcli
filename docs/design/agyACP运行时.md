@@ -68,7 +68,11 @@ antigravity 运行时从 print 单回合 spawn（`-p --input-format stream-json 
 
 ### 灰度开关
 
-`CLOUDCLI_ANTIGRAVITY_ACP=1`（env）切换新旧路径，默认 **print 老路径**；空闲回收 `CLOUDCLI_ANTIGRAVITY_ACP_IDLE_MINUTES`（默认 10）；真机验收后翻转默认，print 路径删除另行拍板。
+ACP 默认**开启**；`CLOUDCLI_ANTIGRAVITY_ACP=0` 回退 print 老路径（保留为未动回退，删除另行拍板）；空闲回收 `CLOUDCLI_ANTIGRAVITY_ACP_IDLE_MINUTES`（默认 10）。
+
+### 通知预览（2026-11-22）
+
+回合结束推送原先只有"provider: completed"——预览捕获在 writer 侧只认 `kind:'text'` 行，而 zcode 是唯一发 text 行的引擎，antigravity 的回复全走 `stream_delta`，预览从未生效。运行时泵现在累积回复文本并按会话 id 写入通知预览注册表（回显抑制期间不计入），排空期的后续播报也覆盖。
 
 ## 分步实施
 

@@ -21,6 +21,7 @@ import type {
   ProviderRuntimeWriter,
 } from '@/shared/types.js';
 
+import { getSessionReplyPreview } from '@/modules/notifications/index.js';
 import { AntigravityRuntimeProvider, closeAntigravityAcpSessions } from '../list/antigravity/antigravity-runtime.provider.js';
 
 process.env.CLOUDCLI_ANTIGRAVITY_ACP = '1';
@@ -293,6 +294,7 @@ test('an ACP turn streams updates and settles with a complete frame', async () =
   assert.deepEqual(second, { sessionId: 'acp-conv-1', success: true });
   const createdRows = messages.filter((message) => message.kind === 'session_created');
   assert.equal(createdRows.length, 1, 'resident session is reused without re-announcing');
+  assert.match(getSessionReplyPreview('sess-acp-1') ?? '', /working/);
 });
 
 test('abort cancels the in-flight turn over session/cancel', async () => {

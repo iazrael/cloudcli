@@ -44,6 +44,10 @@ import { providerCapabilitiesService } from '../services/provider-capabilities.s
 
 import { createWorkspaceFixture } from './workspace-fixture.js';
 
+// This file exercises the print runtime; pin the fallback explicitly so the
+// ACP default flip does not reroute these runs (docs/design/agyACP运行时.md).
+process.env.CLOUDCLI_ANTIGRAVITY_ACP = '0';
+
 /**
  * Sets environment variable `name` to `value` and returns a restore function
  * that puts back the previous value, so test overrides cannot leak into each

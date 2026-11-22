@@ -28,6 +28,10 @@ import { after, before, test } from 'node:test';
 
 import WebSocket from 'ws';
 
+// This file exercises the print runtime; pin the fallback explicitly so the
+// ACP default flip does not reroute these runs (docs/design/agyACP运行时.md).
+process.env.CLOUDCLI_ANTIGRAVITY_ACP = '0';
+
 const require = createRequire(import.meta.url);
 const tsxCliPath = require.resolve('tsx/cli');
 const thisDir = path.dirname(fileURLToPath(import.meta.url));

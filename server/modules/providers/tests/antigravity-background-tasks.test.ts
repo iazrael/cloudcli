@@ -3,6 +3,10 @@ import test from 'node:test';
 
 import { extractAntigravitySubagents } from '@/modules/providers/list/antigravity/antigravity-subagent.js';
 
+// This file exercises the print runtime; pin the fallback explicitly so the
+// ACP default flip does not reroute these runs (docs/design/agyACP运行时.md).
+process.env.CLOUDCLI_ANTIGRAVITY_ACP = '0';
+
 // Step shapes below are verbatim agy 1.3.1 `--output-format stream-json`
 // output. The live stream names a subagent only once its invocation step is
 // DONE; a backgrounded run_command stays one ACTIVE `tool` step until the

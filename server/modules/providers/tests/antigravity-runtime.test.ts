@@ -24,6 +24,10 @@ import { readObjectRecord } from '@/shared/utils.js';
 import { AntigravityRuntimeProvider } from '../list/antigravity/antigravity-runtime.provider.js';
 import { AntigravitySessionsProvider } from '../list/antigravity/antigravity-sessions.provider.js';
 
+// This file exercises the print runtime; pin the fallback explicitly so the
+// ACP default flip does not reroute these runs (docs/design/agyACP运行时.md).
+process.env.CLOUDCLI_ANTIGRAVITY_ACP = '0';
+
 const stubDir = fsSync.mkdtempSync(path.join(os.tmpdir(), 'agy-stub-'));
 const stubPath = path.join(stubDir, 'agy');
 const argsFilePath = path.join(stubDir, 'args.txt');

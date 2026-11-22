@@ -14,7 +14,7 @@ import path from 'node:path';
 
 import crossSpawn from 'cross-spawn';
 
-import { notifyRunFailed, notifyRunStopped } from '@/modules/notifications/index.js';
+import { notifyRunFailed, notifyRunStopped, rememberSessionReplyPreview } from '@/modules/notifications/index.js';
 import {
   appendFilesInputTag,
   appendImagesInputTag,
@@ -245,11 +245,11 @@ const isStreamInterruptedNotice = (message: string | null | undefined): boolean 
 };
 
 /**
- * The ACP runtime is opt-in until it has been verified against production
- * (`CLOUDCLI_ANTIGRAVITY_ACP=1`); the print path below stays the default and
- * untouched fallback (docs/design/agyACP运行时.md 灰度开关).
+ * The ACP runtime is the default since its real-machine acceptance; setting
+ * `CLOUDCLI_ANTIGRAVITY_ACP=0` falls back to the print path below (kept as
+ * the untouched fallback; docs/design/agyACP运行时.md 灰度开关).
  */
-const isAcpRuntimeEnabled = (): boolean => process.env.CLOUDCLI_ANTIGRAVITY_ACP === '1';
+const isAcpRuntimeEnabled = (): boolean => process.env.CLOUDCLI_ANTIGRAVITY_ACP !== '0';
 
 /**
  * The resident ACP session manager. One instance serves every session; the
@@ -1680,6 +1680,7 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
        * turn then continues on this run's writer.
        */
       const seenQuestions = new Set<string>();
+      let replyText = '';
       const pendingAskHolder: { current: Promise<AcpCardOutcome> | null } = { current: null };
       acpLiveRunPumps.add(sessionKey);
       unsubscribe = handle.client.onNotification((notification) => {
@@ -1696,7 +1697,17 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
           lastContextReading = { used: update.used, inputTokens: 0, outputTokens: 0 };
         }
         const translation = translator.translate(notification);
-        for (const message of translation.messages) writer.send(message);
+        for (const message of translation.messages) {
+          writer.send(message);
+          // The terminal push carries the run's last reply text. antigravity
+          // streams reply prose as stream_delta rows, which the shared
+          // writer-side capture (text rows only) never sees, so the runtime
+          // records the accumulated reply itself.
+          if (message.kind === 'stream_delta' && typeof message.content === 'string' && message.content) {
+            replyText += message.content;
+            rememberSessionReplyPreview(sessionKey, replyText);
+          }
+        }
         if (translation.spawnStarted) pendingSpawnCalls.set(translation.spawnStarted.toolCallId, { specs: translation.spawnStarted.specs });
         if (translation.spawnSettled) pendingSpawnCalls.delete(translation.spawnSettled.toolCallId);
         const pendingTool = translation.toolPending;
