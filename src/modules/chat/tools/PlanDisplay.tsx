@@ -1,6 +1,6 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronsUpDown, FileText } from 'lucide-react';
+import { Check, ChevronsUpDown, Copy, FileText } from 'lucide-react';
 
 import {
   Card,
@@ -16,6 +16,7 @@ import {
 } from '@/shared/ui';
 import { usePermission } from '@/modules/chat/context/PermissionContext';
 import { useIsExportingTranscript } from '@/modules/chat/context/TranscriptRenderContext';
+import { copyTextToClipboard } from '@/shared/utils';
 import { MarkdownContent } from '@/modules/chat/tools/ContentRenderers/MarkdownContent';
 
 type PlanDisplayProps = {
@@ -68,6 +69,18 @@ export const PlanDisplay: React.FC<PlanDisplayProps> = ({
   // the live defaultOpen is a screen-side choice.
   const isExporting = useIsExportingTranscript();
 
+  // Flips the header copy button to its check state for a moment after the
+  // plan markdown lands on the clipboard.
+  const [copiedPlan, setCopiedPlan] = useState(false);
+
+  const handleCopyPlan = () => {
+    if (!content) return;
+    void copyTextToClipboard(content).then(() => {
+      setCopiedPlan(true);
+      setTimeout(() => setCopiedPlan(false), 2000);
+    });
+  };
+
   return (
     <Collapsible defaultOpen={isExporting ? false : defaultOpen} nativeDetails={isExporting}>
       <Card className="my-1 flex flex-col shadow-none">
@@ -79,10 +92,21 @@ export const PlanDisplay: React.FC<PlanDisplayProps> = ({
               {isStreaming ? <Shimmer>{title}</Shimmer> : title}
             </CardTitle>
           </div>
-          <CollapsibleTrigger className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground">
-            <ChevronsUpDown className="h-4 w-4" />
-            <span className="sr-only">Toggle plan</span>
-          </CollapsibleTrigger>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={handleCopyPlan}
+              disabled={!content}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-50"
+            >
+              {copiedPlan ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+              <span className="sr-only">Copy plan</span>
+            </button>
+            <CollapsibleTrigger className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground">
+              <ChevronsUpDown className="h-4 w-4" />
+              <span className="sr-only">Toggle plan</span>
+            </CollapsibleTrigger>
+          </div>
         </CardHeader>
 
         {/* Collapsible content */}
