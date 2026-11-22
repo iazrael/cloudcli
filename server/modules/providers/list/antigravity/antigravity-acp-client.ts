@@ -48,7 +48,7 @@ type AcpServerRequestHandler = (request: AcpServerRequest) => unknown | Promise<
 type AcpClientOptions = {
   /** Absolute path of the engine executable (resolved by antigravity-engine-path). */
   enginePath: string;
-  /** Subcommand and flags, e.g. `['acp', '--app-data-dir', 'cloudcli-acp']`. */
+  /** Subcommand and flags, e.g. `['acp', '--add-dir', cwd]`. */
   args: string[];
   /** Working directory the engine is spawned in. */
   cwd: string;

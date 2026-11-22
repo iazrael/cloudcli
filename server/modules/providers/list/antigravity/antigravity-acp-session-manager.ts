@@ -5,11 +5,16 @@
  * turns so the engine can push question/permission requests and background
  * task completions while no turn is in flight (docs/design/agyACP运行时.md).
  *
- * Processes spawn with a cloudcli-managed app-data directory
- * (`~/.gemini/cloudcli-acp/`) whose settings pin `toolPermission:
- * "request-review"` — the user's own settings.json may say
- * `always-proceed`, which silently swallows every permission request and
- * would leave the bridge dead. The user's own directory is never touched.
+ * Processes spawn against the user's own Antigravity data directory
+ * (`~/.gemini/antigravity-cli`), so conversations stay resumable from the
+ * terminal and the session index stays the one the sidebar reads. The one
+ * requirement is that `toolPermission` in its settings.json is not
+ * `always-proceed` — the engine never emits `session/request_permission`
+ * under it, which would leave the card bridge dead. The spawn prep rewrites
+ * exactly that one value when found (read-merge-write, everything else
+ * preserved; the engine's own default without the key asks, which is what
+ * the cards need); mode-level behaviour is per session via
+ * `session/set_mode`, so `--mode auto` usage stays hands-off.
  *
  * Conversation continuity survives process restarts: agy's ACP session ids
  * are its conversation ids, and `session/load` restores them. A failed load
@@ -24,7 +29,7 @@ import path from 'node:path';
 
 import { readObjectRecord, readOptionalString, sanitizeLeafDirectoryName } from '@/shared/utils.js';
 
-import { ACP_APP_DATA_DIR_NAME, getAntigravityAcpDataRoot, getAntigravityDataRoot } from './antigravity-data-root.js';
+import { getAntigravityAcpDataRoot, getAntigravityDataRoot } from './antigravity-data-root.js';
 import { buildAntigravitySubprocessEnv } from './antigravity-subprocess-env.js';
 import {
   AntigravityAcpClient,
@@ -34,16 +39,16 @@ import {
 const TRUSTED_WORKSPACES_LIMIT = 40;
 let settingsWrite = Promise.resolve();
 
-/** Updates the managed settings before spawn. Also used by the settings tests. */
-export function ensureAcpManagedDataDir(cwd: string): Promise<void> {
-  const dir = getAntigravityAcpDataRoot();
-  const write = settingsWrite.then(() => updateManagedSettings(dir, cwd));
+/** Updates the native settings pin before spawn. Also used by the settings tests. */
+export function ensureAcpPermissionsPinned(cwd: string): Promise<void> {
+  const dir = getAntigravityDataRoot();
+  const write = settingsWrite.then(() => updatePinnedSettings(dir, cwd));
   // One failed update must not poison the queue for later sessions.
   settingsWrite = write.catch(() => {});
   return write;
 }
 
-async function updateManagedSettings(dir: string, cwd: string): Promise<void> {
+async function updatePinnedSettings(dir: string, cwd: string): Promise<void> {
   await fsp.mkdir(dir, { recursive: true });
   const settingsPath = path.join(dir, 'settings.json');
   let settings: Record<string, unknown> = {};
@@ -54,7 +59,14 @@ async function updateManagedSettings(dir: string, cwd: string): Promise<void> {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
-  settings.toolPermission = 'request-review';
+  // The engine's default (no key) asks, and 'strict' asks; the only value
+  // that kills the card bridge is 'always-proceed'. Intervene on that one
+  // value and leave every other choice — including the key's absence — to
+  // the user.
+  if (settings.toolPermission === 'always-proceed') {
+    console.info(`[AntigravityAcp] settings.json toolPermission 'always-proceed' suppresses every permission request; pinning it to 'request-review' (the ACP card bridge requires it).`);
+    settings.toolPermission = 'request-review';
+  }
   const trusted = Array.isArray(settings.trustedWorkspaces)
     ? settings.trustedWorkspaces.filter((entry): entry is string => typeof entry === 'string')
     : [];
@@ -87,12 +99,16 @@ async function checkResumeSource(sessionId: string): Promise<void> {
   const safeId = sanitizeLeafDirectoryName(sessionId, 'Antigravity session ID');
   if (safeId === '.') throw new Error('Invalid Antigravity session ID.');
   // agy 1.5.14 acknowledges loads for missing IDs. The session is only
-  // usable if its native conversation is present in agy's active data root.
-  if (await hasNativeConversation(getAntigravityAcpDataRoot(), safeId)) return;
-  if (await hasNativeConversation(getAntigravityDataRoot(), safeId)) {
-    throw new Error('This Antigravity conversation belongs to print mode. Continue it in print mode or start a new ACP conversation.');
+  // usable if its native conversation is present in the shared data root
+  // (print and ACP conversations live in the same store now). Conversations
+  // from the retired managed directory are history-only: their files are not
+  // in this store, and loading one would falsely succeed then fail at
+  // prompt time.
+  if (await hasNativeConversation(getAntigravityDataRoot(), safeId)) return;
+  if (await hasNativeConversation(getAntigravityAcpDataRoot(), safeId)) {
+    throw new Error('This Antigravity conversation was created in the retired managed directory; its history stays readable, but resuming needs a new conversation.');
   }
-  throw new Error(`Antigravity ACP conversation ${safeId} was not found in the managed data directory.`);
+  throw new Error(`Antigravity conversation ${safeId} was not found in the Antigravity data directory.`);
 }
 
 /** Session identity and configuration used by the runtime after it acquires a turn. */
@@ -181,10 +197,10 @@ export class AntigravityAcpSessionManager {
       opening.signal.throwIfAborted();
       if (resumeId) await checkResumeSource(resumeId);
       opening.signal.throwIfAborted();
-      await ensureAcpManagedDataDir(options.cwd);
+      await ensureAcpPermissionsPinned(options.cwd);
       opening.signal.throwIfAborted();
 
-      const spawnArgs = ['acp', '--app-data-dir', ACP_APP_DATA_DIR_NAME, '--add-dir', options.cwd];
+      const spawnArgs = ['acp', '--add-dir', options.cwd];
       if (skipPermissions) spawnArgs.push('--dangerously-skip-permissions');
       const client = new AntigravityAcpClient({
         enginePath: this.enginePath,

@@ -32,11 +32,12 @@ antigravity 运行时从 print 单回合 spawn（`-p --input-format stream-json 
 - 空闲回收：无在途回合、无 pending 权限/提问、无后台任务 → 空闲 10 分钟（可配）kill。有任何工作永不回收。
 - 崩溃兜底：进程意外退出时在途回合按现有进程退出语义收场；下次 send 重新 spawn 并 `session/load` 恢复（失败时结束本轮，保留原会话映射）。
 
-### 托管数据目录（权限钉档）
+### 数据目录（原生共享 + 权限钉档；2026-11-22 起弃用托管目录）
 
-- spawn 带 `--app-data-dir cloudcli-acp`（相对 GeminiDir → `~/.gemini/cloudcli-acp/`）。cloudcli 独立 `settings.json`：`{ "toolPermission": "request-review" }` + `trustedWorkspaces`（spawn 前并入会话 cwd，列表上限裁剪最旧）。
-- 用户自有 `~/.gemini/antigravity-cli/` 完全不动（IDE/print 会话不受影响）。
-- **转录分裂代价**：ACP 会话转录落在 `cloudcli-acp/` 而非 `antigravity-cli/`。`antigravity-data-root.ts` 是集中点，扩为双根扫描（brain 按 conversation id 无冲突）。认证/MCP 配置/配额/model 列表均不受 app-data-dir 影响（钥匙串、`~/.gemini/config/mcp_config.json`、API）。
+- ~~spawn 带 `--app-data-dir cloudcli-acp`（独立托管目录）~~ → **改为与终端共用用户自有 `~/.gemini/antigravity-cli/`**：会话原件、summaries 索引、brain 转录全在原生根——终端 `agy --conversation` 可续聊 ACP 会话，summaries 单库（同步器无需双根扫描，侧栏收录/自动改名天然工作）。
+- **前提**：settings.json 的 `toolPermission` 不得为 `always-proceed`（唯一会吞掉全部权限请求的取值）。spawn 前读-改-写用户自有 settings.json：仅当该键为 `always-proceed` 时改写为 `request-review`（其余取值含缺省不动，用户自留空间），`trustedWorkspaces` 并入会话 cwd（列表上限裁剪最旧）；其余键（模型显示名、statusLine 等）原样保留，原子替换写盘、串行队列防并发撕裂。
+- 实测语义（探针）：`request-review` + `set_mode auto` → 编辑与命令零请求（auto 模式自动批准一切，CLI `--mode auto` 用法不受钉档影响）；无 `toolPermission` 键 → 引擎默认询问，权限卡正常。
+- **遗留**：`~/.gemini/cloudcli-acp/` 为 2026-11-22 前创建的 ACP 会话（只读保留：转录双根读侧覆盖，历史可看可续聊降级为提示）。
 
 ### 协议客户端（步骤 1 本体）
 

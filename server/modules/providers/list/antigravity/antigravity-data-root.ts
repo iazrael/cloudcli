@@ -27,6 +27,12 @@ export function getAntigravityDataRoot(): string {
 }
 
 /** The runtime passes this Gemini-relative directory to agy when starting ACP. */
+/**
+ * The retired managed directory: ACP sessions created before the runtime
+ * switched to the user's own data directory wrote their conversations and
+ * summaries here. Kept on the read paths (history, brain roots, token
+ * usage) so that history stays readable; new sessions never write here.
+ */
 export const ACP_APP_DATA_DIR_NAME = 'cloudcli-acp';
 
 /**
