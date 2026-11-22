@@ -374,8 +374,15 @@ export function useChatRealtimeHandlers({
               queued: directive.activityState.queued === true,
               reporting: directive.activityState.reporting === true,
             });
-          } else if (directive.text === 'token_budget' && directive.tokenBudget) {
-            setTokenBudget(directive.tokenBudget as Record<string, unknown>);
+          } else if (directive.text === 'token_budget') {
+            // Every session's frames share this socket, and the badge only
+            // measures the conversation on screen: two live runs used to trade
+            // it back and forth, and a new session inherited an occupancy it
+            // had never spent.
+            const viewedSessionId = activeViewSessionIdRef.current;
+            if (directive.tokenBudget && viewedSessionId && directive.sessionId === viewedSessionId) {
+              setTokenBudget(directive.tokenBudget as Record<string, unknown>);
+            }
           } else if (directive.text === 'background_tasks' && directive.sessionId) {
             // Agents launched and settled mid-turn (Codex, ZCode) are the
             // turn's business: the reply stays the thing in flight, and the
