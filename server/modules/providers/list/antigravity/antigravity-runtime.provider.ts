@@ -29,6 +29,7 @@ import type { IProviderRuntime } from '@/shared/interfaces.js';
 import type {
   ActiveBackgroundTask,
   AnyRecord,
+  ProviderPermissionDecision,
   ProviderRuntimeContext,
   ProviderRuntimeWriter,
 } from '@/shared/types.js';
@@ -64,6 +65,13 @@ import {
 } from './antigravity-model-effort.js';
 import { AntigravityAcpSessionManager } from './antigravity-acp-session-manager.js';
 import { AntigravityAcpTranslator } from './antigravity-acp-translator.js';
+import {
+  antigravityAcpCards,
+  formatQuestionAnswers,
+  PENDING_CARD_TTL_MS,
+  type AcpCardOutcome,
+} from './antigravity-acp-bridge.js';
+import { ANTIGRAVITY_QUESTION_TOOL as QUESTION_TOOL_NAME } from './antigravity-question.js';
 
 const PROVIDER = 'antigravity';
 
@@ -286,6 +294,18 @@ export function closeAntigravityAcpSessions(): void {
 export class AntigravityRuntimeProvider implements IProviderRuntime {
   readonly backgroundTasks = {
     list: (sessionId: string) => getAntigravityBackgroundTasksForSession(sessionId),
+  };
+
+  /**
+   * The pending-card gateway: `chat_subscribed` replays the cards and the
+   * gateway's permission-response flow settles them, so the ACP question and
+   * permission cards ride exactly the plumbing the other providers use.
+   */
+  readonly permissions = {
+    resolve: (requestId: string, decision: ProviderPermissionDecision) => {
+      antigravityAcpCards.resolve(requestId, decision);
+    },
+    listPending: (sessionId: string) => antigravityAcpCards.listForSession(sessionId),
   };
 
   /**
@@ -1325,20 +1345,65 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
         }
       }
 
-      // Provisional permission answer until step 3 wires the gateway: the
-      // first allow option keeps agentic turns alive, and the opt-in flag
-      // keeps this out of production until the real bridge lands.
+      // The permission bridge: agy parks the tool on this JSON-RPC request
+      // and waits indefinitely (probe-verified — no timeout, no
+      // re-announcement), so the card can live as long as the user thinks;
+      // the registry TTL only reaps zombies. The gateway's
+      // `chat.permission-response` fans into permissions.resolve, which
+      // settles the card and answers the engine.
       manager.handleServerRequests(sessionKey, 'session/request_permission', (request) => {
         const params = readObjectRecord(request.params);
+        const toolCall = readObjectRecord(params?.toolCall) ?? {};
+        const toolCallId = readOptionalString(toolCall.toolCallId) ?? `req_${request.id}`;
         const optionList = Array.isArray(params?.options) ? params.options : [];
-        const allow = optionList
+        const allowOption = optionList
           .map((option) => readObjectRecord(option))
           .find((option) => readOptionalString(option?.kind)?.startsWith('allow'))
           ?? readObjectRecord(optionList[0]);
-        const optionId = readOptionalString(allow?.optionId);
-        const toolCall = readObjectRecord(params?.toolCall);
-        console.debug(`[AntigravityAcp] Provisionally approving ${readOptionalString(toolCall?.name) ?? 'tool'} (gateway bridge pending)`);
-        return optionId ? { outcome: { outcome: 'selected_once', optionId } } : {};
+        const requestId = `acp_perm_${toolCallId}`;
+        const toolName = readOptionalString(toolCall.name) ?? 'tool';
+        const cardInput = toolCall.args ?? toolCall.rawInput ?? {};
+        const cardContext = {
+          title: readOptionalString(toolCall.title) ?? undefined,
+          kind: readOptionalString(toolCall.kind) ?? undefined,
+          locations: Array.isArray(toolCall.locations) ? toolCall.locations : undefined,
+          diff: Array.isArray(toolCall.content) ? toolCall.content : undefined,
+        };
+        writer.send(createNormalizedMessage({
+          id: generateMessageId(PROVIDER),
+          kind: 'permission_request',
+          requestId,
+          toolName,
+          toolId: toolCallId,
+          input: cardInput,
+          context: cardContext,
+          canInterrupt: true,
+          sessionId: capturedSessionId,
+          provider: PROVIDER,
+        }));
+        touchWatchdog();
+        return new Promise((resolveAnswer) => {
+          antigravityAcpCards.add({
+            requestId,
+            kind: 'permission',
+            sessionId: sessionKey,
+            frameSessionId: capturedSessionId,
+            toolName,
+            toolId: toolCallId,
+            input: cardInput,
+            context: cardContext,
+            receivedAt: new Date(),
+            writer,
+            settle: (outcome) => {
+              const optionId = readOptionalString(allowOption?.optionId);
+              if (outcome.allow && optionId) {
+                resolveAnswer({ outcome: { outcome: 'selected_once', optionId } });
+              } else {
+                resolveAnswer({ outcome: { outcome: 'cancel' } });
+              }
+            },
+          });
+        });
       });
 
       const translator = new AntigravityAcpTranslator();
@@ -1472,7 +1537,14 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
       const reportTimer = setInterval(() => { void reconcileSpawnsAndReports(); }, AGENT_REPORT_POLL_INTERVAL_MS);
       reportTimer.unref();
 
-      let pendingAskToolCallId: string | null = null;
+      /**
+       * The question the engine parked the turn on, if any. agy ends the turn
+       * with a pending ask; the card rides the pending-permission flow (the
+       * AskUserQuestion panel answers it through the shared resolve path),
+       * and the run stays parked here until the answer arrives — the answer
+       * turn then continues on this run's writer.
+       */
+      const pendingAskHolder: { current: { requestId: string; waited: Promise<AcpCardOutcome> } | null } = { current: null };
       unsubscribe = manager.onNotification(sessionKey, (notification) => {
         touchWatchdog();
         if (notification.method !== 'session/update') return;
@@ -1488,10 +1560,43 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
         for (const message of translation.messages) writer.send(message);
         if (translation.spawnStarted) pendingSpawnCalls.set(translation.spawnStarted.toolCallId, { specs: translation.spawnStarted.specs });
         if (translation.spawnSettled) pendingSpawnCalls.delete(translation.spawnSettled.toolCallId);
-        if (translation.toolPending?.toolName === 'ask_question') {
-          // The engine parks the turn here: the question card waits for the
-          // user's next message, which IS the answer (step 4 refines the UX).
-          pendingAskToolCallId = translation.toolPending.toolCallId;
+        if (translation.toolPending?.toolName === QUESTION_TOOL_NAME && translation.toolPending.cardToolName) {
+          const toolCallId = translation.toolPending.toolCallId;
+          const requestId = `acp_ask_${toolCallId}`;
+          if (!antigravityAcpCards.get(requestId)) {
+            const cardInput = translation.toolPending.cardInput;
+            writer.send(createNormalizedMessage({
+              id: generateMessageId(PROVIDER),
+              kind: 'permission_request',
+              requestId,
+              toolName: translation.toolPending.cardToolName,
+              toolId: toolCallId,
+              input: cardInput,
+              context: undefined,
+              canInterrupt: false,
+              sessionId: capturedSessionId,
+              provider: PROVIDER,
+            }));
+            const waiters: Array<(outcome: AcpCardOutcome) => void> = [];
+            const waited = new Promise<AcpCardOutcome>((resolveWait) => waiters.push(resolveWait));
+            antigravityAcpCards.add({
+              requestId,
+              kind: 'question',
+              sessionId: sessionKey,
+              frameSessionId: capturedSessionId,
+              toolName: translation.toolPending.cardToolName,
+              toolId: toolCallId,
+              input: cardInput,
+              receivedAt: new Date(),
+              writer,
+              settle: (outcome) => {
+                // One wake per settle; the bridge removes the card before
+                // settling, so a second settle cannot reach a stale waiter.
+                waiters.shift()?.(outcome);
+              },
+            });
+            pendingAskHolder.current = { requestId, waited };
+          }
         }
         if (translation.spawnStarted) void reconcileSpawnsAndReports();
       });
@@ -1558,7 +1663,7 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
       }
 
       const promptFailure: { error: Error | null } = { error: null };
-      const promptPromise = handle.client
+      let promptPromise = handle.client
         .request('session/prompt', {
           sessionId: handle.sessionId,
           prompt: [{ type: 'text', text: promptWithAttachments }],
@@ -1568,12 +1673,21 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
           return null;
         });
 
-      const race = await Promise.race([
-        promptPromise.then((result) => ({ ended: 'response' as const, result })),
-        handle.client.whenExit().then((info) => ({ ended: 'exit' as const, info })),
-      ]);
+      type AcpRaceOutcome =
+        | { ended: 'response'; result: unknown }
+        | { ended: 'exit'; info: { code: number | null; signal: NodeJS.Signals | null } };
+      const awaitTurnEnd = (): Promise<AcpRaceOutcome> =>
+        Promise.race([
+          promptPromise.then((result) => ({ ended: 'response' as const, result })),
+          handle.client.whenExit().then((info) => ({ ended: 'exit' as const, info })),
+        ]);
 
-      if (race.ended === 'exit') {
+      /**
+       * Fails the run after the engine died mid-turn — shared by the first
+       * race and the answer rounds, which race against the same exit. Always
+       * throws, so callers fall into the catch's settled short-circuit.
+       */
+      const settleFromEngineExit = async (info: { code: number | null; signal: NodeJS.Signals | null }): Promise<never> => {
         clearWatchdog();
         const closed = translator.closeOpenSegment();
         if (closed) writer.send(closed);
@@ -1587,7 +1701,7 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
           ? `Antigravity CLI produced no output for ${idleTimeout} and was terminated.`
           : promptFailure.error instanceof Error
             ? promptFailure.error.message
-            : `Antigravity CLI exited (code: ${race.info.code ?? race.info.signal}).`;
+            : `Antigravity CLI exited (code: ${info.code ?? info.signal}).`;
         writer.send(createNormalizedMessage({
           id: generateMessageId(PROVIDER),
           kind: 'error',
@@ -1605,41 +1719,116 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
         });
         settled = true;
         throw new Error(failure);
+      };
+
+      // The turn loop: each round races the prompt response against an engine
+      // exit, and an end_turn that parked on a question holds the run until
+      // the card answers — the answer prompt continues on this same run, so
+      // its frames stream through the writer that showed the card.
+      let race = await awaitTurnEnd();
+      let wasCancelled = false;
+      let resultUsage = { used: 0, inputTokens: 0, outputTokens: 0 };
+      for (;;) {
+        if (race.ended === 'exit') {
+          await settleFromEngineExit(race.info);
+          throw new Error('unreachable: settleFromEngineExit always throws');
+        }
+
+        clearWatchdog();
+        const response = readObjectRecord(race.result);
+        const stopReason = readOptionalString(response?.stopReason);
+        wasCancelled = stopReason === 'cancelled';
+
+        // The response usage is the round's authoritative bill; context stays
+        // the last usage_update reading (identical accounting to the print
+        // path).
+        resultUsage = readAntigravityUsageRecord(response?.usage ?? null);
+        if (resultUsage.used > 0 || resultUsage.inputTokens > 0 || resultUsage.outputTokens > 0) {
+          runCumulative = { ...resultUsage };
+          const contextReading = lastContextReading ?? { ...resultUsage };
+          const tokenBudget = {
+            used: contextReading.used,
+            total: 1048576,
+            inputTokens: contextReading.inputTokens,
+            outputTokens: contextReading.outputTokens,
+            breakdown: { input: contextReading.inputTokens, output: contextReading.outputTokens },
+            cumulative: { ...runCumulative },
+          };
+          writer.send(createNormalizedMessage({
+            id: generateMessageId(PROVIDER),
+            kind: 'status',
+            text: 'token_budget',
+            tokenBudget,
+            sessionId: capturedSessionId,
+            provider: PROVIDER,
+          }));
+          void persistAntigravityTokenUsage(capturedSessionId, tokenBudget);
+        }
+
+        const parkedAsk = pendingAskHolder.current;
+        if (stopReason === 'end_turn' && parkedAsk && antigravityAcpCards.get(parkedAsk.requestId)) {
+          // Parked on a question: the run stays busy and the card stays
+          // answerable until the gateway settles it. The extra timer is the
+          // safety valve beyond the registry's sweep, so a dead gateway
+          // cannot hold the run forever.
+          const outcome = await Promise.race([
+            parkedAsk.waited,
+            new Promise<null>((resolveTimer) => {
+              const timer = setTimeout(() => resolveTimer(null), PENDING_CARD_TTL_MS);
+              timer.unref?.();
+            }),
+          ]);
+          pendingAskHolder.current = null;
+          if (outcome?.aborted) {
+            const closed = translator.closeOpenSegment();
+            if (closed) writer.send(closed);
+            await finishAgentTails();
+            if (antigravityBackgroundWork.hasSession(sessionKey)) {
+              settleAgentsAtTurnEnd('transcript');
+              broadcastBackgroundTasks();
+            }
+            if (!completeSent) {
+              completeSent = true;
+              writer.send(createCompleteMessage({ provider: PROVIDER, sessionId: capturedSessionId, exitCode: 0 }));
+            }
+            notifyRunStopped({
+              userId: writer.userId != null ? String(writer.userId) : null,
+              provider: PROVIDER,
+              sessionId,
+              sessionName: sessionSummary,
+              stopReason: 'aborted',
+            });
+            settled = true;
+            return { sessionId: capturedSessionId, success: true, aborted: true };
+          }
+          if (!outcome || outcome.expired || !outcome.allow) {
+            // Denied or timed out: settle the run; a text message continues
+            // the conversation in a new turn.
+            break;
+          }
+          const updatedInput = outcome.updatedInput;
+          const answerText = updatedInput && typeof updatedInput === 'object' && 'answers' in (updatedInput as AnyRecord)
+            ? formatQuestionAnswers((updatedInput as AnyRecord).answers)
+            : outcome.message?.trim() || 'Continue.';
+          touchWatchdog();
+          // The answer travels as the next prompt; the engine folds it into
+          // the parked ask and continues the same conversation, so this loop
+          // round streams the continuation's frames through the same writer.
+          promptPromise = handle.client
+            .request('session/prompt', {
+              sessionId: handle.sessionId,
+              prompt: [{ type: 'text', text: answerText }],
+            })
+            .catch((error: Error) => {
+              promptFailure.error = error;
+              return null;
+            });
+          race = await awaitTurnEnd();
+          continue;
+        }
+
+        break;
       }
-
-      clearWatchdog();
-      const response = readObjectRecord(race.result);
-      const stopReason = readOptionalString(response?.stopReason);
-      const wasCancelled = stopReason === 'cancelled';
-
-      // The response usage is the turn's authoritative bill; context stays the
-      // last usage_update reading (identical accounting to the print path).
-      const resultUsage = readAntigravityUsageRecord(response?.usage ?? null);
-      if (resultUsage.used > 0 || resultUsage.inputTokens > 0 || resultUsage.outputTokens > 0) {
-        runCumulative = { ...resultUsage };
-        const contextReading = lastContextReading ?? { ...resultUsage };
-        const tokenBudget = {
-          used: contextReading.used,
-          total: 1048576,
-          inputTokens: contextReading.inputTokens,
-          outputTokens: contextReading.outputTokens,
-          breakdown: { input: contextReading.inputTokens, output: contextReading.outputTokens },
-          cumulative: { ...runCumulative },
-        };
-        writer.send(createNormalizedMessage({
-          id: generateMessageId(PROVIDER),
-          kind: 'status',
-          text: 'token_budget',
-          tokenBudget,
-          sessionId: capturedSessionId,
-          provider: PROVIDER,
-        }));
-        void persistAntigravityTokenUsage(capturedSessionId, tokenBudget);
-      }
-
-      // A pending question parks the turn here: the card stays open and the
-      // user's next message answers it (engine semantics; step 4 refines).
-      void pendingAskToolCallId;
 
       const closed = translator.closeOpenSegment();
       if (closed) writer.send(closed);
@@ -1715,6 +1904,10 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
     } finally {
       clearWatchdog();
       unsubscribe();
+      // Safety net: cards a settled or dead run still held would dangle until
+      // the TTL; take them down with the run. Cards the flow already settled
+      // are gone, so this is a no-op on the happy paths.
+      antigravityAcpCards.retractAllForSession(sessionKey, { allow: false, message: 'The session was closed.' });
       manager.setBusy(sessionKey, false);
     }
   }
@@ -1723,11 +1916,18 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
    * Aborts an active Antigravity session.
    */
   async abort(sessionId: string): Promise<boolean> {
-    // A resident ACP session cancels its in-flight turn over the protocol;
-    // the run then settles with stopReason cancelled. The process kill below
-    // stays for print runs and for ACP sessions whose engine already died.
-    if (isAcpRuntimeEnabled() && acpManagerInstance?.cancelTurn(sessionId)) {
-      return true;
+    // A resident ACP session aborts through the protocol: pending cards are
+    // denied first (a parked question run must wake so it can settle as
+    // aborted; an in-flight permission is answered with a cancel), then the
+    // in-flight turn is cancelled. The process kill below stays for print
+    // runs and for ACP sessions whose engine already died.
+    if (isAcpRuntimeEnabled()) {
+      const settledCards = acpManagerInstance
+        ? antigravityAcpCards.retractAllForSession(sessionId, { allow: false, aborted: true }).length
+        : 0;
+      if (acpManagerInstance?.cancelTurn(sessionId) || settledCards > 0) {
+        return true;
+      }
     }
     const process = activeProcesses.get(sessionId);
     if (process) {

@@ -189,7 +189,10 @@ const BASELINE: Record<string, Omit<ProviderCapabilities, 'provider'>> = {
     supportsAbort: true,
     supportsSteering: false,
     supportsSideQuestions: false,
-    supportsPermissionRequests: false,
+    // ACP runtime bridges session/request_permission onto the pending-card
+    // gateway (the print path still cannot ask); the facet is live behind the
+    // CLOUDCLI_ANTIGRAVITY_ACP opt-in.
+    supportsPermissionRequests: true,
     supportsTokenUsage: true,
     supportsQuota: true,
     supportsQuotaReset: false,

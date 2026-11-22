@@ -31,7 +31,7 @@ import {
   readInvokedAgentSpecs,
   type AntigravityAgentSpec,
 } from './antigravity-subagent.js';
-import { toAskUserQuestionCard } from './antigravity-question.js';
+import { ANTIGRAVITY_QUESTION_TOOL as QUESTION_TOOL_NAME, toAskUserQuestionCard } from './antigravity-question.js';
 
 const PROVIDER = 'antigravity';
 
@@ -81,7 +81,13 @@ export type AcpTranslation = {
   /** An `invoke_subagent` call finished; unbound spawns settle from the transcript. */
   spawnSettled?: { toolCallId: string };
   /** A tool is parked waiting for the user (permission request or question answer). */
-  toolPending?: { toolCallId: string; toolName: string };
+  toolPending?: {
+    toolCallId: string;
+    toolName: string;
+    /** ask_question only: the card-facing name and translated input. */
+    cardToolName?: string;
+    cardInput?: unknown;
+  };
 };
 
 export class AntigravityAcpTranslator {
@@ -240,22 +246,46 @@ export class AntigravityAcpTranslator {
 
     // tool_call_update
     if (status === 'pending') {
-      if (!this.seenToolCalls.has(toolCallId)) {
-        // Defensive: a pending update without its in_progress frame still
-        // needs its row, or the card that waits on the user has no anchor.
+      let cardToolName: string | undefined;
+      let cardInput: unknown;
+      if (toolName === QUESTION_TOOL_NAME) {
         const card = toAskUserQuestionCard(toolName, update.args ?? update.rawInput);
+        cardToolName = card.toolName;
+        cardInput = card.toolInput;
+        if (!this.seenToolCalls.has(toolCallId)) {
+          // Defensive: a pending update without its in_progress frame still
+          // needs its row, or the card that waits on the user has no anchor.
+          this.seenToolCalls.add(toolCallId);
+          messages.push(createNormalizedMessage({
+            id: rowId,
+            kind: 'tool_use',
+            toolName: card.toolName,
+            toolInput: card.toolInput,
+            toolId: toolCallId,
+            sessionId: this.getSessionId(),
+            provider: PROVIDER,
+          }));
+        }
+      } else if (!this.seenToolCalls.has(toolCallId)) {
         this.seenToolCalls.add(toolCallId);
         messages.push(createNormalizedMessage({
           id: rowId,
           kind: 'tool_use',
-          toolName: card.toolName,
-          toolInput: card.toolInput,
+          toolName,
+          toolInput: update.args ?? update.rawInput ?? {},
           toolId: toolCallId,
           sessionId: this.getSessionId(),
           provider: PROVIDER,
         }));
       }
-      return { messages, toolPending: { toolCallId, toolName } };
+      return {
+        messages,
+        toolPending: {
+          toolCallId,
+          toolName,
+          ...(cardToolName ? { cardToolName, cardInput } : {}),
+        },
+      };
     }
 
     if (status === 'completed' || status === 'failed') {

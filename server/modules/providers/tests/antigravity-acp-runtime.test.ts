@@ -4,7 +4,8 @@
  * Drives `AntigravityRuntimeProvider.run()` through the resident-ACP path
  * (`CLOUDCLI_ANTIGRAVITY_ACP=1`) against a stub `agy acp` engine, covering the
  * turn lifecycle end to end: session identity rows, streamed updates, the
- * complete frame, abort-via-cancel and a mid-turn engine crash. HOME is
+ * complete frame, abort-via-cancel, a mid-turn engine crash, and both user
+ * interrupts — the permission card and the parked question card. HOME is
  * pointed at a fixture so the managed data directory stays inside the test.
  */
 
@@ -28,14 +29,20 @@ process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-acp-rt-home-'));
 const stubDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-acp-rt-'));
 const stubPath = path.join(stubDir, 'agy');
 const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-acp-rt-ws-'));
+const promptsLog = path.join(stubDir, 'prompts.log');
 process.env.CLOUDCLI_ANTIGRAVITY_PATH = stubPath;
 
 const STUB_SCRIPT = `#!/usr/bin/env node
+const fs = require('fs');
+const promptsLog = process.env.AGY_ACP_PROMPTS_LOG || '/dev/null';
 let buf = '';
 process.stdin.setEncoding('utf8');
 process.stdout.setEncoding('utf8');
 const send = (frame) => process.stdout.write(JSON.stringify(frame) + '\\n');
 let promptId = null;
+let promptCount = 0;
+let permissionRequestId = null;
+let permissionAnswer = null;
 process.stdin.on('data', (chunk) => {
   buf += chunk;
   let i;
@@ -56,12 +63,45 @@ function handle(frame) {
     return;
   }
   if (frame.method === 'session/prompt') {
+    promptCount += 1;
+    const text = frame.params.prompt?.[0]?.text ?? '';
+    fs.appendFileSync(promptsLog, JSON.stringify({ prompt: promptCount, text }) + '\\n');
     promptId = frame.id;
     if (mode === 'acp-exit') {
       setTimeout(() => process.exit(1), 150);
       return;
     }
     if (mode === 'acp-cancel') return; // wait for session/cancel
+    if (mode === 'acp-permission') {
+      if (promptCount === 1) {
+        send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'tool_call', toolCallId: 'call_write', name: 'write_file', args: { Path: 'x.txt' }, status: 'in_progress', kind: 'edit' } } });
+        send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'tool_call_update', toolCallId: 'call_write', name: 'write_file', status: 'pending' } } });
+        permissionRequestId = 8001;
+        permissionAnswer = null;
+        send({ jsonrpc: '2.0', id: 8001, method: 'session/request_permission', params: { toolCall: { sessionUpdate: 'tool_call', toolCallId: 'call_write', name: 'write_file', args: { Path: 'x.txt' }, status: 'pending', kind: 'edit', title: 'File x.txt' }, options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }, { optionId: 'deny', name: 'Deny', kind: 'reject_once' }] } });
+        waitPermission(frame.id);
+      } else {
+        finish(frame.id);
+      }
+      return;
+    }
+    if (mode === 'acp-question') {
+      if (promptCount === 1) {
+        const args = { questions: JSON.stringify([{ question: '你希望使用哪种数据库？', options: ['PostgreSQL', 'SQLite'], is_multi_select: false }]) };
+        send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'tool_call', toolCallId: 'call_ask', name: 'ask_question', args, status: 'in_progress', kind: 'other' } } });
+        send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'tool_call_update', toolCallId: 'call_ask', name: 'ask_question', args, status: 'pending' } } });
+        // The engine parks: the turn ends with the ask pending.
+        send({ jsonrpc: '2.0', id: promptId, result: { stopReason: 'end_turn', usage: { inputTokens: 10, outputTokens: 2, totalTokens: 12 } } });
+        promptId = null;
+      } else {
+        // The answer prompt: the engine folds it into the parked ask.
+        const args = { questions: JSON.stringify([{ question: '你希望使用哪种数据库？', options: ['PostgreSQL', 'SQLite'], is_multi_select: false }]) };
+        send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'tool_call_update', toolCallId: 'call_ask', name: 'ask_question', args, status: 'completed', content: [{ type: 'content', content: { type: 'text', text: 'PostgreSQL' } }] } } });
+        send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '收到，用 PostgreSQL。' } } } });
+        send({ jsonrpc: '2.0', id: frame.id, result: { stopReason: 'end_turn', usage: { inputTokens: 20, outputTokens: 4, totalTokens: 24 } } });
+      }
+      return;
+    }
     send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'usage_update', used: 900, size: 1048576 } } });
     send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'working...' } } } });
     send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'tool_call', toolCallId: 'call_9', name: 'run_command', args: { CommandLine: 'echo hi' }, status: 'in_progress' } } });
@@ -75,9 +115,43 @@ function handle(frame) {
     promptId = null;
   }
 }
+function waitPermission(promptFrameId) {
+  // The permission reply arrives as a plain response frame to id 8001.
+  const original = handle;
+  // handle() is not re-entrant per frame; poll the pending answer via a hook:
+  // the simplest deterministic wiring is to answer the prompt once the
+  // response for 8001 lands, which the dispatcher below records.
+  global.__resolvePermission = (answer) => {
+    permissionAnswer = answer;
+    send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'tool_call_update', toolCallId: 'call_write', name: 'write_file', status: 'completed', content: [{ type: 'diff', path: 'x.txt', newText: 'written' }] } } });
+    original({ id: promptFrameId, method: '__finish__', params: {} });
+  };
+}
+function finish(frameId) {
+  send({ jsonrpc: '2.0', id: frameId, result: { stopReason: 'end_turn', usage: { inputTokens: 100, outputTokens: 5, totalTokens: 105 } } });
+  promptId = null;
+}
 process.on('SIGTERM', () => process.exit(0));
 `;
-fs.writeFileSync(stubPath, STUB_SCRIPT, { mode: 0o755 });
+
+// The stub script's dispatch: server->client responses (id without method)
+// route into the permission answer hook.
+const stubFinal = STUB_SCRIPT.replace(`function handle(frame) {
+  const mode = process.env.AGY_ACP_STUB_MODE;`, `function handle(frame) {
+  if (frame.id !== undefined && frame.method === undefined && frame.result !== undefined) {
+    if (frame.id === 8001 && typeof global.__resolvePermission === 'function') {
+      const hook = global.__resolvePermission;
+      global.__resolvePermission = null;
+      hook(frame.result);
+    }
+    return;
+  }
+  if (frame.method === '__finish__') {
+    finish(frame.id);
+    return;
+  }
+  const mode = process.env.AGY_ACP_STUB_MODE;`);
+fs.writeFileSync(stubPath, stubFinal, { mode: 0o755 });
 
 const context = {
   resolveProviderSessionId: () => null,
@@ -104,6 +178,14 @@ const runtime = new AntigravityRuntimeProvider();
 test.after(() => {
   closeAntigravityAcpSessions();
 });
+
+const waitFor = async (predicate: () => boolean, timeoutMs = 3000): Promise<void> => {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error('condition never became true');
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+};
 
 test('an ACP turn streams updates and settles with a complete frame', async () => {
   process.env.AGY_ACP_STUB_MODE = 'acp-turn';
@@ -157,4 +239,64 @@ test('a mid-turn engine crash fails the run', async () => {
   );
   assert.ok(messages.some((message) => message.kind === 'error'), 'failure surfaced as an error row');
   assert.ok(messages.some((message) => message.kind === 'complete'), 'run still settles with complete');
+});
+
+test('a permission request parks on the card and the gateway answer continues the turn', async () => {
+  process.env.AGY_ACP_STUB_MODE = 'acp-permission';
+  process.env.AGY_ACP_PROMPTS_LOG = promptsLog;
+  const { messages, writer } = createWriter();
+  const runPromise = runtime.run('write the file', { sessionId: 'sess-acp-perm', cwd: workspaceDir }, writer, context);
+
+  await waitFor(() => messages.some((message) => message.kind === 'permission_request'));
+  const card = messages.find((message) => message.kind === 'permission_request');
+  assert.equal(card?.toolName, 'write_file');
+  assert.ok(messages.some((message) => message.kind === 'tool_use' && message.toolId === 'call_write'), 'tool row anchors the card');
+
+  const pending = runtime.permissions?.listPending('sess-acp-perm') ?? [];
+  assert.equal(pending.length, 1, 'the card replays through the gateway');
+  assert.equal(pending[0].requestId, card?.requestId);
+
+  runtime.permissions?.resolve(card?.requestId as string, { allow: true });
+
+  const result = await runPromise;
+  assert.deepEqual(result, { sessionId: 'acp-conv-1', success: true });
+  assert.ok(messages.some((message) => message.kind === 'permission_cancelled'), 'card retracted on settle');
+  assert.ok(messages.some((message) => message.kind === 'tool_result' && message.toolId === 'call_write'), 'approved tool completed');
+  assert.equal(runtime.permissions?.listPending('sess-acp-perm').length, 0);
+});
+
+test('a parked question answers through the card and continues on the same run', async () => {
+  process.env.AGY_ACP_STUB_MODE = 'acp-question';
+  process.env.AGY_ACP_PROMPTS_LOG = promptsLog;
+  const { messages, writer } = createWriter();
+  const runPromise = runtime.run('start', { sessionId: 'sess-acp-ask', cwd: workspaceDir }, writer, context);
+
+  // The engine parks: the card appears while the run holds.
+  await waitFor(() => (runtime.permissions?.listPending('sess-acp-ask') ?? []).length > 0);
+  const pending = runtime.permissions?.listPending('sess-acp-ask')[0];
+  assert.equal(pending?.toolName, 'AskUserQuestion');
+  assert.ok(messages.some((message) => message.kind === 'permission_request' && message.toolName === 'AskUserQuestion'));
+
+  // The run is parked: no complete yet.
+  assert.ok(!messages.some((message) => message.kind === 'complete'), 'parked run has not settled');
+
+  runtime.permissions?.resolve(pending?.requestId as string, {
+    allow: true,
+    updatedInput: { answers: { '你希望使用哪种数据库？': 'PostgreSQL' } },
+  });
+
+  const result = await runPromise;
+  assert.deepEqual(result, { sessionId: 'acp-conv-1', success: true });
+  assert.ok(messages.some((message) => message.kind === 'permission_cancelled'), 'question card retracted');
+  assert.ok(messages.some((message) => message.kind === 'stream_delta'), 'answer turn streamed on the same run (chunk frames arrive as stream deltas)');
+  assert.ok(messages.some((message) => message.kind === 'tool_result' && message.toolId === 'call_ask'), 'ask completed after the answer');
+
+  // The log is shared across this file's tests; the question run's own turns
+  // are its last two entries.
+  const prompts = (await fs.promises.readFile(promptsLog, 'utf8')).trim().split('\n').map((line) => JSON.parse(line)).slice(-2);
+  assert.equal(prompts.length, 2, 'the answer travelled as the second prompt');
+  assert.equal(prompts[0].text, 'start');
+  assert.match(String(prompts[1].text), /PostgreSQL/);
+  assert.match(String(prompts[1].text), /User has answered your questions:/);
+  assert.equal(runtime.permissions?.listPending('sess-acp-ask').length, 0);
 });
