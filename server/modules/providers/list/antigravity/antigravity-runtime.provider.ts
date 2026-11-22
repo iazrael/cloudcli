@@ -63,6 +63,7 @@ import {
   findCatalogOptionForModelString,
   resolveAntigravityModelArgs,
 } from './antigravity-model-effort.js';
+import type { AntigravityAcpClient } from './antigravity-acp-client.js';
 import { AntigravityAcpSessionManager } from './antigravity-acp-session-manager.js';
 import { AntigravityAcpTranslator } from './antigravity-acp-translator.js';
 import {
@@ -255,8 +256,8 @@ const isAcpRuntimeEnabled = (): boolean => process.env.CLOUDCLI_ANTIGRAVITY_ACP 
 
 /**
  * The resident ACP session manager. One instance serves every session; the
- * engine path is resolved lazily so the singleton never caches a stale path
- * across engine reinstalls.
+ * engine path is resolved on first construction and kept for the process's
+ * lifetime (an engine reinstall takes effect on restart).
  */
 let acpManagerInstance: AntigravityAcpSessionManager | null = null;
 const getAcpManager = (): AntigravityAcpSessionManager => {
@@ -265,9 +266,7 @@ const getAcpManager = (): AntigravityAcpSessionManager => {
     acpManagerInstance = new AntigravityAcpSessionManager({
       onSessionExit: (appSessionId, info) => {
         console.info(`[AntigravityAcp] Session ${appSessionId} engine exited (code: ${info.code}, signal: ${info.signal})`);
-        // The router subscription died with the process; a respawned session
-        // must reinstall it.
-        acpRoutedSessions.delete(appSessionId);
+        acpRoutedClients.delete(appSessionId);
         acpRoutedTranslators.delete(appSessionId);
       },
     }, enginePath);
@@ -297,21 +296,28 @@ const acpAnnouncedSessionIds = new Map<string, string>();
  * `publishSessionEvent`, which the composition root wires to the websocket
  * layer) while no run owns the session's writer.
  */
-const acpRoutedSessions = new Set<string>();
+const acpRoutedClients = new Map<string, AntigravityAcpClient>();
 const acpLiveRunPumps = new Set<string>();
 const acpRoutedTranslators = new Map<string, AntigravityAcpTranslator>();
 const acpSessionSinks = new Map<string, NonNullable<ProviderRuntimeContext['publishSessionEvent']>>();
 
 /**
- * Installs the between-turns router once per session: every frame the engine
- * pushes while no run pump is subscribed is translated and published through
- * the first run's context, so background-task completions reach a connected
- * client the same way the turn's own frames do.
+ * Installs the between-turns router for the session's current process: every
+ * frame the engine pushes while no run pump is subscribed is translated and
+ * published through the run context's `publishSessionEvent`, so
+ * background-task completions reach a connected client the same way the
+ * turn's own frames do. Re-installs on a respawned process — the previous
+ * subscription died with it.
  */
-function installAcpSessionRouter(manager: AntigravityAcpSessionManager, sessionKey: string, context: ProviderRuntimeContext): void {
-  if (acpRoutedSessions.has(sessionKey)) return;
+function installAcpSessionRouter(
+  manager: AntigravityAcpSessionManager,
+  sessionKey: string,
+  context: ProviderRuntimeContext,
+  client: AntigravityAcpClient,
+): void {
   if (!context.publishSessionEvent) return;
-  acpRoutedSessions.add(sessionKey);
+  if (acpRoutedClients.get(sessionKey) === client) return;
+  acpRoutedClients.set(sessionKey, client);
   acpSessionSinks.set(sessionKey, context.publishSessionEvent);
   manager.onNotification(sessionKey, (notification) => {
     if (acpLiveRunPumps.has(sessionKey)) return;
@@ -1321,6 +1327,10 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
     const watchdogMs = parseGoDurationMs(idleTimeout) ?? parseGoDurationMs(DEFAULT_IDLE_TIMEOUT) ?? 0;
     let watchdogTimer: NodeJS.Timeout | null = null;
     let watchdogExpired = false;
+    // A card the user is thinking about must not count as engine silence:
+    // while one holds the run the watchdog stays disarmed (the card registry's
+    // own TTL bounds the wait), and engine frames do not re-arm it.
+    let cardHold = 0;
     const clearWatchdog = () => {
       if (watchdogTimer) {
         clearTimeout(watchdogTimer);
@@ -1328,7 +1338,7 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
       }
     };
     const touchWatchdog = () => {
-      if (watchdogMs <= 0) return;
+      if (watchdogMs <= 0 || cardHold > 0) return;
       clearWatchdog();
       watchdogTimer = setTimeout(() => {
         watchdogTimer = null;
@@ -1359,7 +1369,7 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
         skipPermissions: skipPermissions || permissionMode === 'bypassPermissions',
       });
       manager.setBusy(sessionKey, true);
-      installAcpSessionRouter(manager, sessionKey, context);
+      installAcpSessionRouter(manager, sessionKey, context, handle.client);
       acpLiveRunPumps.add(sessionKey);
 
       // Model and effort resolution, shared with the print path's flag
@@ -1474,7 +1484,7 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
           locations: Array.isArray(toolCall.locations) ? toolCall.locations : undefined,
           diff: Array.isArray(toolCall.content) ? toolCall.content : undefined,
         };
-        writer.send(createNormalizedMessage({
+        const requestFrame = createNormalizedMessage({
           id: generateMessageId(PROVIDER),
           kind: 'permission_request',
           requestId,
@@ -1485,8 +1495,13 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
           canInterrupt: true,
           sessionId: capturedSessionId,
           provider: PROVIDER,
-        }));
-        touchWatchdog();
+        });
+        writer.send(requestFrame);
+        // A tab attached after the live frame flew (or while the run's writer
+        // had already settled) still gets the card through the session channel.
+        context.publishSessionEvent?.(sessionKey, requestFrame);
+        cardHold += 1;
+        clearWatchdog();
         return new Promise((resolveAnswer) => {
           antigravityAcpCards.add({
             requestId,
@@ -1500,6 +1515,8 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
             receivedAt: new Date(),
             writer,
             settle: (outcome) => {
+              cardHold -= 1;
+              touchWatchdog();
               const optionId = readOptionalString(allowOption?.optionId);
               if (outcome.allow && optionId) {
                 resolveAnswer({ outcome: { outcome: 'selected_once', optionId } });
@@ -1670,7 +1687,7 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
           const requestId = `acp_ask_${toolCallId}`;
           if (!antigravityAcpCards.get(requestId)) {
             const cardInput = translation.toolPending.cardInput;
-            writer.send(createNormalizedMessage({
+            const questionFrame = createNormalizedMessage({
               id: generateMessageId(PROVIDER),
               kind: 'permission_request',
               requestId,
@@ -1681,7 +1698,9 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
               canInterrupt: false,
               sessionId: capturedSessionId,
               provider: PROVIDER,
-            }));
+            });
+            writer.send(questionFrame);
+            context.publishSessionEvent?.(sessionKey, questionFrame);
             const waiters: Array<(outcome: AcpCardOutcome) => void> = [];
             const waited = new Promise<AcpCardOutcome>((resolveWait) => waiters.push(resolveWait));
             antigravityAcpCards.add({
@@ -1768,15 +1787,17 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
       }
 
       const promptFailure: { error: Error | null } = { error: null };
-      let promptPromise = handle.client
-        .request('session/prompt', {
+      const sendPrompt = (text: string) => {
+        touchWatchdog();
+        return handle.client.request('session/prompt', {
           sessionId: handle.sessionId,
-          prompt: [{ type: 'text', text: promptWithAttachments }],
-        })
-        .catch((error: Error) => {
+          prompt: [{ type: 'text', text }],
+        }).catch((error: Error) => {
           promptFailure.error = error;
           return null;
         });
+      };
+      let promptPromise = sendPrompt(promptWithAttachments);
 
       type AcpRaceOutcome =
         | { ended: 'response'; result: unknown }
@@ -1788,11 +1809,10 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
         ]);
 
       /**
-       * Fails the run after the engine died mid-turn — shared by the first
-       * race and the answer rounds, which race against the same exit. Always
+       * Fails the run once its frames and notifications have gone out. Always
        * throws, so callers fall into the catch's settled short-circuit.
        */
-      const settleFromEngineExit = async (info: { code: number | null; signal: NodeJS.Signals | null }): Promise<never> => {
+      const settleTurnFailure = async (failure: string): Promise<never> => {
         clearWatchdog();
         const closed = translator.closeOpenSegment();
         if (closed) writer.send(closed);
@@ -1802,11 +1822,6 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
           completeSent = true;
           writer.send(createCompleteMessage({ provider: PROVIDER, sessionId: capturedSessionId, exitCode: 1 }));
         }
-        const failure = watchdogExpired
-          ? `Antigravity CLI produced no output for ${idleTimeout} and was terminated.`
-          : promptFailure.error instanceof Error
-            ? promptFailure.error.message
-            : `Antigravity CLI exited (code: ${info.code ?? info.signal}).`;
         writer.send(createNormalizedMessage({
           id: generateMessageId(PROVIDER),
           kind: 'error',
@@ -1826,6 +1841,21 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
         throw new Error(failure);
       };
 
+      /**
+       * Fails the run after the engine died mid-turn — shared by the first
+       * race, the answer rounds and the parked question, which all race
+       * against the same exit. Delegates to {@link settleTurnFailure}, which
+       * always throws; callers throw their own unreachable guard after it.
+       */
+      const settleFromEngineExit = async (info: { code: number | null; signal: NodeJS.Signals | null }): Promise<void> => {
+        const failure = watchdogExpired
+          ? `Antigravity CLI produced no output for ${idleTimeout} and was terminated.`
+          : promptFailure.error instanceof Error
+            ? promptFailure.error.message
+            : `Antigravity CLI exited (code: ${info.code ?? info.signal}).`;
+        await settleTurnFailure(failure);
+      };
+
       // The turn loop: each round races the prompt response against an engine
       // exit, and an end_turn that parked on a question holds the run until
       // the card answers — the answer prompt continues on this same run, so
@@ -1839,10 +1869,25 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
           throw new Error('unreachable: settleFromEngineExit always throws');
         }
 
+        // The engine answered the prompt itself with a JSON-RPC error (auth
+        // expired, conversation gone, overloaded) while staying alive: the
+        // user's message would otherwise vanish into a success-shaped settle.
+        if (promptFailure.error instanceof Error) {
+          await settleTurnFailure(promptFailure.error.message);
+          throw new Error('unreachable: settleTurnFailure always throws');
+        }
+
         clearWatchdog();
         const response = readObjectRecord(race.result);
         const stopReason = readOptionalString(response?.stopReason);
         wasCancelled = stopReason === 'cancelled';
+
+        // Any stop reason outside the two known ones (an engine upgrade
+        // inventing a new terminal state, a refusal) is not a success.
+        if (stopReason !== 'end_turn' && stopReason !== 'cancelled') {
+          await settleTurnFailure(`Antigravity turn ended unexpectedly (stop reason: ${stopReason ?? 'unknown'}).`);
+          throw new Error('unreachable: settleTurnFailure always throws');
+        }
 
         // The response usage is the round's authoritative bill; context stays
         // the last usage_update reading (identical accounting to the print
@@ -1873,17 +1918,34 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
         const parkedAsk = pendingAskHolder.current;
         if (stopReason === 'end_turn' && parkedAsk && antigravityAcpCards.get(parkedAsk.requestId)) {
           // Parked on a question: the run stays busy and the card stays
-          // answerable until the gateway settles it. The extra timer is the
-          // safety valve beyond the registry's sweep, so a dead gateway
-          // cannot hold the run forever.
-          const outcome = await Promise.race([
-            parkedAsk.waited,
+          // answerable until the gateway settles it. The races bound the wait
+          // from the two sides nobody controls: an engine death and the card
+          // registry's TTL (its sweep settles the card on its own; the timer
+          // here is the belt to its braces).
+          cardHold += 1;
+          const parkRace = await Promise.race([
+            parkedAsk.waited.then((outcome) => ({ ended: 'answer' as const, outcome })),
+            handle.client.whenExit().then((info) => ({ ended: 'exit' as const, info })),
             new Promise<null>((resolveTimer) => {
               const timer = setTimeout(() => resolveTimer(null), PENDING_CARD_TTL_MS);
               timer.unref?.();
             }),
           ]);
+          cardHold -= 1;
           pendingAskHolder.current = null;
+          if (parkRace === null) {
+            // The sweep should have settled a timed-out card before this
+            // timer fires; treat it as a denial and let the engine finish on
+            // its own judgment.
+            promptPromise = sendPrompt(formatQuestionAnswers({}));
+            race = await awaitTurnEnd();
+            continue;
+          }
+          if (parkRace.ended === 'exit') {
+            await settleFromEngineExit(parkRace.info);
+            throw new Error('unreachable: settleFromEngineExit always throws');
+          }
+          const outcome = parkRace.outcome;
           if (outcome?.aborted) {
             const closed = translator.closeOpenSegment();
             if (closed) writer.send(closed);
@@ -1907,27 +1969,22 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
             return { sessionId: capturedSessionId, success: true, aborted: true };
           }
           if (!outcome || outcome.expired || !outcome.allow) {
-            // Denied or timed out: settle the run; a text message continues
-            // the conversation in a new turn.
-            break;
+            // Denied or timed out: the engine's next input would be read as
+            // the answer, so tell it the user declined and let it finish on
+            // its own judgment instead of leaving the ask parked under the
+            // session. The judgment turn streams here and settles the run.
+            promptPromise = sendPrompt(formatQuestionAnswers({}));
+            race = await awaitTurnEnd();
+            continue;
           }
           const updatedInput = outcome.updatedInput;
           const answerText = updatedInput && typeof updatedInput === 'object' && 'answers' in (updatedInput as AnyRecord)
             ? formatQuestionAnswers((updatedInput as AnyRecord).answers)
             : outcome.message?.trim() || 'Continue.';
-          touchWatchdog();
           // The answer travels as the next prompt; the engine folds it into
           // the parked ask and continues the same conversation, so this loop
           // round streams the continuation's frames through the same writer.
-          promptPromise = handle.client
-            .request('session/prompt', {
-              sessionId: handle.sessionId,
-              prompt: [{ type: 'text', text: answerText }],
-            })
-            .catch((error: Error) => {
-              promptFailure.error = error;
-              return null;
-            });
+          promptPromise = sendPrompt(answerText);
           race = await awaitTurnEnd();
           continue;
         }

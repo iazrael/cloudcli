@@ -3,6 +3,9 @@
  */
 
 export { AntigravityProvider } from './antigravity.provider.js';
+// Shutdown hook for the resident ACP session processes; consumed by the
+// server's composition root (server/index.ts shutdown sequence).
+export { closeAntigravityAcpSessions } from './antigravity-runtime.provider.js';
 export {
   getAntigravityBrainRoots,
   getAntigravityDataRoot,

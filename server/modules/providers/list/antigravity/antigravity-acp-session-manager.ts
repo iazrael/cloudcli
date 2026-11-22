@@ -25,6 +25,7 @@ import path from 'node:path';
 import { readObjectRecord, readOptionalString } from '@/shared/utils.js';
 
 import { getAntigravityAcpDataRoot } from './antigravity-data-root.js';
+import { buildAntigravitySubprocessEnv } from './antigravity-subprocess-env.js';
 import {
   AntigravityAcpClient,
   AcpConnectionClosedError,
@@ -121,7 +122,7 @@ export class AntigravityAcpSessionManager {
   /**
    * Returns the resident session for the app session, spawning or resuming
    * one when needed. A turn-in-flight session cannot be acquired twice: the
-   * chat gateway queues a session's messages, and an interleaved
+   * gateway rejects sends against a processing session, and an interleaved
    * `session/prompt` would corrupt the engine's turn.
    */
   async acquire(appSessionId: string, options: AcpAcquireOptions): Promise<AcpSessionHandle> {
@@ -151,6 +152,10 @@ export class AntigravityAcpSessionManager {
       enginePath: this.enginePath,
       args: spawnArgs,
       cwd: options.cwd,
+      // Same environment the print path spawns with: the pm2 tree carries
+      // residual SSH variables that flip agy to its file token store and
+      // break auth on every call (antigravity-subprocess-env.ts).
+      env: buildAntigravitySubprocessEnv(),
       onDiagnostic: (line) => console.debug(`[AntigravityAcp] ${line}`),
     });
 

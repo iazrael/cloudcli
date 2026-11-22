@@ -93,6 +93,13 @@ export class AntigravityAcpClient {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
+    // A write racing the engine's death surfaces as an EPIPE error event on
+    // stdin; unhandled, it would crash the whole server. Like the print
+    // path's stdin handling, the exit itself already settles the run.
+    this.child.stdin!.on('error', (error: NodeJS.ErrnoException) => {
+      if (error.code === 'EPIPE') return;
+      this.onDiagnostic?.(`[agy acp] stdin error: ${error.message}`);
+    });
     this.child.stdout!.setEncoding('utf8');
     this.child.stdout!.on('data', (chunk: string) => this.ingest(chunk));
     this.child.stderr!.setEncoding('utf8');
@@ -159,8 +166,6 @@ export class AntigravityAcpClient {
   close(): void {
     if (this.closed) return;
     this.closed = true;
-    // SIGTERM first; the runtime's crash handling escalates to SIGKILL on its
-    // own schedule if the engine ignores it.
     this.child.kill('SIGTERM');
   }
 

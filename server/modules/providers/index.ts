@@ -63,6 +63,7 @@ export { shutdownZCodeRuntime } from './list/zcode/index.js';
 // getAntigravityBrainRoots: used by the File Tree composition root as the
 // read-only allowlist for workspace-external Antigravity plan documents.
 export { getAntigravityBrainRoots } from './list/antigravity/index.js';
+export { closeAntigravityAcpSessions } from './list/antigravity/index.js';
 
 // getClaudeExternalReadOnlyRoots: used by the File Tree composition root as
 // the read-only allowlist for Claude project artifacts referenced from chat.

@@ -72,6 +72,35 @@ function handle(frame) {
       return;
     }
     if (mode === 'acp-cancel') return; // wait for session/cancel
+    if (mode === 'acp-prompt-error') {
+      send({ jsonrpc: '2.0', id: frame.id, error: { code: -32000, message: 'conversation not found' } });
+      promptId = null;
+      return;
+    }
+    if (mode === 'acp-park-exit') {
+      // Park on a question, then die while the client holds the run.
+      const args = { questions: JSON.stringify([{ question: 'q?', options: ['a', 'b'], is_multi_select: false }]) };
+      send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'tool_call', toolCallId: 'call_ask', name: 'ask_question', args, status: 'in_progress' } } });
+      send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'tool_call_update', toolCallId: 'call_ask', name: 'ask_question', args, status: 'pending' } } });
+      send({ jsonrpc: '2.0', id: promptId, result: { stopReason: 'end_turn', usage: { totalTokens: 1 } } });
+      promptId = null;
+      setTimeout(() => process.exit(2), 300);
+      return;
+    }
+    if (mode === 'acp-question-deny') {
+      if (promptCount === 1) {
+        const args = { questions: JSON.stringify([{ question: 'q?', options: ['a', 'b'], is_multi_select: false }]) };
+        send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'tool_call', toolCallId: 'call_ask', name: 'ask_question', args, status: 'in_progress' } } });
+        send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'tool_call_update', toolCallId: 'call_ask', name: 'ask_question', args, status: 'pending' } } });
+        send({ jsonrpc: '2.0', id: promptId, result: { stopReason: 'end_turn', usage: { totalTokens: 1 } } });
+        promptId = null;
+      } else {
+        // The synthetic no-answer prompt: the engine resumes on its own.
+        send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '好的，我自行判断继续。' } } } });
+        send({ jsonrpc: '2.0', id: promptId, result: { stopReason: 'end_turn', usage: { totalTokens: 2 } } });
+      }
+      return;
+    }
     if (mode === 'acp-bg') {
       // Turn ends, then the engine announces a finished daemon command on its
       // own — the frames arrive with no run pump subscribed.
@@ -282,6 +311,62 @@ test('background-task completions published between turns reach the session chan
       'between-turns frames carry the engine conversation id',
     );
   }
+});
+
+test('a prompt rejected by the engine fails the run instead of settling as success', async () => {
+  process.env.AGY_ACP_STUB_MODE = 'acp-prompt-error';
+  const { messages, writer } = createWriter();
+  await assert.rejects(
+    runtime.run('hello', { sessionId: 'sess-acp-perr', cwd: workspaceDir }, writer, context),
+    /conversation not found/,
+  );
+  assert.ok(messages.some((message) => message.kind === 'error'), 'failure surfaced as an error row');
+  assert.ok(messages.some((message) => message.kind === 'complete'), 'run still settles');
+  const complete = messages.find((message) => message.kind === 'complete');
+  assert.equal(complete?.exitCode, 1);
+});
+
+test('an engine death while parked on a question fails the run instead of hanging', async () => {
+  process.env.AGY_ACP_STUB_MODE = 'acp-park-exit';
+  const { messages, writer } = createWriter();
+  const runPromise = runtime.run('start', { sessionId: 'sess-acp-parkexit', cwd: workspaceDir }, writer, context);
+  await waitFor(() => (runtime.permissions?.listPending('sess-acp-parkexit') ?? []).length > 0);
+  await assert.rejects(runPromise, /exited|Antigravity/, 'the parked run wakes on engine death');
+  assert.ok(messages.some((message) => message.kind === 'complete'), 'run settles');
+});
+
+test('a pending permission card holds the watchdog past the idle timeout', async () => {
+  process.env.AGY_ACP_STUB_MODE = 'acp-permission';
+  process.env.CLOUDCLI_ANTIGRAVITY_IDLE_TIMEOUT = '2s';
+  try {
+    const { messages, writer } = createWriter();
+    const runPromise = runtime.run('write the file', { sessionId: 'sess-acp-wd', cwd: workspaceDir }, writer, context);
+    await waitFor(() => (runtime.permissions?.listPending('sess-acp-wd') ?? []).length > 0);
+    // Longer than the 2s idle timeout: a watchdog that ignored the pending
+    // card would have killed the engine here.
+    await new Promise((resolve) => setTimeout(resolve, 3500));
+    assert.equal(runtime.permissions?.listPending('sess-acp-wd').length, 1, 'card still answerable');
+    runtime.permissions?.resolve((runtime.permissions?.listPending('sess-acp-wd')[0])?.requestId as string, { allow: true });
+    const result = await runPromise;
+    assert.deepEqual(result, { sessionId: 'acp-conv-1', success: true });
+    assert.ok(!messages.some((message) => message.kind === 'error' && String(message.content).includes('produced no output')), 'watchdog never fired');
+  } finally {
+    delete process.env.CLOUDCLI_ANTIGRAVITY_IDLE_TIMEOUT;
+  }
+});
+
+test('a denied question lets the engine resume on its own judgment', async () => {
+  process.env.AGY_ACP_STUB_MODE = 'acp-question-deny';
+  process.env.AGY_ACP_PROMPTS_LOG = promptsLog;
+  const { messages, writer } = createWriter();
+  const runPromise = runtime.run('start', { sessionId: 'sess-acp-deny', cwd: workspaceDir }, writer, context);
+  await waitFor(() => (runtime.permissions?.listPending('sess-acp-deny') ?? []).length > 0);
+  runtime.permissions?.resolve((runtime.permissions?.listPending('sess-acp-deny')[0])?.requestId as string, { allow: false });
+  const result = await runPromise;
+  assert.deepEqual(result, { sessionId: 'acp-conv-1', success: true });
+  const prompts = (await fs.promises.readFile(promptsLog, 'utf8')).trim().split('\n').map((line) => JSON.parse(line)).slice(-2);
+  assert.match(String(prompts[1].text), /did not provide answers/, 'the synthetic no-answer prompt reached the engine');
+  assert.ok(messages.some((message) => message.kind === 'permission_cancelled'), 'denied card retracted');
 });
 
 test('a permission request parks on the card and the gateway answer continues the turn', async () => {
