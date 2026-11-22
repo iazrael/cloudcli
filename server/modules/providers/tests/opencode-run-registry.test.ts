@@ -103,7 +103,11 @@ test('toOpenCodeTokenBudget sums cache reads into input and skips empty totals',
   assert.equal(toOpenCodeTokenBudget({ input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 }), null);
   assert.deepEqual(
     toOpenCodeTokenBudget({ input: 19154, output: 10, reasoning: 435, cacheRead: 2048, cacheWrite: 0 }),
-    { used: 21647, inputTokens: 21202, outputTokens: 10, breakdown: { input: 21202, output: 10 } },
+    { used: 21647, inputTokens: 21202, outputTokens: 10, total: 0, breakdown: { input: 21202, output: 10 } },
+  );
+  assert.deepEqual(
+    toOpenCodeTokenBudget({ input: 19154, output: 10, reasoning: 435, cacheRead: 2048, cacheWrite: 0 }, 200_000),
+    { used: 21647, inputTokens: 21202, outputTokens: 10, total: 200_000, breakdown: { input: 21202, output: 10 } },
   );
 });
 

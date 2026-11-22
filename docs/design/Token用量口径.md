@@ -95,3 +95,8 @@ Antigravity 转录较小，保持整份读取。
 - 历史统计依赖原生记录里的逐条 usage；引擎若某天不再写逐条 usage，`used` 会回落到累计量（不会变成 0）。
 - 老版本服务端 + 新前端：没有 `cumulativeUsage` 时四行显示 `—`，不回退成用上下文冒充总量。
 - 累计值含缓存命中，数值会明显大于直觉的「新生成 token」，这是引擎账单口径，详情里的输入/输出行与之同源。
+
+
+## OpenCode（2026-11-22 补分母）
+
+`GET /api/session/:id` 的 tokens 只有五个分量（input/output/reasoning/cacheRead/cacheWrite），没有窗口字段——分母从 opencode 自缓存的 models.dev 目录（`opencode.db` 的 kv `models-dev:v2:catalog`）按会话模型 `<providerID>/<modelID>` 读 `limit.context`；目录缺失或模型无声明的，兜底 200K（与 ZCode 同例）。`toOpenCodeTokenBudget` 挂上 total 后，更多选项/徽标的用量行即显示。

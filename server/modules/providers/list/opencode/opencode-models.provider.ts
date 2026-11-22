@@ -252,6 +252,8 @@ const OPENCODE_FAMILY_DESCRIPTIONS: Record<string, string> = {
 
 type OpenCodeCatalogModelEntry = {
   name?: string;
+  /** models.dev window fields, in tokens — the usage denominator's source. */
+  limit?: { context?: number; output?: number };
   /** v2.2+ layout: effort tiers live under `capabilities.reasoning.effort`. */
   capabilities?: { reasoning?: { supported?: boolean; effort?: unknown[] } };
   /** Pre-v2.2 layout. */
@@ -305,6 +307,22 @@ const readOpenCodeCatalogEntries = (): Map<string, OpenCodeCatalogModelEntry> =>
   }
   return entries;
 };
+
+export const DEFAULT_OPENCODE_CONTEXT_WINDOW = 200_000;
+
+/**
+ * Reads the context window one model declares in the cached models.dev
+ * catalog (`limit.context`, in tokens).
+ *
+ * Consumer: opencode-runtime's token budget denominator (composer usage bar).
+ * Returns null when the catalog, the family or the model is missing or
+ * silent — callers fall back to DEFAULT_OPENCODE_CONTEXT_WINDOW.
+ */
+export function readOpenCodeModelContextLimit(modelRef: { providerID: string; id: string }): number | null {
+  const record = readOpenCodeCatalogEntries().get(`${modelRef.providerID}/${modelRef.id}`);
+  const context = Number(readObjectRecord(record?.limit)?.context);
+  return Number.isFinite(context) && context > 0 ? context : null;
+}
 
 const buildOpenCodeModelOption = (
   value: string,

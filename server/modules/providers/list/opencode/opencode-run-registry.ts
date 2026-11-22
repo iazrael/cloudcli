@@ -66,10 +66,11 @@ export type OpenCodeActiveRun = {
   settle: (settlement: OpenCodeRunSettlement) => void;
 };
 
-/** Session token totals → the status-frame budget shape other providers emit. */
+/** Session token totals → the status-frame budget shape other providers emit. `contextWindow` is the model's declared window (null when unknown; the composer bar needs it). */
 export function toOpenCodeTokenBudget(
   tokens: NonNullable<OpenCodeSessionSnapshot['tokens']>,
-): { used: number; inputTokens: number; outputTokens: number; breakdown: { input: number; output: number } } | null {
+  contextWindow?: number | null,
+): { used: number; inputTokens: number; outputTokens: number; total: number; breakdown: { input: number; output: number } } | null {
   const used = tokens.input + tokens.output + tokens.reasoning + tokens.cacheRead + tokens.cacheWrite;
   if (used <= 0) {
     return null;
@@ -79,6 +80,7 @@ export function toOpenCodeTokenBudget(
     used,
     inputTokens,
     outputTokens: tokens.output,
+    total: Math.max(0, Math.round(contextWindow ?? 0)),
     breakdown: { input: inputTokens, output: tokens.output },
   };
 }

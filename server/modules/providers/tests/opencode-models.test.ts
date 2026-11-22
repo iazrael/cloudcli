@@ -10,6 +10,7 @@ import { closeConnection, initializeDatabase } from '@/modules/database/index.js
 import {
   OpenCodeProviderModels,
   OPENCODE_PREDEFINED_MODELS,
+  readOpenCodeModelContextLimit,
 } from '@/modules/providers/list/opencode/opencode-models.provider.js';
 
 const OPENCODE_ENV_KEYS = [
@@ -545,4 +546,43 @@ test('OpenCode composes the provider prefix into session model ids', async () =>
     }
     await rm(tempSessionsDirectory, { recursive: true, force: true });
   }
+});
+
+test('readOpenCodeModelContextLimit reads limit.context from the cached catalog', async () => {
+  await withOpenCodeHome(
+    async (homeDir) => {
+      const cliPath = await writeFakeOpenCodeCli(homeDir, ['opencode/beam-free'].join('\n'));
+      process.env.CLOUDCLI_OPENCODE_CLI = cliPath;
+
+      const dbPath = path.join(homeDir, '.local', 'share', 'opencode', 'opencode.db');
+      await mkdir(path.dirname(dbPath), { recursive: true });
+      const db = new Database(dbPath);
+      try {
+        db.exec('CREATE TABLE kv (key text PRIMARY KEY, value text NOT NULL);');
+        db.prepare('INSERT INTO kv (key, value) VALUES (?, ?)').run(
+          'models-dev:catalog',
+          JSON.stringify({
+            updatedAt: 1,
+            digest: 'd',
+            body: JSON.stringify({
+              opencode: {
+                models: {
+                  'beam-free': {
+                    name: 'Beam Free',
+                    limit: { context: 1_000_000, output: 64_000 },
+                  },
+                },
+              },
+            }),
+          }),
+        );
+      } finally {
+        db.close();
+      }
+    },
+    async () => {
+      assert.equal(readOpenCodeModelContextLimit({ providerID: 'opencode', id: 'beam-free' }), 1_000_000);
+      assert.equal(readOpenCodeModelContextLimit({ providerID: 'opencode', id: 'unknown-model' }), null);
+    },
+  );
 });

@@ -72,6 +72,7 @@ import {
 import { OpenCodeInteractionBridge } from './opencode-interaction-bridge.js';
 import { buildOpenCodePromptFiles, buildOpenCodePromptText } from './opencode-prompt-attachments.js';
 import { OpenCodeRunRegistry, toOpenCodeTokenBudget } from './opencode-run-registry.js';
+import { DEFAULT_OPENCODE_CONTEXT_WINDOW, readOpenCodeModelContextLimit } from './opencode-models.provider.js';
 import { OpenCodeServiceError, OpenCodeServiceSupervisor } from './opencode-service.js';
 import {
   OpenCodeSessionSettingsApplier,
@@ -289,13 +290,17 @@ export function createOpenCodeRuntime(dependencies: RuntimeDependencies = {}): I
     appSessionId: string,
     providerSessionId: string,
     writer: ProviderRuntimeWriter,
+    sessionModelRef: { providerID: string; id: string } | null,
   ): Promise<void> => {
     if (!client) {
       return;
     }
     try {
       const snapshot = await client.getSession(providerSessionId);
-      const budget = snapshot.tokens ? toOpenCodeTokenBudget(snapshot.tokens) : null;
+      const contextWindow = sessionModelRef
+        ? readOpenCodeModelContextLimit(sessionModelRef) ?? DEFAULT_OPENCODE_CONTEXT_WINDOW
+        : DEFAULT_OPENCODE_CONTEXT_WINDOW;
+      const budget = snapshot.tokens ? toOpenCodeTokenBudget(snapshot.tokens, contextWindow) : null;
       if (budget) {
         writer.send(createNormalizedMessage({
           id: generateMessageId(PROVIDER),
@@ -355,6 +360,9 @@ export function createOpenCodeRuntime(dependencies: RuntimeDependencies = {}): I
     client = activeClient;
 
     let providerSessionId = context.resolveProviderSessionId(appSessionId);
+    // The session's model reference feeds the token budget's context window;
+    // resolved inside the try, read again after the run settles.
+    let sessionModelRef: ReturnType<typeof parseOpenCodeModelRef> = null;
     try {
       if (!providerSessionId) {
         // No title on purpose: the engine names a session it has not named
@@ -384,9 +392,9 @@ export function createOpenCodeRuntime(dependencies: RuntimeDependencies = {}): I
           console.warn('[OpenCode] unable to load provider models for effort validation:', error);
         }
         const effort = resolveModelEffort(resolvedModel, options.effort, effortModels);
-        const modelRef = parseOpenCodeModelRef(resolvedModel, effort);
-        if (modelRef) {
-          await settings.applyModel(activeClient, providerSessionId, modelRef);
+        sessionModelRef = parseOpenCodeModelRef(resolvedModel, effort);
+        if (sessionModelRef) {
+          await settings.applyModel(activeClient, providerSessionId, sessionModelRef);
         } else {
           console.warn(`[OpenCode] cannot parse model reference "${resolvedModel}"; the session keeps its previous model`);
         }
@@ -454,7 +462,7 @@ export function createOpenCodeRuntime(dependencies: RuntimeDependencies = {}): I
       writer.send(frame);
     }
 
-    await sendTokenBudget(appSessionId, providerSessionId, writer);
+    await sendTokenBudget(appSessionId, providerSessionId, writer, sessionModelRef);
 
     if (activeRun.aborted) {
       // The user stopped this run: the gateway's abort handler already

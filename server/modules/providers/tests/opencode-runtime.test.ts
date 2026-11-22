@@ -264,7 +264,7 @@ test('first send creates the session in the project directory, applies mode and 
     assert.equal(frames[2].id, 'msg_a_text_0');
     assert.equal(frames[2].role, 'assistant');
     assert.equal(frames[2].content, 'Hi!');
-    assert.deepEqual(frames[4].tokenBudget, { used: 18, inputTokens: 12, outputTokens: 5, breakdown: { input: 12, output: 5 } });
+    assert.deepEqual(frames[4].tokenBudget, { used: 18, inputTokens: 12, outputTokens: 5, total: 1000000, breakdown: { input: 12, output: 5 } });
     assert.equal(frames[5].success, true);
     assert.equal(frames[5].exitCode, 0);
   });
