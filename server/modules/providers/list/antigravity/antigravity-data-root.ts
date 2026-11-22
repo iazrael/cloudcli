@@ -27,6 +27,20 @@ export function getAntigravityDataRoot(): string {
 }
 
 /**
+ * Resolves the ACP runtime's managed app-data directory (`~/.gemini/
+ * cloudcli-acp` by default). The resident `agy acp` process writes its
+ * conversations, brain transcripts and annotations here (a `--app-data-dir`
+ * sibling of the user's own `antigravity-cli` directory, whose settings pin
+ * `toolPermission`). Consumed by the runtime's token-usage persistence and by
+ * the transcript/brain path helpers below. `CLOUDCLI_ANTIGRAVITY_ACP_DATA_DIR`
+ * overrides it so tests can point reads at a fixture tree.
+ */
+export function getAntigravityAcpDataRoot(): string {
+  return process.env.CLOUDCLI_ANTIGRAVITY_ACP_DATA_DIR
+    ?? path.join(os.homedir(), '.gemini', 'cloudcli-acp');
+}
+
+/**
  * Resolves the conversation summaries SQLite database that agy maintains for
  * session indexing. Consumed by the session synchronizer (reads rows) and by
  * the sessions watcher (matches the file name it listens for).
@@ -62,6 +76,7 @@ export function getAntigravityOauthTokenPath(): string {
 export function getAntigravityBrainRoots(): string[] {
   return [
     path.join(getAntigravityDataRoot(), 'brain'),
+    path.join(getAntigravityAcpDataRoot(), 'brain'),
     path.join(os.homedir(), '.gemini', 'antigravity', 'brain'),
   ];
 }
@@ -76,6 +91,8 @@ export function getAntigravityBrainRoots(): string[] {
 export function getAntigravityTranscriptCandidates(safeSessionId: string): string[] {
   return [
     path.join(getAntigravityDataRoot(), 'brain', safeSessionId, '.system_generated', 'logs', 'transcript.jsonl'),
+    // The ACP runtime's sessions live under the managed data directory.
+    path.join(getAntigravityAcpDataRoot(), 'brain', safeSessionId, '.system_generated', 'logs', 'transcript.jsonl'),
     path.join(os.homedir(), '.gemini', 'antigravity', 'brain', safeSessionId, '.system_generated', 'logs', 'transcript.jsonl'),
   ];
 }

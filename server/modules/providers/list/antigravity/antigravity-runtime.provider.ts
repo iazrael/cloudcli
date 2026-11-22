@@ -42,7 +42,7 @@ import {
   sanitizeLeafDirectoryName,
 } from '@/shared/utils.js';
 
-import { getAntigravityDataRoot, getAntigravityTranscriptCandidates } from './antigravity-data-root.js';
+import { getAntigravityAcpDataRoot, getAntigravityDataRoot, getAntigravityTranscriptCandidates } from './antigravity-data-root.js';
 import { tryResolveEnginePath } from './antigravity-engine-path.js';
 import { buildAntigravitySubprocessEnv } from './antigravity-subprocess-env.js';
 import { createAgentTranscriptTail } from './antigravity-agent-tail.js';
@@ -89,10 +89,13 @@ const tokenUsagePersistChains = new Map<string, Promise<void>>();
  */
 async function persistAntigravityTokenUsage(sessionId: string, tokenBudget: unknown): Promise<void> {
   const safeId = sanitizeLeafDirectoryName(sessionId, 'antigravity session id');
-  const usageFile = path.join(getAntigravityDataRoot(), 'brain', safeId, 'token_usage.json');
-  // The brain directory only exists once the engine wrote a transcript there;
-  // snapshots for unknown sessions have nowhere to land.
-  if (!fsSync.existsSync(path.dirname(usageFile))) return;
+  // ACP sessions keep their brain under the managed data directory; the first
+  // root that already holds this session's brain wins.
+  const brainDir = [getAntigravityDataRoot(), getAntigravityAcpDataRoot()]
+    .map((root) => path.join(root, 'brain', safeId))
+    .find((dir) => fsSync.existsSync(dir));
+  if (!brainDir) return;
+  const usageFile = path.join(brainDir, 'token_usage.json');
   const content = JSON.stringify(tokenBudget, null, 2);
   const write = (tokenUsagePersistChains.get(safeId) ?? Promise.resolve())
     .then(() => fsp.writeFile(usageFile, content, 'utf8'));
@@ -1358,6 +1361,61 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
       manager.setBusy(sessionKey, true);
       installAcpSessionRouter(manager, sessionKey, context);
       acpLiveRunPumps.add(sessionKey);
+
+      // Model and effort resolution, shared with the print path's flag
+      // building: the merged catalog decides whether a base model id encodes
+      // effort as an id suffix. A catalog lookup failure degrades to raw ids.
+      const model = readOptionalString(options.model);
+      const effort = readOptionalString(options.effort);
+      const catalog = await context.getProviderModels().catch(() => null);
+      const resolvedModel = model && catalog
+        ? findCatalogOptionForModelString(model, catalog.OPTIONS)
+        : null;
+      const modelArgs = resolveAntigravityModelArgs(
+        model,
+        effort ?? resolvedModel?.labelTier ?? undefined,
+        resolvedModel?.option,
+      );
+
+      // Permission-mode parity: map the app's mode onto the engine session
+      // (bypassPermissions rode the spawn flag above). A no-op when the
+      // session already runs the requested mode; a failed set_mode keeps the
+      // engine's current mode rather than failing the turn.
+      const targetMode = permissionMode === 'acceptEdits' ? 'accept-edits'
+        : permissionMode === 'plan' ? 'plan'
+        : permissionMode === 'default' ? 'default'
+        : null;
+      if (targetMode && handle.availableModeIds.includes(targetMode) && handle.currentModeId !== targetMode) {
+        try {
+          await handle.client.request('session/set_mode', { sessionId: handle.sessionId, modeId: targetMode });
+          handle.currentModeId = targetMode;
+        } catch (error) {
+          console.warn(`[AntigravityAcp] set_mode ${targetMode} failed; keeping ${handle.currentModeId}:`, error);
+        }
+      }
+
+      // Model selection, best effort: agy's ACP model ids carry the effort
+      // tier as a suffix, so the catalog-resolved family and tier are joined
+      // and matched against the session's available list; an unknown
+      // combination keeps the engine's current model. The real-engine
+      // acceptance pass verifies the switch actually takes effect.
+      if (modelArgs.model) {
+        const candidates = [
+          modelArgs.effort ? `${modelArgs.model}-${modelArgs.effort}` : null,
+          modelArgs.model,
+        ].filter((id): id is string => Boolean(id));
+        const target = handle.availableModelIds.length > 0
+          ? candidates.find((id) => handle.availableModelIds.includes(id)) ?? null
+          : null;
+        if (target && handle.currentModelId !== target) {
+          try {
+            await handle.client.request('session/set_model', { sessionId: handle.sessionId, modelId: target });
+            handle.currentModelId = target;
+          } catch (error) {
+            console.warn(`[AntigravityAcp] set_model ${target} failed; keeping ${handle.currentModelId}:`, error);
+          }
+        }
+      }
 
       const capturedSessionId = handle.sessionId;
       writer.setSessionId?.(capturedSessionId);

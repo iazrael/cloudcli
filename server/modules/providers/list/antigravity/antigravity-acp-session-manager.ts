@@ -20,11 +20,11 @@
  */
 
 import fsp from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 
 import { readObjectRecord, readOptionalString } from '@/shared/utils.js';
 
+import { getAntigravityAcpDataRoot } from './antigravity-data-root.js';
 import {
   AntigravityAcpClient,
   AcpConnectionClosedError,
@@ -35,9 +35,9 @@ import {
 /** The app-data directory name under `~/.gemini/` this runtime manages. */
 export const ACP_APP_DATA_DIR_NAME = 'cloudcli-acp';
 
-/** `--app-data-dir` is relative to the Gemini dir; resolve it for settings writes. */
+/** Resolves the managed directory for settings writes (tests override via env). */
 function managedDataDirPath(): string {
-  return path.join(os.homedir(), '.gemini', ACP_APP_DATA_DIR_NAME);
+  return getAntigravityAcpDataRoot();
 }
 
 /** How many workspace paths the managed trustedWorkspaces list retains. */
@@ -75,6 +75,8 @@ export type AcpSessionHandle = {
   currentModeId: string | null;
   availableModeIds: string[];
   currentModelId: string | null;
+  /** The engine's settable model ids (tier-suffixed families included). */
+  availableModelIds: string[];
   /** False when a requested resume failed and a fresh conversation was opened. */
   continuity: 'resumed' | 'started' | 'restarted';
 };
@@ -258,6 +260,7 @@ export class AntigravityAcpSessionManager {
     const modes = readObjectRecord(payload?.modes);
     const modeList = Array.isArray(modes?.availableModes) ? modes.availableModes : [];
     const models = readObjectRecord(payload?.models);
+    const modelList = Array.isArray(models?.availableModels) ? models.availableModels : [];
     return {
       client,
       sessionId,
@@ -266,6 +269,9 @@ export class AntigravityAcpSessionManager {
         .map((mode) => readOptionalString(readObjectRecord(mode)?.id))
         .filter((id): id is string => Boolean(id)),
       currentModelId: readOptionalString(models?.currentModelId) ?? null,
+      availableModelIds: modelList
+        .map((model) => readOptionalString(readObjectRecord(model)?.modelId))
+        .filter((id): id is string => Boolean(id)),
       continuity,
     };
   }
