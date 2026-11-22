@@ -37,6 +37,7 @@ function createDependencies(
       getSessionById: () => null,
       getSessionByProviderSessionId: () => null,
       createAppSession: () => ({ sessionId: 'app-session-1' }),
+      fetchHistory: async () => ({ messages: [], total: 0, hasMore: false, offset: 0, limit: null }),
     },
     // A registry stand-in: the runtime writes straight to the audience, which
     // is all the tests above this file's registration tests need.
@@ -420,6 +421,7 @@ test('Agent route continues with the effort recorded for the session', async () 
         : null),
       getSessionByProviderSessionId: () => null,
       createAppSession: () => { throw new Error('a continued session must not create a row'); },
+      fetchHistory: async () => ({ messages: [], total: 0, hasMore: false, offset: 0, limit: null }),
     },
     queryOpenCode: (async (_prompt: string, options: { effort?: string }) => {
       opencodeCalls.push(options);
@@ -731,6 +733,7 @@ test('Agent route reads no model catalog for a continued session of an unregiste
       }),
       getSessionByProviderSessionId: () => null,
       createAppSession: () => { throw new Error('a continued session must not create a row'); },
+      fetchHistory: async () => ({ messages: [], total: 0, hasMore: false, offset: 0, limit: null }),
     },
   }), async (baseUrl) => {
     const response = await fetch(`${baseUrl}/api/agent`, {

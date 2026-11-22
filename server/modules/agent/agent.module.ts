@@ -52,8 +52,9 @@ export function createAgentModule(externalDependencies: AgentExternalDependencie
     sessions: {
       getSessionById: (sessionId) => sessionsDb.getSessionById(sessionId),
       getSessionByProviderSessionId: (providerSessionId) => sessionsDb.getSessionByProviderSessionId(providerSessionId),
-      createAppSession: (provider, projectPath, initialMessage) =>
-        sessionsService.createAppSession(provider as LLMProvider, projectPath, initialMessage),
+      createAppSession: (provider, projectPath, initialMessage, options) =>
+        sessionsService.createAppSession(provider as LLMProvider, projectPath, initialMessage, options),
+      fetchHistory: (sessionId, options) => sessionsService.fetchHistory(sessionId, options),
     },
     runs: chatRunRegistry,
     runtime: {
