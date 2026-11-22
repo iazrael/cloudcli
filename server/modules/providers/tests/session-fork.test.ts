@@ -7,6 +7,10 @@ import test from 'node:test';
 import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import { sessionsService } from '@/modules/providers/services/sessions.service.js';
+import {
+  getReportedClaudeContextWindow,
+  rememberClaudeContextWindow,
+} from '@/modules/providers/services/claude-usage.js';
 import type { IProviderFork } from '@/shared/interfaces.js';
 
 const SOURCE_ID = 'fork-source';
@@ -187,5 +191,20 @@ test('forking a session that does not exist is a 404', async () => {
       () => sessionsService.forkSessionById('no-such-session'),
       (error: Error & { code?: string }) => error.code === 'SESSION_NOT_FOUND',
     );
+  });
+});
+
+test('a fork inherits the context window the source session reported', async () => {
+  await withForkableClaude(async ({ directory }) => {
+    seedSource(directory);
+    rememberClaudeContextWindow('native-source', 1_000_000);
+
+    const forked = await sessionsService.forkSessionById(SOURCE_ID, {});
+    const row = sessionsDb.getSessionById(forked.sessionId);
+
+    assert.equal(row?.provider_session_id, 'native-fork');
+    // Without the carry-over the fork's first reading divides its tokens by
+    // the configured/default window and draws 5x the real occupancy.
+    assert.equal(getReportedClaudeContextWindow(row?.provider_session_id), 1_000_000);
   });
 });

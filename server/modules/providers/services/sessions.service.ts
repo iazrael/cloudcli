@@ -7,6 +7,10 @@ import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import { providerRuntimeService } from '@/modules/providers/services/provider-runtime.service.js';
 import { listBusyClaudeCliSessions } from '@/modules/providers/services/claude-cli-liveness.service.js';
 import { sessionHistoryCache } from '@/modules/providers/services/session-history-cache.service.js';
+import {
+  getReportedClaudeContextWindow,
+  rememberClaudeContextWindow,
+} from '@/modules/providers/services/claude-usage.js';
 import type {
   BackgroundTaskSummary,
   FetchHistoryOptions,
@@ -603,6 +607,17 @@ export const sessionsService = {
       model: source.model,
       effort: source.effort,
     });
+
+    // The fork resumes the same conversation under a new provider session id,
+    // so the window the SDK reported for the source would no longer be found.
+    // Without it the page's first reading measures a 1M conversation against
+    // the 200k default until the fork's first turn reports its own.
+    if (provider === 'claude') {
+      const reportedWindow = getReportedClaudeContextWindow(source.provider_session_id);
+      if (reportedWindow) {
+        rememberClaudeContextWindow(forked.providerSessionId, reportedWindow);
+      }
+    }
 
     await broadcastSessionUpserted(forkSessionId);
 
