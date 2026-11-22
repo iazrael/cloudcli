@@ -104,7 +104,7 @@ test('an Agent with no run_in_background holds the process open', () => {
 
 test('a foreground Agent does not', () => {
   // It never pushes a follow-up turn, so holding for it would pin the process
-  // for the full BG_WAIT_CEILING_MS.
+  // for the full hold ceiling.
   assert.equal(startsBackgroundWork(turn({ name: 'Agent', input: { run_in_background: false } })), false);
 });
 
