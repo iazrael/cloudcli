@@ -26,18 +26,15 @@ export function getAntigravityDataRoot(): string {
     ?? path.join(os.homedir(), '.gemini', 'antigravity-cli');
 }
 
+/** The runtime passes this Gemini-relative directory to agy when starting ACP. */
+export const ACP_APP_DATA_DIR_NAME = 'cloudcli-acp';
+
 /**
- * Resolves the ACP runtime's managed app-data directory (`~/.gemini/
- * cloudcli-acp` by default). The resident `agy acp` process writes its
- * conversations, brain transcripts and annotations here (a `--app-data-dir`
- * sibling of the user's own `antigravity-cli` directory, whose settings pin
- * `toolPermission`). Consumed by the runtime's token-usage persistence and by
- * the transcript/brain path helpers below. `CLOUDCLI_ANTIGRAVITY_ACP_DATA_DIR`
- * overrides it so tests can point reads at a fixture tree.
+ * ACP settings, transcript lookups, and token snapshots share the same root.
+ * Used by the Antigravity runtime, session manager, and brain path helpers.
  */
 export function getAntigravityAcpDataRoot(): string {
-  return process.env.CLOUDCLI_ANTIGRAVITY_ACP_DATA_DIR
-    ?? path.join(os.homedir(), '.gemini', 'cloudcli-acp');
+  return path.join(os.homedir(), '.gemini', ACP_APP_DATA_DIR_NAME);
 }
 
 /**
@@ -67,7 +64,7 @@ export function getAntigravityOauthTokenPath(): string {
 
 /**
  * Returns the brain directory roots whose contents the File Tree module may
- * read on the user's behalf: the current data root's `brain` directory plus
+ * read on the user's behalf: the print and ACP roots' `brain` directories plus
  * the pre-1.1 legacy `~/.gemini/antigravity/brain` tree kept for old
  * installations. Consumed by the File Tree composition root, which injects
  * them as the read-only allowlist for external plan documents that Antigravity
@@ -83,7 +80,7 @@ export function getAntigravityBrainRoots(): string[] {
 
 /**
  * Returns transcript.jsonl candidates for one session, newest layout first:
- * the current data root's brain directory, then the pre-1.1 legacy
+ * the print and ACP brain directories, then the pre-1.1 legacy
  * `~/.gemini/antigravity` tree kept for old installations. Consumed by the
  * sessions provider's history loader. `safeSessionId` must already be
  * sanitized with `sanitizeLeafDirectoryName`.

@@ -12,77 +12,102 @@
  * would leave the bridge dead. The user's own directory is never touched.
  *
  * Conversation continuity survives process restarts: agy's ACP session ids
- * are its conversation ids, and `session/load` restores them (probe-verified
- * against agy 1.5.14). A failed load degrades to a fresh session and is
- * reported through the handle so the runtime can tell the user.
+ * are its conversation ids, and `session/load` restores them. A failed load
+ * fails the turn so the app session keeps its conversation mapping.
  *
  * @module antigravity-acp-session-manager
  */
 
+import { randomUUID } from 'node:crypto';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 
-import { readObjectRecord, readOptionalString } from '@/shared/utils.js';
+import { readObjectRecord, readOptionalString, sanitizeLeafDirectoryName } from '@/shared/utils.js';
 
-import { getAntigravityAcpDataRoot } from './antigravity-data-root.js';
+import { ACP_APP_DATA_DIR_NAME, getAntigravityAcpDataRoot, getAntigravityDataRoot } from './antigravity-data-root.js';
 import { buildAntigravitySubprocessEnv } from './antigravity-subprocess-env.js';
 import {
   AntigravityAcpClient,
   AcpConnectionClosedError,
-  type AcpNotification,
-  type AcpServerRequestHandler,
 } from './antigravity-acp-client.js';
 
-/** The app-data directory name under `~/.gemini/` this runtime manages. */
-export const ACP_APP_DATA_DIR_NAME = 'cloudcli-acp';
+const TRUSTED_WORKSPACES_LIMIT = 40;
+let settingsWrite = Promise.resolve();
 
-/** Resolves the managed directory for settings writes (tests override via env). */
-function managedDataDirPath(): string {
-  return getAntigravityAcpDataRoot();
+/** Updates the managed settings before spawn. Also used by the settings tests. */
+export function ensureAcpManagedDataDir(cwd: string): Promise<void> {
+  const dir = getAntigravityAcpDataRoot();
+  const write = settingsWrite.then(() => updateManagedSettings(dir, cwd));
+  // One failed update must not poison the queue for later sessions.
+  settingsWrite = write.catch(() => {});
+  return write;
 }
 
-/** How many workspace paths the managed trustedWorkspaces list retains. */
-const TRUSTED_WORKSPACES_LIMIT = 40;
-
-/**
- * Creates the managed data directory and pins `request-review` there, adding
- * the session's workspace to the trusted list so the engine does not halt on
- * a trust prompt the ACP surface has no dialog for. Idempotent; keeps other
- * workspaces already listed.
- */
-export async function ensureAcpManagedDataDir(cwd: string): Promise<void> {
-  const dir = managedDataDirPath();
+async function updateManagedSettings(dir: string, cwd: string): Promise<void> {
   await fsp.mkdir(dir, { recursive: true });
   const settingsPath = path.join(dir, 'settings.json');
   let settings: Record<string, unknown> = {};
   try {
-    settings = readObjectRecord(JSON.parse(await fsp.readFile(settingsPath, 'utf8'))) ?? {};
-  } catch {
-    // First run or a torn write: start from a clean managed object.
+    const current = readObjectRecord(JSON.parse(await fsp.readFile(settingsPath, 'utf8')));
+    if (!current) throw new Error('Antigravity ACP settings must be a JSON object');
+    settings = current;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
   settings.toolPermission = 'request-review';
   const trusted = Array.isArray(settings.trustedWorkspaces)
     ? settings.trustedWorkspaces.filter((entry): entry is string => typeof entry === 'string')
     : [];
   settings.trustedWorkspaces = [...trusted.filter((entry) => entry !== cwd), cwd].slice(-TRUSTED_WORKSPACES_LIMIT);
-  await fsp.writeFile(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, 'utf8');
+  const temporaryPath = path.join(dir, `.settings-${randomUUID()}.tmp`);
+  try {
+    await fsp.writeFile(temporaryPath, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+    await fsp.rename(temporaryPath, settingsPath);
+  } finally {
+    await fsp.rm(temporaryPath, { force: true });
+  }
 }
 
-/** The session facts `session/new` / `session/load` hand back. */
-export type AcpSessionHandle = {
+async function hasNativeConversation(dataRoot: string, sessionId: string): Promise<boolean> {
+  const base = path.join(dataRoot, 'conversations', sessionId);
+  try {
+    if ((await fsp.stat(`${base}.db`)).isFile()) return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  try {
+    return (await fsp.stat(base)).isDirectory();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    return false;
+  }
+}
+
+async function checkResumeSource(sessionId: string): Promise<void> {
+  const safeId = sanitizeLeafDirectoryName(sessionId, 'Antigravity session ID');
+  if (safeId === '.') throw new Error('Invalid Antigravity session ID.');
+  // agy 1.5.14 acknowledges loads for missing IDs. The session is only
+  // usable if its native conversation is present in agy's active data root.
+  if (await hasNativeConversation(getAntigravityAcpDataRoot(), safeId)) return;
+  if (await hasNativeConversation(getAntigravityDataRoot(), safeId)) {
+    throw new Error('This Antigravity conversation belongs to print mode. Continue it in print mode or start a new ACP conversation.');
+  }
+  throw new Error(`Antigravity ACP conversation ${safeId} was not found in the managed data directory.`);
+}
+
+/** Session identity and configuration used by the runtime after it acquires a turn. */
+type AcpSessionHandle = {
   client: AntigravityAcpClient;
   /** agy conversation id (equals the ACP session id). */
   sessionId: string;
-  currentModeId: string | null;
   availableModeIds: string[];
   currentModelId: string | null;
   /** The engine's settable model ids (tier-suffixed families included). */
   availableModelIds: string[];
-  /** False when a requested resume failed and a fresh conversation was opened. */
-  continuity: 'resumed' | 'started' | 'restarted';
+  continuity: 'resumed' | 'started';
 };
 
-export type AcpAcquireOptions = {
+type AcpAcquireOptions = {
   cwd: string;
   /** agy conversation id to restore via `session/load`; null opens a new one. */
   resumeProviderSessionId?: string | null;
@@ -90,177 +115,218 @@ export type AcpAcquireOptions = {
   skipPermissions?: boolean;
 };
 
-export type AcpManagerEvents = {
-  /** The engine process died; in-flight runs must settle from this. */
-  onSessionExit: (appSessionId: string, info: { code: number | null; signal: NodeJS.Signals | null }) => void;
+type AcpManagerEvents = {
+  onSessionExit: (appSessionId: string, info: { code: number | null; signal: NodeJS.Signals | null }, client: AntigravityAcpClient) => void;
+  hasPendingCards?: (appSessionId: string) => boolean;
 };
 
-/** Idle minutes after which an idle session's process is recycled; 0 keeps it forever. */
 function readIdleRecycleMs(): number {
   const minutes = Number(process.env.CLOUDCLI_ANTIGRAVITY_ACP_IDLE_MINUTES ?? '10');
   if (!Number.isFinite(minutes) || minutes <= 0) return 0;
-  return minutes * 60_000;
+  return Math.min(minutes * 60_000, 2_147_483_647);
 }
 
 type ManagedSession = {
-  appSessionId: string;
-  handle: AcpSessionHandle;
+  client: AntigravityAcpClient;
+  cwd: string;
+  skipPermissions: boolean;
+  handle?: AcpSessionHandle;
   busy: boolean;
-  idleTimer: NodeJS.Timeout | null;
+  backgroundCommands: Set<string>;
+  idleTimer?: NodeJS.Timeout;
+  cancelTimer?: NodeJS.Timeout;
 };
 
+/** Owns process lifetime and turn reservations for the Antigravity runtime. */
 export class AntigravityAcpSessionManager {
   private readonly sessions = new Map<string, ManagedSession>();
+  private readonly opening = new Map<string, AbortController>();
   private readonly idleMs = readIdleRecycleMs();
+  private closed = false;
 
   constructor(
     private readonly events: AcpManagerEvents,
-    /** Absolute engine executable path, resolved by the runtime (tryResolveEnginePath). */
     private readonly enginePath: string,
   ) {}
 
-  /**
-   * Returns the resident session for the app session, spawning or resuming
-   * one when needed. A turn-in-flight session cannot be acquired twice: the
-   * gateway rejects sends against a processing session, and an interleaved
-   * `session/prompt` would corrupt the engine's turn.
-   */
+  /** Reserves one turn before any asynchronous startup or replacement. */
   async acquire(appSessionId: string, options: AcpAcquireOptions): Promise<AcpSessionHandle> {
+    if (this.closed) throw new Error('Antigravity ACP is shutting down');
     const existing = this.sessions.get(appSessionId);
-    if (existing) {
-      if (existing.busy) {
-        throw new Error(`antigravity session ${appSessionId} is busy with another turn`);
+    if (existing?.busy || this.opening.has(appSessionId)) {
+      throw new Error(`Antigravity session ${appSessionId} is busy with another turn`);
+    }
+
+    const skipPermissions = options.skipPermissions === true;
+    const resumeId = existing?.handle?.sessionId ?? options.resumeProviderSessionId;
+    if (existing && !existing.client.isClosed()) {
+      const matching = existing.cwd === options.cwd && existing.skipPermissions === skipPermissions;
+      if (this.events.hasPendingCards?.(appSessionId)) {
+        throw new Error('Antigravity is waiting for a pending card. Answer it before sending another message.');
       }
-      if (existing.handle.client.isClosed()) {
-        this.destroy(appSessionId);
-      } else {
-        this.touch(appSessionId);
+      if (matching && existing.handle) {
+        existing.busy = true;
+        this.clearIdleTimer(existing);
         return existing.handle;
+      }
+      if (existing.backgroundCommands.size > 0) {
+        throw new Error('Antigravity cannot change the workspace or startup permissions while background commands are running. Retry after they finish.');
       }
     }
 
-    await ensureAcpManagedDataDir(options.cwd);
-
-    const spawnArgs = ['acp', '--app-data-dir', ACP_APP_DATA_DIR_NAME];
-    if (options.skipPermissions) spawnArgs.push('--dangerously-skip-permissions');
-    // Parity with the print runtime: only an explicitly requested directory
-    // becomes a declared agy workspace via --add-dir (the spawn cwd alone is
-    // not enough for the engine to operate there).
-    spawnArgs.push('--add-dir', options.cwd);
-
-    const client = new AntigravityAcpClient({
-      enginePath: this.enginePath,
-      args: spawnArgs,
-      cwd: options.cwd,
-      // Same environment the print path spawns with: the pm2 tree carries
-      // residual SSH variables that flip agy to its file token store and
-      // break auth on every call (antigravity-subprocess-env.ts).
-      env: buildAntigravitySubprocessEnv(),
-      onDiagnostic: (line) => console.debug(`[AntigravityAcp] ${line}`),
-    });
-
-    client.whenExit().then((info) => {
-      const session = this.sessions.get(appSessionId);
-      if (session?.handle.client === client) {
-        this.destroy(appSessionId);
-      }
-      this.events.onSessionExit(appSessionId, info);
-    }).catch(() => {
-      // whenExit never rejects; kept for symmetry.
-    });
-
+    const opening = new AbortController();
+    this.opening.set(appSessionId, opening);
     try {
+      if (existing) await this.stopAndWait(existing);
+      opening.signal.throwIfAborted();
+      if (resumeId) await checkResumeSource(resumeId);
+      opening.signal.throwIfAborted();
+      await ensureAcpManagedDataDir(options.cwd);
+      opening.signal.throwIfAborted();
+
+      const spawnArgs = ['acp', '--app-data-dir', ACP_APP_DATA_DIR_NAME, '--add-dir', options.cwd];
+      if (skipPermissions) spawnArgs.push('--dangerously-skip-permissions');
+      const client = new AntigravityAcpClient({
+        enginePath: this.enginePath,
+        args: spawnArgs,
+        cwd: options.cwd,
+        env: buildAntigravitySubprocessEnv(),
+        onDiagnostic: (line) => console.debug(`[AntigravityAcp] ${line}`),
+      });
+      const session: ManagedSession = { client, cwd: options.cwd, skipPermissions, busy: true, backgroundCommands: new Set() };
+      this.sessions.set(appSessionId, session);
+      void client.whenExit().then((info) => {
+        if (this.sessions.get(appSessionId) !== session) return;
+        this.sessions.delete(appSessionId);
+        this.clearIdleTimer(session);
+        clearTimeout(session.cancelTimer);
+        this.events.onSessionExit(appSessionId, info, client);
+      });
+
+      client.handleServerRequest('session/request_permission', () => ({ outcome: { outcome: 'cancel' } }));
       await client.request('initialize', {
         protocolVersion: 1,
         clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } },
       });
-
-      let handle: AcpSessionHandle;
-      const resumeId = options.resumeProviderSessionId ?? null;
-      if (resumeId) {
-        try {
-          const loaded = readObjectRecord(await client.request('session/load', {
-            sessionId: resumeId,
-            cwd: options.cwd,
-            mcpServers: [],
-          }));
-          handle = this.toHandle(client, loaded, 'resumed');
-        } catch (error) {
-          // A lost or foreign conversation id must not brick the session:
-          // fall back to a fresh conversation and let the runtime mark it.
-          console.warn(`[AntigravityAcp] session/load failed for ${resumeId}; opening a fresh conversation:`, error);
-          const opened = readObjectRecord(await client.request('session/new', { cwd: options.cwd, mcpServers: [] }));
-          handle = this.toHandle(client, opened, 'restarted');
-        }
-      } else {
-        const opened = readObjectRecord(await client.request('session/new', { cwd: options.cwd, mcpServers: [] }));
-        handle = this.toHandle(client, opened, 'started');
-      }
-
-      const session: ManagedSession = { appSessionId, handle, busy: false, idleTimer: null };
-      this.sessions.set(appSessionId, session);
-      this.armIdleTimer(appSessionId);
-      return handle;
+      const workspace = { cwd: options.cwd, mcpServers: [] };
+      const payload = readObjectRecord(resumeId
+        ? await client.request('session/load', { ...workspace, sessionId: resumeId })
+        : await client.request('session/new', workspace));
+      opening.signal.throwIfAborted();
+      if (client.isClosed()) throw new Error('Antigravity ACP closed during setup');
+      session.handle = this.toHandle(client, payload, resumeId);
+      this.trackBackgroundCommands(appSessionId, session, session.handle.sessionId);
+      return session.handle;
     } catch (error) {
-      client.close();
+      const failed = this.sessions.get(appSessionId);
+      if (failed && failed !== existing) {
+        failed.busy = false;
+        failed.client.close();
+      }
       throw error;
+    } finally {
+      this.opening.delete(appSessionId);
     }
   }
 
-  /** Marks a turn in flight so the idle recycler keeps the process. */
-  setBusy(appSessionId: string, busy: boolean): void {
+  /** Releases a turn only if this exact handle still owns the resident process. */
+  release(appSessionId: string, handle: AcpSessionHandle): void {
     const session = this.sessions.get(appSessionId);
-    if (!session) return;
-    session.busy = busy;
-    if (!busy) this.touch(appSessionId);
-    else this.clearIdleTimer(session);
+    if (!session || session.handle !== handle) return;
+    clearTimeout(session.cancelTimer);
+    session.cancelTimer = undefined;
+    session.busy = false;
+    this.armIdleTimer(appSessionId, session);
   }
 
-  /** Delivers `session/cancel`, the engine's abort for the in-flight turn. */
+  /** Cancels a foreground turn or an in-progress acquisition. */
   cancelTurn(appSessionId: string): boolean {
+    const opening = this.opening.get(appSessionId);
     const session = this.sessions.get(appSessionId);
-    if (!session || session.handle.client.isClosed()) return false;
-    session.handle.client.notify('session/cancel', { sessionId: session.handle.sessionId });
+    if (opening) {
+      opening.abort();
+      session?.client.close();
+      return true;
+    }
+    if (!session?.handle || !session.busy || session.client.isClosed()) return false;
+    session.client.notify('session/cancel', { sessionId: session.handle.sessionId });
+    session.cancelTimer ??= setTimeout(() => session.client.close(), 5_000);
+    session.cancelTimer.unref();
     return true;
   }
 
-  /** Registers a handler on the session's client (permission bridge). */
-  handleServerRequests(appSessionId: string, method: string, handler: AcpServerRequestHandler): void {
-    this.sessions.get(appSessionId)?.handle.client.handleServerRequest(method, handler);
-  }
-
-  /** Subscribes to notifications of a resident session. */
-  onNotification(appSessionId: string, subscriber: (notification: AcpNotification) => void): () => void {
-    return this.sessions.get(appSessionId)?.handle.client.onNotification(subscriber) ?? (() => {});
-  }
-
-  /** Kills one session's process immediately. */
+  /** Stops a resident process. Its entry stays reserved until it exits. */
   destroy(appSessionId: string): void {
+    this.opening.get(appSessionId)?.abort();
     const session = this.sessions.get(appSessionId);
     if (!session) return;
-    this.sessions.delete(appSessionId);
     this.clearIdleTimer(session);
-    session.handle.client.close();
+    clearTimeout(session.cancelTimer);
+    session.client.close();
   }
 
-  /** Kills every resident process (shutdown / provider reload). */
-  destroyAll(): void {
-    for (const appSessionId of [...this.sessions.keys()]) this.destroy(appSessionId);
+  /** Cancels acquisitions and closes every process during server shutdown. */
+  async destroyAll(): Promise<void> {
+    this.closed = true;
+    for (const opening of this.opening.values()) opening.abort();
+    await Promise.all([...this.sessions.values()].map((session) => this.stopAndWait(session)));
   }
 
-  /** Live session count, for tests and diagnostics. */
+  /** Live process count observed by the session manager tests. */
   get size(): number {
     return this.sessions.size;
+  }
+
+  private async stopAndWait(session: ManagedSession): Promise<void> {
+    this.clearIdleTimer(session);
+    clearTimeout(session.cancelTimer);
+    session.client.close();
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        session.client.whenExit(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('Antigravity ACP did not exit after termination')), 5_000);
+          timer.unref();
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private trackBackgroundCommands(appSessionId: string, session: ManagedSession, sessionId: string): void {
+    session.client.onNotification(({ method, params }) => {
+      if (method !== 'session/update') return;
+      const payload = readObjectRecord(params);
+      if (payload?.sessionId !== sessionId) return;
+      const update = readObjectRecord(payload.update);
+      const callId = readOptionalString(update?.toolCallId);
+      if (!callId || !update) return;
+      const kind = update.sessionUpdate;
+      if (kind !== 'tool_call' && kind !== 'tool_call_update') return;
+      const status = update.status;
+      if (status === 'completed' || status === 'failed' || status === 'cancelled') {
+        if (session.backgroundCommands.delete(callId)) this.armIdleTimer(appSessionId, session);
+        return;
+      }
+      const input = readObjectRecord(update.args ?? update.rawInput);
+      if (update.name === 'run_command' && input?.IsDaemon === true) {
+        session.backgroundCommands.add(callId);
+        this.clearIdleTimer(session);
+      }
+    });
   }
 
   private toHandle(
     client: AntigravityAcpClient,
     payload: Record<string, unknown> | null,
-    continuity: AcpSessionHandle['continuity'],
+    resumeId?: string | null,
   ): AcpSessionHandle {
-    const sessionId = readOptionalString(payload?.sessionId) ?? '';
-    if (!sessionId) {
-      throw new AcpConnectionClosedError('agy acp returned no sessionId', -32000);
+    const reportedId = readOptionalString(payload?.sessionId);
+    const sessionId = reportedId ?? resumeId;
+    if (!payload || !sessionId || (resumeId && reportedId && reportedId !== resumeId)) {
+      throw new AcpConnectionClosedError('agy acp returned an invalid session identity', -32000);
     }
     const modes = readObjectRecord(payload?.modes);
     const modeList = Array.isArray(modes?.availableModes) ? modes.availableModes : [];
@@ -269,7 +335,6 @@ export class AntigravityAcpSessionManager {
     return {
       client,
       sessionId,
-      currentModeId: readOptionalString(modes?.currentModeId) ?? null,
       availableModeIds: modeList
         .map((mode) => readOptionalString(readObjectRecord(mode)?.id))
         .filter((id): id is string => Boolean(id)),
@@ -277,39 +342,26 @@ export class AntigravityAcpSessionManager {
       availableModelIds: modelList
         .map((model) => readOptionalString(readObjectRecord(model)?.modelId))
         .filter((id): id is string => Boolean(id)),
-      continuity,
+      continuity: resumeId ? 'resumed' : 'started',
     };
   }
 
-  private touch(appSessionId: string): void {
-    const session = this.sessions.get(appSessionId);
-    if (!session || this.idleMs <= 0) return;
+  private armIdleTimer(appSessionId: string, session: ManagedSession): void {
     this.clearIdleTimer(session);
-    this.armIdleTimer(appSessionId);
-  }
-
-  private armIdleTimer(appSessionId: string): void {
-    if (this.idleMs <= 0) return;
-    const session = this.sessions.get(appSessionId);
-    if (!session) return;
+    if (this.idleMs <= 0 || session.busy || session.client.isClosed() || session.backgroundCommands.size > 0) return;
     session.idleTimer = setTimeout(() => {
-      // A busy session must never be recycled; the runtime clears the flag
-      // when its turn settles, so a lingering busy here is a bug — skip and
-      // let the next activity re-arm.
-      if (session.busy) return;
+      if (this.events.hasPendingCards?.(appSessionId)) {
+        this.armIdleTimer(appSessionId, session);
+        return;
+      }
       console.info(`[AntigravityAcp] Recycling idle session process ${appSessionId}`);
       this.destroy(appSessionId);
     }, this.idleMs);
-    session.idleTimer.unref?.();
+    session.idleTimer.unref();
   }
 
   private clearIdleTimer(session: ManagedSession): void {
-    if (session.idleTimer) {
-      clearTimeout(session.idleTimer);
-      session.idleTimer = null;
-    }
+    clearTimeout(session.idleTimer);
+    session.idleTimer = undefined;
   }
 }
-
-/** Settings-path export for tests. */
-export const acpManagedSettingsPathForTests = () => path.join(managedDataDirPath(), 'settings.json');

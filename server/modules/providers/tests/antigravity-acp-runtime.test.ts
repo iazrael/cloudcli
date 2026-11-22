@@ -55,10 +55,22 @@ process.stdin.on('data', (chunk) => {
 function handle(frame) {
   const mode = process.env.AGY_ACP_STUB_MODE;
   if (frame.method === 'initialize') {
+    if (mode === 'acp-silent-init') {
+      fs.appendFileSync(promptsLog, 'startup waiting\\n');
+      return;
+    }
     send({ jsonrpc: '2.0', id: frame.id, result: { protocolVersion: 1 } });
     return;
   }
-  if (frame.method === 'session/new') {
+  if (frame.method === 'session/set_mode') {
+    if (mode === 'acp-mode-error') {
+      send({ jsonrpc: '2.0', id: frame.id, error: { code: -32000, message: 'mode refused' } });
+    } else {
+      send({ jsonrpc: '2.0', id: frame.id, result: {} });
+    }
+    return;
+  }
+  if (frame.method === 'session/new' || frame.method === 'session/load') {
     send({ jsonrpc: '2.0', id: frame.id, result: { sessionId: 'acp-conv-1', modes: { currentModeId: 'default', availableModes: [{ id: 'default' }, { id: 'accept-edits' }] }, models: { currentModelId: 'gemini-4-neon-high' } } });
     return;
   }
@@ -69,6 +81,12 @@ function handle(frame) {
     promptId = frame.id;
     if (mode === 'acp-exit') {
       setTimeout(() => process.exit(1), 150);
+      return;
+    }
+    if (mode === 'acp-capture-flags') {
+      const text = process.argv.includes('--dangerously-skip-permissions') ? 'bypass process' : 'approval process';
+      send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } } } });
+      finish(frame.id);
       return;
     }
     if (mode === 'acp-cancel') return; // wait for session/cancel
@@ -87,13 +105,17 @@ function handle(frame) {
       setTimeout(() => process.exit(2), 300);
       return;
     }
-    if (mode === 'acp-question-deny') {
+    if (mode === 'acp-question-deny' || mode === 'acp-early-answer') {
       if (promptCount === 1) {
         const args = { questions: JSON.stringify([{ question: 'q?', options: ['a', 'b'], is_multi_select: false }]) };
         send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'tool_call', toolCallId: 'call_ask', name: 'ask_question', args, status: 'in_progress' } } });
         send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'tool_call_update', toolCallId: 'call_ask', name: 'ask_question', args, status: 'pending' } } });
-        send({ jsonrpc: '2.0', id: promptId, result: { stopReason: 'end_turn', usage: { totalTokens: 1 } } });
-        promptId = null;
+        const finishAsk = () => {
+          send({ jsonrpc: '2.0', id: frame.id, result: { stopReason: 'end_turn', usage: { totalTokens: 1 } } });
+          promptId = null;
+        };
+        if (mode === 'acp-early-answer') setTimeout(finishAsk, 400);
+        else finishAsk();
       } else {
         // The synthetic no-answer prompt: the engine resumes on its own.
         send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '好的，我自行判断继续。' } } } });
@@ -102,6 +124,7 @@ function handle(frame) {
       return;
     }
     if (mode === 'acp-bg') {
+      send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'tool_call', toolCallId: 'call_bg', name: 'run_command', status: 'in_progress', args: { IsDaemon: true } } } });
       // Turn ends, then the engine announces a finished daemon command on its
       // own — the frames arrive with no run pump subscribed.
       send({ jsonrpc: '2.0', id: promptId, result: { stopReason: 'end_turn', usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 } } });
@@ -109,7 +132,7 @@ function handle(frame) {
       setTimeout(() => {
         send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'tool_call_update', toolCallId: 'call_bg', name: 'run_command', status: 'completed', content: [{ type: 'content', content: { type: 'text', text: 'BG-DONE-42' } }] } } });
         send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '后台任务已完成（退出码 0），输出为：BG-DONE-42' } } } });
-      }, 250);
+      }, 500);
       return;
     }
     if (mode === 'acp-permission') {
@@ -219,9 +242,7 @@ const runtime = new AntigravityRuntimeProvider();
 
 // The resident engines hold the event loop open; reclaim them when the file's
 // tests are done so the runner can exit.
-test.after(() => {
-  closeAntigravityAcpSessions();
-});
+test.after(closeAntigravityAcpSessions);
 
 const waitFor = async (predicate: () => boolean, timeoutMs = 3000): Promise<void> => {
   const deadline = Date.now() + timeoutMs;
@@ -427,4 +448,101 @@ test('a parked question answers through the card and continues on the same run',
   assert.match(String(prompts[1].text), /PostgreSQL/);
   assert.match(String(prompts[1].text), /User has answered your questions:/);
   assert.equal(runtime.permissions?.listPending('sess-acp-ask').length, 0);
+});
+
+test('a permission-mode rejection fails the turn before sending a prompt', async () => {
+  process.env.AGY_ACP_STUB_MODE = 'acp-mode-error';
+  process.env.AGY_ACP_PROMPTS_LOG = promptsLog;
+  const { writer } = createWriter();
+  await assert.rejects(runtime.run('must not be sent', {
+    sessionId: 'sess-acp-mode-refused', cwd: workspaceDir, permissionMode: 'acceptEdits',
+  }, writer, context), /mode refused/);
+  assert.doesNotMatch(fs.readFileSync(promptsLog, 'utf8'), /must not be sent/);
+});
+
+test('an answer sent before end_turn still becomes the next prompt', async () => {
+  process.env.AGY_ACP_STUB_MODE = 'acp-early-answer';
+  process.env.AGY_ACP_PROMPTS_LOG = promptsLog;
+  const { writer } = createWriter();
+  const sessionId = 'sess-acp-early-answer';
+  const run = runtime.run('ask early', { sessionId, cwd: workspaceDir }, writer, context);
+  await waitFor(() => runtime.permissions.listPending(sessionId).length === 1);
+  const [card] = runtime.permissions.listPending(sessionId);
+  runtime.permissions.resolve(card.requestId, { allow: true, message: 'early-answer-42' });
+  await run;
+  assert.match(fs.readFileSync(promptsLog, 'utf8'), /early-answer-42/);
+});
+
+test('a background command keeps its process and blocks a permissions change until completion', async () => {
+  await closeAntigravityAcpSessions();
+  process.env.CLOUDCLI_ANTIGRAVITY_ACP_IDLE_MINUTES = '0.002';
+  process.env.AGY_ACP_STUB_MODE = 'acp-bg';
+  const sessionId = 'sess-acp-bg-recycle';
+  const { writer } = createWriter();
+  try {
+    await runtime.run('start a long daemon', { sessionId, cwd: workspaceDir }, writer, context);
+    await assert.rejects(runtime.run('switch now', {
+      sessionId, cwd: workspaceDir, permissionMode: 'bypassPermissions',
+    }, writer, context), /background commands are running/);
+    await waitFor(() => published.some((entry) => entry.appSessionId === sessionId && entry.message.kind === 'tool_result'));
+  } finally {
+    delete process.env.CLOUDCLI_ANTIGRAVITY_ACP_IDLE_MINUTES;
+    await closeAntigravityAcpSessions();
+  }
+});
+
+test('an explicit review mode takes precedence over stale skip-permissions settings', async () => {
+  process.env.AGY_ACP_STUB_MODE = 'acp-capture-flags';
+  const { messages, writer } = createWriter();
+  await runtime.run('review this turn', {
+    sessionId: 'sess-acp-explicit-review',
+    cwd: workspaceDir,
+    permissionMode: 'default',
+    skipPermissions: true,
+    toolsSettings: { skipPermissions: true },
+  }, writer, context);
+  assert.ok(messages.some((message) => message.kind === 'stream_delta' && message.content === 'approval process'));
+});
+
+test('aborting during initialize settles as an aborted turn', async () => {
+  process.env.AGY_ACP_STUB_MODE = 'acp-silent-init';
+  process.env.AGY_ACP_PROMPTS_LOG = promptsLog;
+  const sessionId = 'sess-acp-abort-during-init';
+  const { messages, writer } = createWriter();
+  const run = runtime.run('abort before prompt', { sessionId, cwd: workspaceDir }, writer, context);
+  await waitFor(() => fs.existsSync(promptsLog) && fs.readFileSync(promptsLog, 'utf8').includes('startup waiting'));
+  assert.equal(await runtime.abort(sessionId), true);
+  assert.deepEqual(await run, { sessionId, success: true, aborted: true });
+  assert.equal(messages.filter((message) => message.kind === 'complete' && message.aborted).length, 1);
+});
+
+test('the prompt watchdog reports the silence that caused termination', async () => {
+  process.env.AGY_ACP_STUB_MODE = 'acp-cancel';
+  const { writer } = createWriter();
+  await assert.rejects(runtime.run('engine stays silent', {
+    sessionId: 'sess-acp-silent-prompt', cwd: workspaceDir, idleTimeout: '150ms',
+  }, writer, context), /produced no output for 150ms/);
+});
+
+test('a turn can be aborted while its model catalog is loading', async () => {
+  process.env.AGY_ACP_STUB_MODE = 'acp-turn';
+  const { messages, writer } = createWriter();
+  const sessionId = 'sess-acp-abort-catalog';
+  let loading = false;
+  let unblock = () => {};
+  const run = runtime.run('must wait for catalog', { sessionId, cwd: workspaceDir, model: 'test-model' }, writer, {
+    ...context,
+    getProviderModels: () => new Promise((resolve) => {
+      unblock = () => resolve({ OPTIONS: [], DEFAULT: 'test-model' });
+      loading = true;
+    }),
+  });
+  try {
+    await waitFor(() => loading);
+    assert.equal(await runtime.abort(sessionId), true);
+    assert.deepEqual(await run, { sessionId: 'acp-conv-1', success: true, aborted: true });
+    assert.ok(!messages.some((message) => message.kind === 'stream_delta'));
+  } finally {
+    unblock();
+  }
 });

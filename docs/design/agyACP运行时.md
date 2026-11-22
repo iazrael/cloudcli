@@ -1,6 +1,6 @@
 # agy ACP 运行时（提问+权限双桥接）
 
-> 状态：步骤 1-5 已实现 + 独立审查完成（6 项 P1 与主要 P2 已修复，回归测试钉住），步骤 6 真机验收待做
+> 状态：步骤 1–5 与生命周期修复已实现，浏览器端到端验收和切换默认值待做
 > 基准：v2.23.0 / 2026-11-15
 > 分支：`feat/antigravity-acp-runtime`
 
@@ -30,7 +30,7 @@ antigravity 运行时从 print 单回合 spawn（`-p --input-format stream-json 
 
 - 每个 cloudcli antigravity 应用会话 = 一个常驻 `agy acp` 子进程（进程内一个 ACP session）。不启用 `--process-per-session`（一进程一会话已是默认形态）。
 - 空闲回收：无在途回合、无 pending 权限/提问、无后台任务 → 空闲 10 分钟（可配）kill。有任何工作永不回收。
-- 崩溃兜底：进程意外退出时在途回合按现有进程退出语义收场；下次 send 重新 spawn 并 `session/load` 恢复（失败降级新 session，如实标注）。
+- 崩溃兜底：进程意外退出时在途回合按现有进程退出语义收场；下次 send 重新 spawn 并 `session/load` 恢复（失败时结束本轮，保留原会话映射）。
 
 ### 托管数据目录（权限钉档）
 
@@ -50,9 +50,18 @@ antigravity 运行时从 print 单回合 spawn（`-p --input-format stream-json 
   - 提问挂起：prompt 已 `end_turn` + ask_question 卡 pending → 问题卡；**用户的下一条 send 就是答案**（引擎语义如此，即便内容是新指令）；turn 2 先行 `tool_call_update: completed`，随后正常直播文本。
 - **回合外消息**：后台任务完成事件在无活动回合时到达 → 作为系统/助手行入时间线尾部并广播（print 模式进程已死收不到，此为新行为）。
 - 后台任务注册表：从 `backgroundKeyAliases` 进程别名映射改为 ACP 事件驱动；通知链路复用 antigravity-background-work。
-- abort：杀进程 → `session/cancel`；进程兜底 kill 保留。
-- 看门狗：pending 权限/提问不算静默，不杀进程。
+- abort：杀进程 → `session/cancel`，5 秒未结束时关连接并停止进程。
+- 看门狗：pending 权限/提问不算静默。卡片 30 分钟到期后主动结算。
 - 模式映射：`default`→default、`acceptEdits`→accept-edits、`plan`→plan（`session/set_mode`）、`bypassPermissions`→spawn 带 `--dangerously-skip-permissions`。模型选择通道待探（session/new 参数或 set_model），失败回落引擎默认。
+
+### 生命周期与权限切换修复
+
+- 按应用会话独占一次回合。启动前登记这次获取，创建子进程后立即纳入取消和停机。回合释放只影响它自己获取的进程。
+- 进程复用要求工作目录与启动权限一致。启动权限变更时，先停止旧进程并确认退出，再加载原引擎会话。agy 1.5.14 对缺失的会话 ID 也可能应答成功，加载前先确认托管 ACP 根里的原生会话文件存在。agy 在另一个数据根加载旧 ID 时也可能应答成功，随后 prompt 失败。目前旧 print 会话需用 print 续聊，跨根迁移数据需单独设计。旧进程还有后台任务时保留进程，本轮发送失败并提示稍后重试。恢复失败、权限模式不可用或设置失败时，本轮不发送 prompt。每轮重申审批模式。显式模式优先于旧的免审批布尔设置。
+- 握手、加载、新建、模式和模型设置各有 30 秒超时，超时的连接退出。prompt 仍由输出看门狗监测，等待卡片期间暂停；卡片自己定时到期并结算。提前回答的问题在引擎返回 end_turn 后使用已经收到的决定。
+- 按进程跟踪 agy 后台命令的开始与终态，前台回合内外都处理同一事件。后台命令完成后才开始计空闲时间，进程退出时清理状态。
+- 校验 stdio 消息结构，坏帧留在协议边界处理。保留每个文本分片的原始空白。托管 settings 串行更新、以原子替换写盘，文件不存在时初始化，其余读取错误上报。托管设置和 agy 启动参数共用同一个数据根。
+- 验证覆盖权限双向切换、恢复失败、后台跨回合及权限切换冲突、启动超时和取消、卡片过期与提前作答、坏帧、流式空白及并发配置更新。完成 provider/WS 回归和独立审查后进入真机验收。
 
 ### 灰度开关
 

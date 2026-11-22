@@ -593,10 +593,8 @@ async function startServer() {
                 console.error('[ZCode] Error during protocol client shutdown:', getErrorMessage(err));
             }
             try {
-                // The resident agy acp processes hold the event loop open via
-                // their stdio pipes; stop them so pm2's stop is not left
-                // waiting on a SIGKILL.
-                closeAntigravityAcpSessions();
+                // Wait for ACP children so process.exit cannot skip their SIGKILL fallback.
+                await closeAntigravityAcpSessions();
             } catch (err) {
                 console.error('[Antigravity] Error closing ACP sessions during shutdown:', getErrorMessage(err));
             }

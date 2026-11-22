@@ -66,6 +66,8 @@ function handle(frame) {
   log(frame);
   const mode = process.env.AGY_ACP_STUB_MODE;
   if (frame.method === 'initialize') {
+    if (mode === 'bad-frame') send(null);
+    if (mode === 'silent') return;
     send({ jsonrpc: '2.0', id: frame.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true } } });
     if (mode === 'server-request') {
       send({ jsonrpc: '2.0', id: 9001, method: 'session/request_permission', params: { options: [{ optionId: 'allow' }] } });
@@ -197,7 +199,7 @@ test('acp client tolerates non-JSON stdout lines', async () => {
   try {
     const result = (await client.request('initialize', {})) as Record<string, unknown>;
     assert.equal(result.protocolVersion, 1);
-    assert.ok(diagnostics.some((line) => line.includes('not json')), 'garbage line is surfaced as a diagnostic');
+    assert.ok(diagnostics.some((line) => line.includes('unparseable stdout line')), 'garbage line is surfaced as a diagnostic');
   } finally {
     client.close();
   }
@@ -246,4 +248,27 @@ test('spawning a missing engine rejects requests and resolves whenExit', async (
   await assert.rejects(client.request('initialize', {}), AcpConnectionClosedError);
   const exit = await client.whenExit();
   assert.equal(exit.code, null);
+});
+
+test('a valid JSON value that is not an ACP frame does not crash the client', async () => {
+  const { client } = startStubClient('bad-frame');
+  try {
+    assert.deepEqual(await client.request('initialize', {}, 1000), {
+      protocolVersion: 1,
+      agentCapabilities: { loadSession: true },
+    });
+  } finally {
+    client.close();
+  }
+});
+
+test('a silent control request times out and closes its connection', async () => {
+  const { client } = startStubClient('silent');
+  try {
+    await assert.rejects(client.request('initialize', {}, 100), /initialize.*timed out/);
+    await client.whenExit();
+    assert.equal(client.isClosed(), true);
+  } finally {
+    client.close();
+  }
 });

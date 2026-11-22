@@ -201,3 +201,12 @@ test('unknown update kinds produce no messages', () => {
   const unknown = translator.translate(update({ sessionUpdate: 'a_future_update_kind', data: 1 }));
   assert.equal(unknown.messages.length, 0);
 });
+
+test('streaming preserves spaces, newlines and indentation at chunk boundaries', () => {
+  const translator = new AntigravityAcpTranslator();
+  const chunks = ['The ', ' next\n', '\n  indent', '\n'];
+  const received = chunks.flatMap((text) => translator.translate(update({
+    sessionUpdate: 'agent_message_chunk', content: { type: 'text', text },
+  })).messages);
+  assert.equal(received.map((message) => message.content).join(''), 'The  next\n\n  indent\n');
+});

@@ -468,6 +468,22 @@ export type ProviderPermissionDecision = {
   rememberEntry?: unknown;
 };
 
+//----------------- ANTIGRAVITY ACP ------------
+
+/** A method notification sent by agy over ACP stdio. The payload is narrowed by each consumer. */
+export type AcpNotification = { method: string; params: unknown };
+
+/**
+ * Decision delivered by the ACP card bridge to a suspended Antigravity turn.
+ * Expiry denies the pending action. Abort settles the cancelled turn without a follow-up prompt.
+ */
+export type AcpCardOutcome = ProviderPermissionDecision & {
+  aborted?: boolean;
+  expired?: boolean;
+};
+
+// ---------------------------
+
 export type ProviderRuntimePermissionGateway = {
   resolve(requestId: string, decision: ProviderPermissionDecision): void;
   listPending(sessionId: string): unknown[];

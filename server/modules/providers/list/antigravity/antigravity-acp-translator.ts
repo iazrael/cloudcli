@@ -22,10 +22,9 @@
  * @module antigravity-acp-translator
  */
 
-import type { NormalizedMessage } from '@/shared/types.js';
+import type { AcpNotification, NormalizedMessage } from '@/shared/types.js';
 import { createNormalizedMessage, generateMessageId, readObjectRecord, readOptionalString } from '@/shared/utils.js';
 
-import type { AcpNotification } from './antigravity-acp-client.js';
 import {
   ANTIGRAVITY_SPAWN_TOOL,
   readInvokedAgentSpecs,
@@ -74,7 +73,7 @@ function describeToolContent(content: unknown): string {
 }
 
 /** What one notification contributed to the stream beyond plain messages. */
-export type AcpTranslation = {
+type AcpTranslation = {
   messages: NormalizedMessage[];
   /** An `invoke_subagent` call started; the runtime begins receipt polling for it. */
   spawnStarted?: { toolCallId: string; specs: AntigravityAgentSpec[] };
@@ -90,6 +89,7 @@ export type AcpTranslation = {
   };
 };
 
+/** Translates notifications for the Antigravity runtime and its session event publisher. */
 export class AntigravityAcpTranslator {
   /** Mirrors the print runtime's `agentResponseSegmentOpen` flag. */
   private segmentOpen = false;
@@ -167,8 +167,8 @@ export class AntigravityAcpTranslator {
 
   private translateTextChunk(update: Record<string, unknown>): NormalizedMessage[] {
     const content = readObjectRecord(update.content);
-    const text = readOptionalString(content?.text);
-    if (!text) return [];
+    const text = content?.text;
+    if (typeof text !== 'string' || text.length === 0) return [];
     this.segmentOpen = true;
     return [createNormalizedMessage({
       id: generateMessageId(PROVIDER),

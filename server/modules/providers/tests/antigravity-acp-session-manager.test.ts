@@ -2,7 +2,7 @@
  * Antigravity ACP Session Manager Unit Tests
  *
  * Drives the manager against a stub `agy acp` peer so process residency,
- * resume fallbacks, the busy guard, cancel and idle recycling are verified
+ * resume and its failure path, the busy guard, cancel and idle recycling are verified
  * without the real CLI. HOME is pointed at a temp dir first, so the managed
  * data directory (`~/.gemini/cloudcli-acp/`) writes stay inside the fixture.
  */
@@ -13,18 +13,22 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { AntigravityAcpSessionManager, ensureAcpManagedDataDir, ACP_APP_DATA_DIR_NAME } from '../list/antigravity/antigravity-acp-session-manager.js';
+import { ACP_APP_DATA_DIR_NAME } from '../list/antigravity/antigravity-data-root.js';
+import { AntigravityAcpSessionManager, ensureAcpManagedDataDir } from '../list/antigravity/antigravity-acp-session-manager.js';
 
 const realHome = os.homedir();
 const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-mgr-home-'));
 // ensureAcpManagedDataDir resolves the Gemini dir via os.homedir(), which
 // honours $HOME on POSIX: point it at the fixture before anything runs.
 process.env.HOME = fakeHome;
+process.env.CLOUDCLI_ANTIGRAVITY_DATA_DIR = path.join(fakeHome, '.gemini', 'antigravity-cli');
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const STUB_SCRIPT = `#!/usr/bin/env node
 const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const logPath = process.env.AGY_ACP_STUB_LOG;
 const log = (frame) => fs.appendFileSync(logPath, JSON.stringify(frame) + '\\n');
 const send = (frame) => process.stdout.write(JSON.stringify(frame) + '\\n');
@@ -40,9 +44,13 @@ process.stdin.on('data', (chunk) => {
   }
 });
 function handle(frame) {
-  log(frame);
+  log({ ...frame, pid: process.pid, argv: process.argv.slice(2) });
   const mode = process.env.AGY_ACP_STUB_MODE;
   if (frame.method === 'initialize') {
+    if (mode === 'silent-init') {
+      setTimeout(() => process.exit(1), 1000);
+      return;
+    }
     send({ jsonrpc: '2.0', id: frame.id, result: { protocolVersion: 1 } });
     if (mode === 'exit-soon') setTimeout(() => process.exit(1), 100);
     return;
@@ -56,14 +64,18 @@ function handle(frame) {
     return;
   }
   if (frame.method === 'session/new') {
-    send({ jsonrpc: '2.0', id: frame.id, result: { sessionId: mode === 'load-fails' ? 'fresh-conv' : 'new-conv', modes: { currentModeId: 'default', availableModes: [{ id: 'default' }] }, models: { currentModelId: 'gemini-4-neon-high' } } });
+    const sessionId = mode === 'load-fails' ? 'fresh-conv' : 'new-conv';
+    const conversations = path.join(os.homedir(), '.gemini', 'cloudcli-acp', 'conversations');
+    fs.mkdirSync(conversations, { recursive: true });
+    fs.writeFileSync(path.join(conversations, sessionId + '.db'), 'stub conversation');
+    send({ jsonrpc: '2.0', id: frame.id, result: { sessionId, modes: { currentModeId: 'default', availableModes: [{ id: 'default' }] }, models: { currentModelId: 'gemini-4-neon-high' } } });
     return;
   }
   if (frame.method === 'session/prompt') {
     send({ jsonrpc: '2.0', id: frame.id, result: { stopReason: 'end_turn' } });
   }
 }
-process.on('SIGTERM', () => process.exit(0));
+process.on('SIGTERM', () => { if (process.env.AGY_ACP_STUB_MODE !== 'ignore-term') process.exit(0); });
 `;
 
 const stubDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-mgr-stub-'));
@@ -88,9 +100,12 @@ test('ensureAcpManagedDataDir pins request-review inside the managed dir', async
 
   // A second workspace joins without dropping the first; the user's own
   // antigravity-cli settings are never touched.
-  await ensureAcpManagedDataDir('/tmp/workspace-b');
+  await Promise.all([
+    ensureAcpManagedDataDir('/tmp/workspace-b'),
+    ensureAcpManagedDataDir('/tmp/workspace-c'),
+  ]);
   const updated = JSON.parse(await fs.promises.readFile(settingsPath, 'utf8'));
-  assert.deepEqual(updated.trustedWorkspaces, ['/tmp/workspace-a', '/tmp/workspace-b']);
+  assert.deepEqual(updated.trustedWorkspaces.sort(), ['/tmp/workspace-a', '/tmp/workspace-b', '/tmp/workspace-c']);
   const userSettingsPath = path.join(realHome, '.gemini', 'antigravity-cli', 'settings.json');
   assert.equal(fs.existsSync(userSettingsPath.replace(fakeHome, realHome)), fs.existsSync(userSettingsPath), 'test writes stay in the fixture HOME');
   assert.ok(!JSON.stringify(updated).includes('always-proceed'));
@@ -106,31 +121,35 @@ test('acquire opens a session and reports its facts', async () => {
     assert.equal(manager.size, 1);
 
     // A second acquire reuses the resident process (same client object).
+    manager.release('app-1', handle);
     const again = await manager.acquire('app-1', { cwd: stubDir });
     assert.equal(again, handle);
     assert.equal(manager.size, 1);
   } finally {
-    manager.destroyAll();
+    await manager.destroyAll();
   }
 });
 
-test('resume rides session/load and falls back to a fresh conversation on failure', async () => {
+test('resume rides session/load and a failure preserves the original mapping', async () => {
+  const acpConversations = path.join(fakeHome, '.gemini', ACP_APP_DATA_DIR_NAME, 'conversations');
+  fs.mkdirSync(acpConversations, { recursive: true });
+  for (const id of ['conv-42', 'conv-lost']) {
+    fs.writeFileSync(path.join(acpConversations, id + '.db'), 'stub conversation');
+  }
   const ok = buildManager('load-ok');
   try {
     const resumed = await ok.acquire('app-resume', { cwd: stubDir, resumeProviderSessionId: 'conv-42' });
     assert.equal(resumed.sessionId, 'conv-42');
     assert.equal(resumed.continuity, 'resumed');
   } finally {
-    ok.destroyAll();
+    await ok.destroyAll();
   }
 
   const failed = buildManager('load-fails');
   try {
-    const restarted = await failed.acquire('app-restart', { cwd: stubDir, resumeProviderSessionId: 'conv-lost' });
-    assert.equal(restarted.sessionId, 'fresh-conv');
-    assert.equal(restarted.continuity, 'restarted');
+    await assert.rejects(failed.acquire('app-restart', { cwd: stubDir, resumeProviderSessionId: 'conv-lost' }), /no such conversation/);
   } finally {
-    failed.destroyAll();
+    await failed.destroyAll();
   }
 });
 
@@ -138,13 +157,12 @@ test('a busy session refuses a second acquire', async () => {
   const manager = buildManager('started');
   try {
     await manager.acquire('app-busy', { cwd: stubDir });
-    manager.setBusy('app-busy', true);
     await assert.rejects(
       manager.acquire('app-busy', { cwd: stubDir }),
       /busy with another turn/,
     );
   } finally {
-    manager.destroyAll();
+    await manager.destroyAll();
   }
 });
 
@@ -159,7 +177,7 @@ test('cancelTurn delivers the session/cancel notification', async () => {
     assert.ok(frames.some((frame) => frame.method === 'session/cancel'), 'cancel reached the engine');
     assert.equal(manager.cancelTurn('app-missing'), false);
   } finally {
-    manager.destroyAll();
+    await manager.destroyAll();
   }
 });
 
@@ -173,7 +191,7 @@ test('an engine exit evicts the session and fires the callback', async () => {
     assert.equal(manager.size, 0, 'dead session is evicted');
     assert.equal(exitSeen, 'app-exit');
   } finally {
-    manager.destroyAll();
+    await manager.destroyAll();
   }
 });
 
@@ -181,17 +199,17 @@ test('idle recycling reclaims quiet sessions and spares busy ones', async () => 
   process.env.CLOUDCLI_ANTIGRAVITY_ACP_IDLE_MINUTES = '0.005'; // ~300ms
   const manager = buildManager('started');
   try {
-    await manager.acquire('app-idle', { cwd: stubDir });
+    const idle = await manager.acquire('app-idle', { cwd: stubDir });
+    manager.release('app-idle', idle);
     await sleep(700);
     assert.equal(manager.size, 0, 'idle session recycled');
 
     await manager.acquire('app-busy-idle', { cwd: stubDir });
-    manager.setBusy('app-busy-idle', true);
     await sleep(700);
     assert.equal(manager.size, 1, 'busy session survives the idle window');
   } finally {
     delete process.env.CLOUDCLI_ANTIGRAVITY_ACP_IDLE_MINUTES;
-    manager.destroyAll();
+    await manager.destroyAll();
   }
 });
 
@@ -206,6 +224,95 @@ test('acquiring a dead resident session respawns instead of returning a corpse',
     const second = await manager.acquire('app-corpse', { cwd: stubDir });
     assert.notEqual(second.client, first.client, 'a fresh process serves the next turn');
   } finally {
-    manager.destroyAll();
+    await manager.destroyAll();
+  }
+});
+
+test('permission changes replace the process in both directions and resume the conversation', async () => {
+  const manager = buildManager('load-ok');
+  try {
+    const normal = await manager.acquire('app-mode', { cwd: stubDir });
+    manager.release('app-mode', normal);
+    const bypass = await manager.acquire('app-mode', { cwd: stubDir, skipPermissions: true });
+    manager.release('app-mode', bypass);
+    const restored = await manager.acquire('app-mode', { cwd: stubDir, skipPermissions: false });
+
+    assert.notEqual(normal.client, bypass.client);
+    assert.notEqual(bypass.client, restored.client);
+    assert.equal(restored.sessionId, normal.sessionId);
+    const frames = fs.readFileSync(framesLog, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    const initializations = frames.filter((frame) => frame.method === 'initialize');
+    assert.deepEqual(initializations.map((frame) => frame.argv.includes('--dangerously-skip-permissions')), [false, true, false]);
+    assert.equal(new Set(initializations.map((frame) => frame.pid)).size, 3);
+    assert.equal(frames.filter((frame) => frame.method === 'session/load').length, 2);
+  } finally {
+    await manager.destroyAll();
+  }
+});
+
+test('a permission change never opens a fresh conversation if restoring fails', async () => {
+  const manager = buildManager('load-fails');
+  try {
+    const bypass = await manager.acquire('app-failed-load', { cwd: stubDir, skipPermissions: true });
+    manager.release('app-failed-load', bypass);
+    await assert.rejects(manager.acquire('app-failed-load', { cwd: stubDir }), /no such conversation/);
+    const frames = fs.readFileSync(framesLog, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    assert.equal(frames.filter((frame) => frame.method === 'session/new').length, 1);
+  } finally {
+    await manager.destroyAll();
+  }
+});
+
+test('a starting process can be cancelled and a second acquire is rejected', async () => {
+  const manager = buildManager('silent-init');
+  try {
+    const opening = manager.acquire('app-opening', { cwd: stubDir });
+    const observed = assert.rejects(opening, /closed|exited|cancel/i);
+    await assert.rejects(manager.acquire('app-opening', { cwd: stubDir }), /busy with another turn/);
+    for (let i = 0; i < 50 && !fs.existsSync(framesLog); i += 1) await sleep(10);
+    assert.ok(fs.existsSync(framesLog), 'initialize reached the engine');
+    assert.equal(manager.cancelTurn('app-opening'), true);
+    await observed;
+  } finally {
+    await manager.destroyAll();
+  }
+});
+
+test('shutdown waits for the engine to exit even when SIGTERM is ignored', async () => {
+  const manager = buildManager('ignore-term');
+  const handle = await manager.acquire('app-shutdown', { cwd: stubDir });
+  let exit: Awaited<ReturnType<typeof handle.client.whenExit>> | undefined;
+  void handle.client.whenExit().then((value) => { exit = value; });
+  await manager.destroyAll();
+  assert.equal(exit?.signal, 'SIGKILL');
+  assert.equal(manager.size, 0);
+});
+
+test('a missing native conversation fails even if the engine would accept its ID', async () => {
+  const manager = buildManager('load-ok');
+  try {
+    await assert.rejects(
+      manager.acquire('app-missing-native', { cwd: stubDir, resumeProviderSessionId: 'absent-native-id' }),
+      /conversation.*absent-native-id.*not found/i,
+    );
+    assert.equal(fs.existsSync(framesLog), false, 'the unverified ID was not sent to agy');
+  } finally {
+    await manager.destroyAll();
+  }
+});
+
+test('a conversation stored only in the print root fails with an explicit recovery message', async () => {
+  const manager = buildManager('load-ok');
+  const conversations = path.join(fakeHome, '.gemini', 'antigravity-cli', 'conversations');
+  fs.mkdirSync(conversations, { recursive: true });
+  fs.writeFileSync(path.join(conversations, 'print-only.db'), 'stub conversation');
+  try {
+    await assert.rejects(
+      manager.acquire('app-print-only', { cwd: stubDir, resumeProviderSessionId: 'print-only' }),
+      /continue.*print mode/i,
+    );
+    assert.equal(fs.existsSync(framesLog), false);
+  } finally {
+    await manager.destroyAll();
   }
 });

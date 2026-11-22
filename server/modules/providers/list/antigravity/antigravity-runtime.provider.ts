@@ -27,8 +27,10 @@ import {
 } from '@/modules/providers/shared/background-work/task-status.js';
 import type { IProviderRuntime } from '@/shared/interfaces.js';
 import type {
+  AcpCardOutcome,
   ActiveBackgroundTask,
   AnyRecord,
+  NormalizedMessage,
   ProviderPermissionDecision,
   ProviderRuntimeContext,
   ProviderRuntimeWriter,
@@ -66,12 +68,7 @@ import {
 import type { AntigravityAcpClient } from './antigravity-acp-client.js';
 import { AntigravityAcpSessionManager } from './antigravity-acp-session-manager.js';
 import { AntigravityAcpTranslator } from './antigravity-acp-translator.js';
-import {
-  antigravityAcpCards,
-  formatQuestionAnswers,
-  PENDING_CARD_TTL_MS,
-  type AcpCardOutcome,
-} from './antigravity-acp-bridge.js';
+import { antigravityAcpCards, formatQuestionAnswers } from './antigravity-acp-bridge.js';
 import { ANTIGRAVITY_QUESTION_TOOL as QUESTION_TOOL_NAME } from './antigravity-question.js';
 
 const PROVIDER = 'antigravity';
@@ -264,10 +261,13 @@ const getAcpManager = (): AntigravityAcpSessionManager => {
   if (!acpManagerInstance) {
     const enginePath = tryResolveEnginePath() ?? '';
     acpManagerInstance = new AntigravityAcpSessionManager({
-      onSessionExit: (appSessionId, info) => {
+      hasPendingCards: (appSessionId) => antigravityAcpCards.hasForSession(appSessionId),
+      onSessionExit: (appSessionId, info, client) => {
         console.info(`[AntigravityAcp] Session ${appSessionId} engine exited (code: ${info.code}, signal: ${info.signal})`);
+        if (acpRoutedClients.get(appSessionId) !== client) return;
         acpRoutedClients.delete(appSessionId);
         acpRoutedTranslators.delete(appSessionId);
+        antigravityAcpCards.retractAllForSession(appSessionId, { allow: false, message: 'The ACP connection closed.' });
       },
     }, enginePath);
   }
@@ -282,13 +282,6 @@ const getAcpManager = (): AntigravityAcpSessionManager => {
 const acpBoundSpawnIds = new Map<string, Set<string>>();
 
 /**
- * The conversation id each app session has already announced through a
- * `session_created` row. A resident session is announced once; a respawn that
- * opened a different conversation re-announces so clients rebind.
- */
-const acpAnnouncedSessionIds = new Map<string, string>();
-
-/**
  * Sessions whose between-turns listener is installed, and the ones holding a
  * live run pump. The engine keeps streaming after a turn ends — a daemon
  * `run_command` completing is announced only there — so a resident listener
@@ -296,10 +289,11 @@ const acpAnnouncedSessionIds = new Map<string, string>();
  * `publishSessionEvent`, which the composition root wires to the websocket
  * layer) while no run owns the session's writer.
  */
+const acpAnnouncedClients = new WeakSet<AntigravityAcpClient>();
 const acpRoutedClients = new Map<string, AntigravityAcpClient>();
 const acpLiveRunPumps = new Set<string>();
 const acpRoutedTranslators = new Map<string, AntigravityAcpTranslator>();
-const acpSessionSinks = new Map<string, NonNullable<ProviderRuntimeContext['publishSessionEvent']>>();
+const acpActiveTurns = new Map<string, AbortController>();
 
 /**
  * Installs the between-turns router for the session's current process: every
@@ -310,16 +304,14 @@ const acpSessionSinks = new Map<string, NonNullable<ProviderRuntimeContext['publ
  * subscription died with it.
  */
 function installAcpSessionRouter(
-  manager: AntigravityAcpSessionManager,
   sessionKey: string,
   context: ProviderRuntimeContext,
   client: AntigravityAcpClient,
 ): void {
-  if (!context.publishSessionEvent) return;
-  if (acpRoutedClients.get(sessionKey) === client) return;
+  const publish = context.publishSessionEvent;
+  if (!publish || acpRoutedClients.get(sessionKey) === client) return;
   acpRoutedClients.set(sessionKey, client);
-  acpSessionSinks.set(sessionKey, context.publishSessionEvent);
-  manager.onNotification(sessionKey, (notification) => {
+  client.onNotification((notification) => {
     if (acpLiveRunPumps.has(sessionKey)) return;
     if (notification.method !== 'session/update') return;
     let translator = acpRoutedTranslators.get(sessionKey);
@@ -329,9 +321,8 @@ function installAcpSessionRouter(
       translator.setSessionId(frameSessionId);
       acpRoutedTranslators.set(sessionKey, translator);
     }
-    const publish = acpSessionSinks.get(sessionKey);
     for (const message of translator.translate(notification).messages) {
-      publish?.(sessionKey, message);
+      publish(sessionKey, message);
     }
   });
 }
@@ -340,9 +331,13 @@ function installAcpSessionRouter(
  * Kills every resident ACP session process. Server shutdown and the tests
  * both need this: the children hold the event loop open otherwise.
  */
-export function closeAntigravityAcpSessions(): void {
-  acpManagerInstance?.destroyAll();
-  acpManagerInstance = null;
+export async function closeAntigravityAcpSessions(): Promise<void> {
+  const manager = acpManagerInstance;
+  try {
+    await manager?.destroyAll();
+  } finally {
+    if (acpManagerInstance === manager) acpManagerInstance = null;
+  }
 }
 
 export class AntigravityRuntimeProvider implements IProviderRuntime {
@@ -371,16 +366,13 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
     writer: ProviderRuntimeWriter,
     context: ProviderRuntimeContext,
   ): Promise<unknown> {
-    // The merged catalog decides whether a base model id encodes effort as an
-    // id suffix. A catalog lookup failure must degrade to flag-based effort,
-    // never block the run.
-    const catalog = await context.getProviderModels().catch(() => null);
-
-    // The resident-ACP path only when opted in; the print path below is the
-    // default fallback until the ACP runtime passes real-machine acceptance.
     if (isAcpRuntimeEnabled()) {
       return this.runViaAcp(command, options, writer, context);
     }
+
+    // The merged catalog decides whether a base model id encodes effort as an
+    // id suffix. A catalog lookup failure degrades to flag-based effort.
+    const catalog = await context.getProviderModels().catch(() => null);
 
     return new Promise((resolve, reject) => {
       const sessionId = readOptionalString(options.sessionId);
@@ -1284,11 +1276,8 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
    * description; NormalizedMessage frames stream through the writer; terminal
    * notifications go out once.
    *
-   * Deliberate gaps while the ACP path is opt-in (docs/design/agyACP运行时.md
-   * 分步实施): model and effort still ride the engine default until the ACP
-   * model channel is wired; question cards render but answering is a plain
-   * follow-up message; permission requests are provisionally approved until
-   * the gateway bridge lands.
+   * Questions resume on the same run. Permission decisions use the
+   * pending-card gateway and keep approval state outside the engine process.
    */
   private async runViaAcp(
     command: string,
@@ -1300,8 +1289,10 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
     const explicitWorkspace = readOptionalString(options.cwd)
       ?? readOptionalString(options.projectPath);
     const cwd = explicitWorkspace ? path.resolve(explicitWorkspace) : process.cwd();
-    const permissionMode = readOptionalString(options.permissionMode);
-    const skipPermissions = Boolean(options.skipPermissions || options.toolsSettings?.skipPermissions);
+    const legacySkipPermissions = options.skipPermissions === true || options.toolsSettings?.skipPermissions === true;
+    // Older callers may send only the legacy flag. An explicit mode is the current turn's choice.
+    const permissionMode = readOptionalString(options.permissionMode)
+      ?? (legacySkipPermissions ? 'bypassPermissions' : 'default');
     const sessionSummary = readOptionalString(options.sessionSummary);
     const providerSessionId = sessionId ? context.resolveProviderSessionId(sessionId) : null;
 
@@ -1319,7 +1310,12 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
     }
 
     const manager = getAcpManager();
-    const sessionKey = sessionId || providerSessionId || `agy_acp_${Date.now()}_${keylessRunCounter += 1}`;
+    const sessionKey = sessionId ?? `agy_acp_${Date.now()}_${keylessRunCounter += 1}`;
+    if (acpActiveTurns.has(sessionKey)) {
+      throw new Error(`Antigravity session ${sessionKey} is busy with another turn`);
+    }
+    const cancellation = new AbortController();
+    acpActiveTurns.set(sessionKey, cancellation);
 
     const idleTimeout = readOptionalString(options.idleTimeout)
       ?? process.env.CLOUDCLI_ANTIGRAVITY_IDLE_TIMEOUT
@@ -1360,24 +1356,66 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
     let completeSent = false;
     let runCumulative = { used: 0, inputTokens: 0, outputTokens: 0 };
     let lastContextReading: { used: number; inputTokens: number; outputTokens: number } | null = null;
-    let unsubscribe: () => void = () => {};
+    let unsubscribe: (() => void) | undefined;
+    let release: (() => void) | undefined;
+    let finishAgentTails: (() => Promise<void>) | undefined;
+    let stopAbortedOutput: (() => Promise<void>) | undefined;
+    let capturedSessionId = sessionId ?? null;
+    const finishAborted = async () => {
+      clearWatchdog();
+      await stopAbortedOutput?.();
+      if (!completeSent) {
+        completeSent = true;
+        writer.send(createCompleteMessage({ provider: PROVIDER, sessionId: capturedSessionId, exitCode: 0, aborted: true }));
+      }
+      notifyRunStopped({
+        userId: writer.userId != null ? String(writer.userId) : null,
+        provider: PROVIDER,
+        sessionId,
+        sessionName: sessionSummary,
+        stopReason: 'aborted',
+      });
+      settled = true;
+      return { sessionId: capturedSessionId, success: true, aborted: true };
+    };
 
     try {
       const handle = await manager.acquire(sessionKey, {
         cwd,
         resumeProviderSessionId: providerSessionId,
-        skipPermissions: skipPermissions || permissionMode === 'bypassPermissions',
+        skipPermissions: permissionMode === 'bypassPermissions',
       });
-      manager.setBusy(sessionKey, true);
-      installAcpSessionRouter(manager, sessionKey, context, handle.client);
-      acpLiveRunPumps.add(sessionKey);
+      release = () => manager.release(sessionKey, handle);
+      capturedSessionId = handle.sessionId;
+      cancellation.signal.throwIfAborted();
+      installAcpSessionRouter(sessionKey, context, handle.client);
+
+      writer.setSessionId?.(handle.sessionId);
+      if (handle.continuity === 'started' && !providerSessionId && !acpAnnouncedClients.has(handle.client)) {
+        acpAnnouncedClients.add(handle.client);
+        writer.send(createNormalizedMessage({
+          id: generateMessageId(PROVIDER),
+          kind: 'session_created',
+          newSessionId: handle.sessionId,
+          sessionId: handle.sessionId,
+          provider: PROVIDER,
+          content: `Antigravity session created: ${handle.sessionId}`,
+        }));
+      }
 
       // Model and effort resolution, shared with the print path's flag
       // building: the merged catalog decides whether a base model id encodes
       // effort as an id suffix. A catalog lookup failure degrades to raw ids.
       const model = readOptionalString(options.model);
       const effort = readOptionalString(options.effort);
-      const catalog = await context.getProviderModels().catch(() => null);
+      const catalog = model ? await new Promise<Awaited<ReturnType<ProviderRuntimeContext['getProviderModels']>> | null>((resolve) => {
+        const onAbort = () => resolve(null);
+        cancellation.signal.addEventListener('abort', onAbort, { once: true });
+        void context.getProviderModels().then(resolve, () => resolve(null)).finally(() => {
+          cancellation.signal.removeEventListener('abort', onAbort);
+        });
+      }) : null;
+      cancellation.signal.throwIfAborted();
       const resolvedModel = model && catalog
         ? findCatalogOptionForModelString(model, catalog.OPTIONS)
         : null;
@@ -1387,22 +1425,23 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
         resolvedModel?.option,
       );
 
-      // Permission-mode parity: map the app's mode onto the engine session
-      // (bypassPermissions rode the spawn flag above). A no-op when the
-      // session already runs the requested mode; a failed set_mode keeps the
-      // engine's current mode rather than failing the turn.
+      // Only launch flags can enable bypass mode. A mode change must be
+      // acknowledged before the engine can receive the prompt.
       const targetMode = permissionMode === 'acceptEdits' ? 'accept-edits'
         : permissionMode === 'plan' ? 'plan'
         : permissionMode === 'default' ? 'default'
         : null;
-      if (targetMode && handle.availableModeIds.includes(targetMode) && handle.currentModeId !== targetMode) {
-        try {
-          await handle.client.request('session/set_mode', { sessionId: handle.sessionId, modeId: targetMode });
-          handle.currentModeId = targetMode;
-        } catch (error) {
-          console.warn(`[AntigravityAcp] set_mode ${targetMode} failed; keeping ${handle.currentModeId}:`, error);
-        }
+      if (!targetMode && permissionMode !== 'bypassPermissions') {
+        throw new Error(`Antigravity does not support permission mode ${permissionMode}`);
       }
+      if (targetMode) {
+        if (!handle.availableModeIds.includes(targetMode)) {
+          throw new Error(`Antigravity ACP did not offer permission mode ${targetMode}`);
+        }
+        // A slash command or a previous turn can change the engine's mode.
+        await handle.client.request('session/set_mode', { sessionId: handle.sessionId, modeId: targetMode });
+      }
+      cancellation.signal.throwIfAborted();
 
       // Model selection, best effort: agy's ACP model ids carry the effort
       // tier as a suffix, so the catalog-resolved family and tier are joined
@@ -1422,60 +1461,34 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
             await handle.client.request('session/set_model', { sessionId: handle.sessionId, modelId: target });
             handle.currentModelId = target;
           } catch (error) {
+            if (handle.client.isClosed()) throw error;
             console.warn(`[AntigravityAcp] set_model ${target} failed; keeping ${handle.currentModelId}:`, error);
           }
         }
       }
 
-      const capturedSessionId = handle.sessionId;
-      writer.setSessionId?.(capturedSessionId);
-      // A resident session is announced once; a respawn under a different
-      // conversation id re-announces so clients rebind to the new engine
-      // session.
-      if (acpAnnouncedSessionIds.get(sessionKey) !== capturedSessionId) {
-        acpAnnouncedSessionIds.set(sessionKey, capturedSessionId);
-        if (!providerSessionId) {
-          writer.send(createNormalizedMessage({
-            id: generateMessageId(PROVIDER),
-            kind: 'session_created',
-            newSessionId: capturedSessionId,
-            sessionId: capturedSessionId,
-            provider: PROVIDER,
-            content: `Antigravity session created: ${capturedSessionId}`,
-          }));
-        }
-        if (handle.continuity === 'restarted') {
-          // The resume failed and a fresh conversation opened; the user must
-          // know the context did not carry over rather than wonder why the
-          // agent lost its memory. Deterministic id: a replay re-announces the
-          // same row instead of stacking a copy.
-          writer.send(createNormalizedMessage({
-            id: `msg_${capturedSessionId}_acp_restarted`,
-            kind: 'task_notification',
-            summary: '引擎会话恢复失败，已开新会话（上下文不延续）',
-            status: 'interrupted',
-            sessionId: capturedSessionId,
-            provider: PROVIDER,
-          }));
-        }
-      }
+      cancellation.signal.throwIfAborted();
+      // The run writer already publishes to the session channel. Once the
+      // run settles, use the session publisher for late cards and retractions.
+      const cardWriter = {
+        send: (frame: NormalizedMessage) => {
+          if (settled && context.publishSessionEvent) context.publishSessionEvent(sessionKey, frame);
+          else writer.send(frame);
+        },
+      };
 
       // The permission bridge: agy parks the tool on this JSON-RPC request
-      // and waits indefinitely (probe-verified — no timeout, no
-      // re-announcement), so the card can live as long as the user thinks;
-      // the registry TTL only reaps zombies. The gateway's
-      // `chat.permission-response` fans into permissions.resolve, which
-      // settles the card and answers the engine.
-      manager.handleServerRequests(sessionKey, 'session/request_permission', (request) => {
+      // and waits for the gateway's decision or the card's own expiry.
+      handle.client.handleServerRequest('session/request_permission', (request) => {
+        if (cancellation.signal.aborted) return { outcome: { outcome: 'cancel' } };
         const params = readObjectRecord(request.params);
         const toolCall = readObjectRecord(params?.toolCall) ?? {};
         const toolCallId = readOptionalString(toolCall.toolCallId) ?? `req_${request.id}`;
         const optionList = Array.isArray(params?.options) ? params.options : [];
         const allowOption = optionList
           .map((option) => readObjectRecord(option))
-          .find((option) => readOptionalString(option?.kind)?.startsWith('allow'))
-          ?? readObjectRecord(optionList[0]);
-        const requestId = `acp_perm_${toolCallId}`;
+          .find((option) => option?.kind === 'allow_once');
+        const requestId = generateMessageId('acp_perm');
         const toolName = readOptionalString(toolCall.name) ?? 'tool';
         const cardInput = toolCall.args ?? toolCall.rawInput ?? {};
         const cardContext = {
@@ -1496,16 +1509,11 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
           sessionId: capturedSessionId,
           provider: PROVIDER,
         });
-        writer.send(requestFrame);
-        // A tab attached after the live frame flew (or while the run's writer
-        // had already settled) still gets the card through the session channel.
-        context.publishSessionEvent?.(sessionKey, requestFrame);
         cardHold += 1;
         clearWatchdog();
         return new Promise((resolveAnswer) => {
           antigravityAcpCards.add({
             requestId,
-            kind: 'permission',
             sessionId: sessionKey,
             frameSessionId: capturedSessionId,
             toolName,
@@ -1513,7 +1521,7 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
             input: cardInput,
             context: cardContext,
             receivedAt: new Date(),
-            writer,
+            writer: cardWriter,
             settle: (outcome) => {
               cardHold -= 1;
               // A settled run must not re-arm a watchdog nobody will clear
@@ -1528,6 +1536,7 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
               }
             },
           });
+          cardWriter.send(requestFrame);
         });
       });
 
@@ -1561,7 +1570,7 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
         if (reportRead || reportsClosed) return reportRead ?? Promise.resolve();
         reportRead = (async () => {
           try {
-            const safeId = sanitizeLeafDirectoryName(capturedSessionId, 'antigravity session id');
+            const safeId = sanitizeLeafDirectoryName(handle.sessionId, 'antigravity session id');
             const compact = getAntigravityTranscriptCandidates(safeId).find((candidate) => fsSync.existsSync(candidate));
             if (!compact) return;
             const files = [compact, path.join(path.dirname(compact), 'transcript_full.jsonl')];
@@ -1579,7 +1588,8 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
               // Metadata unchanged; cached receipts already applied below.
             } else {
               reportFingerprint = fingerprint;
-              const rows = await readCanonicalAntigravityTranscript(capturedSessionId);
+              const rows = await readCanonicalAntigravityTranscript(handle.sessionId);
+              if (reportsClosed) return;
               const contents = rows.flatMap(({ entry }) => {
                 if (entry.status !== 'DONE' || entry.source === 'USER_EXPLICIT' || entry.type === 'USER_INPUT') return [];
                 const content = readOptionalString(entry.content) ?? '';
@@ -1669,11 +1679,15 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
        * and the run stays parked here until the answer arrives — the answer
        * turn then continues on this run's writer.
        */
-      const pendingAskHolder: { current: { requestId: string; waited: Promise<AcpCardOutcome> } | null } = { current: null };
-      unsubscribe = manager.onNotification(sessionKey, (notification) => {
-        touchWatchdog();
+      const seenQuestions = new Set<string>();
+      const pendingAskHolder: { current: Promise<AcpCardOutcome> | null } = { current: null };
+      acpLiveRunPumps.add(sessionKey);
+      unsubscribe = handle.client.onNotification((notification) => {
         if (notification.method !== 'session/update') return;
-        const update = readObjectRecord(readObjectRecord(notification.params)?.update);
+        const params = readObjectRecord(notification.params);
+        if (params?.sessionId !== handle.sessionId) return;
+        touchWatchdog();
+        const update = readObjectRecord(params.update);
         // The live context occupancy: usage_update frames carry the session's
         // used tokens directly (the response usage sums the whole turn and
         // would overstate the context — the same accounting the print path
@@ -1685,16 +1699,18 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
         for (const message of translation.messages) writer.send(message);
         if (translation.spawnStarted) pendingSpawnCalls.set(translation.spawnStarted.toolCallId, { specs: translation.spawnStarted.specs });
         if (translation.spawnSettled) pendingSpawnCalls.delete(translation.spawnSettled.toolCallId);
-        if (translation.toolPending?.toolName === QUESTION_TOOL_NAME && translation.toolPending.cardToolName) {
-          const toolCallId = translation.toolPending.toolCallId;
-          const requestId = `acp_ask_${toolCallId}`;
-          if (!antigravityAcpCards.get(requestId)) {
-            const cardInput = translation.toolPending.cardInput;
+        const pendingTool = translation.toolPending;
+        const cardToolName = pendingTool?.cardToolName;
+        if (pendingTool?.toolName === QUESTION_TOOL_NAME && cardToolName) {
+          const { toolCallId, cardInput } = pendingTool;
+          if (!pendingAskHolder.current && !seenQuestions.has(toolCallId) && !cancellation.signal.aborted) {
+            seenQuestions.add(toolCallId);
+            const requestId = generateMessageId('acp_ask');
             const questionFrame = createNormalizedMessage({
               id: generateMessageId(PROVIDER),
               kind: 'permission_request',
               requestId,
-              toolName: translation.toolPending.cardToolName,
+              toolName: cardToolName,
               toolId: toolCallId,
               input: cardInput,
               context: undefined,
@@ -1702,33 +1718,33 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
               sessionId: capturedSessionId,
               provider: PROVIDER,
             });
-            writer.send(questionFrame);
-            context.publishSessionEvent?.(sessionKey, questionFrame);
-            const waiters: Array<(outcome: AcpCardOutcome) => void> = [];
-            const waited = new Promise<AcpCardOutcome>((resolveWait) => waiters.push(resolveWait));
-            antigravityAcpCards.add({
-              requestId,
-              kind: 'question',
-              sessionId: sessionKey,
-              frameSessionId: capturedSessionId,
-              toolName: translation.toolPending.cardToolName,
-              toolId: toolCallId,
-              input: cardInput,
-              receivedAt: new Date(),
-              writer,
-              settle: (outcome) => {
-                // One wake per settle; the bridge removes the card before
-                // settling, so a second settle cannot reach a stale waiter.
-                waiters.shift()?.(outcome);
-              },
+            cardHold += 1;
+            clearWatchdog();
+            pendingAskHolder.current = new Promise<AcpCardOutcome>((resolveAnswer) => {
+              antigravityAcpCards.add({
+                requestId,
+                sessionId: sessionKey,
+                frameSessionId: capturedSessionId,
+                toolName: cardToolName,
+                toolId: toolCallId,
+                input: cardInput,
+                receivedAt: new Date(),
+                writer: cardWriter,
+                settle: (outcome) => {
+                  cardHold -= 1;
+                  if (!settled) touchWatchdog();
+                  resolveAnswer(outcome);
+                },
+              });
             });
-            pendingAskHolder.current = { requestId, waited };
+            cardWriter.send(questionFrame);
           }
         }
         if (translation.spawnStarted) void reconcileSpawnsAndReports();
       });
 
-      const finishAgentTails = async (): Promise<void> => {
+      finishAgentTails = async (): Promise<void> => {
+        if (reportsClosed) return;
         reportsClosed = true;
         clearInterval(reportTimer);
         let timer: NodeJS.Timeout | undefined;
@@ -1776,11 +1792,20 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
         antigravityBackgroundWork.clearSession(sessionKey);
       };
 
+      stopAbortedOutput = async () => {
+        const closed = translator.closeOpenSegment();
+        if (closed) writer.send(closed);
+        await finishAgentTails?.();
+        if (antigravityBackgroundWork.hasSession(sessionKey)) {
+          settleAgentsAtTurnEnd('stopped');
+          broadcastBackgroundTasks();
+        }
+      };
+
       touchWatchdog();
 
       if (!(command && command.trim()) && !hasAttachments) {
         // Nothing to run (parity: the print path exits its process at once).
-        manager.setBusy(sessionKey, false);
         if (!completeSent) {
           completeSent = true;
           writer.send(createCompleteMessage({ provider: PROVIDER, sessionId: capturedSessionId, exitCode: 0 }));
@@ -1791,6 +1816,7 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
 
       const promptFailure: { error: Error | null } = { error: null };
       const sendPrompt = (text: string) => {
+        cancellation.signal.throwIfAborted();
         touchWatchdog();
         return handle.client.request('session/prompt', {
           sessionId: handle.sessionId,
@@ -1815,11 +1841,14 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
        * Fails the run once its frames and notifications have gone out. Always
        * throws, so callers fall into the catch's settled short-circuit.
        */
-      const settleTurnFailure = async (failure: string): Promise<never> => {
+      const settleTurnFailure = async (description: string): Promise<never> => {
         clearWatchdog();
+        const failure = watchdogExpired
+          ? `Antigravity CLI produced no output for ${idleTimeout} and was terminated.`
+          : description;
         const closed = translator.closeOpenSegment();
         if (closed) writer.send(closed);
-        await finishAgentTails();
+        await finishAgentTails?.();
         settleAgentsAtTurnEnd('stopped');
         if (!completeSent) {
           completeSent = true;
@@ -1851,11 +1880,7 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
        * always throws; callers throw their own unreachable guard after it.
        */
       const settleFromEngineExit = async (info: { code: number | null; signal: NodeJS.Signals | null }): Promise<void> => {
-        const failure = watchdogExpired
-          ? `Antigravity CLI produced no output for ${idleTimeout} and was terminated.`
-          : promptFailure.error instanceof Error
-            ? promptFailure.error.message
-            : `Antigravity CLI exited (code: ${info.code ?? info.signal}).`;
+        const failure = promptFailure.error?.message ?? `Antigravity CLI exited (code: ${info.code ?? info.signal}).`;
         await settleTurnFailure(failure);
       };
 
@@ -1867,6 +1892,9 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
       let wasCancelled = false;
       let resultUsage = { used: 0, inputTokens: 0, outputTokens: 0 };
       for (;;) {
+        if (cancellation.signal.aborted && (race.ended === 'exit' || promptFailure.error)) {
+          cancellation.signal.throwIfAborted();
+        }
         if (race.ended === 'exit') {
           await settleFromEngineExit(race.info);
           throw new Error('unreachable: settleFromEngineExit always throws');
@@ -1919,59 +1947,21 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
         }
 
         const parkedAsk = pendingAskHolder.current;
-        if (stopReason === 'end_turn' && parkedAsk && antigravityAcpCards.get(parkedAsk.requestId)) {
-          // Parked on a question: the run stays busy and the card stays
-          // answerable until the gateway settles it. The races bound the wait
-          // from the two sides nobody controls: an engine death and the card
-          // registry's TTL (its sweep settles the card on its own; the timer
-          // here is the belt to its braces).
-          cardHold += 1;
+        if (stopReason === 'end_turn' && parkedAsk) {
+          // Keep the promise even if the gateway already removed the card.
+          // A fast answer can arrive before agy returns end_turn.
           const parkRace = await Promise.race([
-            parkedAsk.waited.then((outcome) => ({ ended: 'answer' as const, outcome })),
+            parkedAsk.then((outcome) => ({ ended: 'answer' as const, outcome })),
             handle.client.whenExit().then((info) => ({ ended: 'exit' as const, info })),
-            new Promise<null>((resolveTimer) => {
-              const timer = setTimeout(() => resolveTimer(null), PENDING_CARD_TTL_MS);
-              timer.unref?.();
-            }),
           ]);
-          cardHold -= 1;
           pendingAskHolder.current = null;
-          if (parkRace === null) {
-            // The sweep should have settled a timed-out card before this
-            // timer fires; treat it as a denial and let the engine finish on
-            // its own judgment.
-            promptPromise = sendPrompt(formatQuestionAnswers({}));
-            race = await awaitTurnEnd();
-            continue;
-          }
+          cancellation.signal.throwIfAborted();
           if (parkRace.ended === 'exit') {
             await settleFromEngineExit(parkRace.info);
             throw new Error('unreachable: settleFromEngineExit always throws');
           }
           const outcome = parkRace.outcome;
-          if (outcome?.aborted) {
-            const closed = translator.closeOpenSegment();
-            if (closed) writer.send(closed);
-            await finishAgentTails();
-            if (antigravityBackgroundWork.hasSession(sessionKey)) {
-              settleAgentsAtTurnEnd('transcript');
-              broadcastBackgroundTasks();
-            }
-            if (!completeSent) {
-              completeSent = true;
-              writer.send(createCompleteMessage({ provider: PROVIDER, sessionId: capturedSessionId, exitCode: 0 }));
-            }
-            notifyRunStopped({
-              userId: writer.userId != null ? String(writer.userId) : null,
-              provider: PROVIDER,
-              sessionId,
-              sessionName: sessionSummary,
-              stopReason: 'aborted',
-            });
-            settled = true;
-            return { sessionId: capturedSessionId, success: true, aborted: true };
-          }
-          if (!outcome || outcome.expired || !outcome.allow) {
+          if (outcome.expired || !outcome.allow) {
             // Denied or timed out: the engine's next input would be read as
             // the answer, so tell it the user declined and let it finish on
             // its own judgment instead of leaving the ask parked under the
@@ -2003,6 +1993,7 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
         broadcastBackgroundTasks();
       }
 
+      if (wasCancelled || cancellation.signal.aborted) return await finishAborted();
       if (!completeSent) {
         completeSent = true;
         const completeMsg = createCompleteMessage({
@@ -2014,29 +2005,17 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
         writer.send(completeMsg);
       }
 
-      const normalizedUserId = writer.userId != null ? String(writer.userId) : null;
-      if (wasCancelled) {
-        notifyRunStopped({
-          userId: normalizedUserId,
-          provider: PROVIDER,
-          sessionId,
-          sessionName: sessionSummary,
-          stopReason: 'aborted',
-        });
-      } else {
-        notifyRunStopped({
-          userId: normalizedUserId,
-          provider: PROVIDER,
-          sessionId,
-          sessionName: sessionSummary,
-          stopReason: 'completed',
-        });
-      }
+      notifyRunStopped({
+        userId: writer.userId != null ? String(writer.userId) : null,
+        provider: PROVIDER,
+        sessionId,
+        sessionName: sessionSummary,
+        stopReason: 'completed',
+      });
       settled = true;
       return {
         sessionId: capturedSessionId,
         success: true,
-        ...(wasCancelled ? { aborted: true } : {}),
       };
     } catch (error) {
       clearWatchdog();
@@ -2044,6 +2023,7 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
       // themselves settled before throwing; only unexpected errors report
       // here, exactly once.
       if (settled) throw error;
+      if (cancellation.signal.aborted) return await finishAborted();
       const failure = error instanceof Error ? error.message : String(error);
       writer.send(createNormalizedMessage({
         id: generateMessageId(PROVIDER),
@@ -2067,20 +2047,20 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
       settled = true;
       throw error instanceof Error ? error : new Error(failure);
     } finally {
+      settled = true;
       clearWatchdog();
-      unsubscribe();
-      // Safety net: cards a settled or dead run still held would dangle until
-      // the TTL; take them down with the run. Cards the flow already settled
-      // are gone, so this is a no-op on the happy paths.
-      antigravityAcpCards.retractAllForSession(sessionKey, { allow: false, message: 'The session was closed.' });
-      // Retraction settles cards whose callbacks touch the watchdog; clear
-      // whatever they armed, now that this run can no longer own it.
-      clearWatchdog();
-      acpLiveRunPumps.delete(sessionKey);
-      // The run's translator closed its segment; the router starts fresh so
-      // an outside-turn text chunk opens its own segment.
-      acpRoutedTranslators.delete(sessionKey);
-      manager.setBusy(sessionKey, false);
+      unsubscribe?.();
+      try {
+        if (release) {
+          acpLiveRunPumps.delete(sessionKey);
+          acpRoutedTranslators.delete(sessionKey);
+          antigravityAcpCards.retractAllForSession(sessionKey, { allow: false, message: 'The turn was closed.' });
+          await finishAgentTails?.();
+        }
+      } finally {
+        release?.();
+        acpActiveTurns.delete(sessionKey);
+      }
     }
   }
 
@@ -2094,10 +2074,11 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
     // in-flight turn is cancelled. The process kill below stays for print
     // runs and for ACP sessions whose engine already died.
     if (isAcpRuntimeEnabled()) {
-      const settledCards = acpManagerInstance
-        ? antigravityAcpCards.retractAllForSession(sessionId, { allow: false, aborted: true }).length
-        : 0;
-      if (acpManagerInstance?.cancelTurn(sessionId) || settledCards > 0) {
+      const cancellation = acpActiveTurns.get(sessionId);
+      const cancelled = acpManagerInstance?.cancelTurn(sessionId);
+      cancellation?.abort();
+      const settledCards = antigravityAcpCards.retractAllForSession(sessionId, { allow: false, aborted: true }).length;
+      if (cancellation || cancelled || settledCards > 0) {
         return true;
       }
     }

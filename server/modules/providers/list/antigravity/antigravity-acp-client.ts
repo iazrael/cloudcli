@@ -19,13 +19,16 @@ import type { ChildProcess } from 'node:child_process';
 
 import crossSpawn from 'cross-spawn';
 
+import type { AcpNotification } from '@/shared/types.js';
+import { readObjectRecord } from '@/shared/utils.js';
+
 /**
  * A JSON-RPC message as it crosses the ACP stdio boundary. agy only ever
  * sends string-free JSON, and the client only ever sends numeric ids.
  */
-export type AcpFrame = {
+type AcpFrame = {
   jsonrpc: '2.0';
-  id?: number;
+  id?: number | string;
   method?: string;
   params?: unknown;
   result?: unknown;
@@ -33,26 +36,23 @@ export type AcpFrame = {
 };
 
 /** A request the engine sent to the client (`id` is always present here). */
-export type AcpServerRequest = { id: number; method: string; params: unknown };
-
-/** A notification the engine pushed (no id, no reply expected). */
-export type AcpNotification = { method: string; params: unknown };
+type AcpServerRequest = { id: number | string; method: string; params: unknown };
 
 /**
  * Handler the runtime registers for one server->client method. Returns the
  * result frame payload; a thrown error becomes a JSON-RPC error reply so the
  * engine is never left waiting.
  */
-export type AcpServerRequestHandler = (request: AcpServerRequest) => unknown | Promise<unknown>;
+type AcpServerRequestHandler = (request: AcpServerRequest) => unknown | Promise<unknown>;
 
-export type AcpClientOptions = {
+type AcpClientOptions = {
   /** Absolute path of the engine executable (resolved by antigravity-engine-path). */
   enginePath: string;
   /** Subcommand and flags, e.g. `['acp', '--app-data-dir', 'cloudcli-acp']`. */
   args: string[];
   /** Working directory the engine is spawned in. */
   cwd: string;
-  /** Extra environment on top of the parent's. */
+  /** Complete child environment. Omit it to inherit the parent's. */
   env?: NodeJS.ProcessEnv;
   /** Diagnostics (engine stderr lines, unparseable stdout) for callers that log. */
   onDiagnostic?: (line: string) => void;
@@ -71,22 +71,29 @@ export class AcpConnectionClosedError extends Error {
 
 /**
  * A live `agy acp` connection. One instance per engine process; the runtime
- * keeps one per resident antigravity session.
+ * and session manager keep one per resident antigravity session.
  */
 export class AntigravityAcpClient {
   private readonly child: ChildProcess;
   private readonly onDiagnostic: ((line: string) => void) | undefined;
   private nextId = 1;
-  private readonly pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
+  private readonly pending = new Map<number, {
+    resolve: (value: unknown) => void;
+    reject: (error: Error) => void;
+    timer?: NodeJS.Timeout;
+  }>();
   private readonly requestHandlers = new Map<string, AcpServerRequestHandler>();
   private readonly notificationSubscribers = new Set<(notification: AcpNotification) => void>();
-  private readonly exitWaiters: Array<(info: { code: number | null; signal: NodeJS.Signals | null }) => void> = [];
+  private readonly exit: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
+  private resolveExit!: (info: { code: number | null; signal: NodeJS.Signals | null }) => void;
+  private killTimer?: NodeJS.Timeout;
   private buffer = '';
   private closed = false;
   private exitInfo: { code: number | null; signal: NodeJS.Signals | null } | null = null;
 
   constructor(options: AcpClientOptions) {
     this.onDiagnostic = options.onDiagnostic;
+    this.exit = new Promise((resolve) => { this.resolveExit = resolve; });
     this.child = crossSpawn(options.enginePath, options.args, {
       cwd: options.cwd,
       // A provided environment replaces wholesale, exactly like the print
@@ -114,8 +121,10 @@ export class AntigravityAcpClient {
       }
     });
     this.child.on('error', (error) => {
-      // Spawn failures (ENOENT) surface here; fail every pending request.
-      this.handleExit(null, null, error);
+      // A spawn error means there is no child. A failed kill is not proof
+      // of exit and must not authorize a replacement process.
+      if (this.child.pid === undefined) this.handleExit(null, null, error);
+      else this.onDiagnostic?.(`[agy acp] process error: ${error.message}`);
     });
     this.child.on('exit', (code, signal) => {
       this.handleExit(code, signal);
@@ -127,8 +136,7 @@ export class AntigravityAcpClient {
    * this to fail the in-flight run; step 2 also uses it for crash handling.
    */
   whenExit(): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
-    if (this.exitInfo) return Promise.resolve(this.exitInfo);
-    return new Promise((resolve) => this.exitWaiters.push(resolve));
+    return this.exit;
   }
 
   /** Registers the handler for one server->client request method. */
@@ -143,16 +151,23 @@ export class AntigravityAcpClient {
   }
 
   /** Sends a client->server request and resolves with the result frame. */
-  request(method: string, params: unknown): Promise<unknown> {
+  request(method: string, params: unknown, timeoutMs = method === 'session/prompt' ? undefined : 30_000): Promise<unknown> {
     if (this.closed || !this.child.stdin || this.exitInfo) {
       return Promise.reject(new AcpConnectionClosedError(`agy acp is not running (method: ${method})`, -32000));
     }
     const id = this.nextId++;
     const frame: AcpFrame = { jsonrpc: '2.0', id, method, params };
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      const timer = timeoutMs === undefined ? undefined : setTimeout(() => {
+        this.pending.delete(id);
+        reject(new AcpConnectionClosedError(`agy acp ${method} timed out after ${timeoutMs}ms`, -32000));
+        this.close();
+      }, timeoutMs);
+      timer?.unref();
+      this.pending.set(id, { resolve, reject, timer });
       this.child.stdin!.write(`${JSON.stringify(frame)}\n`, (writeError) => {
         if (writeError) {
+          clearTimeout(timer);
           this.pending.delete(id);
           reject(new AcpConnectionClosedError(`failed to write ${method} to agy acp: ${writeError.message}`, -32000));
         }
@@ -170,12 +185,10 @@ export class AntigravityAcpClient {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.rejectPending(new AcpConnectionClosedError('agy acp connection closed', -32000));
     this.child.kill('SIGTERM');
-  }
-
-  /** The underlying process, for callers that need to escalate to SIGKILL. */
-  get process(): ChildProcess {
-    return this.child;
+    this.killTimer = setTimeout(() => this.child.kill('SIGKILL'), 1000);
+    this.killTimer.unref();
   }
 
   /** True once close() ran or the engine process exited. */
@@ -195,39 +208,49 @@ export class AntigravityAcpClient {
   }
 
   private handleLine(line: string): void {
-    let frame: AcpFrame;
+    let value: unknown;
     try {
-      frame = JSON.parse(line) as AcpFrame;
+      value = JSON.parse(line);
     } catch {
-      this.onDiagnostic?.(`[agy acp] unparseable stdout line: ${line.slice(0, 300)}`);
+      this.onDiagnostic?.('[agy acp] unparseable stdout line');
+      return;
+    }
+    const frame = readObjectRecord(value);
+    if (frame?.jsonrpc !== '2.0') {
+      this.onDiagnostic?.('[agy acp] Invalid JSON-RPC frame on stdout');
       return;
     }
 
-    if (frame.id !== undefined && frame.method) {
-      this.dispatchServerRequest(frame as AcpServerRequest);
-      return;
-    }
-    if (frame.method) {
+    if (typeof frame.method === 'string' && frame.method) {
+      if (typeof frame.id === 'string' || typeof frame.id === 'number') {
+        this.dispatchServerRequest({ id: frame.id, method: frame.method, params: frame.params });
+        return;
+      }
+      if (frame.id !== undefined) return;
       const notification: AcpNotification = { method: frame.method, params: frame.params };
       for (const subscriber of this.notificationSubscribers) {
         try {
           subscriber(notification);
         } catch (error) {
-          // A subscriber bug must not break the frame loop.
           this.onDiagnostic?.(`[agy acp] notification subscriber threw: ${String(error)}`);
         }
       }
       return;
     }
-    if (frame.id === undefined) return;
 
+    if (typeof frame.id !== 'number') return;
     const pending = this.pending.get(frame.id);
     if (!pending) return;
+    const error = readObjectRecord(frame.error);
+    clearTimeout(pending.timer);
     this.pending.delete(frame.id);
-    if (frame.error) {
-      pending.reject(new Error(`agy acp ${frame.error.code}: ${frame.error.message}`));
-    } else {
+    if (typeof error?.code === 'number' && typeof error.message === 'string') {
+      pending.reject(new Error(`agy acp ${error.code}: ${error.message}`));
+    } else if (Object.hasOwn(frame, 'result') && !Object.hasOwn(frame, 'error')) {
       pending.resolve(frame.result);
+    } else {
+      pending.reject(new Error('agy acp returned an invalid JSON-RPC response'));
+      this.close();
     }
   }
 
@@ -250,7 +273,7 @@ export class AntigravityAcpClient {
       );
   }
 
-  private replyToServer(id: number, result?: unknown, error?: { code: number; message: string }): void {
+  private replyToServer(id: number | string, result?: unknown, error?: { code: number; message: string }): void {
     if (this.closed || !this.child.stdin || this.exitInfo) return;
     const frame: AcpFrame = { jsonrpc: '2.0', id };
     if (error) frame.error = error;
@@ -262,14 +285,21 @@ export class AntigravityAcpClient {
     if (this.exitInfo) return;
     this.closed = true;
     this.exitInfo = { code, signal };
+    clearTimeout(this.killTimer);
     const message = spawnError
       ? `agy acp failed to start: ${spawnError.message}`
       : `agy acp exited (code: ${code ?? 'signal ' + signal})`;
+    this.rejectPending(new AcpConnectionClosedError(message, -32000));
+    this.resolveExit(this.exitInfo);
+    this.notificationSubscribers.clear();
+    this.requestHandlers.clear();
+  }
+
+  private rejectPending(error: Error): void {
     for (const pending of this.pending.values()) {
-      pending.reject(new AcpConnectionClosedError(message, -32000));
+      clearTimeout(pending.timer);
+      pending.reject(error);
     }
     this.pending.clear();
-    for (const waiter of this.exitWaiters.splice(0)) waiter(this.exitInfo);
-    this.child.removeAllListeners();
   }
 }
