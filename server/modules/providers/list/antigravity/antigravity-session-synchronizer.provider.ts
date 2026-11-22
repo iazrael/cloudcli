@@ -1,9 +1,13 @@
 import fsSync from 'node:fs';
+import path from 'node:path';
 
 import Database from 'better-sqlite3';
 
 import { sessionsDb } from '@/modules/database/index.js';
-import type { ProviderSessionFileSynchronizationDelta } from '@/shared/types.js';
+import type {
+  ProviderSessionFileSynchronizationDelta,
+  ProviderSessionWatchTarget,
+} from '@/shared/types.js';
 import {
   parseAntigravityWorkspacePath,
   readOptionalString,
@@ -13,6 +17,7 @@ import {
 import { SqliteSessionSynchronizer } from '../../shared/sessions/sqlite-session-synchronizer.provider.js';
 
 import {
+  getAntigravityAcpDataRoot,
   getAntigravitySummariesDbPath,
   getAntigravityTranscriptCandidates,
 } from './antigravity-data-root.js';
@@ -67,6 +72,25 @@ export class AntigravitySessionSynchronizer extends SqliteSessionSynchronizer<An
 
   protected getDatabasePath(): string {
     return getAntigravitySummariesDbPath();
+  }
+
+  /**
+   * The managed ACP directory keeps its own summaries database (the resident
+   * engine writes there), same schema and id space. Scanning and watching
+   * both roots is what keeps ACP sessions indexed and auto-renamed.
+   */
+  protected override getSecondaryDatabasePaths(): string[] {
+    return [path.join(getAntigravityAcpDataRoot(), 'conversation_summaries.db')];
+  }
+
+  override getSessionWatchTarget(): ProviderSessionWatchTarget {
+    const target = super.getSessionWatchTarget();
+    return {
+      ...target,
+      extraRootPaths: [path.dirname(this.getSecondaryDatabasePaths()[0] ?? '')].filter(
+        (dir) => dir && dir !== target.rootPath,
+      ),
+    };
   }
 
   async synchronize(since?: Date): Promise<number> {

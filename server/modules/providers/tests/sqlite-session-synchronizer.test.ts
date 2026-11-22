@@ -331,3 +331,70 @@ test('rows without a project path are skipped and a missing database yields zero
     await rm(tempDir, { recursive: true, force: true });
   }
 });
+
+class TwoDatabaseSynchronizer extends FixtureSynchronizer {
+  constructor(primaryDbPath: string, private readonly secondaryDbPath: string) {
+    super(primaryDbPath);
+  }
+
+  protected override getSecondaryDatabasePaths(): string[] {
+    return [this.secondaryDbPath];
+  }
+
+  override getSessionWatchTarget() {
+    const target = super.getSessionWatchTarget();
+    return {
+      ...target,
+      extraRootPaths: [path.dirname(this.secondaryDbPath)],
+    };
+  }
+}
+
+test('scan covers secondary databases and the watch target exposes their roots', async () => {
+  const primaryDir = await mkdtemp(path.join(os.tmpdir(), 'sqlite-synchronizer-p-'));
+  const secondaryDir = await mkdtemp(path.join(os.tmpdir(), 'sqlite-synchronizer-s-'));
+  await createFixtureDatabase(primaryDir, [
+    { id: 'primary_1', title: 'Primary', updated_ms: 2_000 },
+  ]);
+  await createFixtureDatabase(secondaryDir, [
+    { id: 'secondary_1', title: 'Secondary', updated_ms: 3_000 },
+  ]);
+
+  try {
+    await withIsolatedDatabase(async () => {
+      const synchronizer = new TwoDatabaseSynchronizer(
+        path.join(primaryDir, 'fixture.db'),
+        path.join(secondaryDir, 'fixture.db'),
+      );
+
+      const target = synchronizer.getSessionWatchTarget();
+      assert.deepEqual(target.extraRootPaths, [secondaryDir]);
+
+      const processed = await synchronizer.synchronize();
+      assert.equal(processed, 2, 'rows from both databases upserted');
+      assert.ok(sessionsDb.getSessionByProviderSessionId('primary_1'), 'primary row indexed');
+      assert.ok(sessionsDb.getSessionByProviderSessionId('secondary_1'), 'secondary row indexed');
+
+      // Incremental syncs honour the shared high-water mark across both dbs:
+      // a new secondary row after the first scan still lands.
+      const synchronizer2 = new TwoDatabaseSynchronizer(
+        path.join(primaryDir, 'fixture.db'),
+        path.join(secondaryDir, 'fixture.db'),
+      );
+      await synchronizer2.synchronize();
+      const db = new Database(path.join(secondaryDir, 'fixture.db'));
+      try {
+        db.prepare('INSERT INTO session (id, title, derived, updated_ms) VALUES (?, ?, ?, ?)')
+          .run('secondary_2', 'Later', 0, 4_000);
+      } finally {
+        db.close();
+      }
+      await mkdir(fixtureWorkspacePath('secondary_2'), { recursive: true });
+      await synchronizer2.synchronize();
+      assert.ok(sessionsDb.getSessionByProviderSessionId('secondary_2'), 'cross-database high-water mark keeps later rows flowing');
+    });
+  } finally {
+    await rm(primaryDir, { recursive: true, force: true });
+    await rm(secondaryDir, { recursive: true, force: true });
+  }
+});

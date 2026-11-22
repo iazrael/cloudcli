@@ -242,7 +242,13 @@ export type ProviderSessionUsageInput = {
 export type ProviderSessionWatchTarget = {
   /** Directory holding this provider's session artifacts. */
   rootPath: string;
-  /** Returns true when a file event under `rootPath` should trigger a sync. */
+  /**
+   * Additional directories holding the same artifacts under another data
+   * root (antigravity's managed ACP directory), watched with the same file
+   * filter; empty by default.
+   */
+  extraRootPaths?: string[];
+  /** Returns true when a file event under any root should trigger a sync. */
   isTargetFile(filePath: string): boolean;
 };
 

@@ -218,40 +218,45 @@ export async function initializeSessionsWatcher(): Promise<void> {
   for (const provider of providerRegistry.listProviders()) {
     const watchTarget = provider.sessionSynchronizer.getSessionWatchTarget();
     const { rootPath } = watchTarget;
+    // Extra roots hold the same artifacts under another data root (the
+    // antigravity ACP managed directory) and get the identical watcher.
+    const roots = [rootPath, ...(watchTarget.extraRootPaths ?? [])];
 
-    try {
-      await fsPromises.mkdir(rootPath, { recursive: true });
+    for (const watchedRoot of roots) {
+      try {
+        await fsPromises.mkdir(watchedRoot, { recursive: true });
 
-      const watcher = chokidar.watch(rootPath, {
-        ignored: createWatcherIgnoredMatcher(rootPath),
-        persistent: true,
-        ignoreInitial: true,
-        followSymlinks: false,
-        depth: 6,
-        usePolling: true,
-        interval: 6_000,
-        binaryInterval: 6_000,
-      });
-
-      watcher
-        .on('add', (filePath: string) => {
-          void onUpdate('add', filePath, provider.id, watchTarget);
-        })
-        .on('change', (filePath: string) => {
-          void onUpdate('change', filePath, provider.id, watchTarget);
-        })
-        .on('error', (error: unknown) => {
-          const message = error instanceof Error ? error.message : String(error);
-          console.error(`Session watcher error for provider "${provider.id}"`, { error: message });
+        const watcher = chokidar.watch(watchedRoot, {
+          ignored: createWatcherIgnoredMatcher(watchedRoot),
+          persistent: true,
+          ignoreInitial: true,
+          followSymlinks: false,
+          depth: 6,
+          usePolling: true,
+          interval: 6_000,
+          binaryInterval: 6_000,
         });
 
-      watchers.push(watcher);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`Failed to initialize session watcher for provider "${provider.id}"`, {
-        rootPath,
-        error: message,
-      });
+        watcher
+          .on('add', (filePath: string) => {
+            void onUpdate('add', filePath, provider.id, watchTarget);
+          })
+          .on('change', (filePath: string) => {
+            void onUpdate('change', filePath, provider.id, watchTarget);
+          })
+          .on('error', (error: unknown) => {
+            const message = error instanceof Error ? error.message : String(error);
+            console.error(`Session watcher error for provider "${provider.id}"`, { error: message });
+          });
+
+        watchers.push(watcher);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`Failed to initialize session watcher for provider "${provider.id}"`, {
+          rootPath: watchedRoot,
+          error: message,
+        });
+      }
     }
   }
 }

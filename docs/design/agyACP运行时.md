@@ -79,7 +79,7 @@ antigravity 运行时从 print 单回合 spawn（`-p --input-format stream-json 
 
 **独立审查修复（2026-11-22）**：①ACP spawn 复用 `buildAntigravitySubprocessEnv()`（pm2 残留 SSH 变量会把 agy 切到文件 token store 破坏认证）；②prompt 被引擎以 JSON-RPC error 拒绝时按失败结算（原先吞成 success，用户消息静默丢失）；③未知 stopReason 一律失败结算；④提问挂起 race 加入引擎死亡；⑤pending 卡期间看门狗解除武装（cardHold 计数），不再与 30m 卡 TTL 双触发竞态；⑥`closeAntigravityAcpSessions` 接入 server/index 停机序列；⑦卡片帧（显示/撤回）双通道发布（writer + publishSessionEvent）；⑧deny/过期提问改发合成"未回答，自行判断"prompt 让引擎自行收尾（避免下一条用户消息被引擎当答案吃掉）；⑨路由按 client 实体重装（respawn 时序洞）；注释与文档环境变量名修正。
 
-**已知残留（验收段处理）**：①引擎会话列表的 summaries db 仍在用户自有根——引擎侧（终端 agy acp）创建的会话不会自动进侧栏，应用内创建的会话不受影响；双 db 同步是同步器框架级改动，验收后按需排期。②`session/set_model` 的实际生效未验证（RPC 被接受 ≠ 生效）。③plan 模式自动批准回归在 ACP 下是否消失待复验。④问答卡的答案不进引擎转录的 ask 工具结果（引擎自己折叠，刷新后以转录为准）。
+**已知残留（验收段处理）**：~~①引擎会话列表的 summaries db 仍在用户自有根~~ → **已修（2026-11-22，真机发现自动改名失效的显性回归）**：ACP 会话的 conversation_summaries.db 落在托管目录，同步器只盯用户自有根，自动改名/会话收录失灵——骨架加 `getSecondaryDatabasePaths()`（默认空，单根 provider 零影响），watcher 支持 `extraRootPaths`，antigravity 子类声明 ACP 根；顺带关掉"引擎侧 ACP 会话不进侧栏"。其余残留：②`session/set_model` 的实际生效未验证（RPC 被接受 ≠ 生效）。③plan 模式自动批准回归在 ACP 下是否消失待复验。④问答卡的答案不进引擎转录的 ask 工具结果（引擎自己折叠，刷新后以转录为准）。
 
 ## 验证
 
