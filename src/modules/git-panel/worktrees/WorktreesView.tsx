@@ -86,6 +86,11 @@ function WorktreeRow({ worktree, isMobile, isBusy, onOpen, onMerge, onRemove }: 
               {t('git:worktrees.locked')}
             </span>
           )}
+          {worktree.isPrunable && (
+            <span className="shrink-0 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400">
+              {t('git:worktrees.prunable')}
+            </span>
+          )}
         </div>
 
         <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
@@ -119,14 +124,17 @@ function WorktreeRow({ worktree, isMobile, isBusy, onOpen, onMerge, onRemove }: 
           <Check className="h-4 w-4 text-primary" />
         ) : (
           <>
-            <button
-              onClick={onOpen}
-              className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-              title={t('git:worktrees.switchTo', { name: branchLabel })}
-            >
-              <ArrowRightLeft className="h-3 w-3" />
-              {t('git:worktrees.open')}
-            </button>
+            {/* A prunable worktree's directory is gone — opening it can only fail. */}
+            {!worktree.isPrunable && (
+              <button
+                onClick={onOpen}
+                className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                title={t('git:worktrees.switchTo', { name: branchLabel })}
+              >
+                <ArrowRightLeft className="h-3 w-3" />
+                {t('git:worktrees.open')}
+              </button>
+            )}
             {!worktree.isMain && (
               <>
                 <button

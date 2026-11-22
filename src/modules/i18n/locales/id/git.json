@@ -229,6 +229,7 @@
     "current": "saat ini",
     "mainWorktree": "worktree utama",
     "locked": "terkunci",
+    "prunable": "Hilang",
     "changeCount_one": "● {{count}} perubahan",
     "changeCount_other": "● {{count}} perubahan",
     "switchTo": "Beralih ke {{name}}",

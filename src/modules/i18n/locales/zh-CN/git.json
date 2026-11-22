@@ -230,6 +230,7 @@
     "current": "当前",
     "mainWorktree": "主工作树",
     "locked": "已锁定",
+    "prunable": "已失效",
     "changeCount_one": "● {{count}} 项更改",
     "changeCount_other": "● {{count}} 项更改",
     "switchTo": "切换到 {{name}}",

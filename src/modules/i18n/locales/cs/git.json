@@ -228,6 +228,7 @@
     "current": "aktuální",
     "mainWorktree": "hlavní worktree",
     "locked": "zamčeno",
+    "prunable": "Chybí",
     "changeCount_one": "● {{count}} změna",
     "changeCount_few": "● {{count}} změny",
     "changeCount_many": "● {{count}} změny",

@@ -239,6 +239,7 @@
     "current": "atual",
     "mainWorktree": "worktree principal",
     "locked": "bloqueado",
+    "prunable": "Ausente",
     "changeCount_one": "● {{count}} alteração",
     "changeCount_other": "● {{count}} alterações",
     "changeCount_many": "● {{count}} de alterações",

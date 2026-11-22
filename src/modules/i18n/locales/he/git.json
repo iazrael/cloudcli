@@ -240,6 +240,7 @@
     "current": "נוכחי",
     "mainWorktree": "worktree ראשי",
     "locked": "נעול",
+    "prunable": "חסר",
     "changeCount_one": "● שינוי אחד",
     "changeCount_two": "● שני שינויים",
     "changeCount_other": "● {{count}} שינויים",

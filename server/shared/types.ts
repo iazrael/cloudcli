@@ -1035,6 +1035,8 @@ export type WorktreeDescriptor = {
   isCurrent: boolean;
   isLocked: boolean;
   isDetached: boolean;
+  /** Git has registered this worktree but its directory is gone (`prunable`); it cannot be inspected, opened or merged. */
+  isPrunable: boolean;
   changedFileCount: number;
   ahead: number;
   behind: number;

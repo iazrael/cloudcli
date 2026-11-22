@@ -112,8 +112,15 @@ export async function listWorktrees(
     entries,
     WORKTREE_LIST_CONCURRENCY,
     async (entry: WorktreePorcelainEntry, index: number): Promise<WorktreeDescriptor> => {
+      // A prunable entry's directory is already gone, so Git cannot run
+      // inside it at all (spawn ENOENT) — skip the inspection instead of
+      // failing the whole listing. The catch does the same for any single
+      // entry whose inspection fails for another reason: one bad worktree
+      // must not blank out the list.
       const [changedFileCount, aheadBehind, lastCommit] = await Promise.all([
-        countChangedFiles(entry.path, runGit),
+        entry.isPrunable
+          ? Promise.resolve(0)
+          : countChangedFiles(entry.path, runGit).catch(() => 0),
         countAheadBehind(repositoryRoot, baseBranch, index === 0 ? null : entry.branch, runGit),
         readLastCommit(entry.path, runGit),
       ]);
@@ -128,6 +135,7 @@ export async function listWorktrees(
         isCurrent: comparable(entry.path) === comparable(requestedPath),
         isLocked: entry.isLocked,
         isDetached: entry.isDetached,
+        isPrunable: entry.isPrunable,
         changedFileCount,
         ahead: aheadBehind.ahead,
         behind: aheadBehind.behind,

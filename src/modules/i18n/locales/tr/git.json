@@ -229,6 +229,7 @@
     "current": "geçerli",
     "mainWorktree": "ana çalışma ağacı",
     "locked": "kilitli",
+    "prunable": "Kayıp",
     "changeCount_one": "● {{count}} değişiklik",
     "changeCount_other": "● {{count}} değişiklik",
     "switchTo": "{{name}} ağacına geç",

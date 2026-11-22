@@ -67,6 +67,7 @@ Saying "发布/发版本" (release a version) means running this whole pipeline 
 6. `git push origin main --follow-tags`, then `gh release create vX.Y.Z -R iazrael/cloudcli --title "CloudCLI X.Y.Z" --notes-file ...` — always pass `-R`; gh defaults to the upstream repo.
 7. Stop before the restart-producing deploy step. Tell the user to run `node scripts/deploy.mjs` from the worktree themselves; non-interactive shells need `PATH="$HOME/Library/pnpm:$PATH" PNPM_HOME="$HOME/Library/pnpm"` so pnpm and the stable global CLI entry are available. Resume verification only after the user confirms it completed.
 8. Verify four things: pm2 online with the new version, `curl http://localhost:3030/` returns 200, the fixed runtime's `dist/assets/*.js` fingerprint has no `-dirty`, and `gh release view` confirms the release.
+9. Delete the release worktree: `git worktree remove /tmp/rel-vX.Y.Z` (add `--force` since it carries untracked build output; `git worktree prune` if the directory is already gone). Leftover registrations with a deleted directory break the Worktrees panel listing.
 
 ## Parallel development worktrees
 

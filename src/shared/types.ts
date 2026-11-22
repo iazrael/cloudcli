@@ -1212,6 +1212,8 @@ export type WorktreeInfo = {
   isCurrent: boolean;
   isLocked: boolean;
   isDetached: boolean;
+  /** Git has registered this worktree but its directory is gone; it cannot be opened or inspected. */
+  isPrunable: boolean;
   changedFileCount: number;
   ahead: number;
   behind: number;

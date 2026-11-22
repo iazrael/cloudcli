@@ -230,6 +230,7 @@
     "current": "current",
     "mainWorktree": "main worktree",
     "locked": "locked",
+    "prunable": "Stale",
     "changeCount_one": "● {{count}} change",
     "changeCount_other": "● {{count}} changes",
     "switchTo": "Switch to {{name}}",
