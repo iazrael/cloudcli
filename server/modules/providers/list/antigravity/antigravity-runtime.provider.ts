@@ -1516,7 +1516,10 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
             writer,
             settle: (outcome) => {
               cardHold -= 1;
-              touchWatchdog();
+              // A settled run must not re-arm a watchdog nobody will clear
+              // (this settle can fire from the finally's retraction after an
+              // abnormal exit).
+              if (!settled) touchWatchdog();
               const optionId = readOptionalString(allowOption?.optionId);
               if (outcome.allow && optionId) {
                 resolveAnswer({ outcome: { outcome: 'selected_once', optionId } });
@@ -2070,6 +2073,9 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
       // the TTL; take them down with the run. Cards the flow already settled
       // are gone, so this is a no-op on the happy paths.
       antigravityAcpCards.retractAllForSession(sessionKey, { allow: false, message: 'The session was closed.' });
+      // Retraction settles cards whose callbacks touch the watchdog; clear
+      // whatever they armed, now that this run can no longer own it.
+      clearWatchdog();
       acpLiveRunPumps.delete(sessionKey);
       // The run's translator closed its segment; the router starts fresh so
       // an outside-turn text chunk opens its own segment.

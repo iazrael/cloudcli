@@ -89,7 +89,11 @@ export class AntigravityAcpClient {
     this.onDiagnostic = options.onDiagnostic;
     this.child = crossSpawn(options.enginePath, options.args, {
       cwd: options.cwd,
-      env: options.env ? { ...process.env, ...options.env } : process.env,
+      // A provided environment replaces wholesale, exactly like the print
+      // path's crossSpawn call: callers pass buildAntigravitySubprocessEnv()
+      // to strip the residual SSH variables that flip agy's token store, and
+      // merging over process.env would quietly bring them back.
+      env: options.env ?? process.env,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
