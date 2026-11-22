@@ -43,7 +43,7 @@ function TokenUsageBadge({ usage, onClick }: TokenUsageBadgeProps) {
       type="button"
       onClick={onClick}
       className={cn(
-        'inline-flex h-11 shrink-0 items-center rounded-lg border px-2 text-xs font-medium shadow-sm transition-colors',
+        'inline-flex h-8 shrink-0 items-center rounded-lg border px-2 text-xs font-medium shadow-sm transition-colors',
         alert === 'critical'
           ? 'border-red-400/60 bg-red-500/10 text-red-600 dark:border-red-500/40 dark:bg-red-900/20 dark:text-red-400'
           : 'border-amber-400/60 bg-amber-500/10 text-amber-600 dark:border-amber-500/40 dark:bg-amber-900/20 dark:text-amber-400',

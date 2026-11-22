@@ -700,7 +700,7 @@ function ChatComposer({
                 disabled={isSubmitting || Boolean(attachmentBlock)}
                 aria-label={t('input.steer.button', { provider: providerLabel, defaultValue: 'Send into the running {{provider}} turn' })}
                 title={t('input.steer.button', { provider: providerLabel, defaultValue: 'Send into the running {{provider}} turn' })}
-                className="h-11 w-11 sm:h-10 sm:w-10"
+                className="h-10 w-10 sm:h-10 sm:w-10"
               >
                 <MessageSquarePlusIcon className="h-4 w-4" />
               </PromptInputButton>
@@ -716,7 +716,7 @@ function ChatComposer({
                 disabled={isSubmitting || Boolean(attachmentBlock)}
                 aria-label={t('sideQuestion.label', { defaultValue: 'Side question · not part of the session' })}
                 title={t('sideQuestion.label', { defaultValue: 'Side question · not part of the session' })}
-                className="h-11 w-11 sm:h-10 sm:w-10"
+                className="h-10 w-10 sm:h-10 sm:w-10"
               >
                 <MessagesSquareIcon className="h-4 w-4" />
               </PromptInputButton>
@@ -754,7 +754,7 @@ function ChatComposer({
               }
               aria-label={submitAriaLabel}
               title={submitAriaLabel}
-              className="h-11 w-11 sm:h-10 sm:w-10"
+              className="h-10 w-10 sm:h-10 sm:w-10"
             >
               {isSubmitting || isTranscribing ? (
                 <Loader2 className="h-4 w-4 animate-spin" />

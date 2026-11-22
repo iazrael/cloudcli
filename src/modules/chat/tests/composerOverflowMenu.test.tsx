@@ -44,16 +44,19 @@ describe('ComposerOverflowMenu', () => {
     expect(screen.getByText('97')).toBeTruthy();
   });
 
-  it('shows the usage row only when the budget carries numbers', () => {
+  it('always shows the usage row, with numbers only when the budget carries a window', () => {
     const { rerender } = render(<ComposerOverflowMenu {...baseProps} tokenBudget={{ used: 87_000, total: 400_000 }} />);
     fireEvent.click(screen.getByRole('button', { name: 'input.moreTools' }));
     expect(screen.getByText('input.contextUsage')).toBeTruthy();
     expect(screen.getByText('87K / 400K')).toBeTruthy();
 
+    // Without a budget the row stays (it is the only route to the breakdown
+    // on phones) but the numbers and bar drop out.
     fireEvent.click(screen.getByRole('button', { name: 'input.moreTools' })); // close
     rerender(<ComposerOverflowMenu {...baseProps} tokenBudget={null} />);
     fireEvent.click(screen.getByRole('button', { name: 'input.moreTools' }));
-    expect(screen.queryByText('input.contextUsage')).toBeNull();
+    expect(screen.getByText('input.contextUsage')).toBeTruthy();
+    expect(screen.queryByText('87K / 400K')).toBeNull();
   });
 
   it('opens the token usage detail from the usage row', () => {

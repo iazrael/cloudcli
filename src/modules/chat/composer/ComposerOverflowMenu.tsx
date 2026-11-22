@@ -162,30 +162,35 @@ export function ComposerOverflowMenu({
         >
           {view === 'menu' ? (
             <>
-              {contextWindow > 0 && (
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    close();
-                    onShowTokenUsage();
-                  }}
-                  className="w-full rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none"
-                >
-                  <span className="flex items-center justify-between gap-2 text-xs">
-                    <span className="text-muted-foreground">{t('input.contextUsage')}</span>
+              {/* Always present: the usage row is the only route to the token
+                  breakdown on phones once the desktop chip is hidden. The
+                  numbers and bar appear once the session has a window size. */}
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  close();
+                  onShowTokenUsage();
+                }}
+                className="w-full rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none"
+              >
+                <span className="flex items-center justify-between gap-2 text-xs">
+                  <span className="text-muted-foreground">{t('input.contextUsage')}</span>
+                  {contextWindow > 0 && (
                     <span className="font-medium text-foreground">
                       {formatTokenCount(usedTokens)} / {formatTokenCount(contextWindow)}
                     </span>
-                  </span>
+                  )}
+                </span>
+                {contextWindow > 0 && (
                   <span className="mt-1.5 block h-1 overflow-hidden rounded-full bg-muted">
                     <span
                       className="block h-full rounded-full bg-primary"
                       style={{ width: `${Math.min(100, Math.round((usedTokens / contextWindow) * 100))}%` }}
                     />
                   </span>
-                </button>
-              )}
+                )}
+              </button>
 
               <ComposerMenuItem
                 role="menuitem"
