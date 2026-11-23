@@ -270,6 +270,11 @@ test('a fresh create seeds the session-level model selection for the engine titl
       modelId: 'GLM-5.3-Flash',
       options: { reasoningLevel: 'max' },
     },
+    // The create handler stringifies the model into "providerId/modelId" and
+    // drops its options; only the separate top-level `thoughtLevel` field
+    // lands the reasoning level in the session-level selection. Without it
+    // the turn-0 title call dies on "Reasoning level is required".
+    thoughtLevel: 'max',
   });
 });
 

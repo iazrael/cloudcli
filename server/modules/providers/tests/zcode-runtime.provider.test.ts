@@ -238,10 +238,13 @@ rl.on('line', (line) => {
     // runtimeModel catalog here. The engine also accepts an initial model
     // selection ({providerId, modelId, options?}) that seeds the session-level
     // selection (0.17.1 behavior the runtime relies on for turn-0 title
-    // generation). Keep this boundary aligned with the real engine so a
-    // provider upgrade cannot silently reintroduce the breakage.
+    // generation) plus a separate top-level thoughtLevel string: the create
+    // handler stringifies model and drops its options, so only thoughtLevel
+    // lands the reasoning level in the session-level selection. Keep this
+    // boundary aligned with the real engine so a provider upgrade cannot
+    // silently reintroduce the breakage.
     for (const key of Object.keys(msg.params ?? {})) {
-      if (key !== 'workspace' && key !== 'model') {
+      if (key !== 'workspace' && key !== 'model' && key !== 'thoughtLevel') {
         send({ id: msg.id, error: { code: -32602, message: 'Invalid params — (root): Unrecognized key: "' + key + '"' } });
         return;
       }
@@ -788,12 +791,16 @@ test('runtime configures model and reasoning effort variant', async () => {
     },
     // The create seeds the session-level selection with the run's resolved
     // model so the engine's turn-0 title generation (and subagent spawns)
-    // resolve a usable provider instead of the engine default.
+    // resolve a usable provider instead of the engine default. The reasoning
+    // level additionally travels as the top-level thoughtLevel field: the
+    // create handler stringifies model and drops its options, so only
+    // thoughtLevel lands the level in the session-level selection.
     model: {
       providerId: 'bigmodel-coding-plan',
       modelId: 'GLM-5.3',
       options: { reasoningLevel: 'high' },
     },
+    thoughtLevel: 'high',
   });
 
   const sendAttempts = readStubLog().filter((entry) => entry.name === 'session_send_attempt');

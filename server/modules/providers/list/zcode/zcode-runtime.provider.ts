@@ -869,6 +869,15 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
       );
     }
 
+    // The create handler stringifies `model` into "providerId/modelId" and
+    // drops its `options`, so the reasoning level must also travel in the
+    // create's separate top-level `thoughtLevel` field: `setThoughtLevel`
+    // merges it into the session-level selection's options, and without it
+    // the turn-0 title call dies on "Reasoning level is required". The
+    // engine validates the value against the model's own level list and just
+    // logs `session_create.thought_level_skipped` for unsupported levels.
+    const createThoughtLevel = createModelSelection?.modelSelection?.options?.reasoningLevel;
+
     try {
       const result = await protocolClient.sendRequest<AnyRecord>(
         'session/create',
@@ -880,6 +889,7 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
           ...(createModelSelection?.modelSelection
             ? { model: createModelSelection.modelSelection }
             : {}),
+          ...(createThoughtLevel ? { thoughtLevel: createThoughtLevel } : {}),
         }
       );
 
