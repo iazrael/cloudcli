@@ -375,7 +375,13 @@ export function useChatRealtimeHandlers({
               reporting: directive.activityState.reporting === true,
             });
           } else if (directive.text === 'token_budget' && directive.tokenBudget) {
-            setTokenBudget(directive.tokenBudget as Record<string, unknown>);
+            // The badge reads one shared budget, so a frame from another
+            // running session must not repaint this view (an empty New
+            // Session page included). The store fills senderless frames with
+            // the viewed session id, so only a mismatching id is dropped.
+            if (directive.sessionId === activeViewSessionIdRef.current) {
+              setTokenBudget(directive.tokenBudget as Record<string, unknown>);
+            }
           } else if (directive.text === 'background_tasks' && directive.sessionId) {
             // Agents launched and settled mid-turn (Codex, ZCode) are the
             // turn's business: the reply stays the thing in flight, and the
