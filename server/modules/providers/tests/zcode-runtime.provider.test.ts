@@ -347,14 +347,31 @@ rl.on('line', (line) => {
       return;
     }
     if (readMode() === 'segments') {
-      // Two prose segments split by an explicit boundary, the shape a reply
-      // interleaved with tool calls takes: the terminal push should carry the
-      // last segment, the way the text-row engines' push does.
+      // Two prose segments, the shape a reply interleaved with tool calls
+      // takes. The engine names every assistant message, so each segment
+      // streams under its own message id — and the engine's segment boundary
+      // events never cross the protocol (only the deltas do), so the row
+      // identity is the only boundary the runtime can see. The terminal push
+      // should carry the last segment, the way the text-row engines' push
+      // does.
       const ev = (payload) => send({ method: 'session/event', params: { sessionId, type: 'model_streaming', payload } });
-      ev({ kind: 'text_delta', delta: '第一段开场白' });
+      ev({ kind: 'text_delta', assistantMessageId: 'msg_seg_1', delta: '第一段开场白' });
+      // The second segment arrives in two deltas under one message id: they
+      // are one segment, not two.
+      ev({ kind: 'text_delta', assistantMessageId: 'msg_seg_2', delta: '第二段' });
+      ev({ kind: 'text_delta', assistantMessageId: 'msg_seg_2', delta: '结论' });
+      send({ method: 'session/event', params: { sessionId, type: 'turn_complete', payload: { usage: { inputTokens: 3, outputTokens: 4 } } } });
+      return;
+    }
+    if (readMode() === 'segments-boundary') {
+      // The same two segments, announced by the engine's own boundary events
+      // instead of by the row identity. Both routes must land on the same
+      // preview.
+      const ev = (payload) => send({ method: 'session/event', params: { sessionId, type: 'model_streaming', payload } });
+      ev({ kind: 'text_delta', assistantMessageId: 'msg_seg_1', delta: '第一段开场白' });
       ev({ kind: 'text_end' });
-      ev({ kind: 'text_start' });
-      ev({ kind: 'text_delta', delta: '第二段结论' });
+      ev({ kind: 'text_start', assistantMessageId: 'msg_seg_2' });
+      ev({ kind: 'text_delta', assistantMessageId: 'msg_seg_2', delta: '第二段结论' });
       ev({ kind: 'text_end' });
       send({ method: 'session/event', params: { sessionId, type: 'turn_complete', payload: { usage: { inputTokens: 3, outputTokens: 4 } } } });
       return;
@@ -729,10 +746,25 @@ test('a multi-segment reply leaves the last segment as the preview', async () =>
 
   // Accumulating every stream_delta would make the push open with the first
   // segment's preamble; the text-row engines' push carries the last segment,
-  // and this runtime's must match.
+  // and this runtime's must match. The engine announces a new segment by
+  // the message id its deltas carry, so the row identity is the boundary.
   await runtime.run('hello', { sessionId: 'app-sess-segments', cwd: stubDir }, writer, context);
 
   assert.equal(getSessionReplyPreview('app-sess-segments'), '第二段结论');
+});
+
+test('a segment boundary announced by the engine lands on the same preview', async () => {
+  fsSync.writeFileSync(modeFilePath, 'segments-boundary\n');
+  fsSync.writeFileSync(logFilePath, '');
+  clearSessionReplyPreview('app-sess-segments-boundary');
+  const runtime = new ZCodeRuntimeProvider();
+  const { writer } = createWriter();
+
+  // The engine's own boundary events, when they do arrive, must reach the
+  // same preview the row identity gives.
+  await runtime.run('hello', { sessionId: 'app-sess-segments-boundary', cwd: stubDir }, writer, context);
+
+  assert.equal(getSessionReplyPreview('app-sess-segments-boundary'), '第二段结论');
 });
 
 test('runtime surfaces session/create failures as error messages', async () => {

@@ -1324,6 +1324,10 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
     // this same closure, so the preview stays current until the real
     // completion notification fires.
     let runReplyText = '';
+    // The row the accumulated text belongs to. A reply arrives in several
+    // segments (one per assistant message) and the push must carry the last
+    // one, the way the text-row engines' capture does.
+    let runReplyRowKey: string | null = null;
     return (notification: AnyRecord) => {
       try {
         const method = readOptionalString(notification.method);
@@ -1407,8 +1411,21 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
           // the same reply shape.
           if (turnOwner === 'own' && message.kind === 'stream_end') {
             runReplyText = '';
+            runReplyRowKey = null;
           }
           if (turnOwner === 'own' && message.kind === 'stream_delta' && typeof message.content === 'string' && message.content) {
+            // The engine keeps its segment boundaries out of the protocol
+            // stream: only the deltas cross it, the `text_start`/`text_end`
+            // events are filtered away before delivery. So the boundary is
+            // the row identity — each assistant message streams under its
+            // own row key, the same change the client closes the previous
+            // bubble on. Without this the accumulator spans the whole turn
+            // and the push opens with the first segment's preamble.
+            const rowKey = message.providerRowKey ?? message.id;
+            if (runReplyRowKey !== null && rowKey !== runReplyRowKey) {
+              runReplyText = '';
+            }
+            runReplyRowKey = rowKey;
             runReplyText += message.content;
             if (handle.appSessionId) {
               rememberSessionReplyPreview(handle.appSessionId, runReplyText);
