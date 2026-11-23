@@ -118,10 +118,14 @@ async function withIsolatedCliEnv(fn: (binDir: string) => Promise<void>): Promis
     [pathKey]: process.env[pathKey],
     [pathExtKey]: process.env[pathExtKey],
     CLAUDE_CLI_PATH: process.env.CLAUDE_CLI_PATH,
+    CODEX_CLI_PATH: process.env.CODEX_CLI_PATH,
   };
 
   process.env[pathKey] = binDir;
   process.env.CLAUDE_CLI_PATH = path.join(binDir, process.platform === 'win32' ? 'claude.cmd' : 'claude');
+  // A developer running the tests with CODEX_CLI_PATH set would otherwise point
+  // the Codex rows at their own install instead of the bundled dependency.
+  delete process.env.CODEX_CLI_PATH;
   if (process.platform === 'win32') {
     process.env[pathExtKey] = '.COM;.EXE;.BAT;.CMD';
   }
@@ -461,6 +465,26 @@ test('Cursor has no npm release to compare with; Codex ships with CloudCLI; plat
     assert.equal(platformClaude.installedVersion, '2.1.200');
     assert.equal(platformClaude.latestVersion, null);
     assert.equal(platformClaude.updateAvailable, false);
+  });
+});
+
+test('Codex reports the CLI from CODEX_CLI_PATH and offers no update for it', async () => {
+  await withIsolatedCliEnv(async (binDir) => {
+    const codex = await createFakeCli(binDir, 'codex');
+    await codex.set('version', '0.171.0\n');
+    process.env.CODEX_CLI_PATH = path.join(binDir, process.platform === 'win32' ? 'codex.cmd' : 'codex');
+
+    const status = await createService().getCliStatus('codex');
+    assert.equal(status.installed, true);
+    assert.equal(status.installedVersion, '0.171.0');
+    assert.equal(status.updateCommand, null);
+    assert.equal(status.updateUnavailableReason, 'external');
+    await assert.rejects(createService().updateCli('codex'), (error: unknown) => {
+      assert.ok(error instanceof AppError);
+      assert.equal(error.code, 'PROVIDER_CLI_UPDATE_UNAVAILABLE');
+      assert.match(error.message, /CODEX_CLI_PATH/);
+      return true;
+    });
   });
 });
 

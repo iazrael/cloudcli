@@ -1,15 +1,14 @@
-import { createRequire } from 'node:module';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { getCodexHome } from '@/shared/index.js';
-import { createCliInstallationProbe } from '@/modules/providers/shared/installation/cli-installation-probe.js';
 import type { IProviderAuth } from '@/shared/interfaces.js';
 import type {
   CliVersionProbe, ProviderAuthStatus, ProviderQuotaData, ProviderQuotaResetConsumeInput, ProviderQuotaResetConsumeResult } from '@/shared/types.js';
 import {
   probeCliVersion, extractEmailFromJwt, readObjectRecord, readOptionalString } from '@/shared/utils.js';
 
+import { resolveCodexCliLaunchSpec } from './codex-cli-path.js';
 import { consumeCodexQuotaReset, fetchCodexQuota } from './codex-quota.provider.js';
 
 type CodexCredentialsStatus = {
@@ -19,23 +18,19 @@ type CodexCredentialsStatus = {
   error?: string;
 };
 
-const installationProbe = createCliInstallationProbe({ command: () => 'codex' });
-
 export class CodexProviderAuth implements IProviderAuth {
   /**
    * Checks whether Codex is available to the server runtime, and which
-   * version it is. That is the `@openai/codex` package CloudCLI depends on,
-   * which `@openai/codex-sdk` resolves from node_modules, not a `codex` on
-   * PATH.
+   * version it is. That is `CODEX_CLI_PATH` when the operator configured one,
+   * otherwise the `@openai/codex` package CloudCLI depends on — not whatever
+   * `codex` happens to be first on PATH.
    */
   checkInstalled(): CliVersionProbe {
-    let launcherPath: string;
-    try {
-      launcherPath = createRequire(import.meta.url).resolve('@openai/codex/bin/codex.js');
-    } catch {
+    const spec = resolveCodexCliLaunchSpec();
+    if (!spec) {
       return { installed: false, exitCode: null, version: null };
     }
-    return probeCliVersion(process.execPath, [launcherPath, '--version']);
+    return probeCliVersion(spec.command, [...spec.prefixArgs, '--version']);
   }
 
   /**

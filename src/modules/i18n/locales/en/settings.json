@@ -538,6 +538,7 @@
       "updateAvailable": "Update available: v{{version}}",
       "upToDate": "Up to date",
       "bundled": "Ships with CloudCLI and is updated together with it.",
+      "external": "Uses the Codex CLI installed on this server.",
       "platform": "Managed by the hosting platform.",
       "updateTo": "Update to v{{version}}",
       "runUpdater": "Run updater",

@@ -469,6 +469,7 @@
       "updateAvailable": "Güncelleme var: v{{version}}",
       "upToDate": "Güncel",
       "bundled": "CloudCLI ile birlikte gelir ve onunla birlikte güncellenir.",
+      "external": "Bu sunucuda yüklü Codex CLI kullanılıyor.",
       "platform": "Barındırma platformu tarafından yönetilir.",
       "updateTo": "v{{version}} sürümüne güncelle",
       "runUpdater": "Güncelleyiciyi çalıştır",

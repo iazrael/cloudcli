@@ -406,6 +406,7 @@
       "updateAvailable": "Mise à jour disponible : v{{version}}",
       "upToDate": "À jour",
       "bundled": "Fournie avec CloudCLI et mise à jour en même temps que lui.",
+      "external": "Utilise la CLI Codex installée sur ce serveur.",
       "platform": "Gérée par la plateforme d'hébergement.",
       "updateTo": "Mettre à jour vers v{{version}}",
       "runUpdater": "Lancer la mise à jour",

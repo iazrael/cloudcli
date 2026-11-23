@@ -435,6 +435,7 @@
       "updateAvailable": "有可用更新：v{{version}}",
       "upToDate": "已是最新",
       "bundled": "隨 CloudCLI 一起提供，並與其一同更新。",
+      "external": "使用伺服器上已安裝的 Codex CLI。",
       "platform": "由代管平台管理。",
       "updateTo": "更新至 v{{version}}",
       "runUpdater": "執行更新程式",

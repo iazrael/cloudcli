@@ -444,6 +444,7 @@
       "updateAvailable": "עדכון זמין: v{{version}}",
       "upToDate": "מעודכנת",
       "bundled": "מגיעה עם CloudCLI ומתעדכנת יחד איתו.",
+      "external": "משתמש ב-Codex CLI המותקן בשרת הזה.",
       "platform": "מנוהלת על ידי פלטפורמת האירוח.",
       "updateTo": "עדכון ל-v{{version}}",
       "runUpdater": "הפעלת העדכון",

@@ -18,6 +18,8 @@ import {
   readOptionalString,
 } from '@/shared/utils.js';
 
+import { resolveCodexCliLaunchSpec } from './codex-cli-path.js';
+
 type CodexQuotaDependencies = {
   startAppServer: () => ChildProcess;
   now: () => number;
@@ -42,11 +44,18 @@ const APP_SERVER_TIMEOUT_MS = 10_000;
 const quotaCache = createProviderQuotaCache<ProviderQuotaData>(CACHE_TTL_MS);
 
 const defaultDependencies: CodexQuotaDependencies = {
-  startAppServer: () => spawn('codex', ['app-server', '--stdio'], {
-    env: { ...process.env },
-    stdio: ['pipe', 'pipe', 'pipe'],
-    windowsHide: true,
-  }),
+  startAppServer: () => {
+    const spec = resolveCodexCliLaunchSpec();
+    if (!spec) {
+      // No CLI means no app-server to ask; the caller reports the read as failed.
+      throw new Error('The Codex CLI is not installed, so quota cannot be read.');
+    }
+    return spawn(spec.command, [...spec.prefixArgs, 'app-server', '--stdio'], {
+      env: { ...process.env },
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+  },
   now: () => Date.now(),
 };
 

@@ -398,6 +398,7 @@
       "updateAvailable": "アップデートあり: v{{version}}",
       "upToDate": "最新です",
       "bundled": "CloudCLI に同梱されており、CloudCLI と一緒に更新されます。",
+      "external": "このサーバーにインストールされている Codex CLI を使用します。",
       "platform": "ホスティングプラットフォームが管理しています。",
       "updateTo": "v{{version}} に更新",
       "runUpdater": "アップデーターを実行",

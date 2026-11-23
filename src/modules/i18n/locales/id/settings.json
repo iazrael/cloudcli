@@ -443,6 +443,7 @@
       "updateAvailable": "Pembaruan tersedia: v{{version}}",
       "upToDate": "Sudah terbaru",
       "bundled": "Disertakan bersama CloudCLI dan diperbarui bersamanya.",
+      "external": "Menggunakan Codex CLI yang terpasang di server ini.",
       "platform": "Dikelola oleh platform hosting.",
       "updateTo": "Perbarui ke v{{version}}",
       "runUpdater": "Jalankan pembaru",

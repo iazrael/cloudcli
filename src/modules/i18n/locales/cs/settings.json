@@ -416,6 +416,7 @@
       "updateAvailable": "K dispozici je aktualizace: v{{version}}",
       "upToDate": "Aktuální",
       "bundled": "Dodává se s CloudCLI a aktualizuje se spolu s ním.",
+      "external": "Používá Codex CLI nainstalované na tomto serveru.",
       "platform": "Spravováno hostingovou platformou.",
       "updateTo": "Aktualizovat na v{{version}}",
       "runUpdater": "Spustit aktualizaci",

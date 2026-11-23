@@ -1,10 +1,11 @@
 import { spawn } from 'node:child_process';
 import { stat } from 'node:fs/promises';
-import { createRequire } from 'node:module';
 import readline from 'node:readline';
 
 import type { AnyRecord } from '@/shared/types.js';
 import { AppError, SIDE_CONVERSATION_BOUNDARY_PROMPT, SIDE_CONVERSATION_DEVELOPER_INSTRUCTIONS, SIDE_QUESTION_ANSWER_SEPARATOR } from '@/shared/utils.js';
+
+import { isCodexScriptLauncher, resolveCodexCliLaunchSpec } from './codex-cli-path.js';
 
 /**
  * Minimal JSON-RPC client for `codex app-server`.
@@ -44,22 +45,25 @@ export type CodexThreadFork = {
 };
 
 /**
- * Resolves the `codex` launcher shipped in node_modules.
+ * Resolves the Codex launcher every app-server connection starts.
  *
- * Deliberately not the `codex` on PATH: a machine can have a second, older
- * install, and the protocol this speaks is only guaranteed against the
- * version this package depends on.
+ * `CODEX_CLI_PATH` takes precedence when the operator configured a CLI that
+ * passes the version guard in `codex-cli-path.ts`; otherwise this is the
+ * `@openai/codex` launcher shipped in node_modules — deliberately not a
+ * `codex` found first on PATH, since the protocol is only guaranteed against
+ * the version this package depends on.
  */
 function resolveCodexLauncher(): string {
-  const require_ = createRequire(import.meta.url);
-  try {
-    return require_.resolve('@openai/codex/bin/codex.js');
-  } catch {
-    throw new AppError('The Codex CLI package is not installed, so Codex conversations cannot be branched.', {
-      code: 'CODEX_APP_SERVER_UNAVAILABLE',
-      statusCode: 501,
-    });
+  const spec = resolveCodexCliLaunchSpec();
+  if (spec) {
+    // Tests replace the launcher path with a fake app-server script; a script
+    // stays first in prefixArgs, while a native CLI is the command itself.
+    return spec.prefixArgs[0] ?? spec.command;
   }
+  throw new AppError('The Codex CLI package is not installed, so Codex conversations cannot be branched.', {
+    code: 'CODEX_APP_SERVER_UNAVAILABLE',
+    statusCode: 501,
+  });
 }
 
 /**
@@ -133,7 +137,12 @@ export async function openCodexAppServer(
   options: CodexAppServerOptions = {},
 ): Promise<CodexAppServerConnection> {
   const launcher = codexAppServer.resolveLauncher();
-  const child = spawn(process.execPath, [launcher, 'app-server'], {
+  // A JS launcher runs under node; a native CLI (or a PATH command) is the
+  // executable itself. The test seam hands back a script path either way.
+  const launch = isCodexScriptLauncher(launcher)
+    ? { command: process.execPath, args: [launcher, 'app-server'] }
+    : { command: launcher, args: ['app-server'] };
+  const child = spawn(launch.command, launch.args, {
     env: { ...(options.inheritEnv === false ? {} : process.env), ...options.env },
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true,

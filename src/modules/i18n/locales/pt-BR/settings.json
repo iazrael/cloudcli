@@ -443,6 +443,7 @@
       "updateAvailable": "Atualização disponível: v{{version}}",
       "upToDate": "Atualizada",
       "bundled": "Vem com o CloudCLI e é atualizada junto com ele.",
+      "external": "Usa a CLI do Codex instalada neste servidor.",
       "platform": "Gerenciada pela plataforma de hospedagem.",
       "updateTo": "Atualizar para v{{version}}",
       "runUpdater": "Executar atualizador",

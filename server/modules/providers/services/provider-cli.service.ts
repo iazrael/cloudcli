@@ -1,5 +1,6 @@
 import spawn from 'cross-spawn';
 
+import { isCodexCliOverrideActive } from '@/modules/providers/list/codex/codex-cli-path.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import { sessionsService } from '@/modules/providers/services/sessions.service.js';
 import { resolveClaudeCodeExecutablePath } from '@/shared/claude-cli-path.js';
@@ -44,7 +45,9 @@ type CliUpdater = {
 // installed (npm, a native installer, Homebrew, ...), which a blanket
 // `npm install -g` does not: on a native or Homebrew install it would add a
 // second copy that PATH may not even pick. Codex is absent on purpose: chats
-// run the @openai/codex build CloudCLI depends on, so it changes with CloudCLI.
+// run the @openai/codex build CloudCLI depends on, so it changes with CloudCLI;
+// with CODEX_CLI_PATH set they run the operator's CLI instead, which the
+// operator updates (the row then reports `external`, not `bundled`).
 const CLI_UPDATERS: Partial<Record<LLMProvider, CliUpdater>> = {
   claude: {
     // undefined only on Windows when no CLI resolves: the SDK then runs its bundled binary.
@@ -65,8 +68,8 @@ const CLI_UPDATERS: Partial<Record<LLMProvider, CliUpdater>> = {
   },
 };
 
-/** Why the settings page offers no update: the CLI ships with CloudCLI, or the hosting platform manages the CLIs. */
-type CliUpdateUnavailableReason = 'bundled' | 'platform';
+/** Why the settings page offers no update: the CLI ships with CloudCLI, it is a `CODEX_CLI_PATH` install updated outside CloudCLI, or the hosting platform manages the CLIs. */
+type CliUpdateUnavailableReason = 'bundled' | 'external' | 'platform';
 
 /** Why an update run went wrong, as read from its exit code and output. */
 type CliUpdateFailure = 'permission_denied' | 'timed_out' | 'failed';
@@ -173,6 +176,14 @@ function isNewerVersion(candidate: string, current: string): boolean {
 function formatCommand(command: string, args: string[]): string {
   const quote = (part: string) => (/[\s"']/.test(part) ? `"${part.replace(/"/g, '\\"')}"` : part);
   return [command, ...args].map(quote).join(' ');
+}
+
+/** Why a provider without an updater cannot be updated from Settings. */
+function noUpdaterReason(provider: LLMProvider): string {
+  if (provider === 'codex' && isCodexCliOverrideActive()) {
+    return 'Codex runs the CLI installed on this server (CODEX_CLI_PATH), so update it there.';
+  }
+  return `${getProviderLabel(provider)} ships with CloudCLI and is updated together with it.`;
 }
 
 function getProviderLabel(provider: LLMProvider): string {
@@ -406,7 +417,11 @@ export function createProviderCliService(dependencyOverrides: Partial<ProviderCl
       const update = resolveUpdateCommand(provider.id);
       const updateUnavailableReason: CliUpdateUnavailableReason | null = dependencies.platformMode
         ? 'platform'
-        : update ? null : 'bundled';
+        : update
+          ? null
+          : provider.id === 'codex' && isCodexCliOverrideActive()
+            ? 'external'
+            : 'bundled';
 
       // The registry is only worth asking when the answer can lead to an update
       // of a CLI that is there.
@@ -454,7 +469,7 @@ export function createProviderCliService(dependencyOverrides: Partial<ProviderCl
       const provider = dependencies.resolveProvider(providerName);
       const update = resolveUpdateCommand(provider.id);
       if (!update) {
-        throw new AppError(`${getProviderLabel(provider.id)} ships with CloudCLI and is updated together with it.`, {
+        throw new AppError(noUpdaterReason(provider.id), {
           code: 'PROVIDER_CLI_UPDATE_UNAVAILABLE',
           statusCode: 400,
         });

@@ -1,6 +1,6 @@
 # Provider 架构与接入指南
 
-> 基准：2.22.0 / 2026-11-15
+> 基准：2.25.0 / 2026-11-23
 > **核心文档**：改动 `server/modules/providers/**` 或 `server/shared/{types,interfaces}.ts` 时**必须同步更新本文**。
 > 普通 bug 修复不动架构的不需要更新（提交时走 `--no-verify`，见 `AGENTS.md`）。
 > 引用一律给"文件路径 + 符号名"，不用行号。
@@ -12,6 +12,10 @@
 `claude | codex | cursor | opencode | zcode | antigravity`，联合类型定义在 `shared/protocol/chatEvents.ts` 的 `LLMProvider`（前后端共用同一份，见下文「线上契约」）。注册表 `server/modules/providers/provider.registry.ts` 用 `Record<LLMProvider, IProvider>` 硬编码六家实例——漏一家直接编译报错。
 
 每家一个目录：`server/modules/providers/list/<name>/`，由 `<name>.provider.ts` 组装各切面。claude / cursor 的 runtime 是遗留 `.js` 适配器；opencode、codex、zcode / antigravity 是 TS（含协议客户端、运行生命周期等更多切面文件）。
+
+## Codex CLI 来源
+
+Codex 的聊天、认证状态里的版本探测和额度读取共用一个启动配置，由 `server/modules/providers/list/codex/codex-cli-path.ts` 的 `resolveCodexCliLaunchSpec` 解析：默认是仓库依赖锁定的 `@openai/codex`（`package.json` 版本即协议验证基准）；设置 `CODEX_CLI_PATH` 时改用运维指定的 CLI，脚本扩展名（`.js`/`.mjs`/`.cjs`）用 `process.execPath` 启动，其余直接启动。覆盖值与内置版本做下限检查：探测失败或版本更旧时回退内置并写警告日志，避免静默降级到没验证过的旧协议；结果按覆盖值缓存在进程内，原地升级需重启服务生效。`provider-cli.service.ts` 在覆盖生效时把更新不可用原因报成 `external`，设置页据此显示"使用服务器上安装的 CLI"。
 
 ## Codex 会话驻留：一个应用会话一个 app-server 进程
 

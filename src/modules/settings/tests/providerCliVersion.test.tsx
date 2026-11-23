@@ -177,6 +177,20 @@ describe('ProviderCliVersion', () => {
     await waitFor(() => expect(screen.queryByTestId('provider-cli-version')).toBeNull());
   });
 
+  it('says the CLI comes from the server when CODEX_CLI_PATH supplies it', async () => {
+    responses.status = [claudeStatus({
+      provider: 'codex',
+      installedVersion: '0.171.0',
+      latestVersion: null,
+      updateAvailable: false,
+      updateCommand: null,
+      updateUnavailableReason: 'external',
+    })];
+    renderRow('0.171.0');
+    expect(await screen.findByText('Uses the Codex CLI installed on this server.')).toBeTruthy();
+    expect(screen.queryByRole('button')).toBeNull();
+  });
+
   it('disables the button and shows what runs while the update is in progress', async () => {
     responses.status = [claudeStatus()];
     let finish: (response: Response) => void = () => {};
