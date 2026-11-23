@@ -455,6 +455,77 @@ test('background work whose runtime can still stop it offers the stop', { concur
   });
 });
 
+test('running sessions list a turn the engine started on its own', { concurrency: false }, async () => {
+  await withIsolatedDatabase(async () => {
+    sessionsDb.createAppSession('engine-turn-session', 'zcode', '/tmp/engine-turn-project');
+    sessionsDb.assignProviderSessionId('engine-turn-session', 'sess_engine_native');
+
+    await withClaudeCliRegistry([], async () => await withProviders(
+      {
+        zcode: {
+          run: async () => undefined,
+          abort: () => false,
+          // A report turn a background task's notification woke: no CloudCLI
+          // run exists, so only the engine can report it.
+          listEngineTurns: () => [{ engineSessionId: 'sess_engine_native', startedAt: 1_234 }],
+        },
+      },
+      async () => {
+        assert.deepEqual(await sessionsService.listRunningSessions(), [{
+          sessionId: 'engine-turn-session',
+          provider: 'zcode',
+          startedAt: 1_234,
+          lastSeq: 0,
+          canInterrupt: false,
+        }]);
+      },
+    ));
+  });
+});
+
+test('an engine turn does not duplicate a chat run on the same session', { concurrency: false }, async () => {
+  await withIsolatedDatabase(async () => {
+    sessionsDb.createAppSession('both-session', 'zcode', '/tmp/engine-turn-project');
+    sessionsDb.assignProviderSessionId('both-session', 'sess_both_native');
+    const run = chatRunRegistry.startRun({
+      appSessionId: 'both-session', provider: 'zcode', providerSessionId: null, connection: null, userId: null,
+    });
+    assert.ok(run);
+
+    await withClaudeCliRegistry([], async () => await withProviders(
+      {
+        zcode: {
+          run: async () => undefined,
+          abort: () => false,
+          listEngineTurns: () => [{ engineSessionId: 'sess_both_native', startedAt: 1_234 }],
+        },
+      },
+      async () => {
+        assert.deepEqual(await sessionsService.listRunningSessions(), [{
+          sessionId: 'both-session', provider: 'zcode', startedAt: run.startedAt, lastSeq: 0,
+        }]);
+      },
+    ));
+  });
+});
+
+test('an engine turn on a session this app never opened is not listed', { concurrency: false }, async () => {
+  await withIsolatedDatabase(async () => {
+    await withClaudeCliRegistry([], async () => await withProviders(
+      {
+        zcode: {
+          run: async () => undefined,
+          abort: () => false,
+          listEngineTurns: () => [{ engineSessionId: 'sess_unknown_native', startedAt: 1_234 }],
+        },
+      },
+      async () => {
+        assert.deepEqual(await sessionsService.listRunningSessions(), []);
+      },
+    ));
+  });
+});
+
 test('a running session says whether its round waits for the engine', { concurrency: false }, async () => {
   await withIsolatedDatabase(async () => {
     sessionsDb.createAppSession('queued-session', 'codex', '/tmp/running-project');

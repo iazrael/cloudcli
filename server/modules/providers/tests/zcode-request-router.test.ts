@@ -164,6 +164,45 @@ test('session events route to listeners by flat and nested session ids only', ()
   assert.equal(received.length, 2);
 });
 
+test('the session-event observer sees events for sessions no listener is attached to', () => {
+  const { router } = createRouter();
+  const observed: string[] = [];
+  router.setSessionEventObserver((notification) => {
+    observed.push(String(notification.params?.type ?? ''));
+  });
+
+  // No listener was registered for this session: the observer still follows it,
+  // which is what keeps an engine turn visible after its run's listener left.
+  router.handleLine(JSON.stringify({
+    method: 'session/event',
+    params: { sessionId: 'sess_no_listener', type: 'turn.started', turnId: 'turn_1' },
+  }));
+  router.handleLine(JSON.stringify({
+    method: 'session/event',
+    params: { sessionId: 'sess_no_listener', type: 'turn.completed', turnId: 'turn_1' },
+  }));
+
+  assert.deepEqual(observed, ['turn.started', 'turn.completed']);
+});
+
+test('an observer that throws does not stop the session listeners', () => {
+  const { router } = createRouter();
+  let delivered = 0;
+  router.setSessionEventObserver(() => {
+    throw new Error('observer exploded');
+  });
+  router.addSessionListener('sess_observer', () => {
+    delivered += 1;
+  });
+
+  router.handleLine(JSON.stringify({
+    method: 'session/event',
+    params: { sessionId: 'sess_observer', type: 'model_streaming' },
+  }));
+
+  assert.equal(delivered, 1);
+});
+
 test('failAllPending rejects every in-flight request with the given reason', async () => {
   const { router, transport } = createRouter();
 

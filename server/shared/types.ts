@@ -2051,6 +2051,24 @@ export type SessionPurgeResult = {
   failed: { sessionId?: string; code: string }[];
 };
 
+//----------------- PROVIDER ENGINE TURNS ------------
+/**
+ * One turn a provider engine is running on a session with no CloudCLI run
+ * behind it — the report turn a background task's notification wakes, or the
+ * turn the engine keeps working on after its run ended.
+ *
+ * The id is the provider-native one: the running-sessions poll resolves it to
+ * the app session row before listing it. These turns cannot be interrupted
+ * through `abort`, which addresses a run, so they are reported as reported
+ * work rather than as a stoppable turn.
+ */
+export type ActiveEngineTurn = {
+  /** The provider-native session id the turn runs on. */
+  engineSessionId: string;
+  /** When the engine announced the turn started (epoch ms). */
+  startedAt: number;
+};
+
 //----------------- SIDE QUESTION RUNTIME TYPES ------------
 /**
  * Request payload for asking a side question on the provider runtime.

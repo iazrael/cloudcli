@@ -1,5 +1,6 @@
 import type {
   ActiveBackgroundTask,
+  ActiveEngineTurn,
   AnyRecord,
   SessionBackgroundWork,
   SideQuestionOutcome,
@@ -123,6 +124,15 @@ export interface IProviderRuntime {
    * running-sessions list falls back to chat runs alone.
    */
   listBackgroundWork?(): SessionBackgroundWork[];
+  /**
+   * Turns the engine is running on its own sessions, with no CloudCLI run
+   * behind them: the report turn a background task's notification wakes after
+   * its launch turn ended, or a turn the engine keeps working on once its run
+   * failed. Only a runtime that watches its engine beyond its own runs has
+   * anything to report; the running-sessions poll lists these with
+   * `canInterrupt: false`, because `abort` addresses a run.
+   */
+  listEngineTurns?(): ActiveEngineTurn[];
   /**
    * Stops one outstanding background task. Resolves false when the session has
    * no live process or that process is not tracking the task — it already

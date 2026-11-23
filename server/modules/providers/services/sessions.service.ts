@@ -338,7 +338,8 @@ export const sessionsService = {
 
   /**
    * Returns app-facing ids for provider runs that are currently processing,
-   * plus every session whose background work outlived its turn.
+   * plus every session whose background work outlived its turn, plus every
+   * session whose engine is running a turn of its own.
    *
    * This is intentionally status-only: callers that only need sidebar activity
    * indicators should not attach to chat streams or request replayed messages.
@@ -392,6 +393,30 @@ export const sessionsService = {
         statusText: 'Running in the Claude CLI',
       });
       runningById.set(session.session_id, entries[entries.length - 1]);
+    }
+
+    // The engine keeps running turns of its own on a session: the report turn
+    // a background task's notification wakes after the turn that launched it
+    // ended, and a turn that keeps going after its CloudCLI run failed. Neither
+    // touches the chat-run registry, so without this the page showed the
+    // session idle while its transcript kept growing. There is no run to abort,
+    // so these are reported but not interruptible.
+    for (const provider of providerRegistry.listProviders()) {
+      for (const turn of provider.runtime.listEngineTurns?.() ?? []) {
+        const session = sessionsDb.getSessionByProviderSessionId(turn.engineSessionId);
+        if (!session || runningById.has(session.session_id)) {
+          continue;
+        }
+
+        entries.push({
+          sessionId: session.session_id,
+          provider: provider.id,
+          startedAt: turn.startedAt,
+          lastSeq: chatRunRegistry.getRun(session.session_id)?.lastSeq ?? 0,
+          canInterrupt: false,
+        });
+        runningById.set(session.session_id, entries[entries.length - 1]);
+      }
     }
 
     // The engine is the only one that knows whether it picked a queued input

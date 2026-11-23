@@ -105,6 +105,14 @@ export class RequestRouter {
 
   private serverRequestHandler: ServerRequestHandler = defaultServerRequestHandler;
 
+  /**
+   * Sees every session event the engine sends, before the per-session
+   * listeners do, and independently of who listens to it. Consumers:
+   * `zcode-runtime.provider`'s engine-turn presence, which has to keep
+   * following a session after its run's listener was detached.
+   */
+  private sessionEventObserver: ((notification: ProtocolNotification) => void) | null = null;
+
   constructor(transport: RouterTransport, options: RequestRouterOptions = {}) {
     this.transport = transport;
     this.defaultTimeoutMs = options.defaultTimeoutMs ?? 30000;
@@ -116,6 +124,14 @@ export class RequestRouter {
    */
   setServerRequestHandler(handler: ServerRequestHandler): void {
     this.serverRequestHandler = handler;
+  }
+
+  /**
+   * Installs (or replaces) the single observer of every session event.
+   * Installed once by the runtime; tests leave it unset.
+   */
+  setSessionEventObserver(observer: (notification: ProtocolNotification) => void): void {
+    this.sessionEventObserver = observer;
   }
 
   /**
@@ -192,6 +208,10 @@ export class RequestRouter {
    * lost, with a synthetic per-session notification. Runs waiting runs fail
    * fast instead of timing out against an engine that no longer knows their
    * sessions.
+   *
+   * The session-event observer gets one session-less notification of the same
+   * kind: it also tracks sessions no listener is attached to any more, and a
+   * dead engine ends every turn it was running.
    */
   notifySessionLost(code: number | null, signal: NodeJS.Signals | null, stderrTail = ''): void {
     for (const [sessionId, listeners] of this.sessionListeners) {
@@ -204,6 +224,17 @@ export class RequestRouter {
         } catch (error) {
           console.error(`[ZCode Protocol] Session-lost listener error for ${sessionId}:`, error);
         }
+      }
+    }
+
+    if (this.sessionEventObserver) {
+      try {
+        this.sessionEventObserver({
+          method: SESSION_LOST_METHOD,
+          params: { sessionId: null, code, signal, stderrTail },
+        });
+      } catch (error) {
+        console.error('[ZCode Protocol] Session-lost observer error:', error);
       }
     }
   }
@@ -288,6 +319,14 @@ export class RequestRouter {
   }
 
   private routeSessionEvent(sessionId: string, notification: ProtocolNotification): void {
+    if (this.sessionEventObserver) {
+      try {
+        this.sessionEventObserver(notification);
+      } catch (error) {
+        console.error(`[ZCode Protocol] Session event observer error for ${sessionId}:`, error);
+      }
+    }
+
     const listeners = this.sessionListeners.get(sessionId);
     if (listeners) {
       for (const listener of listeners) {

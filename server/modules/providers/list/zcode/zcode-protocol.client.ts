@@ -24,7 +24,7 @@
  * @module zcode-protocol.client
  */
 
-import type { ProtocolServerRequest, SessionEventListener } from './zcode-codec.js';
+import type { ProtocolNotification, ProtocolServerRequest, SessionEventListener } from './zcode-codec.js';
 import type { ServerRequestAnswer } from './zcode-request-router.js';
 import { EngineSupervisor } from './zcode-engine-supervisor.js';
 import { RequestRouter } from './zcode-request-router.js';
@@ -199,6 +199,17 @@ export class ZCodeProtocolClient {
    */
   setServerRequestHandler(handler: (request: ProtocolServerRequest) => ServerRequestAnswer | Promise<ServerRequestAnswer>): void {
     this.router.setServerRequestHandler(handler);
+  }
+
+  /**
+   * Installs the observer that sees every session event regardless of who
+   * listens to the session.
+   *
+   * Consumer: the zcode runtime provider's engine-turn presence, which must
+   * keep following a session after its run's listener was detached.
+   */
+  setSessionEventObserver(observer: (notification: ProtocolNotification) => void): void {
+    this.router.setSessionEventObserver(observer);
   }
 
   /**

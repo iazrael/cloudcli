@@ -36,6 +36,7 @@ import path from 'node:path';
 import type { IProviderRuntime } from '@/shared/interfaces.js';
 import type { ChatAttachmentDescriptor } from '@/shared/image-attachments.js';
 import type {
+  ActiveEngineTurn,
   AnyRecord,
   SessionBackgroundWork,
   NormalizedMessage,
@@ -54,6 +55,7 @@ import {
 
 import { zcodeBackgroundWork } from './zcode-background-work.js';
 import { SESSION_LOST_METHOD } from './zcode-codec.js';
+import { listZCodeEngineTurns, observeZCodeEngineTurn } from './zcode-engine-turns.js';
 import { protocolClient } from './zcode-protocol.client.js';
 import {
   isZCodeSubagentLifecycleEvent,
@@ -299,6 +301,10 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
     // installation used to overwrite the singleton handler and never restore
     // the default policy.)
     protocolClient.setServerRequestHandler((request) => runLifecycle.handleServerRequest(request));
+    // Installed once per process, like the request handler above: the registry
+    // is module state, and one observer covers every session's events — not
+    // only those a run still listens to.
+    protocolClient.setSessionEventObserver((notification) => observeZCodeEngineTurn(notification));
   }
 
   /**
@@ -601,6 +607,18 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
    */
   listBackgroundWork(): SessionBackgroundWork[] {
     return zcodeBackgroundWork.list();
+  }
+
+  /**
+   * Turns the engine is running on its own, for the running-sessions poll:
+   * the report turn a background task's notification wakes, and a turn that
+   * keeps going after its CloudCLI run ended. Nothing in the chat-run registry
+   * covers those, so without this the page shows the session idle while its
+   * transcript keeps growing. `abort` addresses a run, so these are listed as
+   * reported work with no Stop.
+   */
+  listEngineTurns(): ActiveEngineTurn[] {
+    return listZCodeEngineTurns();
   }
 
   /**
