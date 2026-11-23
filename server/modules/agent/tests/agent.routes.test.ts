@@ -64,6 +64,8 @@ function createDependencies(
     queryCursor: unexpectedProviderCall as AgentDependencies['queryCursor'],
     queryCodex: unexpectedProviderCall as AgentDependencies['queryCodex'],
     queryOpenCode: unexpectedProviderCall as AgentDependencies['queryOpenCode'],
+    queryZCode: unexpectedProviderCall as AgentDependencies['queryZCode'],
+    queryAntigravity: unexpectedProviderCall as AgentDependencies['queryAntigravity'],
     GithubClient: class {} as unknown as AgentDependencies['GithubClient'],
     ...overrides,
   };
@@ -754,4 +756,42 @@ test('Agent route reads no model catalog for a continued session of an unregiste
   });
 
   assert.deepEqual(catalogReads, []);
+});
+
+test('Agent route accepts antigravity provider and passes bypassPermissions with model and effort', async () => {
+  let invokedOptions: Record<string, unknown> | null = null;
+  await withAgentServer(createDependencies({
+    fileSystem: { access: async () => undefined } as unknown as AgentDependencies['fileSystem'],
+    models: {
+      getProviderModels: async () => ({
+        OPTIONS: [{ value: 'gemini-4-neon' }],
+        DEFAULT: 'gemini-4-argon',
+        EFFORT_LEVELS: ['low', 'medium', 'high'],
+      }),
+      setSessionModel: () => null,
+      setSessionEffort: () => null,
+    } as unknown as AgentDependencies['models'],
+    queryAntigravity: (async (_prompt: string, options: Record<string, unknown>, writer: { send(msg: unknown): void }) => {
+      invokedOptions = options;
+      writer.send({ kind: 'complete', provider: 'antigravity', success: true });
+    }) as unknown as AgentDependencies['queryAntigravity'],
+  }), async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/agent`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        projectPath: '/home/test/project',
+        message: 'Test antigravity agent run',
+        provider: 'antigravity',
+        model: 'gemini-4-neon',
+        effort: 'high',
+        stream: false,
+      }),
+    });
+    assert.equal(response.status, 200);
+    assert.ok(invokedOptions !== null);
+    assert.equal(invokedOptions.model, 'gemini-4-neon');
+    assert.equal(invokedOptions.effort, 'high');
+    assert.equal(invokedOptions.permissionMode, 'bypassPermissions');
+  });
 });
