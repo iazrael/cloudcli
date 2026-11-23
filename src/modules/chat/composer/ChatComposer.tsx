@@ -585,7 +585,7 @@ function ChatComposer({
         <PromptInputFooter>
           <PromptInputTools className="min-w-0">
             {/* Mobile-only ＋ panel: the low-frequency tools (usage, commands,
-                schedule, clear) collect behind it so the main row stays lean. */}
+                schedule) collect behind it so the main row stays lean. */}
             <div className="sm:hidden">
               <ComposerOverflowMenu
                 tokenBudget={tokenBudget}
@@ -593,8 +593,6 @@ function ChatComposer({
                 slashCommandsCount={slashCommandsCount}
                 onToggleCommandMenu={onToggleCommandMenu}
                 canSchedule={Boolean(input.trim())}
-                hasInput={hasInput}
-                onClearInput={onClearInput}
                 onScheduleMessage={onScheduleMessage}
                 onScheduleTask={onScheduleTask}
                 supportsNativeScheduling={supportsNativeScheduling}
@@ -642,7 +640,6 @@ function ChatComposer({
               <PromptInputButton
                 tooltip={{ content: t('input.clearInput', { defaultValue: 'Clear input' }) }}
                 onClick={onClearInput}
-                className="hidden sm:flex"
               >
                 <XIcon />
               </PromptInputButton>

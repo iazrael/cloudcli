@@ -26,8 +26,6 @@ const baseProps = {
   slashCommandsCount: 97,
   onToggleCommandMenu: vi.fn(),
   canSchedule: true,
-  onClearInput: vi.fn(),
-  hasInput: false,
   onScheduleMessage: vi.fn(),
   onScheduleTask: vi.fn(),
   supportsNativeScheduling: false,
@@ -81,19 +79,6 @@ describe('ComposerOverflowMenu', () => {
     render(<ComposerOverflowMenu {...baseProps} canSchedule={false} />);
     fireEvent.click(screen.getByRole('button', { name: 'input.moreTools' }));
     expect(screen.getByRole('menuitem', { name: 'schedule.trigger' }).hasAttribute('disabled')).toBe(true);
-  });
-
-  it('shows the clear-input row only with a draft and clears on click', () => {
-    const onClearInput = vi.fn();
-    const { rerender } = render(<ComposerOverflowMenu {...baseProps} hasInput onClearInput={onClearInput} />);
-    fireEvent.click(screen.getByRole('button', { name: 'input.moreTools' }));
-    fireEvent.click(screen.getByText('input.clearInput'));
-    expect(onClearInput).toHaveBeenCalledTimes(1);
-
-    fireEvent.click(screen.getByRole('button', { name: 'input.moreTools' }));
-    rerender(<ComposerOverflowMenu {...baseProps} hasInput={false} onClearInput={onClearInput} />);
-    fireEvent.click(screen.getByRole('button', { name: 'input.moreTools' }));
-    expect(screen.queryByText('input.clearInput')).toBeNull();
   });
 
   it('switches to the schedule view and back', () => {

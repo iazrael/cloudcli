@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import { ChevronLeft, Clock, PlusIcon, SquareSlashIcon, XIcon } from 'lucide-react';
+import { ChevronLeft, Clock, PlusIcon, SquareSlashIcon } from 'lucide-react';
 
 import { formatTokenCount, readTokenUsageTotals } from '@/modules/chat/composer/tokenUsage';
 import { ComposerMenuItem } from '@/modules/chat/composer/ComposerMenuPrimitives';
@@ -18,8 +18,6 @@ type ComposerOverflowMenuProps = {
   onToggleCommandMenu: () => void;
   /** The box holds a schedulable draft; scheduled send is dimmed without one. */
   canSchedule: boolean;
-  hasInput: boolean;
-  onClearInput: () => void;
   onScheduleMessage: (scheduledFor: Date) => void;
   /** Creates a task bound to the current session instead of a one-off message. */
   onScheduleTask: (schedule: {
@@ -48,10 +46,10 @@ type PanelAnchor = {
 
 /**
  * Rendered by chat's ChatComposer as the mobile composer's "＋" entry: the
- * low-frequency tools — token usage, slash commands, scheduled send, clear
- * input — collect behind it so the main row only carries high-frequency
- * controls. Anchored above its trigger growing rightward (the mirror image of
- * the desktop menus, which grow leftward from the send side).
+ * low-frequency tools — token usage, slash commands, scheduled send — collect
+ * behind it so the main row only carries high-frequency controls. Anchored
+ * above its trigger growing rightward (the mirror image of the desktop menus,
+ * which grow leftward from the send side).
  */
 export function ComposerOverflowMenu({
   tokenBudget,
@@ -59,8 +57,6 @@ export function ComposerOverflowMenu({
   slashCommandsCount,
   onToggleCommandMenu,
   canSchedule,
-  hasInput,
-  onClearInput,
   onScheduleMessage,
   onScheduleTask,
   supportsNativeScheduling,
@@ -218,19 +214,6 @@ export function ComposerOverflowMenu({
                 disabled={!canSchedule}
                 onSelect={() => setView('schedule')}
               />
-
-              {hasInput && (
-                <ComposerMenuItem
-                  role="menuitem"
-                  icon={<XIcon className="h-4 w-4" />}
-                  label={t('input.clearInput')}
-                  isSelected={false}
-                  onSelect={() => {
-                    close();
-                    onClearInput();
-                  }}
-                />
-              )}
             </>
           ) : (
             <>
