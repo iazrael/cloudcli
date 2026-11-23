@@ -190,11 +190,16 @@ export class ChatSessionWriter {
       // the notification reply preview stays current for the run's terminal
       // push — whatever the engine, and without each runtime having to track
       // it. Same-id re-sends (streaming upserts) overwrite, so the preview
-      // ends up holding the last segment's final body.
+      // ends up holding the last segment's final body. Card-tied rows are a
+      // subagent's traffic (codex agent threads, opencode child frames, agy
+      // agent tails, claude SDK sidechains), never the main reply; a compact
+      // summary summarizes old context — neither is this run's answer.
       if (
         this.options.appSessionId
         && outbound.kind === 'text'
         && outbound.role === 'assistant'
+        && !outbound.parentToolUseId
+        && !outbound.isCompactSummary
         && hasVisibleText(outbound.content ?? '')
       ) {
         rememberSessionReplyPreview(this.options.appSessionId, outbound.content ?? '');

@@ -1388,7 +1388,17 @@ export class ZCodeRuntimeProvider implements IProviderRuntime {
             });
             continue;
           }
-          if (message.kind === 'stream_delta' && typeof message.content === 'string' && message.content) {
+          // The preview accumulation rides this run's own turn only: a turn
+          // the engine started itself (and startNow preempted) streams its
+          // winding-down prose past this listener, and letting it in would
+          // open the stop push with the cancelled turn's text. A finished
+          // segment closes the accumulator, so the registry keeps the LAST
+          // segment — what the text-row engines' capture ends up holding for
+          // the same reply shape.
+          if (turnOwner === 'own' && message.kind === 'stream_end') {
+            runReplyText = '';
+          }
+          if (turnOwner === 'own' && message.kind === 'stream_delta' && typeof message.content === 'string' && message.content) {
             runReplyText += message.content;
             if (handle.appSessionId) {
               rememberSessionReplyPreview(handle.appSessionId, runReplyText);

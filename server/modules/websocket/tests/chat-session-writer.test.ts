@@ -68,6 +68,26 @@ test('a run writer remembers the last assistant text as the notification reply p
   assert.equal(getSessionReplyPreview('app-preview-run'), '第一段回复，随后补全成完整回复。');
 });
 
+test('subagent text rows and compact summaries never become the reply preview', () => {
+  const notified: unknown[] = [];
+  const writer = new ChatSessionWriter({
+    connection: null, userId: 7, provider: 'codex', providerSessionId: null, onProviderSessionId: () => {},
+    appSessionId: 'app-preview-foreign',
+    decorateOutboundEvent: (message: NormalizedMessage) => ({ ...message, sessionId: 'app-preview-foreign', seq: 1 }),
+    notifyPermissionRequest: (info) => { notified.push(info); },
+  });
+
+  // Codex/opencode/antigravity/claude subagent traffic reaches this writer as
+  // text rows tied to their card; a background agent finishing last must not
+  // make the stop push carry its answer.
+  writer.send({ id: 'm1', kind: 'text', role: 'assistant', content: '子代理的回答', parentToolUseId: 'call_agent_1', sessionId: 'n', provider: 'codex', timestamp: '2026-01-01T00:00:00.000Z' });
+  // A compaction summary is an assistant-authored text row too, but it is a
+  // summary of old context, not this run's reply.
+  writer.send({ id: 'm2', kind: 'text', role: 'assistant', content: '历史上下文压缩摘要', isCompactSummary: true, sessionId: 'n', provider: 'claude', timestamp: '2026-01-01T00:00:00.000Z' });
+
+  assert.equal(getSessionReplyPreview('app-preview-foreign'), null);
+});
+
 test('a new run on the same session resets the reply preview instead of inheriting the previous turn', () => {
   const first = new ChatSessionWriter({
     connection: null, userId: 7, provider: 'codex', providerSessionId: null, onProviderSessionId: () => {},

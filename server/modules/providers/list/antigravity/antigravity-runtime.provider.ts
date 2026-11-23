@@ -1819,7 +1819,14 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
           // The terminal push carries the run's last reply text. antigravity
           // streams reply prose as stream_delta rows, which the shared
           // writer-side capture (text rows only) never sees, so the runtime
-          // records the accumulated reply itself.
+          // records the accumulated reply itself. A closed segment (the
+          // translator emits stream_end where a tool step or any non-text
+          // update splits the prose) ends the accumulator, so the registry
+          // keeps the LAST segment — what the text-row engines' capture ends
+          // up holding for the same reply shape.
+          if (message.kind === 'stream_end') {
+            replyText = '';
+          }
           if (message.kind === 'stream_delta' && typeof message.content === 'string' && message.content) {
             replyText += message.content;
             rememberSessionReplyPreview(sessionKey, replyText);

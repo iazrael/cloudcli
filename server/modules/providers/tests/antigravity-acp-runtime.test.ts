@@ -174,6 +174,17 @@ function handle(frame) {
       }
       return;
     }
+    if (mode === 'acp-two-segments') {
+      // Prose split by a tool step, the shape a tool-interleaved reply takes:
+      // the terminal push should carry the last segment, the way the
+      // text-row engines' push does.
+      send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '第一段开场白。' } } } });
+      send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'tool_call', toolCallId: 'call_seg', name: 'run_command', args: { CommandLine: 'echo hi' }, status: 'in_progress' } } });
+      send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'tool_call_update', toolCallId: 'call_seg', name: 'run_command', status: 'completed', content: [{ type: 'content', content: { type: 'text', text: 'hi' } }] } } });
+      send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '第二段结论。' } } } });
+      finish(frame.id);
+      return;
+    }
     if (mode === 'acp-question') {
       if (promptCount === 1) {
         const args = { questions: JSON.stringify([{ question: '你希望使用哪种数据库？', options: ['PostgreSQL', 'SQLite'], is_multi_select: false }]) };
@@ -401,6 +412,18 @@ test('a backgrounded command shows on the strip and holds the run until it compl
   assert.deepEqual(finalStrip?.backgroundTasks, [], 'strip cleared after completion');
   assert.ok(messages.some((message) => message.kind === 'stream_delta' && String(message.content).includes('回归测试全部通过')), 'post-end_turn prose streamed');
   assert.match(getSessionReplyPreview('sess-acp-strip') ?? '', /回归测试全部通过/, 'the completion prose is what the stop push carries');
+});
+
+test('a multi-segment ACP reply leaves the last segment as the notification preview', async () => {
+  process.env.AGY_ACP_STUB_MODE = 'acp-two-segments';
+  const { writer } = createWriter();
+
+  // Accumulating every stream_delta would make the push open with the first
+  // segment's preamble; the text-row engines' push carries the last segment,
+  // and this runtime's must match.
+  await runtime.run('hello', { sessionId: 'sess-acp-seg', cwd: workspaceDir }, writer, context);
+
+  assert.equal(getSessionReplyPreview('sess-acp-seg'), '第二段结论。');
 });
 
 test('a prompt rejected by the engine fails the run instead of settling as success', async () => {

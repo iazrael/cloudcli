@@ -343,6 +343,19 @@ rl.on('line', (line) => {
       send({ method: 'session/event', params: { sessionId, type: 'turn.completed', payload: {} } });
       return;
     }
+    if (readMode() === 'segments') {
+      // Two prose segments split by an explicit boundary, the shape a reply
+      // interleaved with tool calls takes: the terminal push should carry the
+      // last segment, the way the text-row engines' push does.
+      const ev = (payload) => send({ method: 'session/event', params: { sessionId, type: 'model_streaming', payload } });
+      ev({ kind: 'text_delta', delta: '第一段开场白' });
+      ev({ kind: 'text_end' });
+      ev({ kind: 'text_start' });
+      ev({ kind: 'text_delta', delta: '第二段结论' });
+      ev({ kind: 'text_end' });
+      send({ method: 'session/event', params: { sessionId, type: 'turn_complete', payload: { usage: { inputTokens: 3, outputTokens: 4 } } } });
+      return;
+    }
     if (readMode() === 'send-fail') {
       send({ method: 'session/event', params: { sessionId, type: 'turn.failed', payload: { error: { message: 'provider auth failed', attribution: { statusCode: 401, reason: 'auth_failed' } } } } });
       return;
@@ -687,6 +700,36 @@ test('a completed run leaves its streamed reply in the notification preview regi
   await runtime.run('hello', { sessionId: 'app-sess-preview', cwd: stubDir }, writer, context);
 
   assert.equal(getSessionReplyPreview('app-sess-preview'), 'hi there');
+});
+
+test('a run that preempts an engine-started turn keeps that turn out of the preview', async () => {
+  fsSync.writeFileSync(modeFilePath, 'preempt\n');
+  fsSync.writeFileSync(logFilePath, '');
+  clearSessionReplyPreview('app-sess-preempt');
+  const runtime = new ZCodeRuntimeProvider();
+  const { writer } = createWriter();
+
+  // startNow cancels the turn the engine started from a queued background
+  // notification; its winding-down prose streams past this run's listener.
+  await runtime.run('hello', { sessionId: 'app-sess-preempt', cwd: stubDir }, writer, context);
+
+  // The stop push would otherwise open with the cancelled turn's text.
+  assert.equal(getSessionReplyPreview('app-sess-preempt'), 'user reply');
+});
+
+test('a multi-segment reply leaves the last segment as the preview', async () => {
+  fsSync.writeFileSync(modeFilePath, 'segments\n');
+  fsSync.writeFileSync(logFilePath, '');
+  clearSessionReplyPreview('app-sess-segments');
+  const runtime = new ZCodeRuntimeProvider();
+  const { writer } = createWriter();
+
+  // Accumulating every stream_delta would make the push open with the first
+  // segment's preamble; the text-row engines' push carries the last segment,
+  // and this runtime's must match.
+  await runtime.run('hello', { sessionId: 'app-sess-segments', cwd: stubDir }, writer, context);
+
+  assert.equal(getSessionReplyPreview('app-sess-segments'), '第二段结论');
 });
 
 test('runtime surfaces session/create failures as error messages', async () => {
