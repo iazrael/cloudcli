@@ -37,7 +37,7 @@ export const PROVIDER_FALLBACK_CATALOG = {
     permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
   },
   zcode: {
-    defaultModel: 'GLM-5.3',
+    defaultModel: 'GLM-5.3-Flash',
     permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
   },
   antigravity: {

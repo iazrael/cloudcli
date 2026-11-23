@@ -129,7 +129,7 @@ export const PROVIDER_CATALOG = {
     // zcode runtime adapter.
     permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
     defaultPermissionMode: 'default',
-    defaultModel: 'GLM-5.3',
+    defaultModel: 'GLM-5.3-Flash',
     // Confirmed on engine 0.17.1: the v4 sendText command takes attachment
     // items ({ref, fileName, mime, bytes}, ref = absolute path); the runtime maps
     // app descriptors onto them. Whether an image reaches the model inline

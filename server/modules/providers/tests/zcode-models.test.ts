@@ -9,6 +9,10 @@ import Database from 'better-sqlite3';
 import { encryptZCodeCredentialValue } from '@/modules/providers/list/zcode/zcode-credentials.js';
 import { clearEnginePathCache } from '@/modules/providers/list/zcode/zcode-engine-path.js';
 import {
+  readZCodeModelContextWindow,
+  readZCodeModelReasoningValues,
+} from '@/modules/providers/list/zcode/zcode-provider-config.js';
+import {
   ZCodeProviderModels,
   buildZCodeSendModelParams,
   readZCodeModelContextLimit,
@@ -77,7 +81,7 @@ test('getSupportedModels falls back to the builtin catalog without a config', as
     const models = new ZCodeProviderModels();
     const definition = await models.getSupportedModels();
 
-    assert.equal(definition.DEFAULT, 'GLM-5.3');
+    assert.equal(definition.DEFAULT, 'GLM-5.3-Flash');
     assert.equal(definition.OPTIONS[0].value, 'GLM-5.3');
     assert.deepEqual(
       definition.OPTIONS[0].effort?.values.map((value) => value.value),
@@ -111,14 +115,17 @@ test('getSupportedModels parses the cli config provider catalog', async () => {
     const models = new ZCodeProviderModels();
     const definition = await models.getSupportedModels();
 
-    assert.equal(definition.OPTIONS.length, 1);
-    assert.equal(definition.DEFAULT, 'GLM-5.3');
+    // The plan row only enriches GLM-5.3; the pinned pair completes the
+    // catalog with GLM-5.3-Flash.
+    assert.equal(definition.OPTIONS.length, 2);
+    assert.equal(definition.DEFAULT, 'GLM-5.3-Flash');
     assert.equal(definition.OPTIONS[0].description, 'ZCode model with 1000K context, 128K output');
     // Variants are normalized to reasoning intensity order: low -> high -> max
     assert.deepEqual(
       definition.OPTIONS[0].effort?.values.map((value) => value.value),
       ['low', 'high', 'max']
     );
+    assert.equal(definition.OPTIONS[1].value, 'GLM-5.3-Flash');
   });
 });
 
@@ -375,7 +382,7 @@ test('getSupportedModels appends the pinned trial Flash option when a trial JWT 
       trial.effort?.values.map((value) => value.value),
       ['low', 'high', 'max']
     );
-    assert.equal(definition.DEFAULT, 'GLM-5.3');
+    assert.equal(definition.DEFAULT, 'GLM-5.3-Flash');
   });
 });
 
@@ -402,10 +409,11 @@ test('getSupportedModels falls back to the builtin catalog when only the legacy 
     const models = new ZCodeProviderModels();
     const definition = await models.getSupportedModels();
 
-    // The v2 path is no longer consulted; the builtin catalog wins.
+    // The v2 path is no longer consulted; without a cli config the pinned
+    // plan pair is the whole catalog.
     assert.deepEqual(
       definition.OPTIONS.map((opt) => opt.value),
-      ['GLM-5.3']
+      ['GLM-5.3', 'GLM-5.3-Flash']
     );
   });
 });
@@ -497,7 +505,7 @@ test('native individual plan remains selectable without a legacy provider config
       'account-provider:coding-plan:account:bigmodel-individual-coding-plan:account:123:api-key': 'personal-key',
     }), 'utf8');
     const catalog = await new ZCodeProviderModels().getSupportedModels();
-    assert.equal(catalog.DEFAULT, 'GLM-5.3');
+    assert.equal(catalog.DEFAULT, 'GLM-5.3-Flash');
     assert.deepEqual(buildZCodeSendModelParams('GLM-5.3-Flash')?.modelSelection, {
       providerId: 'account:bigmodel-individual-coding-plan', modelId: 'GLM-5.3-Flash',
       options: { reasoningLevel: 'max' },
@@ -534,8 +542,11 @@ test('a same-name custom model keeps its provider when an individual-plan key ex
       'account-provider:coding-plan:account:bigmodel-individual-coding-plan:account:123:api-key': 'personal-key',
     }), 'utf8');
     const catalog = await new ZCodeProviderModels().getSupportedModels();
-    assert.equal(catalog.OPTIONS[0]?.group, 'custom-provider');
-    assert.equal(buildZCodeSendModelParams(catalog.OPTIONS[0].value)?.modelSelection.providerId,
+    // The custom provider owns the same-name key (first listing row wins):
+    // its grouped option covers the plan entry and keeps its own routing.
+    const flashOption = catalog.OPTIONS.find((option) => option.value === 'GLM-5.3-Flash');
+    assert.equal(flashOption?.group, 'custom-provider');
+    assert.equal(buildZCodeSendModelParams(flashOption!.value)?.modelSelection.providerId,
       'custom-provider');
   });
 });
@@ -686,7 +697,7 @@ test('getSupportedModels merges ZCode App native providers as grouped options', 
     assert.equal(definition.OPTIONS[2].group, '阿里云百炼（中国）');
     assert.equal(definition.OPTIONS[2].description, 'ZCode qwen-max model');
     assert.equal(definition.OPTIONS[2].effort, undefined);
-    assert.equal(definition.DEFAULT, 'GLM-5.3');
+    assert.equal(definition.DEFAULT, 'GLM-5.3-Flash');
     // A template-disabled model is not routable either.
     assert.equal(buildZCodeSendModelParams('qwen-flash'), null);
   });
@@ -703,9 +714,10 @@ test('getSupportedModels lists native providers permissively when template defau
 
     assert.deepEqual(
       definition.OPTIONS.map((opt) => opt.value),
-      ['qwen-max', 'qwen-flash', 'deepseek-x', 'manual-y'],
+      // The plan pair heads the menu; native groups follow.
+      ['GLM-5.3', 'GLM-5.3-Flash', 'qwen-max', 'qwen-flash', 'deepseek-x', 'manual-y'],
     );
-    assert.equal(definition.DEFAULT, 'qwen-max');
+    assert.equal(definition.DEFAULT, 'GLM-5.3-Flash');
   });
 });
 
@@ -723,7 +735,7 @@ test('personalModelIds memberships stay enabled even when the template ships the
     // out: template-off with neither a user rule nor membership.
     assert.deepEqual(
       definition.OPTIONS.map((opt) => opt.value),
-      ['qwen-max', 'deepseek-x', 'manual-y'],
+      ['GLM-5.3', 'GLM-5.3-Flash', 'qwen-max', 'deepseek-x', 'manual-y'],
     );
   });
 });
@@ -925,5 +937,152 @@ test('readZCodeModelContextLimit reads limit.context from the engine config', as
 test('readZCodeModelContextLimit returns null without an engine config', async () => {
   await withZCodeStorage(async () => {
     assert.equal(readZCodeModelContextLimit('GLM-5.3'), null);
+  });
+});
+
+/** Writes the runtime-synced builtin cache the ZCode client refreshes from its remote catalog. */
+const withRuntimeBuiltinCache = async (
+  storageDir: string,
+  payload: { revision: number; providerRules: unknown[]; modelRules?: unknown[] },
+): Promise<string> => {
+  const cachePath = path.join(
+    storageDir, 'v2', 'runtime', 'provider', 'darwin-aarch64', '3.18.2', 'endpoint-fixture', 'zcode-builtin.json',
+  );
+  await mkdir(path.dirname(cachePath), { recursive: true });
+  await writeFile(cachePath, JSON.stringify({
+    schemaVersion: 1,
+    revision: payload.revision,
+    // Real cache files always carry modelConfigRules; the reader gates on it.
+    config: {
+      modelConfigRules: { modelRules: payload.modelRules ?? [] },
+      providerConfigRules: { providerRules: payload.providerRules },
+    },
+  }), 'utf8');
+  return cachePath;
+};
+
+const INDIVIDUAL_PLAN_RULE = {
+  providerId: 'account:bigmodel-individual-coding-plan',
+  providerName: 'BigModel Individual Coding Plan',
+  config: { builtinModelIds: ['GLM-5.4', 'GLM-5.3', 'GLM-5.3-Flash'] },
+};
+
+/** Engine-shaped GLM rows mirroring the rev-47 runtime cache (anchored patterns, per-model context). */
+const GLM_RUNTIME_MODEL_RULES = [
+  {
+    modelMatch: '.*',
+    config: { properties: { contextWindow: 200000 }, optionSpecs: { reasoningLevel: { values: ['disabled', 'enabled'] } } },
+  },
+  {
+    modelMatch: '(?:.*/)?glm[^/]*',
+    config: { properties: { contextWindow: 1000000 }, optionSpecs: { reasoningLevel: { values: ['low', 'high', 'max'] } } },
+  },
+  {
+    modelMatch: '(?:.*/)?glm-5(?:-[0-9]{6,8})?',
+    config: { properties: { contextWindow: 200000 }, optionSpecs: { reasoningLevel: { values: ['disabled', 'enabled'] } } },
+  },
+  {
+    modelMatch: '.*glm-5\\.3.*',
+    config: { properties: { contextWindow: 1000000 }, optionSpecs: { reasoningLevel: { values: ['low', 'high', 'max'] } } },
+  },
+];
+
+test('getSupportedModels follows the runtime-synced plan catalog', async () => {
+  await withZCodeStorage(async (storageDir) => {
+    await withRuntimeBuiltinCache(storageDir, {
+      revision: 47,
+      providerRules: [INDIVIDUAL_PLAN_RULE],
+      modelRules: GLM_RUNTIME_MODEL_RULES,
+    });
+    await mkdir(path.join(storageDir, 'cli'), { recursive: true });
+    await writeFile(
+      path.join(storageDir, 'cli', 'config.json'),
+      JSON.stringify({
+        provider: {
+          'bigmodel-coding-plan': {
+            kind: 'anthropic',
+            // No GLM-5.4 record yet: the engine has not materialized it here.
+            models: {
+              'GLM-5.3': {
+                reasoning: { enabled: true, levels: ['low', 'max', 'high'], defaultLevel: 'max' },
+                limit: { context: 1000000, output: 128000 },
+              },
+              'GLM-5.3-Flash': {},
+              'GLM-4.7': {},
+            },
+          },
+        },
+      }),
+      'utf8'
+    );
+
+    const catalog = await new ZCodeProviderModels().getSupportedModels();
+    // Engine-added GLM-5.4 shows up from the catalog even though the engine
+    // has not written its record into cli/config.json yet; the stale
+    // GLM-4.7 stays blocked even though cli/config.json lists it.
+    const planModels = catalog.OPTIONS
+      .filter((option) => option.group === undefined)
+      .map((option) => option.value);
+    assert.deepEqual(planModels, ['GLM-5.4', 'GLM-5.3', 'GLM-5.3-Flash']);
+    // Catalog-only metadata come from the builtin table rows…
+    const glm54 = catalog.OPTIONS.find((option) => option.value === 'GLM-5.4');
+    assert.deepEqual(glm54?.effort?.values.map((entry) => entry.value), ['low', 'high', 'max']);
+    assert.match(glm54?.description ?? '', /1000K context/);
+    // …while GLM-5.3 is enriched by its cli/config.json record.
+    const glm53 = catalog.OPTIONS.find((option) => option.value === 'GLM-5.3');
+    assert.match(glm53?.description ?? '', /128K output/);
+    // The default model stays anchored so a catalog reorder cannot drift it.
+    assert.equal(catalog.DEFAULT, 'GLM-5.3-Flash');
+  });
+});
+
+test('builtin reasoning rows match like the engine: anchored and case-insensitive', async () => {
+  await withZCodeStorage(async (storageDir) => {
+    await withEngineTemplateModelRules(storageDir, [], GLM_RUNTIME_MODEL_RULES);
+
+    // Uppercase plan ids resolve through the lowercase rows (the engine's
+    // matcher is case-insensitive).
+    assert.deepEqual(readZCodeModelReasoningValues('GLM-5.4'), ['low', 'high', 'max']);
+    assert.deepEqual(readZCodeModelReasoningValues('GLM-5.3'), ['low', 'high', 'max']);
+    // The bare `glm-5(?:-digits)?` row is anchored, so GLM-5.1 keeps the
+    // generic glm row instead of being swallowed by the glm-5 prefix.
+    assert.deepEqual(readZCodeModelReasoningValues('GLM-5.1'), ['low', 'high', 'max']);
+    // Per-row context windows follow the same last-match resolution.
+    assert.equal(readZCodeModelContextWindow('GLM-5.4'), 1_000_000);
+    // A non-GLM id only hits the catch-all row.
+    assert.equal(readZCodeModelContextWindow('qwen-max'), 200_000);
+  });
+});
+
+test('readZCodeModelContextLimit falls back to the builtin row context', async () => {
+  await withZCodeStorage(async (storageDir) => {
+    await withEngineTemplateModelRules(storageDir, [], GLM_RUNTIME_MODEL_RULES);
+
+    // No cli/config.json record for GLM-5.4 yet; the builtin row carries the
+    // usage denominator until the engine materializes one.
+    assert.equal(readZCodeModelContextLimit('GLM-5.4'), 1_000_000);
+  });
+});
+
+test('runtime-catalog plan ids route to the individual provider', async () => {
+  await withZCodeStorage(async (storageDir) => {
+    await withRuntimeBuiltinCache(storageDir, { revision: 47, providerRules: [INDIVIDUAL_PLAN_RULE] });
+    await mkdir(path.join(storageDir, 'v2'), { recursive: true });
+    await writeFile(path.join(storageDir, 'v2', 'credentials.json'), JSON.stringify({
+      'account-provider:coding-plan:account:bigmodel-individual-coding-plan:account:123:api-key':
+        encryptZCodeCredentialValue('personal-plan-key'),
+    }), 'utf8');
+
+    // Bare id from the runtime catalog resolves to the plan credential at send.
+    assert.deepEqual(buildZCodeSendModelParams('GLM-5.4'), {
+      modelSelection: {
+        providerId: 'account:bigmodel-individual-coding-plan',
+        modelId: 'GLM-5.4',
+        options: { reasoningLevel: 'max' },
+      },
+      modelExecution: { selectionScope: 'execution', requestAuth: { apiKey: 'personal-plan-key' } },
+    });
+    // Outside the catalog a bare id keeps the legacy default routing.
+    assert.equal(resolveZCodeModelRef('GLM-4.7').providerId, 'builtin:bigmodel-coding-plan');
   });
 });

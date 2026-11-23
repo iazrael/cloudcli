@@ -240,7 +240,7 @@ const BUILTIN_RELATIVE_CANDIDATES = [
   path.join('..', '..', '..', '..', '..', 'config', 'provider', BUILTIN_CONFIG_FILE),
 ];
 
-export function findBuiltinConfig(enginePath: string): string | null {
+function findEngineBundledConfig(enginePath: string): string | null {
   const engineDir = path.dirname(path.resolve(enginePath));
   for (const relative of BUILTIN_RELATIVE_CANDIDATES) {
     const candidate = path.resolve(engineDir, relative);
@@ -253,6 +253,103 @@ export function findBuiltinConfig(enginePath: string): string | null {
   return null;
 }
 
+/** Cached builtin file revisions keyed by path with an mtime+size identity. */
+const builtinRevisionCache = new Map<string, { key: string; revision: number | null }>();
+
+/**
+ * Numeric `revision` of a builtin config file, cached on mtime+size so the
+ * per-send resolution does not re-parse the file. Null when unreadable or
+ * non-numeric.
+ */
+function readBuiltinFileRevision(builtinPath: string): number | null {
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(builtinPath);
+  } catch {
+    return null;
+  }
+  const key = `${stat.mtimeMs}:${stat.size}`;
+  const cached = builtinRevisionCache.get(builtinPath);
+  if (cached?.key === key) return cached.revision;
+  let revision: number | null = null;
+  try {
+    const raw = readObjectRecord(JSON.parse(fs.readFileSync(builtinPath, 'utf8')));
+    const numeric = typeof raw?.revision === 'number'
+      ? raw.revision
+      : typeof raw?.revision === 'string' ? Number(raw.revision) : Number.NaN;
+    revision = Number.isFinite(numeric) ? numeric : null;
+  } catch {
+    revision = null;
+  }
+  builtinRevisionCache.set(builtinPath, { key, revision });
+  return revision;
+}
+
+/**
+ * Newest runtime-synced builtin cache under
+ * `<storage>/v2/runtime/provider/<platform>/<version>/endpoint-<hash>/zcode-builtin.json`.
+ * The ZCode client refreshes these files from its remote catalog endpoint
+ * without an app update, so they can lead the bundled file; unreadable or
+ * revision-less entries are skipped and the highest revision wins.
+ */
+function findRuntimeBuiltinConfig(): string | null {
+  const providerRoot = path.join(getZCodeStorageDir(), 'v2', 'runtime', 'provider');
+  let platformEntries: fs.Dirent[];
+  try {
+    platformEntries = fs.readdirSync(providerRoot, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  let best: { path: string; revision: number } | null = null;
+  for (const platform of platformEntries) {
+    if (!platform.isDirectory()) continue;
+    const platformDir = path.join(providerRoot, platform.name);
+    let versionEntries: fs.Dirent[];
+    try {
+      versionEntries = fs.readdirSync(platformDir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const version of versionEntries) {
+      if (!version.isDirectory()) continue;
+      const versionDir = path.join(platformDir, version.name);
+      let endpointEntries: fs.Dirent[];
+      try {
+        endpointEntries = fs.readdirSync(versionDir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const endpoint of endpointEntries) {
+        if (!endpoint.isDirectory() || !endpoint.name.startsWith('endpoint-')) continue;
+        const candidate = path.join(versionDir, endpoint.name, 'zcode-builtin.json');
+        const revision = readBuiltinFileRevision(candidate);
+        if (revision === null) continue;
+        if (!best || revision > best.revision) best = { path: candidate, revision };
+      }
+    }
+  }
+  return best?.path ?? null;
+}
+
+/**
+ * Resolves the builtin config every consumer shares: the runtime-synced cache
+ * when it carries a higher revision than the engine-bundled file (the ZCode
+ * App behaves the same way), the bundled file otherwise. Engine-spawn env,
+ * template defaults, reasoning specs, the account sync revision and the plan
+ * catalogs all read through this single resolution.
+ */
+export function findBuiltinConfig(enginePath: string): string | null {
+  const bundledPath = findEngineBundledConfig(enginePath);
+  const runtimePath = findRuntimeBuiltinConfig();
+  const bundledRevision = bundledPath ? readBuiltinFileRevision(bundledPath) : null;
+  const runtimeRevision = runtimePath ? readBuiltinFileRevision(runtimePath) : null;
+  if (runtimePath && runtimeRevision !== null
+    && (bundledRevision === null || runtimeRevision > bundledRevision)) {
+    return runtimePath;
+  }
+  return bundledPath;
+}
+
 /** Cached builtin template state keyed by builtin file identity (path+mtime+size). */
 type ZCodeBuiltinTemplateState = {
   /**
@@ -261,12 +358,21 @@ type ZCodeBuiltinTemplateState = {
    */
   templateDefaults: Map<string, Map<string, boolean>> | null;
   /**
-   * reasoningLevel option specs in file order. The engine ships its `.*`
-   * catch-all first and narrower regex rows later, and later matches
-   * supersede earlier ones, so resolution walks forward and keeps the last
-   * match. Invalid regexes never match anything.
+   * `modelRules` rows in file order. The engine ships its `.*` catch-all
+   * first and narrower regex rows later, and later matches supersede earlier
+   * ones, so resolution walks forward and keeps the last match. Regexes
+   * compile the way the engine applies them — `^(?:pattern)$` anchored,
+   * case-insensitive. Rows carry either (or both) of the reasoningLevel
+   * values and the per-model contextWindow; invalid regexes never match.
    */
-  reasoningSpecs: { regex: RegExp | null; values: string[] }[];
+  reasoningSpecs: { regex: RegExp | null; values: string[]; contextWindow: number | null }[];
+  /**
+   * Per-provider `builtinModelIds` from `providerConfigRules.providerRules` —
+   * the account plans' granted model catalogs, the same field the engine's
+   * account registry consumes. Null when the file ships no provider rules
+   * ("unknown", never "empty").
+   */
+  planModelIds: Map<string, string[]> | null;
 };
 let builtinTemplateCache: { key: string; state: ZCodeBuiltinTemplateState } | null = null;
 
@@ -286,10 +392,27 @@ function readZCodeBuiltinTemplateState(): ZCodeBuiltinTemplateState | null {
   if (builtinTemplateCache?.key === cacheKey) return builtinTemplateCache.state;
 
   try {
-    const modelConfig = readObjectRecord(
-      readObjectRecord(readObjectRecord(JSON.parse(fs.readFileSync(builtinPath, 'utf8')))?.config)?.modelConfigRules,
-    );
+    const configBody = readObjectRecord(readObjectRecord(JSON.parse(fs.readFileSync(builtinPath, 'utf8')))?.config);
+    const modelConfig = readObjectRecord(configBody?.modelConfigRules);
     if (!modelConfig) return null;
+
+    // Provider rules carry the account plans' model catalogs; absent rules
+    // mean "no knowledge" (the plan pair fallback applies downstream).
+    const providerRules = Array.isArray(readObjectRecord(configBody?.providerConfigRules)?.providerRules)
+      ? readObjectRecord(configBody?.providerConfigRules)?.providerRules as unknown[]
+      : null;
+    const planModelIds = new Map<string, string[]>();
+    for (const entry of providerRules ?? []) {
+      const record = readObjectRecord(entry);
+      const providerId = readOptionalString(record?.providerId);
+      if (!providerId) continue;
+      const modelIds = (Array.isArray(readObjectRecord(record?.config)?.builtinModelIds)
+        ? readObjectRecord(record?.config)?.builtinModelIds as unknown[]
+        : [])
+        .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+        .map((value) => value.trim());
+      planModelIds.set(providerId, modelIds);
+    }
 
     // Absent rows (older engine layouts) mean "no knowledge", not "all off".
     const templateRows = Array.isArray(modelConfig.templateModelRules)
@@ -315,19 +438,27 @@ function readZCodeBuiltinTemplateState(): ZCodeBuiltinTemplateState | null {
       const values = (Array.isArray(readObjectRecord(spec)?.values) ? readObjectRecord(spec)?.values as unknown[] : [])
         .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
         .map((value) => value.trim().toLowerCase());
-      if (values.length === 0) continue;
+      const rawContextWindow = readObjectRecord(readObjectRecord(record?.config)?.properties)?.contextWindow;
+      const contextWindow = typeof rawContextWindow === 'number' && Number.isFinite(rawContextWindow) && rawContextWindow > 0
+        ? rawContextWindow
+        : null;
+      if (values.length === 0 && contextWindow === null) continue;
+      // The engine compiles these patterns as `^(?:pattern)$` with the /i
+      // flag when applying them, so uppercase ids like GLM-5.4 hit the
+      // lowercase rows and non-wrapped patterns stay anchored.
       let regex: RegExp | null = null;
       try {
-        regex = new RegExp(pattern);
+        regex = new RegExp(`^(?:${pattern})$`, 'i');
       } catch {
         // Unusable pattern: this row never matches.
       }
-      reasoningSpecs.push({ regex, values });
+      reasoningSpecs.push({ regex, values, contextWindow });
     }
 
     const state: ZCodeBuiltinTemplateState = {
       templateDefaults: templateRows ? defaults : null,
       reasoningSpecs,
+      planModelIds: providerRules ? planModelIds : null,
     };
     builtinTemplateCache = { key: cacheKey, state };
     return state;
@@ -352,13 +483,34 @@ export function readZCodeTemplateModelDefaults(): Map<string, Map<string, boolea
 }
 
 /**
+ * The individual coding plan's granted models: `builtinModelIds` of the
+ * `account:bigmodel-individual-coding-plan` rule in the resolved builtin
+ * config (runtime-synced cache first, engine-bundled file second). Null when
+ * the builtin file or its provider rules are unavailable, or the rule lists
+ * no models (more likely bad data than a plan that grants nothing) — callers
+ * fall back to the pinned plan pair rather than hiding the whole plan.
+ *
+ * Consumer: `getPersonalPlanModelIds` in zcode-models.provider.ts.
+ */
+export function readZCodeIndividualPlanModelIds(): Set<string> | null {
+  const ids = readZCodeBuiltinTemplateState()
+    ?.planModelIds
+    ?.get('account:bigmodel-individual-coding-plan');
+  if (!ids || ids.length === 0) return null;
+  const set = new Set(ids);
+  return set.size > 0 ? set : null;
+}
+
+/**
  * Effective reasoningLevel values for a model id: the values of the LAST
- * builtin `modelRules` row whose `modelMatch` regex matches it (the engine
- * ships the `.*` catch-all first). Null when nothing matches or the builtin
- * config is unavailable — callers must not invent a level then. The engine
- * rejects sends without `options.reasoningLevel` for models that ship a
- * non-empty spec ("Reasoning level is required for <provider>/<model>"), so
- * this feeds both the menu effort and the send-time default.
+ * builtin `modelRules` row whose pattern matches it (the engine ships the
+ * `.*` catch-all first, matching anchored and case-insensitively). Rows
+ * without reasoning values cannot mask an earlier row's spec. Null when
+ * nothing matches or the builtin config is unavailable — callers must not
+ * invent a level then. The engine rejects sends without
+ * `options.reasoningLevel` for models that ship a non-empty spec
+ * ("Reasoning level is required for <provider>/<model>"), so this feeds both
+ * the menu effort and the send-time default.
  *
  * Consumers: native catalog entries and native send defaults in
  * zcode-models.provider.ts.
@@ -368,7 +520,27 @@ export function readZCodeModelReasoningValues(modelId: string): string[] | null 
   if (!specs?.length) return null;
   let matched: string[] | null = null;
   for (const spec of specs) {
+    if (spec.values.length === 0) continue;
     if (spec.regex?.test(modelId)) matched = spec.values;
+  }
+  return matched;
+}
+
+/**
+ * Context window for a model id: `properties.contextWindow` of the LAST
+ * builtin `modelRules` row whose pattern matches it — the same per-model
+ * metadata the engine applies. Null when no row carries one or the builtin
+ * config is unavailable; callers fall back to their own default window.
+ *
+ * Consumer: `readZCodeModelContextLimit` in zcode-models.provider.ts.
+ */
+export function readZCodeModelContextWindow(modelId: string): number | null {
+  const specs = readZCodeBuiltinTemplateState()?.reasoningSpecs;
+  if (!specs?.length) return null;
+  let matched: number | null = null;
+  for (const spec of specs) {
+    if (spec.contextWindow === null) continue;
+    if (spec.regex?.test(modelId)) matched = spec.contextWindow;
   }
   return matched;
 }

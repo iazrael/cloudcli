@@ -6,6 +6,7 @@ import test from 'node:test';
 
 import {
   buildZCodeAccountSyncPayload,
+  findBuiltinConfig,
   resolveZCodeBuiltinRevision,
   resolveZCodeProviderConfigEnv,
 } from '@/modules/providers/list/zcode/zcode-provider-config.js';
@@ -34,7 +35,17 @@ const withEngineLayout = async (
     await writeFile(configPath, '{}', 'utf8');
   }
 
-  await runTest(enginePath, configPath);
+  // Isolates the runtime builtin-cache scan from the developer's real
+  // ~/.zcode, whose remote-synced revision would otherwise win resolution
+  // and leak machine state into these cases.
+  const previousStorage = process.env.ZCODE_STORAGE_DIR;
+  process.env.ZCODE_STORAGE_DIR = path.join(root, 'storage');
+  try {
+    await runTest(enginePath, configPath);
+  } finally {
+    if (previousStorage === undefined) delete process.env.ZCODE_STORAGE_DIR;
+    else process.env.ZCODE_STORAGE_DIR = previousStorage;
+  }
 };
 
 test('finds the built-in config in the packaged Resources/config layout', async () => {
@@ -316,6 +327,78 @@ test('buildZCodeAccountSyncPayload returns null when no individual key is stored
     try {
       const payload = buildZCodeAccountSyncPayload(configPath);
       assert.equal(payload, null);
+    } finally {
+      if (previousStorage === undefined) delete process.env.ZCODE_STORAGE_DIR;
+      else process.env.ZCODE_STORAGE_DIR = previousStorage;
+    }
+  });
+});
+
+/** Writes a runtime-synced builtin cache (the ZCode client's remote fetch) into the storage tree. */
+const withRuntimeBuiltinCache = async (
+  storageDir: string,
+  body: Record<string, unknown>,
+): Promise<string> => {
+  const cachePath = path.join(
+    storageDir, 'v2', 'runtime', 'provider', 'darwin-aarch64', '3.18.2', 'endpoint-fixture', 'zcode-builtin.json',
+  );
+  await mkdir(path.dirname(cachePath), { recursive: true });
+  await writeFile(cachePath, JSON.stringify(body), 'utf8');
+  return cachePath;
+};
+
+test('findBuiltinConfig prefers a higher-revision runtime cache over the bundled file', async () => {
+  await withEngineLayout(path.join('..', 'config', 'provider', 'zcode-builtin.json'), async (enginePath, configPath) => {
+    await writeFile(configPath ?? '', JSON.stringify({ revision: 44 }), 'utf8');
+    const previousStorage = process.env.ZCODE_STORAGE_DIR;
+    const storageDir = await mkdtemp(path.join(os.tmpdir(), 'zcode-runtime-builtin-'));
+    process.env.ZCODE_STORAGE_DIR = storageDir;
+
+    try {
+      const runtimePath = await withRuntimeBuiltinCache(storageDir, { revision: 47 });
+
+      assert.equal(findBuiltinConfig(enginePath), runtimePath);
+      // The spawn env hands the same fresh file to the engine, so its account
+      // registry sees engine-added models without an app update.
+      const env = resolveZCodeProviderConfigEnv(enginePath);
+      assert.equal(env[BUILTIN_ENV], runtimePath);
+    } finally {
+      if (previousStorage === undefined) delete process.env.ZCODE_STORAGE_DIR;
+      else process.env.ZCODE_STORAGE_DIR = previousStorage;
+    }
+  });
+});
+
+test('an older or unreadable runtime cache yields to the bundled file', async () => {
+  await withEngineLayout(path.join('..', 'config', 'provider', 'zcode-builtin.json'), async (enginePath, configPath) => {
+    await writeFile(configPath ?? '', JSON.stringify({ revision: 44 }), 'utf8');
+    const previousStorage = process.env.ZCODE_STORAGE_DIR;
+    const storageDir = await mkdtemp(path.join(os.tmpdir(), 'zcode-runtime-builtin-'));
+    process.env.ZCODE_STORAGE_DIR = storageDir;
+
+    try {
+      const runtimePath = await withRuntimeBuiltinCache(storageDir, { revision: 43 });
+      assert.equal(findBuiltinConfig(enginePath), configPath);
+
+      // Corrupt cache JSON is ignored, not fatal.
+      await writeFile(runtimePath, 'not-json', 'utf8');
+      assert.equal(findBuiltinConfig(enginePath), configPath);
+    } finally {
+      if (previousStorage === undefined) delete process.env.ZCODE_STORAGE_DIR;
+      else process.env.ZCODE_STORAGE_DIR = previousStorage;
+    }
+  });
+});
+
+test('a runtime cache alone serves as the builtin config', async () => {
+  await withEngineLayout(null, async (enginePath) => {
+    const previousStorage = process.env.ZCODE_STORAGE_DIR;
+    const storageDir = await mkdtemp(path.join(os.tmpdir(), 'zcode-runtime-builtin-'));
+    process.env.ZCODE_STORAGE_DIR = storageDir;
+
+    try {
+      const runtimePath = await withRuntimeBuiltinCache(storageDir, { revision: 47 });
+      assert.equal(findBuiltinConfig(enginePath), runtimePath);
     } finally {
       if (previousStorage === undefined) delete process.env.ZCODE_STORAGE_DIR;
       else process.env.ZCODE_STORAGE_DIR = previousStorage;

@@ -21,6 +21,8 @@ import {
 import { readZCodeIndividualPlanAuthContext, readDecryptedZCodeJwtToken } from './zcode-credentials.js';
 import { getZCodeDatabasePath, getZCodeStorageDir } from './zcode-data-root.js';
 import {
+  readZCodeIndividualPlanModelIds,
+  readZCodeModelContextWindow,
   readZCodeModelReasoningValues,
   readZCodeTemplateModelDefaults,
   resolveZCodeProviderApiType,
@@ -37,7 +39,20 @@ export const ZCODE_INDIVIDUAL_PLAN_PROVIDER_ID = 'account:bigmodel-individual-co
 const ZCODE_START_PLAN_MODEL_ID = 'GLM-5.3-Flash';
 const ZCODE_START_PLAN_MODEL_VALUE = `${ZCODE_START_PLAN_PROVIDER_ID}/${ZCODE_START_PLAN_MODEL_ID}`;
 const ZCODE_START_PLAN_MODEL_LABEL = 'GLM-5.3-Flash（体验）';
-const ZCODE_PERSONAL_MODELS_WHITELIST = new Set(['GLM-5.3', 'GLM-5.3-Flash']);
+/** Plan catalog fallback for installs without a readable builtin config. */
+const ZCODE_PERSONAL_MODELS_FALLBACK = new Set(['GLM-5.3', 'GLM-5.3-Flash']);
+
+/**
+ * Plan models the installed engine grants: the individual plan's
+ * `builtinModelIds` from the resolved builtin config (runtime-synced cache
+ * first, engine-bundled file second), or the pinned fallback when neither is
+ * readable. Filters the picker's plan entries and routes bare plan ids, so
+ * engine-added models (GLM-5.4 …) appear without a cloudcli release while
+ * stale ids (GLM-4.7 …) stay out.
+ */
+function getPersonalPlanModelIds(): Set<string> {
+  return readZCodeIndividualPlanModelIds() ?? ZCODE_PERSONAL_MODELS_FALLBACK;
+}
 
 /**
  * Appends the pinned trial-plan option when the account holds a trial JWT.
@@ -83,7 +98,7 @@ export const ZCODE_BUILTIN_MODELS: ProviderModelsDefinition = {
       },
     },
   ],
-  DEFAULT: 'GLM-5.3',
+  DEFAULT: 'GLM-5.3-Flash',
 };
 
 const EFFORT_DESCRIPTIONS: Record<string, string> = {
@@ -294,31 +309,123 @@ function buildNativePersonalSendParams(
   };
 }
 
+/** Plan provider rows in `cli/config.json` — never a catalog source, see readZCodeModelConfig. */
+function isPlanProviderRow(providerId: string): boolean {
+  return providerId === 'bigmodel-coding-plan'
+    || providerId.startsWith('builtin:bigmodel')
+    || providerId.startsWith('account:bigmodel-coding-plan')
+    || providerId.startsWith('account:bigmodel-individual');
+}
+
 /**
- * Reads ZCode's user-facing provider config to extract model definitions.
- * ZCode 0.16.9+ stores the active catalog in `cli/config.json`; the legacy
- * `v2/config.json` is not consulted because engines old enough to rely on it
- * cannot be driven by this integration anyway. Providers configured in the
- * ZCode App (`v2/provider_config.json`) merge in after the cli table,
- * grouped under their provider name; on a bare-key collision the cli entry
- * wins, matching the send routing in `resolveZCodeModelRef`.
+ * Reads the model catalog. Membership comes from a single authority per
+ * source: account-plan models are the builtin config's plan catalog
+ * (`account:bigmodel-individual-coding-plan` `builtinModelIds`, runtime-synced
+ * cache first), user-configured custom providers come from
+ * `cli/config.json`, and ZCode App personal providers (`v2/provider_config.json`)
+ * merge in grouped after both. `cli/config.json` no longer decides plan
+ * membership — it only enriches a plan model's description/effort when the
+ * engine has materialized a record for the same id, so engine-added models
+ * appear immediately and stale ids stay out. On a bare-key collision the plan
+ * entry wins and cli custom entries yield, matching the send routing in
+ * `resolveZCodeModelRef`.
  */
 const readZCodeModelConfig = async (): Promise<ProviderModelsDefinition> => {
-  let baseDefinition: ProviderModelsDefinition = ZCODE_BUILTIN_MODELS;
-  try {
-    let config: Record<string, unknown> | null = null;
-    try {
-      config = readObjectRecord(JSON.parse(
-        await readFile(path.join(getZCodeStorageDir(), 'cli', 'config.json'), 'utf8')
-      ));
-    } catch {
-      // Missing or unreadable engine config: fall through to the builtin catalog.
+  const modelOptions: ProviderModelOption[] = [];
+  const seenModelKeys = new Set<string>();
+  const cliModelRecords = new Map<string, Record<string, unknown>>();
+
+  /** Option from a cli/config.json model record (same parsing as before). */
+  const buildOptionFromRecord = (
+    modelKey: string,
+    modelRecord: Record<string, unknown>,
+    group: string | undefined,
+  ): ProviderModelOption => {
+    const reasoning = readObjectRecord(modelRecord.reasoning);
+    const variants = Array.isArray(reasoning?.levels) ? reasoning.levels : reasoning?.variants;
+    const hasReasoning = Array.isArray(variants) && variants.length > 0;
+
+    const limits = readObjectRecord(modelRecord.limit);
+    const contextLimit = limits?.context;
+    const outputLimit = limits?.output;
+
+    const limitDescriptions: string[] = [];
+    if (typeof contextLimit === 'number') {
+      limitDescriptions.push(`${(contextLimit / 1000).toFixed(0)}K context`);
+    }
+    if (typeof outputLimit === 'number') {
+      limitDescriptions.push(`${(outputLimit / 1000).toFixed(0)}K output`);
     }
 
-    const providers = readObjectRecord(config?.provider);
-    const modelOptions: ProviderModelOption[] = [];
-    const seenModelKeys = new Set<string>();
+    const description = limitDescriptions.length > 0
+      ? `ZCode model with ${limitDescriptions.join(', ')}`
+      : `ZCode ${modelKey} model`;
 
+    let effort: ProviderModelOption['effort'] | undefined;
+    if (hasReasoning && Array.isArray(variants)) {
+      const sortedVariants = variants
+        .filter((variant): variant is string => typeof variant === 'string' && variant.trim().length > 0)
+        .map((variant) => variant.trim().toLowerCase())
+        .sort((a, b) => {
+          const orderA = REASONING_EFFORT_ORDER[a] ?? 999;
+          const orderB = REASONING_EFFORT_ORDER[b] ?? 999;
+          if (orderA !== orderB) return orderA - orderB;
+          return a.localeCompare(b);
+        });
+      effort = {
+        default: readOptionalString(reasoning?.defaultLevel)?.toLowerCase() ?? 'max',
+        values: sortedVariants.map((variant: string) => {
+          const normalized = variant.toLowerCase();
+          return {
+            value: normalized,
+            description: EFFORT_DESCRIPTIONS[normalized] || `${normalized} reasoning level`,
+          };
+        }),
+      };
+    }
+
+    return {
+      value: modelKey,
+      label: modelKey,
+      ...(group ? { group } : {}),
+      description: readOptionalString(modelRecord.description) || description,
+      effort: hasReasoning ? effort : undefined,
+    };
+  };
+
+  /** Plan option without a cli record: metadata come from the builtin table rows. */
+  const buildPlanOptionFromBuiltinTable = (modelId: string): ProviderModelOption => {
+    const reasoningValues = readZCodeModelReasoningValues(modelId);
+    const effort = reasoningValues ? buildNativeReasoningEffort(reasoningValues) : undefined;
+    const contextWindow = readZCodeModelContextWindow(modelId);
+    return {
+      value: modelId,
+      label: modelId,
+      description: contextWindow
+        ? `ZCode model with ${(contextWindow / 1000).toFixed(0)}K context`
+        : `ZCode ${modelId} model`,
+      ...(effort ? { effort } : {}),
+    };
+  };
+
+  /** Plan option without a cli record: the static fallback entry first, then the builtin table. */
+  const buildPlanOption = (modelId: string): ProviderModelOption => {
+    const fallbackEntry = ZCODE_BUILTIN_MODELS.OPTIONS.find((option) => option.value === modelId);
+    if (fallbackEntry) return fallbackEntry;
+    return buildPlanOptionFromBuiltinTable(modelId);
+  };
+
+  const planRecords = new Map<string, Record<string, unknown>>();
+  const planOwnedKeys = new Set<string>();
+  const customOwnedKeys = new Set<string>();
+  const customEntries: { modelKey: string; option: ProviderModelOption }[] = [];
+
+  try {
+    const config = readObjectRecord(JSON.parse(
+      await readFile(path.join(getZCodeStorageDir(), 'cli', 'config.json'), 'utf8')
+    ));
+
+    const providers = readObjectRecord(config?.provider);
     if (providers) {
       for (const [providerId, providerConfig] of Object.entries(providers)) {
         const providerRecord = readObjectRecord(providerConfig);
@@ -328,116 +435,79 @@ const readZCodeModelConfig = async (): Promise<ProviderModelsDefinition> => {
         const models = readObjectRecord(providerRecord?.models);
         if (!models) continue;
 
-        const isPersonalProvider = providerId === 'bigmodel-coding-plan'
-          || providerId.startsWith('builtin:bigmodel')
-          || providerId.startsWith('account:bigmodel-coding-plan')
-          || providerId.startsWith('account:bigmodel-individual');
+        const isPlanRow = isPlanProviderRow(providerId);
+        const group = isPlanRow
+          ? undefined
+          : (readOptionalString(providerRecord?.name) || providerId);
 
         for (const [modelKey, modelConfig] of Object.entries(models)) {
-          if (seenModelKeys.has(modelKey)) continue;
-          if (isPersonalProvider && !ZCODE_PERSONAL_MODELS_WHITELIST.has(modelKey)) {
-            continue;
-          }
-
           const modelRecord = readObjectRecord(modelConfig);
           if (!modelRecord) continue;
-
-          seenModelKeys.add(modelKey);
-
-          const reasoning = readObjectRecord(modelRecord.reasoning);
-          const variants = Array.isArray(reasoning?.levels) ? reasoning.levels : reasoning?.variants;
-          const hasReasoning = Array.isArray(variants) && variants.length > 0;
-
-          const limits = readObjectRecord(modelRecord.limit);
-          const contextLimit = limits?.context;
-          const outputLimit = limits?.output;
-
-          const limitDescriptions: string[] = [];
-          if (typeof contextLimit === 'number') {
-            limitDescriptions.push(`${(contextLimit / 1000).toFixed(0)}K context`);
+          if (!cliModelRecords.has(modelKey)) cliModelRecords.set(modelKey, modelRecord);
+          // First listing provider owns the key; a later same-key row in the
+          // other family neither re-enriches nor duplicates the entry.
+          if (planOwnedKeys.has(modelKey) || customOwnedKeys.has(modelKey)) continue;
+          if (isPlanRow) {
+            planOwnedKeys.add(modelKey);
+            planRecords.set(modelKey, modelRecord);
+          } else {
+            customOwnedKeys.add(modelKey);
+            customEntries.push({ modelKey, option: buildOptionFromRecord(modelKey, modelRecord, group) });
           }
-          if (typeof outputLimit === 'number') {
-            limitDescriptions.push(`${(outputLimit / 1000).toFixed(0)}K output`);
-          }
-
-          const description = limitDescriptions.length > 0
-            ? `ZCode model with ${limitDescriptions.join(', ')}`
-            : `ZCode ${modelKey} model`;
-
-          let effort: ProviderModelOption['effort'] | undefined;
-          if (hasReasoning && Array.isArray(variants)) {
-            const sortedVariants = variants
-              .filter((variant): variant is string => typeof variant === 'string' && variant.trim().length > 0)
-              .map((variant) => variant.trim().toLowerCase())
-              .sort((a, b) => {
-                const orderA = REASONING_EFFORT_ORDER[a] ?? 999;
-                const orderB = REASONING_EFFORT_ORDER[b] ?? 999;
-                if (orderA !== orderB) return orderA - orderB;
-                return a.localeCompare(b);
-              });
-            effort = {
-              default: readOptionalString(reasoning?.defaultLevel)?.toLowerCase() ?? 'max',
-              values: sortedVariants.map((variant: string) => {
-                const normalized = variant.toLowerCase();
-                return {
-                  value: normalized,
-                  description: EFFORT_DESCRIPTIONS[normalized] || `${normalized} reasoning level`,
-                };
-              }),
-            };
-          }
-
-          const group = isPersonalProvider
-            ? undefined
-            : (readOptionalString(providerRecord?.name) || providerId);
-
-          modelOptions.push({
-            value: modelKey,
-            label: modelKey,
-            ...(group ? { group } : {}),
-            description: readOptionalString(modelRecord.description) || description,
-            effort: hasReasoning ? effort : undefined,
-          });
         }
       }
     }
-
-    // Merge providers configured in the ZCode App settings page. Their model
-    // metadata carries no reasoning levels or limits, so options stay plain
-    // entries grouped under the provider name.
-    for (const rule of readNativePersonalProviderRules()) {
-      for (const modelId of rule.modelIds) {
-        if (seenModelKeys.has(modelId)) continue;
-        seenModelKeys.add(modelId);
-        const reasoningValues = readZCodeModelReasoningValues(modelId);
-        const effort = reasoningValues ? buildNativeReasoningEffort(reasoningValues) : undefined;
-        modelOptions.push({
-          value: modelId,
-          label: modelId,
-          group: rule.providerName,
-          description: `ZCode ${modelId} model`,
-          ...(effort ? { effort } : {}),
-        });
-      }
-    }
-
-    if (modelOptions.length > 0) {
-      baseDefinition = {
-        OPTIONS: modelOptions,
-        DEFAULT: modelOptions[0]?.value ?? 'GLM-5.3',
-      };
-    }
   } catch {
-    baseDefinition = ZCODE_BUILTIN_MODELS;
+    // Missing or unreadable engine config: the plan catalog still drives the menu.
+  }
+
+  // Plan models first so the flat head of the menu reads like claude's; a
+  // catalog id owned by a custom provider is skipped (the custom entry below
+  // covers it, matching the send routing's precedence).
+  for (const planModelId of getPersonalPlanModelIds()) {
+    if (customOwnedKeys.has(planModelId) || seenModelKeys.has(planModelId)) continue;
+    seenModelKeys.add(planModelId);
+    const record = planRecords.get(planModelId);
+    modelOptions.push(record
+      ? buildOptionFromRecord(planModelId, record, undefined)
+      : buildPlanOption(planModelId));
+  }
+  for (const entry of customEntries) {
+    if (seenModelKeys.has(entry.modelKey)) continue;
+    seenModelKeys.add(entry.modelKey);
+    modelOptions.push(entry.option);
+  }
+
+  // Merge providers configured in the ZCode App settings page. Their model
+  // metadata carries no reasoning levels or limits, so options stay plain
+  // entries grouped under the provider name.
+  for (const rule of readNativePersonalProviderRules()) {
+    for (const modelId of rule.modelIds) {
+      if (seenModelKeys.has(modelId)) continue;
+      seenModelKeys.add(modelId);
+      const reasoningValues = readZCodeModelReasoningValues(modelId);
+      const effort = reasoningValues ? buildNativeReasoningEffort(reasoningValues) : undefined;
+      modelOptions.push({
+        value: modelId,
+        label: modelId,
+        group: rule.providerName,
+        description: `ZCode ${modelId} model`,
+        ...(effort ? { effort } : {}),
+      });
+    }
   }
 
   // Model keys stay bare (`GLM-5.3`) so the picker reads like claude's and
   // antigravity's; the account scoping is applied at send resolution instead.
   // The trial plan is the one exception: its pinned option carries the scoped
   // id because the bare Flash id already belongs to the personal plan.
+  // The default model stays anchored to the Flash entry so a catalog reorder
+  // cannot drift it (the ZCode App's own default for the personal plan).
   return {
-    OPTIONS: appendStartPlanModelIfEligible(baseDefinition.OPTIONS),
-    DEFAULT: baseDefinition.OPTIONS[0]?.value ?? baseDefinition.DEFAULT,
+    OPTIONS: appendStartPlanModelIfEligible(modelOptions),
+    DEFAULT: modelOptions.some((option) => option.value === 'GLM-5.3-Flash')
+      ? 'GLM-5.3-Flash'
+      : modelOptions[0]?.value ?? ZCODE_BUILTIN_MODELS.DEFAULT,
   };
 };
 
@@ -515,14 +585,16 @@ export function readZCodeSessionModelInfoFromDb(providerSessionId: string): { mo
 export const DEFAULT_ZCODE_CONTEXT_WINDOW = 200_000;
 
 /**
- * Reads the context window one configured ZCode model declares in the engine
- * config (`provider.<id>.models.<key>.limit.context`, first enabled provider
- * listing the key — the same field the model menu's description quotes).
+ * Reads the context window one ZCode model declares: the engine config
+ * record first (`provider.<id>.models.<key>.limit.context` — the same field
+ * the model menu's description quotes), then the builtin `modelRules` row
+ * (`properties.contextWindow`) so engine-added models have the right
+ * denominator before the engine materializes their record.
  *
  * Consumer: zcode-sessions.provider's token usage readers, which need the
  * window as the usage denominator (composer panel bar, badge thresholds).
- * Returns null when the config, the provider or the model is missing or
- * silent — callers fall back to DEFAULT_ZCODE_CONTEXT_WINDOW.
+ * Returns null when neither source knows the model — callers fall back to
+ * DEFAULT_ZCODE_CONTEXT_WINDOW.
  */
 export function readZCodeModelContextLimit(modelId: string): number | null {
   try {
@@ -530,26 +602,24 @@ export function readZCodeModelContextLimit(modelId: string): number | null {
       fsSync.readFileSync(path.join(getZCodeStorageDir(), 'cli', 'config.json'), 'utf8')
     ));
     const providers = readObjectRecord(config?.provider);
-    if (!providers) {
-      return null;
-    }
-
-    for (const providerConfig of Object.values(providers)) {
-      const providerRecord = readObjectRecord(providerConfig);
-      if (!providerRecord || providerRecord.enabled === false) continue;
-      const models = readObjectRecord(providerRecord.models);
-      const modelRecord = models ? readObjectRecord(models[modelId]) : null;
-      if (!modelRecord) continue;
-      const limits = readObjectRecord(modelRecord.limit);
-      const context = Number(limits?.context);
-      if (Number.isFinite(context) && context > 0) {
-        return context;
+    if (providers) {
+      for (const providerConfig of Object.values(providers)) {
+        const providerRecord = readObjectRecord(providerConfig);
+        if (!providerRecord || providerRecord.enabled === false) continue;
+        const models = readObjectRecord(providerRecord.models);
+        const modelRecord = models ? readObjectRecord(models[modelId]) : null;
+        if (!modelRecord) continue;
+        const limits = readObjectRecord(modelRecord.limit);
+        const context = Number(limits?.context);
+        if (Number.isFinite(context) && context > 0) {
+          return context;
+        }
       }
     }
   } catch {
-    // Missing or unreadable engine config: caller falls back to the default.
+    // Missing or unreadable engine config: the builtin row may still know.
   }
-  return null;
+  return readZCodeModelContextWindow(modelId);
 }
 
 /**
@@ -577,7 +647,7 @@ export function resolveZCodeModelRef(
   const requestedProviderId = slashIndex >= 0 ? trimmed.slice(0, slashIndex).trim() : undefined;
   const requestedModelId = slashIndex >= 0 ? trimmed.slice(slashIndex + 1).trim() : trimmed;
   const hasIndividualKey = Boolean(readZCodeIndividualPlanAuthContext());
-  const nativePersonalId = hasIndividualKey && ZCODE_PERSONAL_MODELS_WHITELIST.has(requestedModelId)
+  const nativePersonalId = hasIndividualKey && getPersonalPlanModelIds().has(requestedModelId)
     ? ZCODE_INDIVIDUAL_PLAN_PROVIDER_ID : null;
 
   if (nativePersonalId && (requestedProviderId === 'bigmodel-coding-plan'
