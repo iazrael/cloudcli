@@ -337,7 +337,7 @@ opencode 的自动命名由引擎自己做，CloudCLI 只负责不挡路。引�
 
 各家的来源都是原生记录，不做估算：Claude 从转录里取最新一条主线程 assistant 作为上下文、全部 assistant 行（含子代理）求和作为累计；Codex 的 `last_token_usage` / `total_token_usage` 由 `services/codex-usage.ts` 的 `buildCodexUsageSnapshot` 统一解析，实时通知与 roll-out 读取走同一函数，所以刷新前后同值；OpenCode 的上下文是最后一条 assistant 消息的 `tokens`，累计是 `session_v2` 的 token 列（旧库退回逐条求和）；ZCode 同理取最后一条带 `tokens` 的消息与全部消息之和；Antigravity 的上下文是最后一个 step 的 usage，累计取 `result.usage`（引擎自己的运行累计）。Cursor 不支持。
 
-窗口 `total` 只有引擎自己报了才有：Claude 用 SDK 报告的 `result.modelUsage[...].contextWindow`（回落 `CONTEXT_WINDOW`），Codex 用 `model_context_window`；OpenCode / ZCode / Antigravity 的转录不提供窗口，详情显示占位而不是猜一个。
+窗口 `total` 只有引擎自己报了才有：Claude 用 SDK 报告的 `result.modelUsage[...].contextWindow`；SDK 不报时（例如 Claude Code 走 Anthropic 兼容网关）按会话模型查本机模型元数据——`MODEL_CONTEXT_WINDOWS=model=window,...` 显式配置优先，否则读 OpenCode CLI 缓存在 `opencode.db` 里的 models.dev 目录（`services/model-context-window.service.ts`：先 `opencode-go`/`opencode` 家族，同名模型跨其他家族窗口不一致时不采用），仍查不到才回落 `CONTEXT_WINDOW`（默认 160K）。历史回读用转录里最新一条主线程 assistant 的 model 走同一套解析，实时帧与历史页的窗口因此一致。Codex 用 `model_context_window`；OpenCode / ZCode / Antigravity 的转录不提供窗口，详情显示占位而不是猜一个。
 
 `/cost` 路由在实时载荷缺 `cumulative` 时读一次 provider 的持久化快照补齐，已有累计量就不再扫转录。前端把 `tokenUsage` 写进输入框按钮、把 `cumulativeUsage` 写进详情；页面回到前台（`visibilitychange`）会补拉一次用量，避免手机休眠后按钮停在旧快照。
 

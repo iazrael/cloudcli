@@ -40,6 +40,7 @@ import {
   notifyUserIfEnabled
 } from '@/modules/notifications/index.js';
 import { sessionHistoryCache } from '@/modules/providers/services/session-history-cache.service.js';
+import { resolveModelContextWindow } from '@/modules/providers/services/model-context-window.service.js';
 import {
   getReportedClaudeContextWindow,
   rememberClaudeContextWindow
@@ -980,12 +981,25 @@ function readNumber(value: unknown): number {
 }
 
 /**
- * The window a budget is measured against: the one the SDK reported for the
- * session's model when known, else the server-wide CONTEXT_WINDOW setting.
+ * The window a budget is measured against, in order: the one the SDK reported
+ * for the session's model; the model's own window from local metadata (an
+ * explicit `MODEL_CONTEXT_WINDOWS` entry, else the cached models.dev catalog);
+ * the server-wide CONTEXT_WINDOW setting; and 160K as the last resort.
+ *
+ * The middle step matters for Claude Code behind an Anthropic-compatible
+ * gateway: the SDK then reports no `modelUsage.contextWindow`, and a single
+ * server-wide default would measure a 1M-token model against 160K.
  */
-function resolveContextWindow(reportedContextWindow: number | null | undefined): number {
+function resolveContextWindow(
+  reportedContextWindow: number | null | undefined,
+  modelId?: string | null,
+): number {
   if (Number.isFinite(reportedContextWindow) && (reportedContextWindow as number) > 0) {
     return reportedContextWindow as number;
+  }
+  const inferredContextWindow = resolveModelContextWindow(modelId);
+  if (inferredContextWindow) {
+    return inferredContextWindow;
   }
   return parseInt(process.env.CONTEXT_WINDOW ?? '', 10) || 160000;
 }
@@ -1025,14 +1039,18 @@ function readReportedContextWindow(sdkMessage: unknown, mainModel: string | null
  * `input_tokens + cache_read + cache_creation` is one request's whole prompt,
  * which is exactly what the context window holds at that moment.
  */
-function buildTokenBudget(messageUsage: Record<string, unknown>, reportedContextWindow?: number | null): TokenBudget {
+function buildTokenBudget(
+  messageUsage: Record<string, unknown>,
+  reportedContextWindow?: number | null,
+  modelId?: string | null,
+): TokenBudget {
   const directInputTokens = readNumber(messageUsage.input_tokens ?? messageUsage.inputTokens);
   const cacheCreationTokens = readNumber(messageUsage.cache_creation_input_tokens ?? messageUsage.cacheCreationInputTokens ?? messageUsage.cacheCreationTokens);
   const cacheReadTokens = readNumber(messageUsage.cache_read_input_tokens ?? messageUsage.cacheReadInputTokens ?? messageUsage.cacheReadTokens);
   const cacheTokens = cacheCreationTokens + cacheReadTokens;
   const inputTokens = directInputTokens + cacheTokens;
   const outputTokens = readNumber(messageUsage.output_tokens ?? messageUsage.outputTokens);
-  const contextWindow = resolveContextWindow(reportedContextWindow);
+  const contextWindow = resolveContextWindow(reportedContextWindow, modelId);
 
   return {
     used: inputTokens + outputTokens,
@@ -1057,7 +1075,11 @@ function buildTokenBudget(messageUsage: Record<string, unknown>, reportedContext
  * a source here — see `extractCumulativeTokenBudget`. Used by the stream loop
  * and the token-budget tests.
  */
-export function extractTokenBudget(sdkMessage: unknown, reportedContextWindow?: number | null): TokenBudget | null {
+export function extractTokenBudget(
+  sdkMessage: unknown,
+  reportedContextWindow?: number | null,
+  modelId?: string | null,
+): TokenBudget | null {
   if (!sdkMessage || typeof sdkMessage !== 'object') {
     return null;
   }
@@ -1083,7 +1105,7 @@ export function extractTokenBudget(sdkMessage: unknown, reportedContextWindow?: 
     return null;
   }
 
-  return buildTokenBudget(messageUsage, reportedContextWindow);
+  return buildTokenBudget(messageUsage, reportedContextWindow, modelId);
 }
 
 /**
@@ -1101,7 +1123,11 @@ export function extractTokenBudget(sdkMessage: unknown, reportedContextWindow?: 
  * produced no assistant budget at all. Used by the stream loop as that
  * fallback and by the token-budget tests.
  */
-export function extractCumulativeTokenBudget(sdkMessage: unknown, reportedContextWindow?: number | null): TokenBudget | null {
+export function extractCumulativeTokenBudget(
+  sdkMessage: unknown,
+  reportedContextWindow?: number | null,
+  modelId?: string | null,
+): TokenBudget | null {
   const streamMessage = sdkMessage as ClaudeStreamMessage | null | undefined;
   if (!streamMessage || typeof streamMessage !== 'object' || streamMessage.type !== 'result') {
     return null;
@@ -1109,7 +1135,7 @@ export function extractCumulativeTokenBudget(sdkMessage: unknown, reportedContex
 
   const usage = streamMessage.usage as unknown as Record<string, unknown> | undefined;
   if (usage && typeof usage === 'object') {
-    return buildTokenBudget(usage, reportedContextWindow);
+    return buildTokenBudget(usage, reportedContextWindow, modelId);
   }
 
   const modelUsage = streamMessage.modelUsage as unknown as Record<string, Record<string, unknown>> | undefined;
@@ -1128,7 +1154,7 @@ export function extractCumulativeTokenBudget(sdkMessage: unknown, reportedContex
   const inputTokens = readNumber(modelData.cumulativeInputTokens ?? modelData.inputTokens);
   const outputTokens = readNumber(modelData.cumulativeOutputTokens ?? modelData.outputTokens);
   const totalUsed = inputTokens + outputTokens;
-  const contextWindow = resolveContextWindow(reportedContextWindow);
+  const contextWindow = resolveContextWindow(reportedContextWindow, modelId);
 
   return {
     used: totalUsed,
@@ -2380,8 +2406,8 @@ async function runClaudeProcess(
       // Extract and send token budget updates from assistant usage payloads,
       // falling back to the turn's cumulative bill only for SDK builds that
       // report no per-assistant usage at all.
-      let tokenBudgetData = extractTokenBudget(message, reportedContextWindow)
-        || (assistantBudgetSent ? null : extractCumulativeTokenBudget(message, reportedContextWindow));
+      let tokenBudgetData = extractTokenBudget(message, reportedContextWindow, mainThreadModel)
+        || (assistantBudgetSent ? null : extractCumulativeTokenBudget(message, reportedContextWindow, mainThreadModel));
       // Read through a cast: the assignment sits later in this loop body.
       const previousBudget = lastSentTokenBudget as TokenBudget | null;
       if (

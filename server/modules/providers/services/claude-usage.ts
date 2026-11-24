@@ -1,5 +1,6 @@
 import type { AnyRecord, ProviderTokenUsageResult } from '@/shared/types.js';
 import { readJsonlIncrementally, readUsageNumber, type JsonlIncrementalState } from '@/shared/utils.js';
+import { resolveModelContextWindow } from '@/modules/providers/services/model-context-window.service.js';
 
 /**
  * Context windows the Claude SDK reported per provider session id.
@@ -56,6 +57,8 @@ type ClaudeUsageAccumulator = {
   cacheCreationTokens: number;
   cumulativeInputTokens: number;
   cumulativeOutputTokens: number;
+  /** Model of the newest main-thread turn; the fallback window is looked up by it. */
+  model: string | null;
 };
 
 /** Cursors of the transcripts already read; one small object per session. */
@@ -72,6 +75,7 @@ function createClaudeUsageAccumulator(): ClaudeUsageAccumulator {
     cacheCreationTokens: 0,
     cumulativeInputTokens: 0,
     cumulativeOutputTokens: 0,
+    model: null,
   };
 }
 
@@ -122,6 +126,13 @@ function applyClaudeUsageEntry(accumulator: ClaudeUsageAccumulator, entry: AnyRe
   accumulator.cacheCreationTokens = rowCacheCreationTokens;
   accumulator.inputTokens = rowInputTokens;
   accumulator.outputTokens = rowOutputTokens;
+
+  // The window fallback is per model, so the newest main-thread turn's model
+  // decides it — a subagent's model has its own window (it was skipped above).
+  const model = entry?.message?.model;
+  if (typeof model === 'string' && model && model !== '<synthetic>') {
+    accumulator.model = model;
+  }
 }
 
 function buildClaudeUsageResult(
@@ -131,9 +142,13 @@ function buildClaudeUsageResult(
 ): ProviderTokenUsageResult {
   const parsedContextWindow = Number.parseInt(configuredContextWindow ?? '', 10);
   const configuredOrDefaultContextWindow = Number.isFinite(parsedContextWindow) ? parsedContextWindow : 160_000;
+  // The SDK states the window only for direct Anthropic runs. Behind a
+  // compatible gateway the model id is all there is, so the local catalog
+  // stands in — an explicit MODEL_CONTEXT_WINDOWS entry inside it first.
+  const inferredContextWindow = resolveModelContextWindow(accumulator.model);
   const contextWindow = reportedContextWindow && reportedContextWindow > 0
     ? reportedContextWindow
-    : configuredOrDefaultContextWindow;
+    : inferredContextWindow ?? configuredOrDefaultContextWindow;
   const cacheTokens = accumulator.cacheReadTokens + accumulator.cacheCreationTokens;
 
   return {

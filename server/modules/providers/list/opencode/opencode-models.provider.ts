@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import Database from 'better-sqlite3';
 
 import { sessionsDb } from '@/modules/database/index.js';
+import { readLocalModelCatalog } from '@/modules/providers/services/model-context-window.service.js';
 import type { IProviderModels } from '@/shared/interfaces.js';
 import type {
   ProviderCurrentActiveModel,
@@ -16,7 +17,6 @@ import type {
 import {
   buildDefaultProviderCurrentActiveModel,
   createStaleWhileRefreshValue,
-  readJsonRecord,
   readObjectRecord,
   readOptionalString,
   stripAnsiSequences,
@@ -260,50 +260,21 @@ type OpenCodeCatalogModelEntry = {
   reasoning_options?: Array<{ type?: string; values?: string[] }>;
 };
 
-/** `kv` keys of the cached models.dev catalog, newest layout first (v2.2 renamed it). */
-const OPENCODE_CATALOG_KV_KEYS = ['models-dev:v2:catalog', 'models-dev:catalog'];
-
 /**
- * Reads the models.dev catalog OpenCode caches in its database (`kv` key
- * `models-dev:v2:catalog`, `models-dev:catalog` before v2.2) and maps
+ * Reads the models.dev catalog OpenCode caches in its database and maps
  * `<family>/<modelId>` to the display name and reasoning-effort values it
  * records for each model.
  *
  * This is where the reasoning-variant data lives in v2 — `opencode models`
  * prints ids only, but this catalog carries the effort tiers per model and
- * is refreshed by the CLI itself. A missing database, missing key, or a
- * `body` encoded as an embedded JSON string all degrade to an empty map, so
- * options fall back to synthesized labels without effort variants.
+ * is refreshed by the CLI itself. The shared model-context-window service
+ * owns the database read (and its mtime cache); this adapter only views the
+ * entries through its own record shape.
  */
 const readOpenCodeCatalogEntries = (): Map<string, OpenCodeCatalogModelEntry> => {
   const entries = new Map<string, OpenCodeCatalogModelEntry>();
-  try {
-    const db = new Database(getOpenCodeDatabasePath(), { readonly: true, fileMustExist: true });
-    try {
-      const readKey = db.prepare('SELECT value FROM kv WHERE key = ?');
-      const row = OPENCODE_CATALOG_KV_KEYS
-        .map((key) => readKey.get(key) as { value?: string } | undefined)
-        .find((candidate) => candidate?.value);
-      const parsed = readJsonRecord(row?.value);
-      let body: unknown = parsed?.body;
-      if (typeof body === 'string') {
-        body = JSON.parse(body);
-      }
-      const families = readObjectRecord(body) ?? {};
-      for (const [familyId, family] of Object.entries(families)) {
-        const models = readObjectRecord(readObjectRecord(family)?.models) ?? {};
-        for (const [modelId, model] of Object.entries(models)) {
-          const record = readObjectRecord(model);
-          if (record) {
-            entries.set(`${familyId}/${modelId}`, record as OpenCodeCatalogModelEntry);
-          }
-        }
-      }
-    } finally {
-      db.close();
-    }
-  } catch {
-    // No database or no cached catalog: options fall back to synthesis.
+  for (const [key, record] of readLocalModelCatalog()) {
+    entries.set(key, record as OpenCodeCatalogModelEntry);
   }
   return entries;
 };
