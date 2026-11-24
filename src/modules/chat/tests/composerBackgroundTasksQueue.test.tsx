@@ -263,6 +263,70 @@ test('editing a sent message while background work runs is refused without clear
   assert.match(String(error?.content), /background work/);
 });
 
+test('a refused edit leaves the composer able to send again', async () => {
+  const { useChatComposerState } = await import('@/modules/chat/hooks/useChatComposerState');
+
+  const sent: Array<Record<string, unknown>> = [];
+  // The background work ends between the refusal and the retry, so the
+  // retry is an ordinary send rather than another refusal.
+  let backgroundWork = true;
+
+  const { result, rerender } = renderHook(() =>
+    useChatComposerState({
+      selectedProject,
+      selectedSession,
+      currentSessionId: 'session-1',
+      provider: 'claude',
+      permissionMode: 'bypassPermissions',
+      cyclePermissionMode: () => undefined,
+      resolvePermissionModeForProvider: () => 'bypassPermissions',
+      currentProviderModel: 'claude-3-7-sonnet',
+      currentProviderEffort: 'default',
+      isLoading: false,
+      hasActiveBackgroundTasks: backgroundWork,
+      backgroundTasks: backgroundWork
+        ? [{ id: 't1', toolName: 'Bash', command: 'npm run build', startedAt: Date.now() }]
+        : [],
+      canAbortSession: false,
+      tokenBudget: null,
+      sendMessage: (payload) => sent.push(payload as Record<string, unknown>),
+      stickToBottomAfterSend: () => undefined,
+      addMessage: () => undefined,
+      setPendingPermissionRequests: () => undefined,
+    }),
+  );
+
+  act(() => {
+    result.current.beginEditMessage({
+      type: 'user',
+      content: 'the correction',
+      transcriptAnchorId: 'anchor-1',
+      timestamp: new Date(),
+    } as never);
+  });
+
+  await act(async () => {
+    await result.current.handleSubmit(submitEvent);
+  });
+
+  // The refusal must not latch the scope: the user leaves edit mode and
+  // sends a plain message, and it has to go out.
+  backgroundWork = false;
+  rerender();
+  act(() => {
+    result.current.cancelEditMessage();
+    result.current.setInput('a plain message');
+  });
+
+  let accepted = true;
+  await act(async () => {
+    accepted = await result.current.handleSubmit(submitEvent);
+  });
+
+  assert.equal(accepted, true, 'the composer is not left locked by the refusal');
+  assert.equal(sent.length, 1, 'the retry reaches the websocket');
+});
+
 test('"Send anyway" sends now with forceInterrupt instead of queueing', async () => {
   const { useChatComposerState } = await import('@/modules/chat/hooks/useChatComposerState');
 

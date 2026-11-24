@@ -291,6 +291,7 @@
     "nextTaskPrompt": "Mulai tugas berikutnya"
   },
   "message": {
+    "editBlockedByBackgroundWork": "Tidak dapat mengedit pesan yang sudah dikirim selama masih ada tugas latar belakang. Tunggu sampai selesai atau hentikan, lalu coba lagi.",
     "editAndResend": "Edit dan kirim ulang",
     "forkFromHere": "Fork dari sini",
     "answeredBy": "Dijawab oleh {{model}}"

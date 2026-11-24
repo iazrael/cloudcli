@@ -231,6 +231,7 @@
     }
   },
   "message": {
+    "editBlockedByBackgroundWork": "バックグラウンド処理の実行中は、送信済みのメッセージを編集できません。処理が終わるか停止してから、もう一度お試しください。",
     "editAndResend": "編集して再送信",
     "forkFromHere": "ここから分岐",
     "answeredBy": "{{model}} が回答"

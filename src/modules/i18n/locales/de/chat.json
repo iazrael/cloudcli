@@ -267,6 +267,7 @@
     "nextTaskPrompt": "Nächste Aufgabe starten"
   },
   "message": {
+    "editBlockedByBackgroundWork": "Eine gesendete Nachricht kann nicht bearbeitet werden, während im Hintergrund noch Arbeit läuft. Warte, bis sie fertig ist, oder stoppe sie, und versuche es dann erneut.",
     "editAndResend": "Bearbeiten und erneut senden",
     "forkFromHere": "Ab hier verzweigen",
     "answeredBy": "Beantwortet von {{model}}"

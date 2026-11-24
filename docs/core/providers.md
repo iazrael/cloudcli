@@ -308,6 +308,9 @@ opencode 的自动命名由引擎自己做，CloudCLI 只负责不挡路。引�
 
 **fork 的两种存储形态决定读法**（`fork` 切面在即能力在，缺省即无 fork 入口）。codex 与 opencode 的 fork 是真复制：新会话名下就有全部行，读法与普通会话无异；opencode 的切点参数 `before` 是排除语义，facet 负责换算成"锚点后一条消息"。zcode 的 fork 是引用：`session/fork` 的新会话在 `session` 表以 `parent_id` 链回父会话，自身只存 fork 之后的行和一条 fork 通知（截断边界记在通知的 `forkContext.targetMessageId`），引擎自己的 `session/messages` RPC 同样不解析链——所以 `fetchHistory` 必须沿 `parent_id` 递归拼接祖先行、按边界（含边界消息）截断再接上自己的行（`selectResolvedHistoryRows`）。fork 前会话须先 `session/resume` 激活；运行中的回合被引擎拒绝。两家历史读取都为真实 user 提示发射 `transcriptAnchorId`（= 该回合最后一条消息的引擎 id），fork 入口据此保住提示与其回答；antigravity 的 `/fork` 被引擎挡在交互模式内，无头不可用。旁问（`askSideQuestion`）建立在同一 fork 机制上：claude 优先把旁问写进驻留进程的原生 stdin（不落盘、不打断在跑回合），引擎不接时回落 SDK 只读 fork 副本；codex 用一次性 off-disk fork，opencode 在 fork 副本上 deny 全部变更动作（denied 动作的工具直接从工具集消失）后提问，走私有 `/api/event` SSE 流收答，答完删除副本。
 
+**fork 出来的会话继承源会话报过的上下文窗口。** Claude 的 fork 由 SDK 复制转录并另起一个原生会话 id，而上下文窗口是按原生 id 记的（见下文「Token 用量口径」）；fork 出的新 id 查不到源会话报过的窗口，只能回落 `CONTEXT_WINDOW` 或默认 200K——一个 1M 窗口的会话在 fork 的第一轮里会按 200K 算占用，画出五倍的占用率。所以 fork 建好时把源会话报过的窗口复制到新原生 id 上，fork 的首次读数就和源会话一致。别的引擎不报这个窗口（口径见「Token 用量口径」），不涉及继承。
+
+
 ## 会话存储清理
 
 `sessions-storage-cleanup.service.ts` 定期清理已归档、未置顶、长期不活动的会话，默认关闭。有运行中任务、排队消息或定时消息的会话不进候选，`updated_at` 无法解析的也不进。手动清理在后台执行：`POST .../run` 校验后立即返回 202，界面轮询 `GET .../settings` 的 `running` 直到结束，避免长任务撞上反向代理超时。引擎通过 `sessions` 切面的四个可选方法接入：

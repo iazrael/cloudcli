@@ -261,6 +261,7 @@
     "nextTaskPrompt": "다음 작업 시작"
   },
   "message": {
+    "editBlockedByBackgroundWork": "백그라운드 작업이 실행 중일 때는 이미 보낸 메시지를 편집할 수 없습니다. 작업이 끝날 때까지 기다리거나 중지한 뒤 다시 시도하세요.",
     "editAndResend": "수정 후 다시 보내기",
     "forkFromHere": "여기서 분기",
     "answeredBy": "{{model}}이(가) 응답함"

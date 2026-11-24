@@ -250,6 +250,7 @@
     "nextTaskPrompt": "Inizia l'attività successiva"
   },
   "message": {
+    "editBlockedByBackgroundWork": "Non puoi modificare un messaggio già inviato mentre c’è del lavoro in background. Aspetta che finisca o interrompiolo, poi riprova.",
     "editAndResend": "Modifica e reinvia",
     "forkFromHere": "Dirama da qui",
     "answeredBy": "Risposto da {{model}}"

@@ -279,9 +279,21 @@ test('a state application error leaves its cursor pending until that event can b
   store.applyServerEvent(ack(3));
   const effects: string[] = [];
   const options = { onDirective: (directive: { effect: string }) => effects.push(directive.effect) };
-  // A broken adapter can omit its row id: transport identity remains valid,
-  // but the existing row reconciliation rejects the malformed message.
-  store.applyServerEvent(event(2, 'text', { id: undefined, role: 'assistant', content: 'second' }), options);
+  // A row the store cannot apply is the fault injection: the transport
+  // identity (seq) stays valid, but the state application fails, so the
+  // contiguous cursor must not move past it. The failure is transient — the
+  // same seq applies once it can, which is what parks the cursor at 1 and
+  // lets the backlog drain afterwards.
+  const originalAppend = store.appendRealtime.bind(store);
+  let failNext = true;
+  store.appendRealtime = (sessionId, message) => {
+    if (failNext && message.content === 'second') {
+      failNext = false;
+      throw new Error('row could not be applied');
+    }
+    originalAppend(sessionId, message);
+  };
+  store.applyServerEvent(event(2, 'text', { role: 'assistant', content: 'second' }), options);
   store.applyServerEvent(event(3, 'complete', { success: true }), options);
   assert.throws(() => store.applyServerEvent(event(1, 'text', { role: 'assistant', content: 'first' }), options));
   assert.equal(store.getResumeSeq('session'), 1);

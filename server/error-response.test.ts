@@ -43,7 +43,7 @@ test('malformed JSON is a client error, not a 500, with a Windows-path hint', ()
 test('other body-parser failures keep their 4xx status and parser type', () => {
   const tooLarge = createErrorResponse(withStatus(new Error('request entity too large'), 413, 'entity.too.large'));
   assert.equal(tooLarge.statusCode, 413);
-  assert.equal(tooLarge.body.error.code, 'ENTITY_TOO_LARGE');
+  assert.equal(tooLarge.body.error.code, 'PAYLOAD_TOO_LARGE');
   assert.equal(tooLarge.body.error.message, 'request entity too large');
 
   const aborted = createErrorResponse(withStatus(new Error('request aborted'), 400, 'request.aborted'));
@@ -64,4 +64,16 @@ test('an unexpected error stays a generic 500 so internals never leak', () => {
       },
     },
   });
+});
+
+test('an error carrying a 4xx status of its own is still a generic 500', () => {
+  // A route that failed, or an upstream that answered badly, is not the
+  // client's fault: only the parser's own failures keep a 4xx.
+  const response = createErrorResponse(
+    withStatus(new Error('upstream token: sk-secret'), 401),
+  );
+
+  assert.equal(response.statusCode, 500);
+  assert.equal(response.body.error.code, 'INTERNAL_ERROR');
+  assert.equal(response.body.error.message, 'Internal server error');
 });

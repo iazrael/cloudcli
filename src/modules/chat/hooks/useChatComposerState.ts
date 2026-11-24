@@ -1175,6 +1175,23 @@ export function useChatComposerState({
         return false;
       }
 
+      // Claude resumes an edited conversation in a fresh CLI process, which
+      // would kill the background work its held process is still running. The
+      // runtime refuses that with PROVIDER_INPUT_DEFERRED; refusing it here,
+      // before the composer is cleared and before this scope is latched, keeps
+      // the edit and its text in place for a retry once the work ends (or is
+      // stopped).
+      if (editingAnchorId && provider === 'claude' && hasActiveBackgroundTasks) {
+        addMessage({
+          type: 'error',
+          content: t('message.editBlockedByBackgroundWork', {
+            defaultValue: "You can't edit a sent message while background work is still running. Wait for it to finish, or stop the background task, then try again.",
+          }),
+          timestamp: new Date(),
+        });
+        return false;
+      }
+
       // Every repeat of an in-flight submit — a second click, Enter pressed
       // again, a queued flush landing mid-send — stops here. Without this the
       // duplicate re-ran the whole path, and because the session id is only
@@ -1211,22 +1228,6 @@ export function useChatComposerState({
           askSideQuestionFromComposer(sessionKey, btwMatch[1] ?? '');
           return true;
         }
-      }
-
-      // Claude resumes an edited conversation in a fresh CLI process, which
-      // would kill the background work its held process is still running. The
-      // runtime refuses that with PROVIDER_INPUT_DEFERRED; refusing it here,
-      // before the composer is cleared, keeps the edit and its text in place
-      // for a retry once the work ends (or is stopped).
-      if (editingAnchorId && provider === 'claude' && hasActiveBackgroundTasks) {
-        addMessage({
-          type: 'error',
-          content: t('message.editBlockedByBackgroundWork', {
-            defaultValue: "You can't edit a sent message while background work is still running. Wait for it to finish, or stop the background task, then try again.",
-          }),
-          timestamp: new Date(),
-        });
-        return false;
       }
 
       let takenAttachments: UploadedComposerAttachment[] = [];

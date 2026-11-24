@@ -1,4 +1,4 @@
-import { AppError, errorStatusCode } from '@/shared/utils.js';
+import { AppError } from '@/shared/utils.js';
 
 /** The JSON body every API error response carries. */
 type ApiErrorResponseBody = {
@@ -10,25 +10,40 @@ type ApiErrorResponseBody = {
   };
 };
 
-function readErrorType(error: unknown): string {
-  if (typeof error !== 'object' || error === null || !('type' in error)) {
-    return '';
-  }
-  return typeof error.type === 'string' ? error.type : '';
-}
+/**
+ * The request-body failures that are the client's fault, and the response each
+ * one gets. body-parser tags every failure with a `type`; only the ones
+ * listed here are the client's own doing (a malformed body, a body over the
+ * limit, a request cut off mid-flight), so only they keep a 4xx status.
+ *
+ * Anything else — a route that failed, an upstream that answered badly —
+ * stays a generic 500, so an internal message never reaches the client.
+ */
+const PARSER_ERRORS: Record<string, { code: string; statusCode: number }> = {
+  'entity.parse.failed': { code: 'INVALID_JSON_BODY', statusCode: 400 },
+  'entity.too.large': { code: 'PAYLOAD_TOO_LARGE', statusCode: 413 },
+  'request.aborted': { code: 'REQUEST_ABORTED', statusCode: 400 },
+  'encoding.unsupported': { code: 'UNSUPPORTED_ENCODING', statusCode: 415 },
+  'charset.unsupported': { code: 'UNSUPPORTED_CHARSET', statusCode: 415 },
+  'parameters.too.many': { code: 'TOO_MANY_PARAMETERS', statusCode: 413 },
+};
 
-function readErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : '';
-}
+/**
+ * The hint a malformed body gets. The commonest cause is a hand-written path
+ * whose backslashes were not escaped, which reads as a server fault when it
+ * is not one.
+ */
+const MALFORMED_JSON_MESSAGE =
+  'Invalid JSON request body. If a value contains backslashes, such as a Windows path, escape them as \\\\ or use forward slashes.';
 
 /**
  * Translates any error reaching the server's final error middleware into the
  * HTTP status and JSON body the client receives.
  *
- * A controlled `AppError` keeps its own status, code and details. Errors that
- * carry a 4xx status of their own — body-parser's malformed-JSON and
- * oversized-body failures, for example — keep that status instead of being
- * reported as a 500. Anything else stays a generic 500 so internals never leak.
+ * A controlled `AppError` keeps its own status, code and details. A request
+ * body that body-parser rejected keeps the 4xx status the parser gave it
+ * instead of being reported as a 500. Anything else stays a generic 500 so
+ * internals never leak.
  *
  * Consumers: `server/index.ts` global error middleware; tests cover the
  * malformed-JSON path that Windows paths in hand-written bodies trigger.
@@ -48,26 +63,25 @@ export function createErrorResponse(error: unknown): { statusCode: number; body:
     };
   }
 
-  const statusCode = errorStatusCode(error);
-  if (statusCode >= 400 && statusCode < 500) {
-    const errorType = readErrorType(error);
-    const isMalformedJson = errorType === 'entity.parse.failed';
+  const parserError = typeof error === 'object' && error !== null && 'type' in error
+    && typeof (error as { type?: unknown }).type === 'string'
+    ? PARSER_ERRORS[(error as { type: string }).type]
+    : undefined;
+
+  if (parserError) {
+    const isMalformedJson = parserError.code === 'INVALID_JSON_BODY';
     return {
-      statusCode,
+      statusCode: parserError.statusCode,
       body: {
         success: false,
         error: {
-          code: isMalformedJson
-            ? 'INVALID_JSON_BODY'
-            : errorType
-              ? errorType.toUpperCase().replace(/[^A-Z0-9]+/g, '_')
-              : 'BAD_REQUEST',
+          code: parserError.code,
           message: isMalformedJson
-            ? 'Invalid JSON request body. If a value contains backslashes, such as a Windows path, escape them as \\\\ or use forward slashes.'
-            : readErrorMessage(error) || 'Bad request',
+            ? MALFORMED_JSON_MESSAGE
+            : error instanceof Error ? error.message : 'Bad request',
           // Keep the parser's position hint, but not in the top-level message:
           // the message is what a person reads first.
-          details: isMalformedJson ? readErrorMessage(error) : undefined,
+          details: isMalformedJson && error instanceof Error ? error.message : undefined,
         },
       },
     };

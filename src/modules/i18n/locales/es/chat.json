@@ -328,6 +328,7 @@
     "nextTaskPrompt": "Empezar la siguiente tarea"
   },
   "message": {
+    "editBlockedByBackgroundWork": "No se puede editar un mensaje enviado mientras haya tareas en segundo plano. Espera a que terminen o deténlas y vuelve a intentarlo.",
     "editAndResend": "Editar y reenviar",
     "forkFromHere": "Bifurcar desde aquí",
     "answeredBy": "Respondido por {{model}}"

@@ -337,6 +337,7 @@
     "nextTaskPrompt": "開始下一個任務"
   },
   "message": {
+    "editBlockedByBackgroundWork": "後台工作還在執行時無法編輯已送出的訊息。請等它結束或先停止後台工作，再重試。",
     "editAndResend": "編輯並重新傳送",
     "forkFromHere": "從此處分支",
     "answeredBy": "由 {{model}} 回答"

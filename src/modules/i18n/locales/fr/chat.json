@@ -246,6 +246,7 @@
     "nextTaskPrompt": "Commencer la prochaine tâche"
   },
   "message": {
+    "editBlockedByBackgroundWork": "Impossible de modifier un message envoyé tant qu’une tâche de fond est en cours. Attendez sa fin ou arrêtez-la, puis réessayez.",
     "editAndResend": "Modifier et renvoyer",
     "forkFromHere": "Dupliquer à partir d’ici",
     "answeredBy": "Répondu par {{model}}"

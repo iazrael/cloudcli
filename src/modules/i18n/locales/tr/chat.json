@@ -374,6 +374,7 @@
     "nextTaskPrompt": "Sonraki görevi başlat"
   },
   "message": {
+    "editBlockedByBackgroundWork": "Arka planda çalışma sürerken gönderilmiş bir mesajı düzenleyemezsiniz. Çalışmanın bitmesini bekleyin veya durdurun, ardından yeniden deneyin.",
     "editAndResend": "Düzenle ve yeniden gönder",
     "forkFromHere": "Buradan çatalla",
     "answeredBy": "{{model}} tarafından yanıtlandı"

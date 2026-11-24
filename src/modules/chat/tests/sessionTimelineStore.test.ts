@@ -1853,25 +1853,6 @@ test('gateway frames that are not about the timeline add no rows to the viewed s
 
 // ─── Gateway frames that are not timeline rows ───────────────────────────────
 
-test('a sidebar-global session_removed frame never enters the timeline', async () => {
-  const fetchPage = scriptedFetcher([
-    { params: { limit: 20, offset: 0 }, page: { messages: [msg(1), msg(2)], total: 2, hasMore: false } },
-  ]);
-  const store = new SessionTimelineStore({ fetchPage });
-
-  await store.fetchFromServer(SESSION_ID, { limit: 20, offset: 0 });
-  const slot = store.getSessionSlot(SESSION_ID)!;
-  const mergedBefore = slot.merged;
-
-  store.applyServerEvent(
-    { kind: 'session_removed', sessionIds: ['sess-archived-elsewhere'] } as ServerEvent,
-    { fallbackSessionId: SESSION_ID, provider: 'claude' },
-  );
-
-  assert.equal(slot.realtimeMessages.length, 0, 'global frames must not become realtime rows');
-  assert.equal(slot.merged, mergedBefore, 'merged must not be recomputed');
-});
-
 test('appendRealtime drops a frame whose id is missing instead of poisoning the slot', () => {
   const store = new SessionTimelineStore();
 
@@ -1882,5 +1863,37 @@ test('appendRealtime drops a frame whose id is missing instead of poisoning the 
     store.getMessages(SESSION_ID).map((row) => row.id),
     ['m2'],
     'the id-less frame is ignored and the following append still works',
+  );
+});
+
+test('an id-less frame does not wedge the replay of the frames behind it', () => {
+  // The harm an id-less row does is not its own throw: the ledger buffers
+  // out-of-order frames, so a row that cannot be applied parks the
+  // contiguous cursor and every later frame of that session fails with it.
+  const store = new SessionTimelineStore();
+  store.setActiveSession(SESSION_ID);
+  store.applyServerEvent({
+    kind: 'chat_subscribed', sessionId: SESSION_ID, streamEpoch: 'gateway-a',
+    lastSeq: 3, replayFromSeq: 1, stale: false, isProcessing: true, pendingPermissions: [],
+    timestamp: '2026-10-20T00:00:00Z',
+  } as never);
+
+  const sequenced = (seq: number, extra: Record<string, unknown> = {}) => ({
+    id: `event-${seq}`, sessionId: SESSION_ID, timestamp: '2026-10-20T00:00:00Z',
+    provider: 'claude', kind: 'text', role: 'assistant', content: `row ${seq}`,
+    seq, streamEpoch: 'gateway-a', ...extra,
+  });
+
+  // The row the engine could not name: the transport identity is valid, the
+  // row identity is not.
+  store.applyServerEvent(sequenced(2, { id: undefined }) as never);
+  store.applyServerEvent(sequenced(3, { kind: 'complete', success: true }) as never);
+  store.applyServerEvent(sequenced(1) as never);
+
+  assert.equal(store.getResumeSeq(SESSION_ID), 3, 'the backlog drained past the id-less row');
+  assert.deepEqual(
+    store.getMessages(SESSION_ID).map((row) => row.id),
+    ['event-1'],
+    'the id-less row is the only one dropped',
   );
 });

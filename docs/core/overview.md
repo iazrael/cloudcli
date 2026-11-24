@@ -35,6 +35,7 @@ flowchart LR
 - 装配层把网关的事件发布入口交给 provider 运行时：常驻引擎在回合结束后自发汇报回合时，事件经 `chatRunRegistry` 的会话通道发出，运行时自己不发包、不编号。装配层也把任务桥接的登记入口与凭证的签发、作废交给运行时，并单独挂载桥接入口 `/api/tasks/mcp/invoke`（在通用 API Key 中间件之前，自行鉴权）。宿主任务的任务条也在这里接线：`setCodexHostTaskSource` 把任务模块的卡片列表和停止交给 Codex 运行时，`setTaskActivityListener` 在任务开始或结束时经会话通道重发整张任务条（机制见 providers.md「Codex 异步任务结果续开」）。
 - 端口：`SERVER_PORT` 默认 **3001**，`HOST` 默认 `0.0.0.0`；开发模式 Vite 跑 5173 并把 API 代理到 3001（`vite.config.js`）。
 - HTTP 连接配置：`server/http-timeouts.ts` 在监听前配置 origin 的连接空闲时间；默认覆盖常见代理的默认空闲池时间，但自定义代理仍需保证其空闲池先于 origin 过期。`HTTP_KEEP_ALIVE_TIMEOUT_MS` 可覆盖默认值，单位为毫秒，必须是 Node 定时器范围内的正整数；非法配置使启动失败。请求头接收超时保持大于连接空闲超时。默认值与校验范围以实现为准，PM2 实例的覆盖值写在 `~/.pm2/ecosystem.config.cjs`。
+- **统一的错误响应**：`server/error-response.ts` 把落到全局错误中间件的异常翻成 HTTP 状态与 JSON 体。应用自己抛的 `AppError` 保留自己的状态、code 与 details；请求体本身不合法（body-parser 拒收的坏 JSON、超限的体、被中断的请求）保留它给出的 4xx，不再一律报成 500——手写请求里 Windows 路径的反斜杠没转义，读起来是客户端写错了，不是服务器故障。其余异常一律通用 500，原始消息不进响应体，只进服务端日志。
 - 启动标记：`~/.cloudcli/local-server.json`（host/port/pid/appRoot），用于 CLI 与健康检查定位实例。
 - 异步任务入口只在本次 Codex 运行配置 stdio MCP；宿主凭可信运行上下文登记任务，再以独立 app-server `command/exec` 按原沙箱执行。敏感运行凭证只进 MCP 子进程环境，并从命令环境排除。管理 CLI 使用用户 JWT 调用认证接口。
 
@@ -44,6 +45,7 @@ flowchart LR
 server/
   index.ts                 进程入口：路由挂载、静态资源、WS、监听与停机
   load-env.ts              最早加载 .env；DATABASE_PATH 默认 ~/.cloudcli/auth.db
+  error-response.ts        全局错误中间件的响应翻译（AppError 保留自身；请求体不合法保留 4xx；其余通用 500）
   modules/
     providers/             ★ 引擎接入层（registry + 6 家 provider + services），见 providers.md
     websocket/             ★ WS 网关（/ws 聊天、/shell 终端、通知、插件代理），见 chat.md

@@ -332,6 +332,7 @@
     "nextTaskPrompt": "Začněte další úkol"
   },
   "message": {
+    "editBlockedByBackgroundWork": "Během pozadí úlohy nelze upravit odeslanou zprávu. Počkejte, až skončí, nebo ji zastavte, a pak to zkuste znovu.",
     "editAndResend": "Upravit a znovu odeslat",
     "forkFromHere": "Rozvětvit odsud"
   },
