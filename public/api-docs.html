@@ -444,6 +444,7 @@
 
             <div class="sidebar-title">API Reference</div>
             <a href="#agent">Agent</a>
+            <a href="#models">Provider Models</a>
             <a href="#session-lifecycle">Session Lifecycle</a>
 
             <div class="sidebar-title">Examples</div>
@@ -549,7 +550,13 @@
                                         <td>string</td>
                                         <td><span class="badge badge-optional">Optional</span></td>
                                         <td id="model-options-cell">
-                                            Model identifier for the AI provider (loading from constants...)
+                                            Model identifier for the AI provider:<br><br>
+                                            <strong>Anthropic (claude):</strong> <code>default</code>, <code>opus</code>, <code>fable</code>, <code>sonnet</code>, <code>haiku</code> (default: <code>default</code>)<br><br>
+                                            <strong>OpenAI (codex):</strong> <code>gpt-6.2-sol</code>, <code>gpt-6.2-astra</code>, <code>gpt-6.1-sol</code>, <code>gpt-6.1-terra</code>, <code>gpt-6-astra</code> (default: <code>gpt-6.2-sol</code>)<br><br>
+                                            <strong>Cursor:</strong> <code>auto</code>, <code>composer-2.5-fast</code>, <code>composer-2.5</code>, <code>claude-opus-5</code>, <code>claude-sonnet-5</code> (default: <code>auto</code>)<br><br>
+                                            <strong>OpenCode:</strong> <code>opencode-go/beam-free</code>, <code>opencode-go/claude-haiku-5-5</code>, <code>opencode-go/qwen3.8-flash</code> (default: <code>opencode-go/beam-free</code>)<br><br>
+                                            <strong>ZCode:</strong> <code>GLM-5.3</code> (default: <code>GLM-5.3</code>)<br><br>
+                                            <strong>Antigravity:</strong> <code>gemini-4-argon</code>, <code>gemini-4-neon</code>, <code>gemini-4-hydrogen</code>, <code>claude-opus-5-5</code>, <code>claude-sonnet-5-5</code> (default: <code>gemini-4-argon</code>)
                                         </td>
                                     </tr>
                                     <tr>
@@ -817,6 +824,76 @@ data: {"type":"done"}</code></pre>
                 </div>
             </div>
 
+            <!-- Provider Models API Section -->
+            <div class="section-row">
+                <div class="docs-section">
+                    <section id="models">
+                        <h2>Provider Models</h2>
+
+                        <div class="endpoint">
+                            <div class="endpoint-header">
+                                <span class="method method-get">GET</span>
+                                <span class="endpoint-path"><span class="api-url">http://localhost:3001</span>/api/providers/:provider/models</span>
+                            </div>
+
+                            <p>Query the supported models, catalog default, and available reasoning-effort levels for a specific AI provider (<code>claude</code>, <code>codex</code>, <code>cursor</code>, <code>opencode</code>, <code>zcode</code>, or <code>antigravity</code>).</p>
+
+                            <p>The returned <code>models.DEFAULT</code> or any model <code>value</code> in <code>models.OPTIONS</code> can be passed directly as <code>model</code> to <code>POST /api/agent</code>. The values in <code>models.EFFORT_LEVELS</code> (such as <code>low</code>, <code>medium</code>, <code>high</code>, <code>max</code>) can be passed as <code>effort</code>.</p>
+
+                            <h4>Path Parameters</h4>
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Parameter</th>
+                                        <th>Type</th>
+                                        <th>Required</th>
+                                        <th>Description</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td><code>provider</code></td>
+                                        <td>string</td>
+                                        <td><span class="badge badge-required">Required</span></td>
+                                        <td>Provider identifier: <code>claude</code>, <code>codex</code>, <code>cursor</code>, <code>opencode</code>, <code>zcode</code>, or <code>antigravity</code>.</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+
+                            <h4>Authentication</h4>
+                            <p>Supports either <code>X-API-Key: ck_...</code> header (for CI / Agent scripts) or <code>Authorization: Bearer &lt;token&gt;</code>.</p>
+                        </div>
+                    </section>
+                </div>
+
+                <div class="examples-section">
+                    <div class="example-block">
+                        <h4>Query Provider Models</h4>
+<pre><code class="language-bash">curl "<span class="api-url">http://localhost:3001</span>/api/providers/claude/models" \
+  -H "X-API-Key: ck_..."</code></pre>
+                    </div>
+
+                    <div class="example-block">
+                        <h4>Sample Response</h4>
+<pre><code class="language-json">{
+  "success": true,
+  "data": {
+    "provider": "claude",
+    "models": {
+      "OPTIONS": [
+        { "value": "default", "label": "Default (recommended)" },
+        { "value": "opus", "label": "Opus 5.5" },
+        { "value": "sonnet", "label": "Sonnet 5.5" }
+      ],
+      "DEFAULT": "default",
+      "EFFORT_LEVELS": ["low", "medium", "high", "xhigh", "max"]
+    }
+  }
+}</code></pre>
+                    </div>
+                </div>
+            </div>
+
             <!-- Usage Patterns Section -->
             <div class="section-row">
                 <div class="docs-section">
@@ -935,10 +1012,12 @@ data: {"type":"done"}</code></pre>
 
         // Populate model documentation from the live provider API
         const PROVIDER_ORDER = [
-            { id: 'claude',   name: 'Anthropic' },
-            { id: 'codex',    name: 'OpenAI' },
-            { id: 'cursor',   name: 'Cursor' },
-            { id: 'opencode', name: 'OpenCode' },
+            { id: 'claude',      name: 'Anthropic' },
+            { id: 'codex',       name: 'OpenAI' },
+            { id: 'cursor',      name: 'Cursor' },
+            { id: 'opencode',    name: 'OpenCode' },
+            { id: 'zcode',       name: 'ZCode' },
+            { id: 'antigravity', name: 'Antigravity' },
         ];
 
         async function populateModels() {
@@ -946,25 +1025,41 @@ data: {"type":"done"}</code></pre>
             if (!modelCell) return;
 
             const token = localStorage.getItem('auth-token');
-            const headers = token ? { Authorization: `Bearer ${token}` } : {};
+            const apiKey = localStorage.getItem('api-key');
+            const headers = {};
+            if (token) {
+                headers['Authorization'] = `Bearer ${token}`;
+            } else if (apiKey) {
+                headers['X-API-Key'] = apiKey;
+            }
 
             const results = await Promise.allSettled(
                 PROVIDER_ORDER.map(({ id }) =>
-                    fetch(`/api/providers/${id}/models`, { headers }).then(r => r.json())
+                    fetch(`/api/providers/${id}/models`, { headers }).then(r => {
+                        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                        return r.json();
+                    })
                 )
             );
+
+            // Only overwrite static fallback content if at least one request succeeded
+            const hasSuccess = results.some(r => r.status === 'fulfilled' && r.value?.data?.models);
+            if (!hasSuccess) return;
 
             const providerModels = results.map((result, i) => {
                 const { name } = PROVIDER_ORDER[i];
                 if (result.status === 'rejected' || !result.value?.data?.models) {
                     return `<strong>${name}:</strong> <em>unavailable</em>`;
                 }
-                const { OPTIONS, DEFAULT } = result.value.data.models;
+                const { OPTIONS, DEFAULT, EFFORT_LEVELS } = result.value.data.models;
                 const models = OPTIONS.map(m => `<code>${m.value}</code>`).join(', ');
-                return `<strong>${name}:</strong> ${models} (default: <code>${DEFAULT}</code>)`;
+                const effortInfo = Array.isArray(EFFORT_LEVELS) && EFFORT_LEVELS.length > 0
+                    ? ` (efforts: ${EFFORT_LEVELS.map(e => `<code>${e}</code>`).join(', ')})`
+                    : '';
+                return `<strong>${name}:</strong> ${models} (default: <code>${DEFAULT}</code>)${effortInfo}`;
             }).join('<br><br>');
 
-            modelCell.innerHTML = `Model identifier for the AI provider:<br><br>${providerModels}`;
+            modelCell.innerHTML = `Model identifier for the AI provider (live catalog):<br><br>${providerModels}`;
         }
 
         document.addEventListener('DOMContentLoaded', populateModels);

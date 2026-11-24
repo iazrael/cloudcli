@@ -34,6 +34,7 @@ import { createErrorResponse } from './error-response.js';
 import { createGitModule } from './modules/git/index.js';
 import {
     authenticateToken,
+    authenticateTokenOrApiKeyWhen,
     authenticateWebSocket,
     authRoutes,
     validateApiKey,
@@ -305,8 +306,12 @@ app.use('/api/browser-use-mcp', browserUseMcpRoutes);
 // Browser API Routes (protected)
 app.use('/api/browser-use', authenticateToken, browserUseRoutes);
 
-// Unified provider MCP routes (protected)
-app.use('/api/providers', authenticateToken, providerRoutes);
+// Unified provider routes. Only the model-catalog read (GET /:provider/models)
+// accepts an API key; every write and the MCP configuration stay JWT-only.
+const isProviderModelCatalogRead = (req: Request) => (
+  req.method === 'GET' && /^\/[^/]+\/models\/?$/.test(req.path)
+);
+app.use('/api/providers', authenticateTokenOrApiKeyWhen(isProviderModelCatalogRead), providerRoutes);
 app.use('/api/scheduled-messages', authenticateToken, scheduledMessagesRoutes);
 app.use('/api/tasks', taskContinuationsRouter);
 app.use('/api/scheduled-jobs', authenticateToken, scheduledJobsRoutes);

@@ -3,7 +3,7 @@ import jwt from 'jsonwebtoken';
 
 import { IS_PLATFORM } from '@/shared/utils.js';
 
-import { userDb, appConfigDb } from '../database/index.js';
+import { userDb, appConfigDb, apiKeysDb } from '../database/index.js';
 
 // Use env var if set, otherwise auto-generate a unique secret per installation
 const JWT_SECRET = process.env.JWT_SECRET || appConfigDb.getOrCreateJwtSecret();
@@ -103,6 +103,64 @@ const authenticateToken = async (req, res, next) => {
   }
 };
 
+/**
+ * Dual authentication middleware accepting either a valid JWT (Web browser)
+ * or a valid API key (CLI, CI, Agent).
+ * Checks the X-API-Key header, then an `Authorization: Bearer ck_…` key, then
+ * falls back to JWT. Keys are never read from the query string, where they
+ * would land in access logs and browser history.
+ */
+const authenticateTokenOrApiKey = async (req, res, next) => {
+  // Platform mode: trust request and use default user context
+  if (IS_PLATFORM) {
+    try {
+      const user = userDb.getFirstUser();
+      if (!user) {
+        return res.status(500).json({ error: 'Platform mode: No user found in database' });
+      }
+      req.user = user;
+      return next();
+    } catch (error) {
+      console.error('Platform mode error:', error);
+      return res.status(500).json({ error: 'Platform mode: Failed to fetch user' });
+    }
+  }
+
+  // 1. Try API Key first if explicitly passed via header
+  const rawApiKey = req.headers['x-api-key'];
+  const authHeader = req.headers['authorization'];
+  const bearerToken = authHeader && authHeader.split(' ')[1];
+
+  const candidateApiKey = (typeof rawApiKey === 'string' && rawApiKey.trim())
+    || (bearerToken && bearerToken.startsWith('ck_') ? bearerToken : null);
+
+  if (candidateApiKey) {
+    const user = apiKeysDb.validateApiKey(candidateApiKey);
+    if (!user) {
+      return res.status(401).json({
+        error: 'Invalid or inactive API key',
+        code: 'API_KEY_INVALID',
+      });
+    }
+    req.user = user;
+    return next();
+  }
+
+  // 2. Fall back to JWT validation
+  return authenticateToken(req, res, next);
+};
+
+/**
+ * Mount-level guard that accepts an API key only for the requests `allowsApiKey`
+ * selects and requires a JWT for every other request under the same mount.
+ *
+ * An API key is meant for automation reading what it needs (the model catalog),
+ * not for the settings and MCP-configuration writes that share the mount.
+ */
+const authenticateTokenOrApiKeyWhen = (allowsApiKey: (req) => boolean) => (req, res, next) => (
+  allowsApiKey(req) ? authenticateTokenOrApiKey(req, res, next) : authenticateToken(req, res, next)
+);
+
 // Generate JWT token
 const generateToken = (user) => {
   return jwt.sign(
@@ -158,6 +216,8 @@ const authenticateWebSocket = (token) => {
 export {
   validateApiKey,
   authenticateToken,
+  authenticateTokenOrApiKey,
+  authenticateTokenOrApiKeyWhen,
   generateToken,
   authenticateWebSocket,
   JWT_SECRET
