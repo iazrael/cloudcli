@@ -40,6 +40,12 @@ type UseChatSessionStateArgs = {
   showThinking: boolean;
 }
 
+/** One context-window reading together with the session it belongs to. */
+type TokenBudgetEntry = {
+  sessionId: string;
+  budget: Record<string, unknown>;
+};
+
 /* ------------------------------------------------------------------ */
 /*  Helper: Convert a ChatMessage to a NormalizedMessage for the store */
 /* ------------------------------------------------------------------ */
@@ -132,7 +138,14 @@ export function useChatSessionState({
   const [isLoadingMoreMessages, setIsLoadingMoreMessages] = useState(false);
   const [hasMoreMessages, setHasMoreMessages] = useState(false);
   const [totalMessages, setTotalMessages] = useState(0);
-  const [tokenBudget, setTokenBudget] = useState<Record<string, unknown> | null>(null);
+  /**
+   * The viewed session's context window reading, tagged with the session it
+   * was read for. Tagging is what keeps a slow history page or a late
+   * `/token-usage` answer for the session the user just left from painting the
+   * new session's composer; the derived `tokenBudget` below only hands out the
+   * entry whose id matches the view.
+   */
+  const [tokenBudgetEntry, setTokenBudgetEntry] = useState<TokenBudgetEntry | null>(null);
   const [allMessagesLoaded, setAllMessagesLoaded] = useState(false);
   const [isLoadingAllMessages, setIsLoadingAllMessages] = useState(false);
   const [viewHiddenCount, setViewHiddenCount] = useState(0);
@@ -189,7 +202,7 @@ export function useChatSessionState({
     setHasMoreMessages(false);
     setTotalMessages(0);
     
-    setTokenBudget(null);
+    setTokenBudgetEntry(null);
     setAllMessagesLoaded(false);
     allMessagesLoadedRef.current = false;
     setIsLoadingAllMessages(false);
@@ -208,6 +221,8 @@ export function useChatSessionState({
   const activeSessionId = selectedSession?.id || currentSessionId || null;
   /** The id of the session on screen, without the rest of its metadata. */
   const openSessionId = selectedSession?.id ?? null;
+  /** Only the reading belonging to the session on screen may reach the composer. */
+  const tokenBudget = tokenBudgetEntry?.sessionId === activeSessionId ? tokenBudgetEntry.budget : null;
 
   // The activity indicator always reflects the latest status of the session
   // being viewed — never stale local UI state from the last time it was
@@ -251,22 +266,51 @@ export function useChatSessionState({
   activeSessionIdRef.current = activeSessionId;
 
   /**
+   * Writes one reading for the session it was read for. Live
+   * `token_budget` frames and `/cost` both reach this through the hook's
+   * public setter; the view derives its displayed value from the entry's id,
+   * so a write for another session stays invisible instead of needing every
+   * caller to remember the guard.
+   */
+  const setTokenBudget = useCallback((budget: Record<string, unknown> | null) => {
+    const sessionId = activeSessionIdRef.current;
+    setTokenBudgetEntry(budget && sessionId ? { sessionId, budget } : null);
+  }, []);
+
+  /**
    * Single mirror point from a store slot into the view's pagination and
    * token-usage state. Every store response applied to the viewed session
    * funnels through here, so the local mirror and the slot can never drift
    * apart (a missed copy at any call site used to leave top loading gated on
    * a stale hasMore).
+   *
+   * `sessionId` is the slot's owner, not the view: a page that arrives after
+   * the user switched still lands in its own slot (and is discarded from the
+   * composer by the id check in the derived value).
    */
-  const syncPaginationFromSlot = useCallback((slot: SessionSlot) => {
+  const syncPaginationFromSlot = useCallback((sessionId: string, slot: SessionSlot) => {
     setHasMoreMessages(slot.hasMore);
     setTotalMessages(slot.total);
+    // A page that lands after the user switched belongs to the session they
+    // left; its usage must not take the slot of the one they are reading.
+    if (sessionId !== activeSessionIdRef.current) {
+      return;
+    }
     if (slot.tokenUsage && typeof slot.tokenUsage === 'object') {
       const incoming = slot.tokenUsage as Record<string, unknown>;
-      setTokenBudget((previous) => {
+      setTokenBudgetEntry((previous) => {
+        // Keep an earlier reading only when it belongs to this same session;
+        // another session's number must never stand in for a missing one.
+        const previousBudget = previous?.sessionId === sessionId ? previous.budget : null;
         const incomingWindow = Number(incoming.total ?? 0);
-        const previousWindow = Number(previous?.total ?? 0);
+        const incomingUsed = Number(incoming.used ?? 0)
+          || (Number(incoming.inputTokens ?? 0) + Number(incoming.outputTokens ?? 0));
+        if (incomingWindow <= 0 && incomingUsed <= 0) {
+          return previousBudget ? previous : null;
+        }
+        const previousWindow = Number(previousBudget?.total ?? 0);
         if (incomingWindow > 0 || previousWindow <= 0) {
-          return incoming;
+          return { sessionId, budget: incoming };
         }
         return previous;
       });
@@ -286,7 +330,7 @@ export function useChatSessionState({
     });
     const slot = result.slot;
     if (slot && activeSessionIdRef.current === sessionId) {
-      syncPaginationFromSlot(slot);
+      syncPaginationFromSlot(sessionId, slot);
     }
     return !result.deferred;
   };
@@ -410,7 +454,7 @@ export function useChatSessionState({
           ),
         });
         const { slot, prependedCount } = result;
-        syncPaginationFromSlot(slot);
+        syncPaginationFromSlot(selectedSession.id, slot);
 
         if (!slot.hasMore) {
           allMessagesLoadedRef.current = true;
@@ -498,7 +542,7 @@ export function useChatSessionState({
       setCurrentSessionId(null);
         setHasMoreMessages(false);
       setTotalMessages(0);
-      setTokenBudget(null);
+      setTokenBudgetEntry(null);
       lastLoadedSessionKeyRef.current = null;
       return;
     }
@@ -540,7 +584,7 @@ export function useChatSessionState({
     setViewportResetSignal((signal) => signal + 1);
 
     if (sessionChanged) {
-      setTokenBudget(null);
+      setTokenBudgetEntry(null);
     }
 
     setCurrentSessionId(selectedSessionId);
@@ -558,7 +602,7 @@ export function useChatSessionState({
       ),
     }).then(slot => {
       if (slot) {
-        syncPaginationFromSlot(slot);
+        syncPaginationFromSlot(selectedSessionId, slot);
       }
       setIsLoadingSessionMessages(false);
     }).catch(() => {
@@ -652,7 +696,7 @@ export function useChatSessionState({
             ),
           });
           if (slot) {
-            syncPaginationFromSlot(slot);
+            syncPaginationFromSlot(selectedSession.id, slot);
             setAllMessagesLoaded(true);
             allMessagesLoadedRef.current = true;
           } else if (!isActiveRef.current) {
@@ -697,7 +741,7 @@ export function useChatSessionState({
   const refreshTokenUsage = useCallback(async (sessionIdToFetch?: string) => {
     const sid = sessionIdToFetch || activeSessionIdRef.current;
     if (!sid) {
-      setTokenBudget(null);
+      setTokenBudgetEntry(null);
       return;
     }
     try {
@@ -709,12 +753,18 @@ export function useChatSessionState({
           const nextData = payload.data as Record<string, unknown>;
           const nextUsed = Number(nextData.used ?? 0)
             || (Number(nextData.inputTokens ?? 0) + Number(nextData.outputTokens ?? 0));
-          setTokenBudget((prev) => {
-            const currentUsed = Number((prev as Record<string, unknown> | null)?.used ?? 0);
+          setTokenBudgetEntry((previous) => {
+            const previousBudget = previous?.sessionId === sid ? previous.budget : null;
+            const currentUsed = Number(previousBudget?.used ?? 0);
+            // A provider that momentarily reads zero must not erase a real
+            // reading — but only the same session's reading counts as real.
             if (nextUsed === 0 && currentUsed > 0) {
-              return prev;
+              return previous;
             }
-            return nextData;
+            if (nextUsed === 0 && Number(nextData.total ?? 0) <= 0) {
+              return null;
+            }
+            return { sessionId: sid, budget: nextData };
           });
         }
       }
@@ -726,7 +776,7 @@ export function useChatSessionState({
   // Initial token usage fetch whenever active session id changes
   useEffect(() => {
     if (!activeSessionId) {
-      setTokenBudget(null);
+      setTokenBudgetEntry(null);
       return;
     }
     void refreshTokenUsage(activeSessionId);
@@ -794,7 +844,7 @@ export function useChatSessionState({
       if (currentSessionId !== requestSessionId) return;
 
       if (slot) {
-        syncPaginationFromSlot(slot);
+        syncPaginationFromSlot(requestSessionId, slot);
         setAllMessagesLoaded(true);
       } else {
         allMessagesLoadedRef.current = false;

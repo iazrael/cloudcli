@@ -270,7 +270,11 @@ flowchart LR
 
 ## 输入框的 token 计数
 
-输入框按钮只显示**上下文占用**：`status/token_budget` 帧（或历史页带回的 `tokenUsage`）里的 `used` 与 `total`，即最近一次请求的 prompt 加输出。`/cost` 详情另外读 `cumulativeUsage`（会话累计），两处口径不能互换，契约在 [providers.md](./providers.md#token-用量口径)。
+输入框只显示**上下文占用**：`status/token_budget` 帧（或历史页带回的 `tokenUsage`）里的 `used` 与 `total`，即最近一次请求的 prompt 加输出。`/cost` 详情另外读 `cumulativeUsage`（会话累计），两处口径不能互换，契约在 [providers.md](./providers.md#token-用量口径)。
+
+**读数带会话归属。** `useChatSessionState` 把读数存成 `{ sessionId, budget }`，只有 `sessionId` 等于当前查看会话时才交给渲染。实时帧、历史页的 `tokenUsage`、切换会话时的 `/token-usage` 补拉三条写入路径都走这个归属：用户在慢链路上切走后，上一个会话迟到的响应仍落进它自己的 slot，但不会顶掉新会话的读数，也不会让新会话显示旧数字。空读数（无窗口且无用量）不会保留任何跨会话的旧值。
+
+展示位置：桌面主栏显示完整 chip（点击进详情）；手机主栏**不显示**用量，只有「＋」面板里的「上下文用量」行给出数字、进度条和详情入口，避免一个只在接近满窗时才出现的红色数字占住主栏。
 
 按钮值只在「切换会话」「一轮结束」「页面回到前台」时刷新：手机休眠或标签页后台化期间收不到 `token_budget`，回到前台由 `useChatSessionState` 的 `visibilitychange` 监听补拉一次；WebSocket 重连走既有的历史尾页刷新，历史页同样带回上下文快照。`/cost` 的返回只覆盖上下文三项，不会把累计量写进按钮。
 

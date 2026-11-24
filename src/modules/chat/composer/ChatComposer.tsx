@@ -47,7 +47,6 @@ import type { ActiveBackgroundTask } from '@/shared/types';
 import ComposerModelMenu from '@/modules/chat/composer/ComposerModelMenu';
 import ComposerPermissionMenu from '@/modules/chat/composer/ComposerPermissionMenu';
 import ComposerOverflowMenu from '@/modules/chat/composer/ComposerOverflowMenu';
-import TokenUsageBadge from '@/modules/chat/composer/TokenUsageBadge';
 
 type MentionableFile = {
   name: string;
@@ -612,13 +611,10 @@ function ChatComposer({
               <VoiceInputButton state={voiceState} onToggle={voiceToggle} errorMsg={voiceError} />
             )}
 
-            {/* Usage: the full chip is a desktop fixture; on phones the badge
-                only speaks up once the window closes in on full. */}
+            {/* Usage: a desktop fixture. On phones the reading lives in the
+                ＋ panel's "context usage" row, off the main row entirely. */}
             <div className="hidden sm:block">
               <TokenUsageSummary usage={tokenBudget} onClick={onShowTokenUsage} />
-            </div>
-            <div className="sm:hidden">
-              <TokenUsageBadge usage={tokenBudget} onClick={onShowTokenUsage} />
             </div>
 
             <PromptInputButton

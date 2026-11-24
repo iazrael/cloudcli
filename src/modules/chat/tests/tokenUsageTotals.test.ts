@@ -1,29 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { getTokenUsageAlert, readTokenUsageTotals } from '@/modules/chat/composer/tokenUsage';
-
-describe('getTokenUsageAlert', () => {
-  it('returns null below the warn threshold', () => {
-    expect(getTokenUsageAlert(84_900, 100_000)).toBeNull();
-  });
-
-  it('returns warn from the warn threshold up', () => {
-    expect(getTokenUsageAlert(85_000, 100_000)).toBe('warn');
-    expect(getTokenUsageAlert(94_000, 100_000)).toBe('warn');
-  });
-
-  it('returns critical from the critical threshold up', () => {
-    expect(getTokenUsageAlert(95_000, 100_000)).toBe('critical');
-    expect(getTokenUsageAlert(100_000, 100_000)).toBe('critical');
-    expect(getTokenUsageAlert(120_000, 100_000)).toBe('critical');
-  });
-
-  it('returns null without a usable window or usage', () => {
-    expect(getTokenUsageAlert(87_000, 0)).toBeNull();
-    expect(getTokenUsageAlert(0, 100_000)).toBeNull();
-    expect(getTokenUsageAlert(-1, 100_000)).toBeNull();
-  });
-});
+import { readTokenUsageTotals } from '@/modules/chat/composer/tokenUsage';
 
 describe('readTokenUsageTotals', () => {
   it('reads used and window from flat fields', () => {
