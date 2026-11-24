@@ -115,7 +115,7 @@ MCP 服务器表单按 `useProviderMcpCapabilities()` 渲染。首屏与请求�
   面板几何与计算后的 `overflow-y`/`touch-action`/`contain`/`transform`、面板中心点的
   `elementFromPoint` 命中者、以及触摸事件从产生到被处理的最大延迟。
   平时零开销：passive 监听，只在触摸时比两个数，判定成立才读一次样。
-- **时间线**：导出时刻 `serverMessages` / `realtimeMessages` 的行 id 列表、乐观行退休映射、`runEnded`。
+- **时间线**：导出时刻 `serverMessages` / `realtimeMessages` 的行 id 列表、乐观行退休映射、已证明配对的 id 集合、`runEnded`。重复回复先看这里：配对在退休映射里却不在已证明集合里，说明这个回合从未被命名，占位行因此无法与它的持久化副本对账。
 - **服务端运行结束记录**：`GET /api/diagnostics/runs`，即后端对每次 run 为什么结束的判定
   （见 [chat.md](./chat.md)）。拉取失败写 `{ error }`，不让一段失败毁掉整份报告。
 

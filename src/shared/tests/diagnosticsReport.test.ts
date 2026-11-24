@@ -45,7 +45,8 @@ test('the report pairs the frames with the rows the timeline is holding', () => 
     snapshot: {
       serverMessages: [row({ id: 'item-u1', role: 'user' })],
       realtimeMessages: [row({ id: 'local_1', role: 'user' })],
-      retiredOptimisticUserAnchors: [],
+      retiredOptimisticUserAnchors: [['local_1', 'item-u1']],
+      provenOptimisticUserAnchors: ['local_1'],
       pendingPrompts: [['local_1', { afterRowId: null }]],
       runEnded: false,
     },
@@ -60,7 +61,8 @@ test('the report pairs the frames with the rows the timeline is holding', () => 
   assert.deepEqual(report.timeline?.rendered.map((r) => r.id), ['local_1', 'item-u1']);
   assert.deepEqual(report.timeline?.server, ['item-u1']);
   assert.deepEqual(report.timeline?.realtime, ['local_1']);
-  assert.deepEqual(report.timeline?.retiredOptimisticUserAnchors, []);
+  assert.deepEqual(report.timeline?.retiredOptimisticUserAnchors, [['local_1', 'item-u1']]);
+  assert.deepEqual(report.timeline?.provenOptimisticUserAnchors, ['local_1']);
 });
 
 test('a report taken with no session open still carries the frames', () => {
@@ -126,6 +128,7 @@ test('the report states, and keeps, its privacy guarantees', () => {
       serverMessages: [],
       realtimeMessages: [],
       retiredOptimisticUserAnchors: [],
+      provenOptimisticUserAnchors: [],
       pendingPrompts: [],
       runEnded: true,
     },

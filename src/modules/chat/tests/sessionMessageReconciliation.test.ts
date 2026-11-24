@@ -230,6 +230,55 @@ test('an earlier pairing that sits above its own anchor proves no turn', () => {
   assert.equal(provenAnchors.has('local_p'), false);
 });
 
+/**
+ * A prompt sent before the session's first page loaded has no anchor, so its
+ * pairing is only a reading of the transcript — until the run ends. A fresh
+ * pairing gets that escape hatch; a kept one must get it too, or the pairing
+ * recorded mid-run (the common case: the first page lands while the turn is
+ * still streaming) can never be proven afterwards and the turn it opened can
+ * never reconcile its unkeyed reply.
+ */
+test('a kept pairing sent with no history is proven once the run ends', () => {
+  const user = createUserMessage('srv-u1', '2026-10-22T00:00:00.000Z');
+  const local = createUserMessage('local_p', '2026-10-22T00:00:01.000Z');
+  const pending = new Map([['local_p', { afterRowId: null }]]);
+  const prior = new Map([['local_p', 'srv-u1']]);
+
+  const midRun = reconcileOptimisticPrompts([user], [local], pending, false, prior);
+  assert.equal(midRun.provenAnchors.has('local_p'), false, 'a guess is not a proof while the run is going');
+
+  const finished = reconcileOptimisticPrompts([user], [local], pending, true, prior);
+  assert.equal(finished.provenAnchors.get('local_p'), 'srv-u1');
+});
+
+/**
+ * The run-ended proof is a fact about a finished turn, so it must survive the
+ * next send clearing the slot's `runEnded`: the transcript can index the
+ * reply after the completion refresh, and the proof is the only thing that
+ * still names the turn it belongs to.
+ */
+test('a latched proof survives the next send clearing the run flag', () => {
+  const user = createUserMessage('srv-u1', '2026-10-22T00:00:00.000Z');
+  const local = createUserMessage('local_p', '2026-10-22T00:00:01.000Z');
+  const nextPrompt = createUserMessage('local_p2', '2026-10-22T00:05:00.000Z');
+  const pending = new Map([
+    ['local_p', { afterRowId: null }],
+    ['local_p2', { afterRowId: null }],
+  ]);
+
+  const { provenAnchors } = reconcileOptimisticPrompts(
+    [user],
+    [local, nextPrompt],
+    pending,
+    false,
+    new Map([['local_p', 'srv-u1']]),
+    new Set(['local_p']),
+  );
+
+  assert.equal(provenAnchors.get('local_p'), 'srv-u1');
+  assert.equal(provenAnchors.has('local_p2'), false, 'latching one pairing must not prove another');
+});
+
 test('upsertToolUseRow: a blank re-announce frame never blanks a populated card', () => {
   const toolRow = (id: string, toolId: string, toolInput: Record<string, unknown>) => ({
     id,

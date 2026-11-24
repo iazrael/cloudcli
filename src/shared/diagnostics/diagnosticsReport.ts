@@ -45,6 +45,8 @@ export type DiagnosticsReport = {
     server: string[];
     realtime: string[];
     retiredOptimisticUserAnchors: Array<[string, string]>;
+    /** Pairings whose proof holds; a live row reconciles against its own turn only through these. */
+    provenOptimisticUserAnchors: string[];
     runEnded: boolean;
   } | null;
   startup: StartupDiagnosticsSection | null;
@@ -100,6 +102,7 @@ export function buildDiagnosticsReport(input: {
         server: input.snapshot.serverMessages.map((row) => row.id),
         realtime: input.snapshot.realtimeMessages.map((row) => row.id),
         retiredOptimisticUserAnchors: input.snapshot.retiredOptimisticUserAnchors,
+        provenOptimisticUserAnchors: input.snapshot.provenOptimisticUserAnchors,
         runEnded: input.snapshot.runEnded,
       }
       : null,

@@ -1983,6 +1983,14 @@ export type TimelineSnapshot = {
   serverMessages: NormalizedMessage[];
   realtimeMessages: NormalizedMessage[];
   retiredOptimisticUserAnchors: Array<[string, string]>;
+  /**
+   * Optimistic prompts whose pairing counts as proven. A live row can only
+   * reconcile against its own turn's persisted rows through one of these, so
+   * a duplicate reply is read here first: a prompt missing from this list
+   * while `retiredOptimisticUserAnchors` holds it is a pairing that never
+   * became a fact.
+   */
+  provenOptimisticUserAnchors: string[];
   pendingPrompts: Array<[string, unknown]>;
   runEnded: boolean;
 };

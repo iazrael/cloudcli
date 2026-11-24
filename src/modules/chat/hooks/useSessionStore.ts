@@ -49,6 +49,7 @@ export function useSessionStore(): SessionTimelineStore {
           serverMessages: slot.serverMessages,
           realtimeMessages: slot.realtimeMessages,
           retiredOptimisticUserAnchors: [...slot.retiredOptimisticUserAnchors.entries()],
+          provenOptimisticUserAnchors: [...slot.provenOptimisticUserAnchors],
           pendingPrompts: [...slot.pendingPrompts.entries()],
           runEnded: slot.runEnded,
         },

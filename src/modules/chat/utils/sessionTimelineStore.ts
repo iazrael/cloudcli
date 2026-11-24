@@ -104,6 +104,14 @@ export type SessionSlot = {
    */
   retiredOptimisticUserAnchors: Map<string, string>;
   /**
+   * Optimistic prompts whose pairing has been proven — the fact a live row
+   * needs before it may reconcile against that turn's persisted rows. Proof
+   * can rest on a send-time anchor or on the run having ended; the latter is
+   * cleared by the next send (`runEnded`), so it is latched here to keep the
+   * finished turn nameable however late its persisted reply indexes.
+   */
+  provenOptimisticUserAnchors: Set<string>;
+  /**
    * The placeholder row holding streamed text that no engine row has claimed
    * yet, or `null`. Every engine follows a streamed segment with a real row
    * carrying its own id; until that row arrives the placeholder is all the
@@ -174,6 +182,7 @@ function createEmptySlot(): SessionSlot {
     realtimeMessages: EMPTY,
     pendingPrompts: new Map(),
     retiredOptimisticUserAnchors: new Map(),
+    provenOptimisticUserAnchors: new Set(),
     streamingPlaceholderId: null,
     streamedSegmentCount: 0,
     runEnded: false,
@@ -467,7 +476,7 @@ function reconcileStreamedPlaceholderByContent(
 function pruneRealtimeSupersededByServer(
   serverMessages: NormalizedMessage[],
   realtimeMessages: NormalizedMessage[],
-  slot: Pick<SessionSlot, 'pendingPrompts' | 'retiredOptimisticUserAnchors' | 'runEnded' | 'streamingPlaceholderId'>,
+  slot: Pick<SessionSlot, 'pendingPrompts' | 'retiredOptimisticUserAnchors' | 'provenOptimisticUserAnchors' | 'runEnded' | 'streamingPlaceholderId'>,
 ): NormalizedMessage[] {
   if (realtimeMessages.length === 0) {
     return realtimeMessages;
@@ -486,9 +495,13 @@ function pruneRealtimeSupersededByServer(
     slot.pendingPrompts,
     slot.runEnded,
     slot.retiredOptimisticUserAnchors,
+    slot.provenOptimisticUserAnchors,
   );
   for (const [localId, serverId] of retiredAnchors) {
     slot.retiredOptimisticUserAnchors.set(localId, serverId);
+  }
+  for (const localId of provenAnchors.keys()) {
+    slot.provenOptimisticUserAnchors.add(localId);
   }
 
   const serverTurnForRealtimeRow = (message: NormalizedMessage): NormalizedMessage[] =>
@@ -666,7 +679,7 @@ function computeMerged(
   server: NormalizedMessage[],
   realtime: NormalizedMessage[],
   arrivalAnchors: Map<string, string>,
-  slot: Pick<SessionSlot, 'pendingPrompts' | 'retiredOptimisticUserAnchors' | 'runEnded'>,
+  slot: Pick<SessionSlot, 'pendingPrompts' | 'retiredOptimisticUserAnchors' | 'provenOptimisticUserAnchors' | 'runEnded'>,
 ): NormalizedMessage[] {
   if (realtime.length === 0) {
     return server;
@@ -679,9 +692,13 @@ function computeMerged(
     slot.pendingPrompts,
     slot.runEnded,
     slot.retiredOptimisticUserAnchors,
+    slot.provenOptimisticUserAnchors,
   );
   for (const [localId, serverId] of retiredAnchors) {
     slot.retiredOptimisticUserAnchors.set(localId, serverId);
+  }
+  for (const localId of provenAnchors.keys()) {
+    slot.provenOptimisticUserAnchors.add(localId);
   }
   // Retired prompts stay in `realtime` as turn boundaries; the merge is where
   // they stop being rendered.
@@ -800,6 +817,7 @@ function recordRealtimeArrivalAnchors(slot: SessionSlot): void {
   if (
     anchors.size > slot.realtimeMessages.length
     || slot.retiredOptimisticUserAnchors.size > slot.realtimeMessages.length
+    || slot.provenOptimisticUserAnchors.size > slot.realtimeMessages.length
   ) {
     const liveIds = new Set(slot.realtimeMessages.map((message) => message.id));
     for (const id of anchors.keys()) {
@@ -810,6 +828,11 @@ function recordRealtimeArrivalAnchors(slot: SessionSlot): void {
     for (const id of slot.retiredOptimisticUserAnchors.keys()) {
       if (!liveIds.has(id)) {
         slot.retiredOptimisticUserAnchors.delete(id);
+      }
+    }
+    for (const id of slot.provenOptimisticUserAnchors) {
+      if (!liveIds.has(id)) {
+        slot.provenOptimisticUserAnchors.delete(id);
       }
     }
   }
@@ -2056,6 +2079,7 @@ export class SessionTimelineStore {
     const survivingTail = slot.serverMessages[slot.serverMessages.length - 1];
     slot.pendingPrompts.clear();
     slot.retiredOptimisticUserAnchors.clear();
+    slot.provenOptimisticUserAnchors.clear();
     slot.realtimeMessages = replacements.length > 0
       ? [replacements[replacements.length - 1]]
       : [];

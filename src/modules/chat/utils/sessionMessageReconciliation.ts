@@ -67,6 +67,13 @@ export type OptimisticPromptReconciliation = {
  * prompt's copy scrolls out of it, pairing that prompt again from scratch
  * takes some newer turn's row, every later prompt slides down with it, and
  * the newest is left with nothing to claim — rendered beside its own copy.
+ *
+ * `priorProven` are pairings an earlier pass already proved. Proof is a fact
+ * about the transcript, not about the current run: a prompt sent with no
+ * history loaded gets its proof from `runEnded`, which the next send clears
+ * even though nothing about the earlier turn changed. Latching it keeps the
+ * finished turn nameable — without that, a reply whose persisted copy indexes
+ * after the completion refresh can never retire its unkeyed streamed twin.
  */
 export function reconcileOptimisticPrompts(
   serverMessages: NormalizedMessage[],
@@ -74,6 +81,7 @@ export function reconcileOptimisticPrompts(
   pendingPrompts: ReadonlyMap<string, PendingPrompt>,
   runEnded: boolean,
   priorPairings: ReadonlyMap<string, string> = new Map(),
+  priorProven: ReadonlySet<string> = new Set(),
 ): OptimisticPromptReconciliation {
   const retiredAnchors = new Map<string, string>();
   const provenAnchors = new Map<string, string>();
@@ -98,13 +106,23 @@ export function reconcileOptimisticPrompts(
     const priorServerId = priorPairings.get(message.id);
     if (priorServerId !== undefined) {
       retiredAnchors.set(message.id, priorServerId);
-      // Proven on the same terms as a fresh pairing: the anchor is loaded and
-      // the paired row sits after it.
+      // Proven on the same terms as a fresh pairing: an anchor was loaded and
+      // the paired row sits after it, or — sent with nothing loaded — the run
+      // has ended, which is what makes the pairing a fact for a fresh one.
+      // Omitting that escape hatch here was a one-way door: a pairing made
+      // mid-run (the first page usually lands while the turn is streaming)
+      // could never be proven afterwards, so the turn could never be named
+      // and its unkeyed streamed reply stayed beside its persisted copy.
       const anchorIndex = anchorRowId === null
         ? -1
         : serverMessages.findIndex((candidate) => candidate.id === anchorRowId);
       const pairedIndex = serverMessages.findIndex((candidate) => candidate.id === priorServerId);
-      if (anchorIndex >= 0 && pairedIndex > anchorIndex) {
+      // Either way the paired row must be in the window: a proof nobody can
+      // point at a row for names no turn, so it is not a proof.
+      const provenNow = anchorRowId === null
+        ? runEnded && pairedIndex >= 0
+        : anchorIndex >= 0 && pairedIndex > anchorIndex;
+      if (provenNow || priorProven.has(message.id)) {
         provenAnchors.set(message.id, priorServerId);
       }
       continue;

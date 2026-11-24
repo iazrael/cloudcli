@@ -651,6 +651,120 @@ test('a persisted twin trimmed of trailing whitespace still retires its unkeyed 
     'retiring the placeholder must clear the adoption pointer');
 });
 
+test('an unkeyed ACP reply retires even when its prompt was paired before any history loaded', async () => {
+  // The production shape: a new session is sent before its (empty) first page
+  // has ever been loaded, so the optimistic prompt has no anchor. The first
+  // page then lands mid-run, which records the prompt's pairing while the
+  // turn is still streaming. That pairing is a guess then, but the run ending
+  // makes it a fact — and the reply's unkeyed placeholder can only be retired
+  // against its own turn once the turn can be named.
+  const streamedContent = 'Rune slots replace the per-room picker, and gold evolutions fire from the pair.';
+  const initialUser = msg(1, { id: 'msg_session_1', provider: 'antigravity', content: 'review the rune plan' });
+  const persistedReply = msg(2, {
+    id: 'msg_session_11',
+    provider: 'antigravity',
+    content: streamedContent,
+    providerRowKey: 'assistant-step:11',
+  });
+  const fetchPage = scriptedFetcher([
+    {
+      params: { limit: SESSION_MESSAGES_PAGE_SIZE, offset: 0 },
+      page: { messages: [initialUser], total: 1, hasMore: false },
+    },
+    {
+      params: { limit: SESSION_MESSAGES_PAGE_SIZE, offset: 0 },
+      page: { messages: [initialUser, persistedReply], total: 2, hasMore: false },
+    },
+  ]);
+  const store = new SessionTimelineStore({ fetchPage });
+
+  store.appendRealtime(SESSION_ID, {
+    id: 'local_prompt_1',
+    sessionId: SESSION_ID,
+    timestamp: new Date(BASE_TIME).toISOString(),
+    provider: 'antigravity',
+    kind: 'text',
+    role: 'user',
+    content: 'review the rune plan',
+  });
+  await store.fetchFromServer(SESSION_ID, { limit: SESSION_MESSAGES_PAGE_SIZE, offset: 0 });
+  emitAntigravity(store, { kind: 'stream_delta', sessionId: SESSION_ID, content: streamedContent.slice(0, 20) });
+  emitAntigravity(store, { kind: 'stream_delta', sessionId: SESSION_ID, content: streamedContent.slice(20) });
+  emitAntigravity(store, { kind: 'stream_end', sessionId: SESSION_ID });
+  emitAntigravity(store, { kind: 'complete', sessionId: SESSION_ID });
+
+  await store.refreshLatestFromServer(SESSION_ID);
+
+  assert.deepEqual(
+    store.getMessages(SESSION_ID).filter((row) => row.content === streamedContent).map((row) => row.id),
+    ['msg_session_11'],
+  );
+});
+
+test('a proven turn stays proven after the next prompt is sent', async () => {
+  // The completion refresh can land before the transcript indexes the reply.
+  // The prompt pairing was still proven at that moment (the run had ended),
+  // and that is a fact about the transcript, not about the current run — so a
+  // later refresh, arriving after the next prompt has cleared the flag, must
+  // still retire the finished turn's placeholder.
+  const streamedContent = 'The first turn reply arrives in the transcript a moment late.';
+  const initialUser = msg(1, { id: 'msg_session_1', provider: 'antigravity', content: 'first question' });
+  const persistedReply = msg(2, {
+    id: 'msg_session_11',
+    provider: 'antigravity',
+    content: streamedContent,
+    providerRowKey: 'assistant-step:11',
+  });
+  const fetchPage = scriptedFetcher([
+    {
+      params: { limit: SESSION_MESSAGES_PAGE_SIZE, offset: 0 },
+      page: { messages: [initialUser], total: 1, hasMore: false },
+    },
+    // Completion refresh: the transcript has the prompt but not yet the reply.
+    {
+      params: { limit: SESSION_MESSAGES_PAGE_SIZE, offset: 0 },
+      page: { messages: [initialUser], total: 1, hasMore: false },
+    },
+    // Later refresh (the next prompt has cleared `runEnded`): the reply is in.
+    {
+      params: { limit: SESSION_MESSAGES_PAGE_SIZE, offset: 0 },
+      page: { messages: [initialUser, persistedReply], total: 2, hasMore: false },
+    },
+  ]);
+  const store = new SessionTimelineStore({ fetchPage });
+
+  store.appendRealtime(SESSION_ID, {
+    id: 'local_prompt_1',
+    sessionId: SESSION_ID,
+    timestamp: new Date(BASE_TIME).toISOString(),
+    provider: 'antigravity',
+    kind: 'text',
+    role: 'user',
+    content: 'first question',
+  });
+  await store.fetchFromServer(SESSION_ID, { limit: SESSION_MESSAGES_PAGE_SIZE, offset: 0 });
+  emitAntigravity(store, { kind: 'stream_delta', sessionId: SESSION_ID, content: streamedContent });
+  emitAntigravity(store, { kind: 'stream_end', sessionId: SESSION_ID });
+  emitAntigravity(store, { kind: 'complete', sessionId: SESSION_ID });
+  await store.refreshLatestFromServer(SESSION_ID);
+
+  store.appendRealtime(SESSION_ID, {
+    id: 'local_prompt_2',
+    sessionId: SESSION_ID,
+    timestamp: new Date(BASE_TIME + 5000).toISOString(),
+    provider: 'antigravity',
+    kind: 'text',
+    role: 'user',
+    content: 'second question',
+  });
+  await store.refreshLatestFromServer(SESSION_ID);
+
+  assert.deepEqual(
+    store.getMessages(SESSION_ID).filter((row) => row.content === streamedContent).map((row) => row.id),
+    ['msg_session_11'],
+  );
+});
+
 test('a near-identical keyed Antigravity history row yields to richer markdown-formatted stream text', async () => {
   const providerRowKey = 'assistant-step:7b';
   const shared = '游戏世界与界面分工协作是现代 Web 游戏的常见架构。'.repeat(18);
