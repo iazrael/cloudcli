@@ -8,6 +8,7 @@ import Database from 'better-sqlite3';
 
 import { ClaudeSessionsProvider } from '@/modules/providers/list/claude/claude-sessions.provider.js';
 import { CLAUDE_PREDEFINED_MODELS } from '@/modules/providers/list/claude/claude-models.provider.js';
+import { clearClaudeGatewayCache } from '@/modules/providers/list/claude/claude-gateway.js';
 import { queryClaudeSDK } from '@/modules/providers/list/claude/claude-runtime.provider.js';
 import { createProviderTokenUsageService } from '@/modules/providers/services/provider-token-usage.service.js';
 import type { NormalizedMessage, ProviderRuntimeContext } from '@/shared/types.js';
@@ -259,15 +260,32 @@ async function withModelContextWindows(value: string | undefined, body: () => Pr
  * Points the process home at a throwaway directory holding an OpenCode
  * models.dev catalog, so the local-metadata path is exercised without
  * depending on the machine's real ~/.local/share/opencode.
+ *
+ * `baseUrl` defaults to the OpenCode gateway (the catalog is only a valid
+ * source there); pass null to simulate Claude running anywhere else.
  */
 async function withLocalModelCatalog(
   families: Record<string, Record<string, number>>,
   body: () => Promise<void>,
+  options: { baseUrl?: string | null } = {},
 ): Promise<void> {
+  const baseUrl = options.baseUrl === undefined
+    ? 'https://opencode.ai/inference/go/anthropic'
+    : options.baseUrl;
   const homeDir = await mkdtemp(path.join(os.tmpdir(), 'claude-context-window-home-'));
   const originalHomedir = os.homedir;
+  const previousBaseUrl = process.env.ANTHROPIC_BASE_URL;
   (os as any).homedir = () => homeDir;
+  delete process.env.ANTHROPIC_BASE_URL;
+  clearClaudeGatewayCache();
   try {
+    if (baseUrl) {
+      await mkdir(path.join(homeDir, '.claude'), { recursive: true });
+      await writeFile(
+        path.join(homeDir, '.claude', 'settings.json'),
+        JSON.stringify({ env: { ANTHROPIC_BASE_URL: baseUrl } }),
+      );
+    }
     const dbPath = path.join(homeDir, '.local', 'share', 'opencode', 'opencode.db');
     await mkdir(path.dirname(dbPath), { recursive: true });
     const db = new Database(dbPath);
@@ -290,7 +308,10 @@ async function withLocalModelCatalog(
     }
     await body();
   } finally {
+    clearClaudeGatewayCache();
     (os as any).homedir = originalHomedir;
+    if (previousBaseUrl === undefined) delete process.env.ANTHROPIC_BASE_URL;
+    else process.env.ANTHROPIC_BASE_URL = previousBaseUrl;
     await rm(homeDir, { recursive: true, force: true });
   }
 }
@@ -318,6 +339,23 @@ test('the cached models.dev catalog supplies the window the SDK did not report',
         const sent = await runScripted('app-gateway-catalog', gatewayStream('native-gateway-catalog'));
         assert.equal(tokenBudgets(sent).at(-1)!.total, 1_000_000);
       });
+    });
+  });
+});
+
+test('the OpenCode catalog stays out when Claude calls another endpoint', async () => {
+  await withContextWindowEnv(undefined, async () => {
+    await withModelContextWindows(undefined, async () => {
+      await withLocalModelCatalog(
+        { 'opencode-go': { 'deepseek-v4.1-flash': 1_000_000 } },
+        async () => {
+          const sent = await runScripted('app-other-gateway', gatewayStream('native-other-gateway'));
+          // Another endpoint reports no window either, and the OpenCode cache
+          // says nothing about it: the default stands instead of 1M.
+          assert.equal(tokenBudgets(sent).at(-1)!.total, 160_000);
+        },
+        { baseUrl: 'https://gateway.example.com/anthropic' },
+      );
     });
   });
 });

@@ -1,6 +1,7 @@
 import type { AnyRecord, ProviderTokenUsageResult } from '@/shared/types.js';
 import { readJsonlIncrementally, readUsageNumber, type JsonlIncrementalState } from '@/shared/utils.js';
 import { resolveModelContextWindow } from '@/modules/providers/services/model-context-window.service.js';
+import { isOpenCodeGateway } from '@/modules/providers/list/claude/claude-gateway.js';
 
 /**
  * Context windows the Claude SDK reported per provider session id.
@@ -145,7 +146,9 @@ function buildClaudeUsageResult(
   // The SDK states the window only for direct Anthropic runs. Behind a
   // compatible gateway the model id is all there is, so the local catalog
   // stands in — an explicit MODEL_CONTEXT_WINDOWS entry inside it first.
-  const inferredContextWindow = resolveModelContextWindow(accumulator.model);
+  const inferredContextWindow = resolveModelContextWindow(accumulator.model, {
+    allowCatalog: isOpenCodeGateway(),
+  });
   const contextWindow = reportedContextWindow && reportedContextWindow > 0
     ? reportedContextWindow
     : inferredContextWindow ?? configuredOrDefaultContextWindow;

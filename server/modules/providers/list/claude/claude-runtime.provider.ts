@@ -41,6 +41,7 @@ import {
 } from '@/modules/notifications/index.js';
 import { sessionHistoryCache } from '@/modules/providers/services/session-history-cache.service.js';
 import { resolveModelContextWindow } from '@/modules/providers/services/model-context-window.service.js';
+import { isOpenCodeGateway } from '@/modules/providers/list/claude/claude-gateway.js';
 import {
   getReportedClaudeContextWindow,
   rememberClaudeContextWindow
@@ -997,7 +998,9 @@ function resolveContextWindow(
   if (Number.isFinite(reportedContextWindow) && (reportedContextWindow as number) > 0) {
     return reportedContextWindow as number;
   }
-  const inferredContextWindow = resolveModelContextWindow(modelId);
+  const inferredContextWindow = resolveModelContextWindow(modelId, {
+    allowCatalog: isOpenCodeGateway(),
+  });
   if (inferredContextWindow) {
     return inferredContextWindow;
   }

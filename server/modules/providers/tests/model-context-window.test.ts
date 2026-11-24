@@ -70,55 +70,69 @@ test('an explicit MODEL_CONTEXT_WINDOWS entry wins over the cached catalog', asy
   });
 });
 
-test('the opencode-go family is preferred over other families', async () => {
+test('the catalog is not consulted unless the caller allows it for its gateway', async () => {
+  await withCatalog({ 'opencode-go': { 'deepseek-v4.1-flash': 1_000_000 } }, () => {
+    // A gateway that is not OpenCode must not inherit OpenCode's cached numbers.
+    assert.equal(resolveModelContextWindow('deepseek-v4.1-flash'), null);
+    assert.equal(
+      resolveModelContextWindow('deepseek-v4.1-flash', { allowCatalog: true }),
+      1_000_000,
+    );
+  });
+});
+
+test('the opencode-go family is preferred over the opencode family', async () => {
   await withCatalog({
     opencode: { 'deepseek-v4.1-flash': 500_000 },
     'opencode-go': { 'deepseek-v4.1-flash': 1_000_000 },
-    openrouter: { 'deepseek-v4.1-flash': 1_048_576 },
   }, () => {
-    assert.equal(resolveModelContextWindow('deepseek-v4.1-flash'), 1_000_000);
+    assert.equal(
+      resolveModelContextWindow('deepseek-v4.1-flash', { allowCatalog: true }),
+      1_000_000,
+    );
   });
 });
 
 test('the opencode family is used when opencode-go has no entry', async () => {
   await withCatalog({
     opencode: { 'kimi-k3.1-pro': 1_048_576 },
-    openrouter: { 'kimi-k3.1-pro': 1_048_576 },
   }, () => {
-    assert.equal(resolveModelContextWindow('kimi-k3.1-pro'), 1_048_576);
+    assert.equal(
+      resolveModelContextWindow('kimi-k3.1-pro', { allowCatalog: true }),
+      1_048_576,
+    );
   });
 });
 
-test('a model in several other families is used only when those families agree', async () => {
+test('models found only in other families are not borrowed', async () => {
   await withCatalog({
+    anthropic: { 'claude-sonnet-5-5': 1_000_000 },
     openrouter: { 'minimax-m3.1-flash': 1_000_000 },
-    vercel: { 'minimax-m3.1-flash': 1_000_000 },
   }, () => {
-    assert.equal(resolveModelContextWindow('minimax-m3.1-flash'), 1_000_000);
-  });
-
-  await withCatalog({
-    openrouter: { 'minimax-m3.1-flash': 1_000_000 },
-    scaleway: { 'minimax-m3.1-flash': 256_000 },
-  }, () => {
-    assert.equal(resolveModelContextWindow('minimax-m3.1-flash'), null);
+    // Claude Models' own window and third-party families are not the OpenCode
+    // gateway's declaration, so the catalog stays out of them.
+    assert.equal(resolveModelContextWindow('claude-sonnet-5-5', { allowCatalog: true }), null);
+    assert.equal(resolveModelContextWindow('minimax-m3.1-flash', { allowCatalog: true }), null);
   });
 });
 
 test('an unknown model or a missing catalog resolves to null', async () => {
   await withCatalog(null, () => {
-    assert.equal(resolveModelContextWindow('deepseek-v4.1-flash'), null);
+    assert.equal(resolveModelContextWindow('deepseek-v4.1-flash', { allowCatalog: true }), null);
   });
 
   await withCatalog({ 'opencode-go': { 'deepseek-v4.1-flash': 1_000_000 } }, () => {
-    assert.equal(resolveModelContextWindow('some-other-model'), null);
-    assert.equal(resolveModelContextWindow(null), null);
+    assert.equal(resolveModelContextWindow('some-other-model', { allowCatalog: true }), null);
+    assert.equal(resolveModelContextWindow(null, { allowCatalog: true }), null);
   });
 });
 
 test('a refreshed catalog is re-read after the database changes', async () => {
   await withCatalog({ 'opencode-go': { 'deepseek-v4.1-flash': 1_000_000 } }, async () => {
-    assert.equal(resolveModelContextWindow('deepseek-v4.1-flash'), 1_000_000);
+    assert.equal(
+      resolveModelContextWindow('deepseek-v4.1-flash', { allowCatalog: true }),
+      1_000_000,
+    );
 
     const dbPath = path.join(os.homedir(), '.local', 'share', 'opencode', 'opencode.db');
     const db = new Database(dbPath);
@@ -135,6 +149,9 @@ test('a refreshed catalog is re-read after the database changes', async () => {
     const future = new Date(Date.now() + 5_000);
     await utimes(dbPath, future, future);
 
-    assert.equal(resolveModelContextWindow('deepseek-v4.1-flash'), 2_000_000);
+    assert.equal(
+      resolveModelContextWindow('deepseek-v4.1-flash', { allowCatalog: true }),
+      2_000_000,
+    );
   });
 });

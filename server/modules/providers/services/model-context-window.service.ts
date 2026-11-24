@@ -31,13 +31,6 @@ export type LocalModelCatalogEntry = Record<string, unknown>;
 /** `kv` keys of the cached models.dev catalog, newest layout first (v2.2 renamed it). */
 const CATALOG_KV_KEYS = ['models-dev:v2:catalog', 'models-dev:catalog'];
 
-/**
- * Families tried first when the caller only has the bare model id. Claude
- * served through the OpenCode gateway requests `deepseek-v4.1-flash`, while the
- * catalog keys it as `opencode-go/deepseek-v4.1-flash`.
- */
-const PREFERRED_CATALOG_FAMILIES = ['opencode-go', 'opencode'];
-
 type CatalogCache = {
   path: string;
   mtimeMs: number;
@@ -125,16 +118,30 @@ function readContextLimit(entry: LocalModelCatalogEntry | undefined): number | n
   return Number.isFinite(context) && context > 0 ? context : null;
 }
 
+/** How far the cached catalog may speak for a caller's model. */
+export type ModelContextWindowOptions = {
+  /**
+   * The caller's endpoint is the OpenCode gateway, whose catalog this is. Any
+   * other endpoint must leave it false: the cache describes OpenCode's models,
+   * not whatever gateway the user configured next.
+   */
+  allowCatalog?: boolean;
+};
+
 /**
  * Resolves the context window for one model id from local metadata.
  *
- * Order: `MODEL_CONTEXT_WINDOWS` (exact id), then the cached models.dev catalog
- * — the bare id as a full key, then the `opencode-go` / `opencode` families,
- * then any other family only when every match declares the same window. A
- * missing catalog, unknown model, or conflicting other-family windows answer
- * null so the caller keeps its own fallback instead of guessing.
+ * `MODEL_CONTEXT_WINDOWS` (exact id) always applies — it is the operator's
+ * statement about this deployment. The cached models.dev catalog is consulted
+ * only when the caller allows it (OpenCode gateway), and only through the
+ * `opencode-go` / `opencode` families, which are the gateway's own model
+ * declarations. A missing catalog or unknown model answers null so the caller
+ * keeps its own fallback instead of guessing.
  */
-export function resolveModelContextWindow(modelId: string | null | undefined): number | null {
+export function resolveModelContextWindow(
+  modelId: string | null | undefined,
+  options: ModelContextWindowOptions = {},
+): number | null {
   const id = modelId?.trim();
   if (!id) {
     return null;
@@ -145,29 +152,21 @@ export function resolveModelContextWindow(modelId: string | null | undefined): n
     return configured;
   }
 
+  if (!options.allowCatalog) {
+    return null;
+  }
+
   const entries = readLocalModelCatalog();
   if (entries.size === 0) {
     return null;
   }
 
-  // A caller that already passes `<family>/<id>` names the entry directly.
-  const direct = readContextLimit(entries.get(id));
-  if (direct) {
-    return direct;
-  }
-
-  for (const family of PREFERRED_CATALOG_FAMILIES) {
-    const limit = readContextLimit(entries.get(`${family}/${id}`));
+  for (const key of [`opencode-go/${id}`, `opencode/${id}`, id]) {
+    const limit = readContextLimit(entries.get(key));
     if (limit) {
       return limit;
     }
   }
 
-  const otherFamilyLimits = new Set<number>();
-  for (const [key, entry] of entries) {
-    if (!key.endsWith(`/${id}`)) continue;
-    const limit = readContextLimit(entry);
-    if (limit) otherFamilyLimits.add(limit);
-  }
-  return otherFamilyLimits.size === 1 ? [...otherFamilyLimits][0] : null;
+  return null;
 }
