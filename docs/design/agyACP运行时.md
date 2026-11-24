@@ -54,7 +54,7 @@ antigravity 运行时从 print 单回合 spawn（`-p --input-format stream-json 
 - **提问回显抑制（真机回归修复）**：引擎在 ask_question 卡旁边会把问题原文作为 agent_message_chunk 再回显一遍（只存在于直播流，不进转录——刷新后不重复）。翻译器在卡挂起期间丢弃消息 chunk，运行时在发出答案 prompt 时解除。
 - 后台任务注册表：从 `backgroundKeyAliases` 进程别名映射改为 ACP 事件驱动；通知链路复用 antigravity-background-work。
 - abort：杀进程 → `session/cancel`，5 秒未结束时关连接并停止进程。
-- 看门狗：pending 权限/提问不算静默。卡片 30 分钟到期后主动结算。
+- 看门狗：pending 权限/提问不算静默。卡片 30 分钟到期后主动结算。仍有未结束的工具调用（自动转后台的长命令）时静默也不算卡死，见 providers.md「一次性 CLI 的异步任务」。
 - 模式映射：`default`→default、`acceptEdits`→accept-edits、`plan`→plan（`session/set_mode`）、`bypassPermissions`→spawn 带 `--dangerously-skip-permissions`。模型选择通道待探（session/new 参数或 set_model），失败回落引擎默认。
 
 ### 生命周期与权限切换修复

@@ -104,6 +104,18 @@ function handle(frame) {
       }, 1500);
       return;
     }
+    if (mode === 'acp-async-command') {
+      // Probe-verified agy behaviour: a command moved to the background by
+      // WaitMsBeforeAsync keeps the prompt open and the stream silent until it
+      // finishes, then the call completes and the turn ends.
+      send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'tool_call', toolCallId: 'call_train', name: 'run_command', args: { CommandLine: 'python train.py', WaitMsBeforeAsync: 10000 }, status: 'in_progress' } } });
+      send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'training started' } } } });
+      setTimeout(() => {
+        send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'tool_call_update', toolCallId: 'call_train', name: 'run_command', status: 'completed', content: [{ type: 'content', content: { type: 'text', text: 'trained' } }] } } });
+        finish(frame.id);
+      }, 1200);
+      return;
+    }
     if (mode === 'acp-daemon') {
       // A backgrounded command is still running when the model yields
       // end_turn; the run must hold until the command completes.
@@ -621,6 +633,19 @@ test('the prompt watchdog reports the silence that caused termination', async ()
   await assert.rejects(runtime.run('engine stays silent', {
     sessionId: 'sess-acp-silent-prompt', cwd: workspaceDir, idleTimeout: '150ms',
   }, writer, context), /produced no output for 150ms/);
+});
+
+test('a silent wait on an unfinished tool call is not a wedge', async () => {
+  process.env.AGY_ACP_STUB_MODE = 'acp-async-command';
+  const { messages, writer } = createWriter();
+  // The command outlasts the idle timeout several times over.
+  const result = await runtime.run('train the model', {
+    sessionId: 'sess-acp-async-command', cwd: workspaceDir, idleTimeout: '200ms',
+  }, writer, context);
+  assert.deepEqual(result, { sessionId: 'acp-conv-1', success: true });
+  assert.ok(!messages.some((message) => message.kind === 'error'), 'watchdog never fired');
+  assert.ok(messages.some((message) => message.kind === 'tool_result' && message.content === 'trained'));
+  assert.equal(messages.filter((message) => message.kind === 'complete').length, 1);
 });
 
 test('a turn can be aborted while its model catalog is loading', async () => {
