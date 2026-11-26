@@ -380,9 +380,16 @@ export type CustomProviderModelInput = {
  * `model` must always be populated. Provider adapters should use the
  * provider-specific lookup method requested by the caller, and only fall back
  * to the provider catalog `DEFAULT` value when the active model cannot be read.
+ *
+ * `effort` carries the reasoning effort the provider itself recorded for the
+ * session, when its session state keeps one (`null`/omitted = unknown). It lets
+ * `resolveSessionModel` surface a variant the app never persisted — the case
+ * for sessions created through the Agent API or a provider CLI — instead of
+ * making the composer fall back to the browser's per-provider preference.
  */
 export type ProviderCurrentActiveModel = {
   model: string;
+  effort?: string | null;
 };
 
 /**

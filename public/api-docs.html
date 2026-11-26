@@ -455,7 +455,7 @@
             <div class="section-row">
                 <div class="docs-section">
                     <div class="intro">
-                        <p><strong>Programmatically trigger AI agents to work on projects, then inspect, continue or stop the resulting session.</strong> Clone GitHub repositories or use existing project paths. Perfect for CI/CD pipelines, automated code reviews, and bulk processing.</p>
+                        <p><strong>Programmatically trigger AI agents to work on projects, then inspect, continue or stop the resulting session.</strong> Start a long run without holding the request open, follow its events from a cursor, and read the final reply from the stored transcript. Clone GitHub repositories or use existing project paths. Perfect for CI/CD pipelines, automated code reviews, and bulk processing.</p>
                     </div>
 
                     <section id="authentication">
@@ -545,6 +545,18 @@
                                         <td>Enable streaming (default: <code>true</code>)</td>
                                     </tr>
                                     <tr>
+                                        <td><code>wait</code></td>
+                                        <td>boolean</td>
+                                        <td><span class="badge badge-optional">Optional</span></td>
+                                        <td>Wait for the run to finish (default: <code>true</code>). <code>false</code> answers <code>202</code> immediately with the app session id and the run's <code>runId</code>; poll <code>GET /api/agent/:sessionId</code> for status, <code>GET /api/agent/runs/:runId/events</code> for progress and <code>GET /api/agent/:sessionId/result</code> for the reply. <code>stream</code> is ignored in this mode and <code>createBranch</code>/<code>createPR</code> are refused.</td>
+                                    </tr>
+                                    <tr>
+                                        <td><code>clientRequestId</code></td>
+                                        <td>string</td>
+                                        <td><span class="badge badge-optional">Optional</span></td>
+                                        <td>Idempotency key for a new session. A retry with the same value resolves to the session the first attempt allocated; a <code>wait:false</code> retry that lands while the original run is still going also gets that run back instead of a second dispatch.</td>
+                                    </tr>
+                                    <tr>
                                         <td><code>model</code></td>
                                         <td>string</td>
                                         <td><span class="badge badge-optional">Optional</span></td>
@@ -614,6 +626,23 @@
                             <p>JSON object containing session details, assistant messages only (filtered), and token usage summary. Content-Type: <code>application/json</code></p>
                             <p>Each entry in <code>messages</code> is a normalized <code>text</code> event from the run. Providers that stream their reply as deltas (OpenCode) are assembled into one such event, so the response carries the reply either way.</p>
 
+                            <h4>Response (<code>wait: false</code>)</h4>
+                            <p>HTTP <code>202</code> with JSON. The provider keeps running after the response; the body carries the ids the follow-up reads need:</p>
+<pre><code class="language-json">{
+  "success": true,
+  "sessionId": "abc123",
+  "provider": "opencode",
+  "providerSessionId": null,
+  "projectPath": "/path/to/project",
+  "status": "running",
+  "run": {
+    "runId": "8f14e45f-ea2a-4f3b-b8d1-9b5c1c2e7a10",
+    "startedAt": "2026-11-22T12:00:00.000Z",
+    "lastSeq": 0
+  }
+}</code></pre>
+                            <p>Pass <code>run.lastSeq</code> as the initial <code>after</code> cursor of the events endpoint, and <code>sessionId</code> back as <code>sessionId</code> to continue the conversation.</p>
+
                             <h4>Error Response</h4>
                             <p>Returns error details with appropriate HTTP status code.</p>
                         </div>
@@ -680,7 +709,7 @@ print(response.json())</code></pre>
                     <div class="example-block">
                         <h4>Streaming Response</h4>
 <pre><code class="language-javascript">data: {"type":"status","message":"Repository cloned"}
-data: {"type":"session-id","sessionId":"abc123"}
+data: {"type":"session-id","sessionId":"abc123","runId":"8f14e45f-ea2a-4f3b-b8d1-9b5c1c2e7a10","lastSeq":0}
 data: {"type":"thinking","content":"Analyzing..."}
 data: {"type":"tool_use","tool":"read_file"}
 data: {"type":"content","content":"Done!"}
@@ -692,6 +721,7 @@ data: {"type":"done"}</code></pre>
 <pre><code class="language-json">{
   "success": true,
   "sessionId": "abc123",
+  "runId": "8f14e45f-ea2a-4f3b-b8d1-9b5c1c2e7a10",
   "providerSessionId": "ses_9f2c...",
   "messages": [
     {
@@ -734,7 +764,7 @@ data: {"type":"done"}</code></pre>
                 <div class="docs-section">
                     <section id="session-lifecycle">
                         <h2>Session Lifecycle</h2>
-                        <p>Every response reports its app session id. Use it — or the provider-native <code>providerSessionId</code> — to inspect or stop the session. Closing the stream does <strong>not</strong> stop the run; send an explicit abort.</p>
+                        <p>Every response reports its app session id. Use it — or the provider-native <code>providerSessionId</code> — to inspect, continue or stop the session. A <code>wait:false</code> run also reports a <code>runId</code>, the cursor for its event page. Closing the stream does <strong>not</strong> stop the run; send an explicit abort.</p>
 
                         <div class="endpoint">
                             <div class="endpoint-header">
@@ -755,6 +785,7 @@ data: {"type":"done"}</code></pre>
   "archived": false,
   "status": "running",
   "run": {
+    "runId": "8f14e45f-ea2a-4f3b-b8d1-9b5c1c2e7a10",
     "startedAt": "2026-11-14T12:00:00.000Z",
     "lastSeq": 12
   },
@@ -763,6 +794,105 @@ data: {"type":"done"}</code></pre>
 }</code></pre>
 
                             <p><code>status</code> is <code>running</code> while a turn is active, <code>background</code> while only background work remains, and <code>idle</code> otherwise. <code>run</code> is <code>null</code> unless a turn is running.</p>
+                        </div>
+
+                        <div class="endpoint">
+                            <div class="endpoint-header">
+                                <span class="method method-get">GET</span>
+                                <span class="endpoint-path"><span class="api-url">http://localhost:3001</span>/api/agent/:sessionId/result</span>
+                            </div>
+
+                            <p>The assistant reply of the last turn, read from the stored transcript. This is the read side of <code>wait:false</code>: poll the status route until <code>idle</code>, then read the reply here. Unlike the live event buffer it survives a dropped connection and a server restart.</p>
+
+                            <h4>Query Parameters</h4>
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Parameter</th>
+                                        <th>Type</th>
+                                        <th>Required</th>
+                                        <th>Description</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td><code>limit</code></td>
+                                        <td>integer</td>
+                                        <td><span class="badge badge-optional">Optional</span></td>
+                                        <td>Size of the history tail page to read (default <code>200</code>, max <code>1000</code>). The last user text in that page anchors the turn, so a continued session returns only its latest reply.</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+
+                            <h4>Response</h4>
+<pre><code class="language-json">{
+  "success": true,
+  "sessionId": "abc123",
+  "provider": "opencode",
+  "providerSessionId": "ses_9f2c...",
+  "projectPath": "/path/to/project",
+  "status": "idle",
+  "run": null,
+  "messages": [
+    {
+      "kind": "text",
+      "role": "assistant",
+      "content": "I've completed the task..."
+    }
+  ],
+  "reply": "I've completed the task...",
+  "tokens": { "inputTokens": 150, "outputTokens": 50 }
+}</code></pre>
+
+                            <p>While <code>status</code> is <code>running</code> or <code>background</code>, <code>messages</code>/<code>reply</code> may be empty or partial; treat <code>idle</code> as the final answer. Unknown session: <code>404</code>.</p>
+                        </div>
+
+                        <div class="endpoint">
+                            <div class="endpoint-header">
+                                <span class="method method-get">GET</span>
+                                <span class="endpoint-path"><span class="api-url">http://localhost:3001</span>/api/agent/runs/:runId/events</span>
+                            </div>
+
+                            <p>One run's buffered events after a cursor. Poll with <code>after</code> set to the previous response's <code>lastSeq</code> to continue a run after a dropped connection or a killed request; stop when <code>terminal</code> is <code>true</code>.</p>
+
+                            <h4>Query Parameters</h4>
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Parameter</th>
+                                        <th>Type</th>
+                                        <th>Required</th>
+                                        <th>Description</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td><code>after</code></td>
+                                        <td>integer</td>
+                                        <td><span class="badge badge-optional">Optional</span></td>
+                                        <td>Return events whose <code>seq</code> is greater than this value. Start with the run's <code>run.lastSeq</code> from the <code>wait:false</code> response so earlier turns are skipped; default <code>0</code>.</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+
+                            <h4>Response</h4>
+<pre><code class="language-json">{
+  "success": true,
+  "runId": "8f14e45f-ea2a-4f3b-b8d1-9b5c1c2e7a10",
+  "sessionId": "abc123",
+  "provider": "opencode",
+  "status": "running",
+  "terminal": false,
+  "events": [
+    { "kind": "text", "seq": 7, "content": "Analyzing the project..." }
+  ],
+  "lastSeq": 7,
+  "replayFromSeq": 1,
+  "streamEpoch": "…",
+  "stale": false
+}</code></pre>
+
+                            <p><code>stale: true</code> means the cursor predates the replay buffer (5000 events / about 5 minutes); the middle was dropped and the caller should use <code>/result</code> instead. A completed run stays readable for about 5 minutes, then this route returns <code>404</code>; the persisted <code>/result</code> is the authoritative answer.</p>
                         </div>
 
                         <div class="endpoint">
@@ -789,6 +919,32 @@ data: {"type":"done"}</code></pre>
                     <div class="example-block">
                         <h4>Get Session Status</h4>
 <pre><code class="language-bash">curl <span class="api-url">http://localhost:3001</span>/api/agent/abc123 \
+  -H "X-API-Key: ck_..."</code></pre>
+                    </div>
+
+                    <div class="example-block">
+                        <h4>Start Without Waiting</h4>
+<pre><code class="language-bash">curl -X POST <span class="api-url">http://localhost:3001</span>/api/agent \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: ck_..." \
+  -d '{
+    "projectPath": "/path/to/project",
+    "provider": "opencode",
+    "message": "Run the long task",
+    "wait": false,
+    "clientRequestId": "long-task-1"
+  }'</code></pre>
+                    </div>
+
+                    <div class="example-block">
+                        <h4>Read a Run's Events</h4>
+<pre><code class="language-bash">curl "<span class="api-url">http://localhost:3001</span>/api/agent/runs/8f14e45f-ea2a-4f3b-b8d1-9b5c1c2e7a10/events?after=0" \
+  -H "X-API-Key: ck_..."</code></pre>
+                    </div>
+
+                    <div class="example-block">
+                        <h4>Read the Final Result</h4>
+<pre><code class="language-bash">curl "<span class="api-url">http://localhost:3001</span>/api/agent/abc123/result?limit=200" \
   -H "X-API-Key: ck_..."</code></pre>
                     </div>
 

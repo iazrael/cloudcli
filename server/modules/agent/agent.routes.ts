@@ -3,12 +3,15 @@ import path from 'path';
 
 import express from 'express';
 
-import type { LLMProvider, ProviderRunFunction } from '@/shared/types.js';
+import type { FetchHistoryResult, LLMProvider, NormalizedMessage, ProviderRunFunction } from '@/shared/types.js';
 
 import { normalizeProjectPath } from '../../shared/utils.js';
 
 /** The providers an Agent API run can start: the ones with a runtime and a model catalog. */
 const AGENT_RUN_PROVIDERS = ['claude', 'cursor', 'codex', 'opencode'];
+
+/** The runnable providers whose runtime accepts a reasoning effort. */
+const AGENT_EFFORT_PROVIDERS = new Set(['claude', 'codex', 'opencode']);
 
 /** What the route reads off a session row it continues or reports: the row, not the request, says which provider and project a session belongs to. */
 type AgentSessionRow = {
@@ -17,6 +20,9 @@ type AgentSessionRow = {
   provider_session_id: string | null;
   project_path: string | null;
   custom_name?: string | null;
+  /** Runtime facts chat.send also records; a continuation inherits them. */
+  model?: string | null;
+  effort?: string | null;
   isArchived?: number;
   created_at?: string;
   updated_at?: string;
@@ -37,10 +43,24 @@ type AgentRouterDependencies = {
   sessions: {
     getSessionById(sessionId: string): AgentSessionRow | null;
     getSessionByProviderSessionId(providerSessionId: string): AgentSessionRow | null;
-    createAppSession(provider: string, projectPath: string, initialMessage: string): { sessionId: string };
+    createAppSession(
+      provider: string,
+      projectPath: string,
+      initialMessage: string,
+      options?: { clientRequestId?: string | null },
+    ): { sessionId: string };
+    /**
+     * The stored transcript, read after a run. `wait:false` returns before the
+     * run ends, so the caller reads its reply here instead of from the POST
+     * response; the same read survives a dropped connection or a restart.
+     */
+    fetchHistory(
+      sessionId: string,
+      options?: { limit?: number | null; offset?: number },
+    ): Promise<FetchHistoryResult>;
   };
   /** The live-run registry the chat socket uses; registering here is what puts an API run on the running-sessions list. */
-  runs: Pick<typeof import('../websocket/index.js').chatRunRegistry, 'startRun' | 'completeRunIfCurrent' | 'isProcessing' | 'getRun'>;
+  runs: Pick<typeof import('../websocket/index.js').chatRunRegistry, 'startRun' | 'completeRunIfCurrent' | 'isProcessing' | 'getRun' | 'getRunById' | 'replayEvents'>;
   /** The provider runtime's stop path, shared with the chat socket's `chat.abort`. */
   runtime: Pick<typeof import('../providers/index.js').providerRuntimeService, 'abort' | 'hasBackgroundWork'>;
   queryClaude: ProviderRunFunction;
@@ -683,6 +703,26 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
   }
 
   /**
+   * The assistant text of the last turn in a stored transcript: the prompt is
+   * the last user text row, and the reply is every assistant text row after it.
+   * A continued session therefore reports its latest reply, not the whole
+   * conversation. When the prompt is older than the page the caller asked for,
+   * the page's assistant text stands in for it.
+   */
+  function lastTurnAssistantText(messages: NormalizedMessage[]): NormalizedMessage[] {
+    const isAssistantText = (message: NormalizedMessage) => message.kind === 'text' && message.role === 'assistant';
+    let promptIndex = -1;
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      if (messages[index].kind === 'text' && messages[index].role === 'user') {
+        promptIndex = index;
+        break;
+      }
+    }
+    const turn = promptIndex === -1 ? messages : messages.slice(promptIndex + 1);
+    return turn.filter(isAssistantText);
+  }
+
+  /**
    * Describes what a session is doing right now. `background` covers a held
    * process whose foreground turn ended but whose background work still runs.
    */
@@ -692,7 +732,7 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
     const background = !running && runtime.hasBackgroundWork(sessionRow.session_id);
     return {
       status: running ? 'running' : background ? 'background' : 'idle',
-      run: running ? { startedAt: new Date(run.startedAt).toISOString(), lastSeq: run.lastSeq } : null,
+      run: running ? { runId: run.runId, startedAt: new Date(run.startedAt).toISOString(), lastSeq: run.lastSeq } : null,
     };
   }
 
@@ -789,6 +829,88 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
   });
 
   /**
+   * GET /api/agent/runs/:runId/events?after=<seq>
+   *
+   * One run's buffered events after a cursor, with the authoritative last
+   * sequence. Poll with `after=lastSeq` to continue a run after a dropped
+   * connection or a killed request; stop when `terminal` is true. `stale`
+   * means the buffer no longer reaches back to `after` (the run ran long
+   * enough to drop old events) and the caller must use `/result` instead.
+   *
+   * A completed run stays readable for the registry's retention window
+   * (5 minutes); afterwards this returns 404 and `/result` is the durable
+   * answer. This is a poll page rather than a long-lived stream, matching
+   * `wait:false`: no connection has to survive the run.
+   */
+  router.get('/runs/:runId/events', validateExternalApiKey, (req, res) => {
+    const run = runRegistry.getRunById(String(req.params.runId));
+    if (!run) {
+      return res.status(404).json({ error: `Run "${req.params.runId}" was not found` });
+    }
+
+    const requestedAfter = Number.parseInt(String(req.query.after ?? ''), 10);
+    const after = Number.isFinite(requestedAfter) && requestedAfter >= 0 ? requestedAfter : 0;
+    const replay = runRegistry.replayEvents(run.appSessionId, after);
+
+    return res.json({
+      success: true,
+      runId: run.runId,
+      sessionId: run.appSessionId,
+      provider: run.provider,
+      status: run.status,
+      terminal: run.status === 'completed',
+      events: replay.events,
+      lastSeq: replay.lastSeq,
+      replayFromSeq: replay.replayFromSeq,
+      streamEpoch: replay.streamEpoch,
+      stale: replay.stale,
+    });
+  });
+
+  /**
+   * GET /api/agent/:sessionId/result
+   *
+   * The assistant text a finished (or still running) API run produced. This is
+   * the read side of `wait:false`: the caller has the session id, polls the
+   * status route, and reads the reply here instead of holding one HTTP request
+   * open for the whole run. The text comes from the stored transcript, so a
+   * dropped connection or a server restart does not lose it.
+   *
+   * Returns `status` on every call. While the run is still `running` or
+   * `background`, `messages`/`reply` may be empty or partial; poll until
+   * `idle`. `limit` sizes the tail page read from history (default 200, max
+   * 1000); the last user text in that page anchors the turn.
+   */
+  router.get('/:sessionId/result', validateExternalApiKey, async (req, res) => {
+    const sessionRow = resolveSessionRow(req.params.sessionId);
+    if (!sessionRow) {
+      return res.status(404).json({ error: `Session "${req.params.sessionId}" was not found` });
+    }
+
+    const requestedLimit = Number.parseInt(String(req.query.limit ?? ''), 10);
+    const limit = Number.isFinite(requestedLimit) && requestedLimit > 0
+      ? Math.min(requestedLimit, 1000)
+      : 200;
+
+    const state = describeSession(sessionRow);
+    const history = await sessionGateway.fetchHistory(sessionRow.session_id, { limit, offset: 0 });
+    const messages = lastTurnAssistantText(history.messages);
+
+    return res.json({
+      success: true,
+      sessionId: sessionRow.session_id,
+      provider: sessionRow.provider,
+      providerSessionId: sessionRow.provider_session_id,
+      projectPath: sessionRow.project_path,
+      status: state.status,
+      run: state.run,
+      messages,
+      reply: messages.map((message) => typeof message.content === 'string' ? message.content : '').join('\n\n'),
+      tokens: history.tokenUsage ?? null,
+    });
+  });
+
+  /**
    * POST /api/agent
    *
    * Trigger an AI agent to work on a project.
@@ -825,6 +947,20 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
    *                          - true: Returns text/event-stream with incremental updates
    *                          - false: Returns complete JSON response after completion
    *
+   * @param {boolean} wait - (Optional) Whether this request waits for the run to finish.
+   *                        Default: true
+   *                        - true: answers with the streaming or JSON response below
+   *                        - false: answers 202 immediately with the session id and
+   *                          run summary; poll GET /api/agent/:sessionId and read
+   *                          GET /api/agent/:sessionId/result. `stream` is ignored
+   *                          and branch/PR creation is refused (400), because the
+   *                          request is gone before either can be answered.
+   *
+   * @param {string} clientRequestId - (Optional) Idempotency key for a new session.
+   *                                  A retry that sends the same value resolves to
+   *                                  the session the first attempt allocated, not a
+   *                                  second conversation.
+   *
    * @param {string} sessionId - (Optional) Continue an existing session: the id an earlier
    *                             response reported as `sessionId` / in its `session-id` event,
    *                             or the provider-native id it reported as `providerSessionId`.
@@ -850,7 +986,9 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
    * @param {string} effort - (Optional) Reasoning effort for providers/models that support it.
    *                          Claude supports: 'low', 'medium', 'high', 'xhigh', 'max' depending on model.
    *                          Codex supports: 'low', 'medium', 'high', 'xhigh', 'max', 'ultra' depending on model.
-   *                          'default' or omission lets the provider decide.
+   *                          'default' or omission lets the provider decide. A continuation that
+   *                          omits it keeps the effort recorded for the session, so a follow-up
+   *                          does not reset a max run.
    *
    * @param {boolean} unattended - (Optional) Whether nobody will answer the run's MCP elicitation forms.
    *                              Claude only. Default: true
@@ -962,6 +1100,8 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
    *   - message must be non-empty string
    *   - provider must be 'claude', 'cursor', 'codex', or 'opencode'
    *   - createBranch/createPR requires githubUrl OR projectPath (not neither)
+   *   - createBranch/createPR with wait=false is refused; there is no response
+   *     left to carry the branch or PR once the immediate answer is sent
    *   - branchName must pass Git naming rules (if provided)
    *
    * Runtime Validations (500 Internal Server Error or specific error in response):
@@ -993,7 +1133,7 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
    *   Content-Type: text/event-stream
    *   Events:
    *     - { type: "status", message: "...", projectPath: "..." }
-   *     - { type: "session-id", sessionId: "..." }   // the app session id, usable as `sessionId` later
+   *     - { type: "session-id", sessionId: "...", runId: "...", lastSeq: 0 }   // app session id + this round's event cursor
    *     - { kind: "text" | "tool_use" | ... , sessionId, seq, ... }   // the provider's normalized events
    *     - { kind: "complete", ... }
    *     - { type: "status", message: "Run aborted", aborted: true }   // only when a tab aborted the run; no branch/PR follows
@@ -1007,6 +1147,7 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
    *   {
    *     success: true,          // false, with aborted: true, when a tab aborted the run
    *     sessionId: "session-123",          // the app session id; pass it back as `sessionId` to continue
+   *     runId: "uuid",          // this round's event cursor; see GET /api/agent/runs/:runId/events
    *     providerSessionId: "native-id",    // the provider's own id, for tooling that drives the CLI directly
    *     messages: [...],        // The assistant's replies: the run's normalized `text` events.
    *                             // A provider that streams its reply as `stream_delta` frames
@@ -1028,6 +1169,25 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
    *       url: "https://github.com/owner/repo/pull/42"
    *     } | { error: "..." }
    *   }
+   *
+   * Immediate Response (wait=false, regardless of `stream`):
+   *   HTTP Status: 202
+   *   Content-Type: application/json
+   *   {
+   *     success: true,
+   *     sessionId: "session-123",
+   *     provider: "opencode",
+   *     providerSessionId: null,   // a new session learns its native id during the run
+   *     projectPath: "/path/to/project",
+   *     status: "running",
+   *     run: { runId: "uuid", startedAt: "2026-...Z", lastSeq: 0 }
+   *   }
+   *   Poll GET /api/agent/:sessionId until status is "idle", then read
+   *   GET /api/agent/:sessionId/result for the assistant reply, tokens and the
+   *   provider-native id. To follow the run's events instead, poll
+   *   GET /api/agent/runs/:runId/events?after=<lastSeq> until `terminal`.
+   *   All are API-key routes and survive a dropped connection, so a caller
+   *   never has to hold one request open for the run.
    *
    * Error Response:
    *   HTTP Status: 400, 401, 404 (unknown sessionId), 409 (session already mid-run), 500
@@ -1076,8 +1236,20 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
       : undefined;
 
     // Parse stream and cleanup as booleans (handle string "true"/"false" from curl)
-    const stream = req.body.stream === undefined ? true : (req.body.stream === true || req.body.stream === 'true');
+    const requestedStream = req.body.stream === undefined ? true : (req.body.stream === true || req.body.stream === 'true');
     const cleanup = req.body.cleanup === undefined ? true : (req.body.cleanup === true || req.body.cleanup === 'true');
+    // `wait:false` returns as soon as the run is registered, so the caller can
+    // hold no request open for a long agent. It always answers JSON: there is
+    // no response left to stream by the time the run finishes.
+    const wait = req.body.wait !== false && req.body.wait !== 'false';
+    const background = !wait;
+    const stream = requestedStream && wait;
+    // A caller that retries a lost dispatch sends the same id; the session
+    // gateway maps it to the session the first attempt allocated instead of
+    // opening a second conversation.
+    const clientRequestId = typeof req.body.clientRequestId === 'string' && req.body.clientRequestId.trim()
+      ? req.body.clientRequestId.trim()
+      : null;
     // Only an explicit false switches it off. A run that waits on a form
     // nobody sees holds until the MCP server gives up, so a value that is
     // neither true nor false keeps the declining default.
@@ -1086,6 +1258,13 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
     // If branchName is provided, automatically enable createBranch
     const createBranch = branchName ? true : (req.body.createBranch === true || req.body.createBranch === 'true');
     const createPR = req.body.createPR === true || req.body.createPR === 'true';
+
+    // Branch/PR creation runs after the agent finishes, so a caller that asks
+    // for it must stay for the answer; `wait:false` has no response to put the
+    // branch or PR into.
+    if (background && (createBranch || createPR)) {
+      return res.status(400).json({ error: 'wait:false does not create a branch or PR; use wait:true' });
+    }
 
     // Validate inputs
     if (!githubUrl && !projectPath && !sessionId) {
@@ -1193,7 +1372,7 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
       // the provider-native id is mapped onto it when the runtime announces it.
       const appSessionId = sessionRow
         ? sessionRow.session_id
-        : sessionGateway.createAppSession(provider, finalProjectPath, message.trim()).sessionId;
+        : sessionGateway.createAppSession(provider, finalProjectPath, message.trim(), { clientRequestId }).sessionId;
 
       // Registered before any header goes out, so a session already mid-run
       // is refused with a plain 409 rather than an empty stream. The HTTP
@@ -1208,6 +1387,24 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
         userId: req.user.id,
       });
       if (!run) {
+        // A `wait:false` retry that lands while the first run is still going
+        // gets the same answer again: the session id and the run it names.
+        // Without the idempotency key the refusal stays a 409, as before.
+        const currentRun = background && clientRequestId ? runRegistry.getRun(appSessionId) : undefined;
+        if (currentRun && currentRun.status === 'running') {
+          if (cleanup && githubUrl && clonedProjectCreated) {
+            cleanupProject(finalProjectPath, null);
+          }
+          return res.status(202).json({
+            success: true,
+            sessionId: appSessionId,
+            provider: currentRun.provider,
+            providerSessionId: currentRun.writer.getSessionId() ?? currentRun.providerSessionId ?? null,
+            projectPath: finalProjectPath,
+            status: 'running',
+            run: { runId: currentRun.runId, startedAt: new Date(currentRun.startedAt).toISOString(), lastSeq: currentRun.lastSeq },
+          });
+        }
         if (cleanup && githubUrl && clonedProjectCreated) {
           cleanupProject(finalProjectPath, null);
         }
@@ -1231,7 +1428,7 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
         message: githubUrl ? 'Repository cloned and session started' : 'Session started',
         projectPath: finalProjectPath
       });
-      writer.send({ type: 'session-id', sessionId: appSessionId });
+      writer.send({ type: 'session-id', sessionId: appSessionId, runId: run.runId, lastSeq: run.lastSeq });
 
       // A request without `model` runs on the catalog's DEFAULT, the value
       // /api/providers/:provider/models and the API docs advertise. It is the
@@ -1248,55 +1445,117 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
         ? providerModels.DEFAULT
         : undefined;
 
-      // Start the appropriate session
-      if (provider === 'claude') {
-        console.log('🤖 Starting Claude SDK session');
-
-        await queryClaudeSDK(message.trim(), {
-          projectPath: finalProjectPath,
-          cwd: finalProjectPath,
-          sessionId: appSessionId,
-          model: model || providerModels?.DEFAULT,
-          effort,
-          permissionMode: 'bypassPermissions', // Bypass all permissions for API calls
-          // A caller that only reads this response cannot answer an MCP form;
-          // one whose run a person watches in the UI says so with `false`.
-          unattended
-        }, run.writer);
-
-      } else if (provider === 'cursor') {
-        console.log('🖱️ Starting Cursor CLI session');
-
-        await spawnCursor(message.trim(), {
-          projectPath: finalProjectPath,
-          cwd: finalProjectPath,
-          sessionId: appSessionId,
-          model: model || cursorDefaultModel,
-          skipPermissions: true // Bypass permissions for Cursor
-        }, run.writer);
-      } else if (provider === 'codex') {
-        console.log('🤖 Starting Codex SDK session');
-
-        await queryCodex(message.trim(), {
-          projectPath: finalProjectPath,
-          cwd: finalProjectPath,
-          sessionId: appSessionId,
-          model: model || providerModels?.DEFAULT,
-          effort,
-          permissionMode: 'bypassPermissions'
-        }, run.writer);
-      } else if (provider === 'opencode') {
-        console.log('Starting OpenCode CLI session');
-
-        await spawnOpenCode(message.trim(), {
-          projectPath: finalProjectPath,
-          cwd: finalProjectPath,
-          sessionId: appSessionId,
-          model: model || providerModels?.DEFAULT,
-          effort,
-          permissionMode: 'bypassPermissions' // Agent runs are non-interactive, like the other providers above
-        }, run.writer);
+      // Record what this run starts with, as chat.send does. The composer
+      // reopens the session from this row, and a follow-up must not reset the
+      // engine to its provider default. A new session pins the catalog model
+      // and an explicit `default` effort so reopening does not inherit a later
+      // per-provider browser preference; a continuation without either keeps
+      // whatever the row already recorded, and an omitted effort continues
+      // with the recorded one instead of falling back to the engine default.
+      const requestedEffort = AGENT_EFFORT_PROVIDERS.has(provider) && typeof effort === 'string' ? effort : undefined;
+      const recordedEffort = typeof sessionRow?.effort === 'string' ? sessionRow.effort.trim() : '';
+      const effortForRun = requestedEffort ?? (recordedEffort || undefined);
+      const effectiveModel = model
+        || (typeof sessionRow?.model === 'string' ? sessionRow.model.trim() : '')
+        || (provider === 'cursor' ? cursorDefaultModel : providerModels?.DEFAULT);
+      if (model || (!sessionRow && effectiveModel)) {
+        providerModelsService.setSessionModel(provider, appSessionId, effectiveModel);
       }
+      const effortToRecord = requestedEffort ?? (sessionRow ? '' : 'default');
+      if (effortToRecord) {
+        providerModelsService.setSessionEffort(provider, appSessionId, effortToRecord);
+      }
+
+      // The provider call this request runs. A normal request awaits it; a
+      // `wait:false` request detaches it after answering with the session id,
+      // because the caller polls the status and result routes instead.
+      const startProviderRun = () => {
+        if (provider === 'claude') {
+          console.log('🤖 Starting Claude SDK session');
+          return queryClaudeSDK(message.trim(), {
+            projectPath: finalProjectPath,
+            cwd: finalProjectPath,
+            sessionId: appSessionId,
+            model: model || providerModels?.DEFAULT,
+            effort: effortForRun,
+            permissionMode: 'bypassPermissions', // Bypass all permissions for API calls
+            // A caller that only reads this response cannot answer an MCP form;
+            // one whose run a person watches in the UI says so with `false`.
+            unattended
+          }, run.writer);
+        }
+        if (provider === 'cursor') {
+          console.log('🖱️ Starting Cursor CLI session');
+          return spawnCursor(message.trim(), {
+            projectPath: finalProjectPath,
+            cwd: finalProjectPath,
+            sessionId: appSessionId,
+            model: model || cursorDefaultModel,
+            skipPermissions: true // Bypass permissions for Cursor
+          }, run.writer);
+        }
+        if (provider === 'codex') {
+          console.log('🤖 Starting Codex SDK session');
+          return queryCodex(message.trim(), {
+            projectPath: finalProjectPath,
+            cwd: finalProjectPath,
+            sessionId: appSessionId,
+            model: model || providerModels?.DEFAULT,
+            effort: effortForRun,
+            permissionMode: 'bypassPermissions'
+          }, run.writer);
+        }
+        if (provider === 'opencode') {
+          console.log('Starting OpenCode CLI session');
+          return spawnOpenCode(message.trim(), {
+            projectPath: finalProjectPath,
+            cwd: finalProjectPath,
+            sessionId: appSessionId,
+            model: model || providerModels?.DEFAULT,
+            effort: effortForRun,
+            permissionMode: 'bypassPermissions' // Agent runs are non-interactive, like the other providers above
+          }, run.writer);
+        }
+        return Promise.resolve();
+      };
+
+      // A cloned project is removed after the run, whether the caller waited
+      // for it or polls for it later.
+      const cleanupClonedProject = () => {
+        if (!cleanup || !githubUrl || !clonedProjectCreated) return;
+        // Only cleanup if we cloned a repo (not for existing project paths)
+        const sessionIdForCleanup = run.writer.getSessionId();
+        setTimeout(() => {
+          cleanupProject(finalProjectPath, sessionIdForCleanup);
+        }, 5000);
+      };
+
+      if (background) {
+        // The run is registered, so the running-sessions list and the status
+        // route already see it. Answer with the id at once and let the
+        // provider run on its own.
+        res.status(202).json({
+          success: true,
+          sessionId: appSessionId,
+          provider,
+          providerSessionId: run.writer.getSessionId() ?? sessionRow?.provider_session_id ?? null,
+          projectPath: finalProjectPath,
+          status: 'running',
+          run: { runId: run.runId, startedAt: new Date(run.startedAt).toISOString(), lastSeq: run.lastSeq },
+        });
+        void Promise.resolve()
+          .then(startProviderRun)
+          .catch((error) => {
+            console.error('❌ External session error (background):', error);
+          })
+          .finally(() => {
+            cleanupClonedProject();
+            runRegistry.completeRunIfCurrent(run, { exitCode: 1 });
+          });
+        return;
+      }
+
+      await startProviderRun();
 
       // A tab can now abort the run (`chat.abort`), on which the runtime
       // returns as it does on completion. What the interrupted agent left
@@ -1500,6 +1759,7 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
           success: !aborted,
           ...(aborted ? { aborted: true } : {}),
           sessionId: appSessionId,
+          runId: run.runId,
           // The provider-native id, for a caller that drives the CLI itself
           // (`claude --resume`); `sessionId` is what this API and the UI use.
           providerSessionId: run.writer.getSessionId(),
@@ -1520,13 +1780,7 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
       }
 
       // Clean up if requested
-      if (cleanup && githubUrl && clonedProjectCreated) {
-        // Only cleanup if we cloned a repo (not for existing project paths)
-        const sessionIdForCleanup = run.writer.getSessionId();
-        setTimeout(() => {
-          cleanupProject(finalProjectPath, sessionIdForCleanup);
-        }, 5000);
-      }
+      cleanupClonedProject();
 
     } catch (error) {
       console.error('❌ External session error:', error);
@@ -1566,8 +1820,9 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
       // Safety net, as for a chat send: a runtime that threw or resolved
       // without its terminal `complete` would leave the session listed as
       // running in every tab. Scoped to this run, so a run the session
-      // started meanwhile is left alone.
-      if (run) {
+      // started meanwhile is left alone. A `wait:false` run is completed by
+      // the detached promise's own `finally`, not by this request's teardown.
+      if (run && !background) {
         runRegistry.completeRunIfCurrent(run, { exitCode: 1 });
       }
     }

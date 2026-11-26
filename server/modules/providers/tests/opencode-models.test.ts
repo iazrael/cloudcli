@@ -6,7 +6,7 @@ import test from 'node:test';
 
 import Database from 'better-sqlite3';
 
-import { closeConnection, initializeDatabase } from '@/modules/database/index.js';
+import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
 import {
   OpenCodeProviderModels,
   OPENCODE_PREDEFINED_MODELS,
@@ -519,10 +519,11 @@ test('OpenCode composes the provider prefix into session model ids', async () =>
         },
       ]),
       async (adapter) => {
-        assert.equal(
-          (await adapter.getCurrentActiveModel('ses_openrouter')).model,
-          'openrouter/z-ai/glm-5.3-flash',
-        );
+        const prefixed = await adapter.getCurrentActiveModel('ses_openrouter');
+        assert.equal(prefixed.model, 'openrouter/z-ai/glm-5.3-flash');
+        // The engine's stored variant is the session's reasoning effort even
+        // when the app row predates effort tracking.
+        assert.equal(prefixed.effort, 'default');
         assert.equal(
           (await adapter.getCurrentActiveModel('ses_qualified')).model,
           'openrouter/z-ai/glm-5.3-flash',
@@ -585,4 +586,48 @@ test('readOpenCodeModelContextLimit reads limit.context from the cached catalog'
       assert.equal(readOpenCodeModelContextLimit({ providerID: 'opencode', id: 'unknown-model' }), null);
     },
   );
+});
+
+test('OpenCode back-fills an app session effort from the engine variant', async () => {
+  // Sessions created through the Agent API never persisted an effort, so the
+  // app row reads NULL while the engine kept `variant: max`. The active-model
+  // lookup must return that variant and write it back, or the composer opens
+  // on the browser's per-provider default.
+  const tempSessionsDirectory = await mkdtemp(path.join(os.tmpdir(), 'opencode-session-effort-'));
+  const previousDatabasePath = process.env.DATABASE_PATH;
+  try {
+    closeConnection();
+    process.env.DATABASE_PATH = path.join(tempSessionsDirectory, 'auth.db');
+    await initializeDatabase();
+    sessionsDb.createAppSession('app-session-effort', 'opencode', '/tmp/project', 'Effort');
+    sessionsDb.assignProviderSessionId('app-session-effort', 'ses_effort');
+
+    await withOpenCodeHome(
+      (homeDir) => writeOpenCodeSessionDatabase(homeDir, [
+        {
+          id: 'ses_effort',
+          model: JSON.stringify({
+            id: 'deepseek-v4.1-flash',
+            providerID: 'opencode-go',
+            variant: 'max',
+          }),
+        },
+      ]),
+      async (adapter) => {
+        const active = await adapter.getCurrentActiveModel('app-session-effort');
+
+        assert.equal(active.model, 'opencode-go/deepseek-v4.1-flash');
+        assert.equal(active.effort, 'max');
+        assert.equal(sessionsDb.getSessionById('app-session-effort')?.effort, 'max');
+      },
+    );
+  } finally {
+    closeConnection();
+    if (previousDatabasePath === undefined) {
+      delete process.env.DATABASE_PATH;
+    } else {
+      process.env.DATABASE_PATH = previousDatabasePath;
+    }
+    await rm(tempSessionsDirectory, { recursive: true, force: true });
+  }
 });

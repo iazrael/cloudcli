@@ -56,8 +56,10 @@ async function withIsolatedDatabase(run: () => Promise<void>): Promise<void> {
 function createDependencies(
   queryClaude: RunFunction,
   runtimeOverrides: Partial<AgentDependencies['runtime']> = {},
+  history: NormalizedMessage[] = [],
 ): AgentDependencies {
   const unexpected = async (): Promise<never> => { throw new Error('unexpected provider call'); };
+  const sessionIdsByClientRequestId = new Map<string, string>();
   return {
     fileSystem: { access: async () => undefined } as unknown as AgentDependencies['fileSystem'],
     crypto: nodeCrypto,
@@ -68,14 +70,35 @@ function createDependencies(
     apiKeys: { validateApiKey: () => undefined },
     githubTokens: { getActiveGithubToken: () => null },
     projects: { createProjectPath: () => ({ outcome: 'created' }) },
-    models: { getProviderModels: async () => ({ OPTIONS: [], DEFAULT: 'default-model' }) } as unknown as AgentDependencies['models'],
+    models: {
+      getProviderModels: async () => ({ OPTIONS: [], DEFAULT: 'default-model' }),
+      setSessionModel: () => null,
+      setSessionEffort: () => null,
+    } as unknown as AgentDependencies['models'],
     sessions: {
       getSessionById: (sessionId) => sessionsDb.getSessionById(sessionId),
       getSessionByProviderSessionId: (providerSessionId) => sessionsDb.getSessionByProviderSessionId(providerSessionId),
-      createAppSession: (provider, projectPath, initialMessage) => {
+      createAppSession: (provider, projectPath, initialMessage, options) => {
+        const clientRequestId = options?.clientRequestId ?? null;
+        const existing = clientRequestId ? sessionIdsByClientRequestId.get(clientRequestId) : undefined;
+        if (existing) return { sessionId: existing };
         const sessionId = `app-${initialMessage.length}-${nodeCrypto.randomUUID()}`;
         sessionsDb.createAppSession(sessionId, provider, projectPath, initialMessage);
+        if (clientRequestId) sessionIdsByClientRequestId.set(clientRequestId, sessionId);
         return { sessionId };
+      },
+      fetchHistory: async (_sessionId, options = {}) => {
+        const limit = options.limit ?? null;
+        const offset = options.offset ?? 0;
+        const end = Math.max(0, history.length - offset);
+        const start = limit === null ? 0 : Math.max(0, end - limit);
+        return {
+          messages: history.slice(start, end),
+          total: history.length,
+          hasMore: start > 0,
+          offset,
+          limit,
+        };
       },
     },
     runs: chatRunRegistry,
@@ -114,6 +137,23 @@ const abortSession = (baseUrl: string, sessionId: string) =>
 
 const getSessionStatus = (baseUrl: string, sessionId: string) =>
   fetch(`${baseUrl}/api/agent/${encodeURIComponent(sessionId)}`);
+
+const getSessionResult = (baseUrl: string, sessionId: string) =>
+  fetch(`${baseUrl}/api/agent/${encodeURIComponent(sessionId)}/result`);
+
+const getRunEvents = (baseUrl: string, runId: string, after = 0) =>
+  fetch(`${baseUrl}/api/agent/runs/${encodeURIComponent(runId)}/events?after=${after}`);
+
+/** Polls the status route until it reports `expected`, as a `wait:false` caller does. */
+async function waitForSessionStatus(baseUrl: string, sessionId: string, expected: string): Promise<Record<string, unknown>> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const response = await getSessionStatus(baseUrl, sessionId);
+    const body = await response.json() as Record<string, unknown>;
+    if (body.status === expected) return body;
+    await new Promise((resolve) => { setTimeout(resolve, 20); });
+  }
+  assert.fail(`session ${sessionId} never reached ${expected}`);
+}
 
 const readEvents = async (response: Response): Promise<Array<Record<string, unknown>>> =>
   (await response.text())
@@ -345,6 +385,168 @@ test('session status reports a running turn and then idle', async () => {
       assert.equal(idleBody.run, null);
 
       const missing = await getSessionStatus(baseUrl, 'missing');
+      assert.equal(missing.status, 404);
+    });
+  });
+});
+
+test('wait:false answers with the session id before the run ends, and the result route reads its reply from history', async () => {
+  await withIsolatedDatabase(async () => {
+    const runtime = createHeldRuntime();
+    const history = [
+      createNormalizedMessage({ kind: 'text', id: 'history-user-run-it', provider: 'claude', sessionId: 'native-1', role: 'user', content: 'Run it' }),
+      createNormalizedMessage({ kind: 'text', id: 'history-assistant-hello', provider: 'claude', sessionId: 'native-1', role: 'assistant', content: 'hello' }),
+    ];
+    await withAgentServer(createDependencies(runtime.queryClaude, {}, history), async (baseUrl) => {
+      const response = await post(baseUrl, { projectPath: PROJECT_PATH, message: 'Run it', wait: false });
+      assert.equal(response.status, 202);
+      const body = await response.json() as {
+        success: boolean;
+        sessionId: string;
+        status: string;
+        run: { runId: string; startedAt: string; lastSeq: number } | null;
+      };
+      assert.equal(body.success, true);
+      assert.match(body.sessionId, /^app-/);
+      assert.match(body.run?.runId ?? '', /^[0-9a-f-]{36}$/, 'the answer names the run it just registered');
+      assert.equal(body.status, 'running');
+      assert.ok(body.run, 'the answer names the run it just registered');
+
+      assert.equal((await (await getSessionStatus(baseUrl, body.sessionId)).json() as { status: string }).status, 'running');
+
+      // The provider is still held, but the stored transcript already has the
+      // reply the result route serves (the caller normally polls until idle).
+      const whileRunning = await getSessionResult(baseUrl, body.sessionId);
+      assert.equal(whileRunning.status, 200);
+      const partial = await whileRunning.json() as { status: string; reply: string };
+      assert.equal(partial.status, 'running');
+      assert.equal(partial.reply, 'hello');
+
+      runtime.release();
+      assert.equal((await waitForSessionStatus(baseUrl, body.sessionId, 'idle')).status, 'idle');
+
+      const result = await getSessionResult(baseUrl, body.sessionId);
+      assert.equal(result.status, 200);
+      const done = await result.json() as {
+        status: string;
+        reply: string;
+        messages: Array<{ content: string }>;
+        providerSessionId: string;
+      };
+      assert.equal(done.status, 'idle');
+      assert.equal(done.reply, 'hello');
+      assert.deepEqual(done.messages.map((message) => message.content), ['hello']);
+      assert.equal(done.providerSessionId, 'native-1');
+    });
+  });
+});
+
+test('a run\'s events replay from a cursor and report the terminal state', async () => {
+  await withIsolatedDatabase(async () => {
+    const runtime = createHeldRuntime();
+    await withAgentServer(createDependencies(runtime.queryClaude), async (baseUrl) => {
+      const response = await post(baseUrl, { projectPath: PROJECT_PATH, message: 'Run it', wait: false });
+      assert.equal(response.status, 202);
+      const body = await response.json() as { sessionId: string; run: { runId: string } };
+
+      for (let i = 0; i < 50 && runtime.seen.length === 0; i += 1) {
+        await new Promise((resolve) => { setTimeout(resolve, 20); });
+      }
+
+      const first = await getRunEvents(baseUrl, body.run.runId, 0);
+      assert.equal(first.status, 200);
+      const firstBody = await first.json() as {
+        status: string;
+        terminal: boolean;
+        events: Array<{ kind: string; seq?: number; content?: string }>;
+        lastSeq: number;
+        stale: boolean;
+      };
+      assert.equal(firstBody.status, 'running');
+      assert.equal(firstBody.terminal, false);
+      assert.deepEqual(firstBody.events.map((event) => event.kind), ['text']);
+      assert.equal(firstBody.events[0]?.content, 'hello');
+      assert.equal(firstBody.stale, false);
+
+      runtime.release();
+      await waitForSessionStatus(baseUrl, body.sessionId, 'idle');
+
+      const rest = await getRunEvents(baseUrl, body.run.runId, firstBody.lastSeq);
+      const restBody = await rest.json() as {
+        status: string;
+        terminal: boolean;
+        events: Array<{ kind: string }>;
+        lastSeq: number;
+      };
+      assert.equal(restBody.status, 'completed');
+      assert.equal(restBody.terminal, true);
+      assert.deepEqual(restBody.events.map((event) => event.kind), ['complete']);
+      assert.ok(restBody.lastSeq > firstBody.lastSeq);
+
+      const missing = await getRunEvents(baseUrl, 'missing');
+      assert.equal(missing.status, 404);
+    });
+  });
+});
+
+test('a wait:false retry with the same clientRequestId gets the same session and the running run', async () => {
+  await withIsolatedDatabase(async () => {
+    const runtime = createHeldRuntime();
+    await withAgentServer(createDependencies(runtime.queryClaude), async (baseUrl) => {
+      const first = await post(baseUrl, {
+        projectPath: PROJECT_PATH, message: 'Run it', wait: false, clientRequestId: 'dispatch-1',
+      });
+      assert.equal(first.status, 202);
+      const firstBody = await first.json() as { sessionId: string };
+
+      const retry = await post(baseUrl, {
+        projectPath: PROJECT_PATH, message: 'Run it', wait: false, clientRequestId: 'dispatch-1',
+      });
+      assert.equal(retry.status, 202);
+      const retryBody = await retry.json() as { sessionId: string; status: string; run: unknown };
+      assert.equal(retryBody.sessionId, firstBody.sessionId, 'the retry reuses the session the first attempt allocated');
+      assert.equal(retryBody.status, 'running');
+      assert.ok(retryBody.run, 'the retry names the run that is still going');
+      assert.equal(runtime.seen.length, 1, 'the provider was entered once');
+
+      runtime.release();
+      await waitForSessionStatus(baseUrl, firstBody.sessionId, 'idle');
+    });
+  });
+});
+
+test('wait:false refuses branch/PR creation instead of answering before it exists', async () => {
+  await withIsolatedDatabase(async () => {
+    const runtime = createHeldRuntime();
+    await withAgentServer(createDependencies(runtime.queryClaude), async (baseUrl) => {
+      const response = await post(baseUrl, { projectPath: PROJECT_PATH, message: 'Run it', wait: false, createBranch: true });
+      assert.equal(response.status, 400);
+      assert.match((await response.json() as { error: string }).error, /wait:false/);
+      assert.equal(runtime.seen.length, 0, 'nothing ran');
+    });
+  });
+});
+
+test('the result route returns only the last turn of a continued session, and 404s an unknown one', async () => {
+  await withIsolatedDatabase(async () => {
+    sessionsDb.createAppSession('app-continued', 'claude', PROJECT_PATH, 'Continued');
+    const history = [
+      createNormalizedMessage({ kind: 'text', id: 'history-user-first', provider: 'claude', sessionId: 'native-1', role: 'user', content: 'First' }),
+      createNormalizedMessage({ kind: 'text', id: 'history-assistant-one', provider: 'claude', sessionId: 'native-1', role: 'assistant', content: 'one' }),
+      createNormalizedMessage({ kind: 'text', id: 'history-user-second', provider: 'claude', sessionId: 'native-1', role: 'user', content: 'Second' }),
+      createNormalizedMessage({ kind: 'text', id: 'history-assistant-two', provider: 'claude', sessionId: 'native-1', role: 'assistant', content: 'two' }),
+    ];
+    const runtime = createHeldRuntime();
+    runtime.release();
+    await withAgentServer(createDependencies(runtime.queryClaude, {}, history), async (baseUrl) => {
+      const response = await getSessionResult(baseUrl, 'app-continued');
+      assert.equal(response.status, 200);
+      const body = await response.json() as { status: string; reply: string; messages: Array<{ content: string }> };
+      assert.equal(body.status, 'idle');
+      assert.equal(body.reply, 'two');
+      assert.deepEqual(body.messages.map((message) => message.content), ['two']);
+
+      const missing = await getSessionResult(baseUrl, 'missing');
       assert.equal(missing.status, 404);
     });
   });

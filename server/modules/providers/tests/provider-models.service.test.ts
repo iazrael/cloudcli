@@ -126,7 +126,7 @@ const createTestService = (options: {
   catalog?: ReturnType<typeof createCatalogStore>;
   sessions?: ReturnType<typeof createSessionStore>;
   settings?: ReturnType<typeof createSettingsStore>;
-  activeModel?: (provider: LLMProvider, sessionId?: string) => string;
+  activeModel?: (provider: LLMProvider, sessionId?: string) => string | ProviderCurrentActiveModel;
   onCatalogRead?: (provider: LLMProvider) => void;
 } = {}) => {
   const catalog = options.catalog ?? createCatalogStore();
@@ -142,9 +142,10 @@ const createTestService = (options: {
           options.onCatalogRead?.(provider);
           return createModels(`${provider}-default`);
         },
-        getCurrentActiveModel: async (sessionId) => createCurrentActiveModel(
-          options.activeModel?.(provider, sessionId) ?? `${provider}-default`,
-        ),
+        getCurrentActiveModel: async (sessionId) => {
+          const active = options.activeModel?.(provider, sessionId) ?? `${provider}-default`;
+          return typeof active === 'string' ? createCurrentActiveModel(active) : active;
+        },
       },
     }),
   });
@@ -528,6 +529,48 @@ test('resolveSessionModel uses provider session state for unrecorded external se
 
   assert.equal(resolved.model, 'provider-reported');
   assert.equal(resolved.source, 'provider');
+});
+
+test('resolveSessionModel surfaces the effort a provider kept beside its model', async () => {
+  // OpenCode records the reasoning variant in the same object as the model id;
+  // a session the app never recorded (Agent API, CLI) would otherwise fall back
+  // to the browser's per-provider effort.
+  const { service } = createTestService({
+    sessions: createSessionStore({ 'session-1': null }),
+    activeModel: () => ({ model: 'provider-reported', effort: 'max' }),
+  });
+
+  const resolved = await service.resolveSessionModel('opencode', { sessionId: 'session-1' });
+
+  assert.equal(resolved.model, 'provider-reported');
+  assert.equal(resolved.effort, 'max');
+  assert.equal(resolved.source, 'provider');
+});
+
+test('resolveSessionModel keeps a recorded effort over the provider variant', async () => {
+  const { service } = createTestService({
+    sessions: createSessionStore({ 'session-1': null }, { 'session-1': 'low' }),
+    activeModel: () => ({ model: 'provider-reported', effort: 'max' }),
+  });
+
+  const resolved = await service.resolveSessionModel('opencode', { sessionId: 'session-1' });
+
+  assert.equal(resolved.effort, 'low');
+});
+
+test('resolveSessionModel keeps the provider effort when its model equals the catalog default', async () => {
+  // The adapter answering with its own built-in default is "no answer" for the
+  // model, but the effort it read beside the session is still real.
+  const { service } = createTestService({
+    sessions: createSessionStore({ 'session-1': null }),
+    activeModel: () => ({ model: 'opencode-default', effort: 'max' }),
+  });
+
+  const resolved = await service.resolveSessionModel('opencode', { sessionId: 'session-1' });
+
+  assert.equal(resolved.model, 'opencode-default');
+  assert.equal(resolved.effort, 'max');
+  assert.equal(resolved.source, 'default');
 });
 
 test('resolveSessionModel uses the requested model when provider reports the catalog default', async () => {
