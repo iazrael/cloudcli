@@ -631,6 +631,40 @@ test('AntigravitySkillsProvider discovers user skills from ~/.gemini/config/skil
   }
 });
 
+test('AntigravitySkillsProvider lists a symlink-shared skill once across user roots', async () => {
+  // Engines share one library through per-skill symlinks: ~/.gemini/config/skills/demo
+  // -> ~/.agents/skills/demo. Both user roots hold the same physical SKILL.md, and
+  // the listing must keep only the first discovery-order entry instead of two.
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-skills-symlink-test-'));
+  const restoreHomedir = mock.method(os, 'homedir', () => tempDir);
+
+  try {
+    const sharedSkillDir = path.join(tempDir, '.agents', 'skills', 'demo-skill');
+    await fs.mkdir(sharedSkillDir, { recursive: true });
+    await fs.writeFile(
+      path.join(sharedSkillDir, 'SKILL.md'),
+      '---\nname: demo-skill\ndescription: Demo\n---\n\nBody\n',
+      'utf8',
+    );
+
+    const geminiSkillDir = path.join(tempDir, '.gemini', 'config', 'skills', 'demo-skill');
+    await fs.mkdir(path.dirname(geminiSkillDir), { recursive: true });
+    await fs.symlink(sharedSkillDir, geminiSkillDir, 'dir');
+
+    const skills = new AntigravitySkillsProvider();
+    const list = await skills.listSkills({ workspacePath: '/mock/workspace' });
+    const demoEntries = list.filter((skill) => skill.name === 'demo-skill');
+
+    assert.equal(demoEntries.length, 1);
+    // Discovery order puts ~/.gemini/config/skills before ~/.agents/skills, so
+    // the surviving entry points at the root each engine would load first.
+    assert.ok(demoEntries[0]?.sourcePath.includes(path.join('.gemini', 'config', 'skills')));
+  } finally {
+    restoreHomedir.mock.restore();
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test('AntigravityMcpProvider handles project-level mcp_config.json', async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-mcp-test-'));
   const mcp = new AntigravityMcpProvider();

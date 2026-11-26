@@ -227,7 +227,7 @@ ZCode 的 `SendMessage` 能把已结束的 agent 复活到后台。引擎把这�
 - `sessions/workspace-admission.ts`：会话入库前的工作区准入闸门，见下节。
 - `sessions/session-worktree-placement.ts`：会话目录的工作树认亲改判，见下节。
 - `sessions/session-project-path-canonicalization.ts`：引擎记录的目录与注册项目为同一目录的两种写法（软链还原）时，会话归并到已注册项目的存储写法，见下节。
-- `mcp/mcp.provider.ts`、`skills/skills.provider.ts`：MCP 与技能的校验/扫描基类。
+- `mcp/mcp.provider.ts`、`skills/skills.provider.ts`：MCP 与技能的校验/扫描基类。技能扫描按各引擎的发现顺序遍历声明根，同一 `SKILL.md` 经 realpath 还原后只保留首个条目——各家引擎（agy/claude/codex/zcode/opencode）通过软链共享 `~/.agents/skills` 等技能库时，多根重叠不产生重复技能项，与引擎自身按真实路径去重的加载行为一致；列表去重发生在 `SkillsProvider` 一处，斜杠命令菜单与设置页技能列表共用同一接口结果。
 - `background-work/background-work-registry.ts`：`BackgroundWorkRegistry`——按应用会话登记引擎里仍在跑的后台工作（codex / zcode / antigravity / opencode 的子 agent，以及 opencode 放到后台的命令），运行时切面的 `listBackgroundWork()` 从它作答，见上文「子 agent 卡片」。
 Codex 的模型目录由 `codex-models.provider.ts` 通过 `codex-app-server.client.ts` 的连接读取。例如 CLI 的 `model/list` 只返回当前可见模型时，选择器只显示这些模型，不会补回写死的旧型号。查询使用对话运行时同一份内置 `@openai/codex`，不使用终端 PATH 上的另一份 CLI。适配器读取所有分页，过滤隐藏模型，按模型 ID 去重，并使用引擎返回的名称、说明、推理强度和默认模型；没有默认标记时使用首个可见模型。自定义模型由 `provider-models.service.ts` 合并。同 ID 的自定义记录与引擎目录只显示一项，保留用户名称和可编辑记录，并继承引擎的推理强度。引擎收录已有自定义 ID 后，用户仍可修改名称；创建或修改为其他已存在 ID 仍会被拒绝。删除已被引擎收录的自定义记录只移除用户名称，型号继续显示，已有会话的型号与强度保持不变；删除仅存在于自定义记录中的型号才切换到默认型号并清空强度。
 

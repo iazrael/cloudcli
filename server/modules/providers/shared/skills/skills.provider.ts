@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { mkdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
 
 import type { IProviderSkills } from '@/shared/interfaces.js';
 import type {
@@ -96,6 +96,7 @@ export abstract class SkillsProvider implements IProviderSkills {
     const workspacePath = resolveWorkspacePath(options?.workspacePath);
     const sources = await this.getSkillSources(workspacePath);
     const skills: ProviderSkill[] = [];
+    const seenRealSkillPaths = new Set<string>();
 
     for (const source of sources) {
       const skillFiles = await findProviderSkillMarkdownFiles(source.rootDir, {
@@ -103,6 +104,19 @@ export abstract class SkillsProvider implements IProviderSkills {
       });
       for (const skillPath of skillFiles) {
         try {
+          // Engines share one skill library across tools through per-skill
+          // symlinks (e.g. ~/.gemini/config/skills/* -> ~/.agents/skills/*),
+          // so a provider's own root and the shared root can hold the same
+          // physical SKILL.md. Matching on realpath keeps one entry, in each
+          // engine's own discovery order, mirroring how the engines load the
+          // winning copy once. An unreachable path falls back to its resolved
+          // spelling so the definition read below still reports it.
+          const realSkillPath = await realpath(skillPath).catch(() => path.resolve(skillPath));
+          if (seenRealSkillPaths.has(realSkillPath)) {
+            continue;
+          }
+          seenRealSkillPaths.add(realSkillPath);
+
           const definition = await readProviderSkillMarkdownDefinition(skillPath);
           const command = source.commandForSkill
             ? source.commandForSkill(definition.name)
