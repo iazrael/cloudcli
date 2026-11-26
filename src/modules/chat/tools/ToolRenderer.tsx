@@ -283,6 +283,8 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
               isResult={contentProps.isResult}
             />
           );
+        } else if (contentProps.content) {
+          contentComponent = <TextContent content={contentProps.content} format={contentProps.format} />;
         }
         break;
 

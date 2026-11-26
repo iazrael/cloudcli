@@ -10,6 +10,8 @@ import {
   pickFilePath,
   pickWriteContent,
 } from '@/modules/chat/tools/toolTaxonomy';
+import { parseToolPayload } from '@/modules/chat/utils/messageTransforms';
+import type { TodoItem } from '@/shared/types';
 
 /** A file card's title: the touched file's basename. */
 const fileNameTitle = (input: unknown): string => {
@@ -189,6 +191,49 @@ export function extractToolResultText(toolResult: any): string {
   }
 
   return String(content);
+}
+
+// Keep the title in sync with the checklist, including the step in flight.
+function checklistTitle(todos: TodoItem[]): string {
+  if (todos.length === 0) {
+    return 'Updating checklist';
+  }
+
+  const done = todos.filter((todo) => todo?.status === 'completed').length;
+  const active = todos.find((todo) => todo?.status === 'in_progress');
+  if (active) {
+    return `${String(active.activeForm || active.content)} — ${done}/${todos.length}`;
+  }
+  return done === todos.length
+    ? `Done — ${done}/${todos.length}`
+    : `${done}/${todos.length} done`;
+}
+
+/** agy can encode the steps array as a JSON string inside the tool arguments. */
+function readAgySteps(input: unknown): TodoItem[] | null {
+  const args = parseToolPayload(input);
+  if (!args || typeof args !== 'object' || !('steps' in args)) {
+    return null;
+  }
+
+  const steps = parseToolPayload(args.steps);
+  if (!Array.isArray(steps)) {
+    return null;
+  }
+
+  const todos: TodoItem[] = [];
+  for (const step of steps) {
+    const { title, status } = step ?? {};
+    if (
+      typeof title !== 'string' || !title.trim()
+      || (status !== 'pending' && status !== 'in_progress' && status !== 'done' && status !== 'completed')
+    ) {
+      // A partial list would report misleading totals. Preserve the raw input.
+      return null;
+    }
+    todos.push({ content: title, status: status === 'done' ? 'completed' : status });
+  }
+  return todos;
 }
 
 export const TOOL_CONFIGS: Record<string, ToolDisplayConfig> = {
@@ -655,23 +700,7 @@ export const TOOL_CONFIGS: Record<string, ToolDisplayConfig> = {
   TodoWrite: {
     input: {
       type: 'collapsible',
-      // Naming the step in flight makes a collapsed checklist say what the
-      // agent is doing right now, not just how far along it is.
-      title: (input) => {
-        const todos = Array.isArray(input?.todos) ? input.todos : [];
-        if (todos.length === 0) {
-          return 'Updating checklist';
-        }
-
-        const done = todos.filter((todo: any) => todo?.status === 'completed').length;
-        const active = todos.find((todo: any) => todo?.status === 'in_progress');
-        if (active) {
-          return `${String(active.activeForm || active.content)} — ${done}/${todos.length}`;
-        }
-        return done === todos.length
-          ? `Done — ${done}/${todos.length}`
-          : `${done}/${todos.length} done`;
-      },
+      title: (input) => checklistTitle(Array.isArray(input?.todos) ? input.todos : []),
       defaultOpen: true,
       contentType: 'todo-list',
       getContentProps: (input) => ({
@@ -683,6 +712,27 @@ export const TOOL_CONFIGS: Record<string, ToolDisplayConfig> = {
     result: {
       hideOnSuccess: true
     }
+  },
+
+  update_steps: {
+    input: {
+      type: 'collapsible',
+      title: (input) => {
+        const todos = readAgySteps(input);
+        return todos ? checklistTitle(todos) : summarizeToolInput(input);
+      },
+      defaultOpen: true,
+      contentType: 'todo-list',
+      getContentProps: (input) => {
+        const todos = readAgySteps(input);
+        return todos
+          ? { todos }
+          : TOOL_CONFIGS.Default.input.getContentProps?.(input);
+      },
+    },
+    result: {
+      hideOnSuccess: (input) => readAgySteps(input) !== null,
+    },
   },
 
   TodoRead: {

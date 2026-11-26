@@ -46,6 +46,7 @@ const TOOL_ALIASES: Record<string, string> = {
   exit_plan_mode: 'Plan',
   Plan: 'Plan',
   update_plan: 'Plan',
+  update_steps: 'TodoWrite',
 };
 
 /** The engine-neutral name a tool alias resolves to (its grouping identity). */
@@ -84,11 +85,11 @@ const CANONICAL_DISPLAY_CATEGORIES: ReadonlyArray<readonly [string, ReadonlySet<
   ['edit', new Set(['Edit', 'Write'])],
   ['search', new Set(['Grep', 'Glob'])],
   ['bash', new Set(['Bash'])],
+  ['todo', new Set(['TodoWrite', 'TodoRead'])],
 ];
 
 const RAW_DISPLAY_CATEGORIES: ReadonlyArray<readonly [string, ReadonlySet<string>]> = [
   ['search', new Set(['list_dir'])],
-  ['todo', new Set(['TodoWrite', 'TodoRead'])],
   ['task', new Set(['TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet', 'manage_task'])],
   ['agent', new Set(['Agent', 'manage_subagents', 'send_message'])],
   ['plan', new Set(['exit_plan_mode', 'ExitPlanMode'])],

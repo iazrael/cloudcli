@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import { i18n } from '@/modules/i18n';
 import { ToolRenderer } from '@/modules/chat/tools/ToolRenderer';
+import { shouldHideToolResult } from '@/modules/chat/tools/configs/toolConfigs';
 
 /**
  * agy's `edit_file` and opencode's `shell` used to fall through to the
@@ -59,5 +60,50 @@ describe('engine-native card headers', () => {
 
     expect(container.textContent).toContain('Write');
     expect(container.textContent).not.toContain('write_file');
+  });
+});
+
+describe('Antigravity step checklist', () => {
+  const steps = [
+    { title: 'Review the diff', status: 'done' },
+    { title: 'Run the checks', status: 'in_progress' },
+    { title: 'Summarize the changes', status: 'pending' },
+  ];
+  const receipt = { content: 'Steps updated' };
+
+  it.each([
+    { steps },
+    JSON.stringify({ steps: JSON.stringify(steps) }),
+  ])('renders the current step and progress from %j', (toolInput) => {
+    render(
+      <ToolRenderer toolName="update_steps" toolInput={toolInput} toolResult={receipt} mode="input" />,
+    );
+
+    expect(screen.getByText('Checklist')).toBeTruthy();
+    expect(screen.getByText('Run the checks — 1/3')).toBeTruthy();
+    const rows = screen.getAllByRole('listitem');
+    expect(rows.map((row) => row.textContent)).toEqual(steps.map((step) => step.title));
+    expect(rows.map((row) => row.getAttribute('data-status'))).toEqual(['completed', 'in_progress', 'pending']);
+    expect(screen.queryByText('Steps updated')).toBeNull();
+    expect(shouldHideToolResult('update_steps', receipt, toolInput)).toBe(true);
+    expect(shouldHideToolResult('update_steps', { content: 'Rejected', isError: true }, toolInput)).toBe(false);
+  });
+
+  it('shows an empty checklist without inventing any steps', () => {
+    render(<ToolRenderer toolName="update_steps" toolInput={{ steps: [] }} mode="input" />);
+
+    expect(screen.getByText('Updating checklist')).toBeTruthy();
+    expect(screen.queryByRole('listitem')).toBeNull();
+  });
+
+  it('keeps the input and result readable if a step cannot be parsed', () => {
+    const toolInput = { steps: [...steps, { title: 'Unknown step', status: 'unexpected' }] };
+    render(
+      <ToolRenderer toolName="update_steps" toolInput={toolInput} toolResult={receipt} mode="input" />,
+    );
+
+    expect(screen.queryByRole('listitem')).toBeNull();
+    expect(screen.getByText(/"status": "unexpected"/)).toBeTruthy();
+    expect(screen.getByText('Steps updated')).toBeTruthy();
   });
 });
