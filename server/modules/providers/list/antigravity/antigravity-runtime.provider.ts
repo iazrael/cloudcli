@@ -1341,6 +1341,15 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
     // while one holds the run the watchdog stays disarmed (the card registry's
     // own TTL bounds the wait), and engine frames do not re-arm it.
     let cardHold = 0;
+    // Tool calls of this run the engine has not reported finished. agy holds
+    // the prompt open while a command it moved to the background
+    // (`WaitMsBeforeAsync`) still runs and streams nothing meanwhile, so a
+    // long build or training job is silent for hours by design; killing the
+    // engine there also kills the job. Silence only counts as a wedge while
+    // no call is outstanding; a stuck tool stays visible as a running card
+    // the user can stop.
+    const openToolCalls = new Set<string>();
+    let reportedToolWait = false;
     const clearWatchdog = () => {
       if (watchdogTimer) {
         clearTimeout(watchdogTimer);
@@ -1352,6 +1361,14 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
       clearWatchdog();
       watchdogTimer = setTimeout(() => {
         watchdogTimer = null;
+        if (openToolCalls.size > 0) {
+          if (!reportedToolWait) {
+            reportedToolWait = true;
+            console.info(`[AntigravityAcp] No output for ${idleTimeout} while ${openToolCalls.size} tool call(s) run; still waiting on session ${sessionKey}`);
+          }
+          touchWatchdog();
+          return;
+        }
         watchdogExpired = true;
         console.error(`[AntigravityAcp] No output for ${idleTimeout}; terminating session ${sessionKey}`);
         manager.destroy(sessionKey);
@@ -1748,6 +1765,16 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
         if (params?.sessionId !== handle.sessionId) return;
         touchWatchdog();
         const update = readObjectRecord(params.update);
+        const updateKind = readOptionalString(update?.sessionUpdate);
+        const toolCallId = readOptionalString(update?.toolCallId);
+        if (toolCallId && (updateKind === 'tool_call' || updateKind === 'tool_call_update')) {
+          const toolStatus = readOptionalString(update?.status);
+          if (toolStatus === 'completed' || toolStatus === 'failed' || toolStatus === 'cancelled') {
+            openToolCalls.delete(toolCallId);
+          } else {
+            openToolCalls.add(toolCallId);
+          }
+        }
         // The live context occupancy: usage_update frames carry the session's
         // used tokens directly (the response usage sums the whole turn and
         // would overstate the context — the same accounting the print path
