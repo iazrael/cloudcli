@@ -254,8 +254,14 @@ const REPLAY_SKIP_WINDOW = 200;
 /** Suffix length the buffered-replay verdict aligns against the tail with. */
 const REPLAY_BUFFER_PROBE = 400;
 
-/** What consuming one chunk against the transcript tail concluded. */
-export type ReplayChunkVerdict =
+/**
+ * What the replay guard concluded about a chunk or the buffered stretch:
+ * `replay` carries the tail position the replay has consumed up to (the
+ * guard resumes consuming from there), `live` ends the guard. Shared by
+ * `consumeReplayChunk` and `classifyBufferedReplay`; exported for the runtime
+ * tests (consumer: antigravity-acp-runtime.test).
+ */
+export type ReplayVerdict =
   | { verdict: 'replay'; nextCursor: number }
   | { verdict: 'live' };
 
@@ -284,7 +290,7 @@ export function consumeReplayChunk(
   tailText: string | null,
   cursor: number,
   chunkText: string,
-): ReplayChunkVerdict {
+): ReplayVerdict {
   if (!chunkText.trim()) return { verdict: 'replay', nextCursor: cursor };
   if (!tailText || cursor >= tailText.length) return { verdict: 'live' };
   const head = chunkText.length > REPLAY_CHUNK_HEAD ? chunkText.slice(0, REPLAY_CHUNK_HEAD) : chunkText;
@@ -301,11 +307,6 @@ export function consumeReplayChunk(
   return { verdict: 'live' };
 }
 
-/** What classifying a whole buffered stretch against the tail concluded. */
-export type BufferedReplayVerdict =
-  | { verdict: 'replay'; nextCursor: number }
-  | { verdict: 'live' };
-
 /**
  * Classifies the text buffered while the tail was still being read, once the
  * tail is known. The buffer holds the resumed session's replayed history,
@@ -320,7 +321,7 @@ export type BufferedReplayVerdict =
 export function classifyBufferedReplay(
   tailText: string | null,
   bufferText: string,
-): BufferedReplayVerdict {
+): ReplayVerdict {
   if (!tailText) return { verdict: 'live' };
   // Align on the longest suffix both texts share: a tail shorter than the
   // probe window still aligns (the replay's final chars are the tail's).
