@@ -90,6 +90,21 @@ function handle(frame) {
       finish(frame.id);
       return;
     }
+    if (mode === 'acp-replay-then-live') {
+      // A resumed session: replay the transcript tail first, then stream the
+      // fresh reply whose first chunk (“已”) also occurs inside the tail.
+      // The delay lets the runtime's tail read win the race deterministically.
+      const replayTail = process.env.AGY_ACP_REPLAY_TAIL || '';
+      setTimeout(() => {
+        if (replayTail) {
+          send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: replayTail } } } });
+        }
+        send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '已' } } } });
+        send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-conv-1', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '把 zcode 和 opencode 一并对齐完成。' } } } });
+        finish(frame.id);
+      }, 250);
+      return;
+    }
     if (mode === 'acp-cancel') return; // wait for session/cancel
     if (mode === 'acp-drain') {
       // The model yields end_turn while its spawned subagent is still out:
@@ -671,20 +686,119 @@ test('a turn can be aborted while its model catalog is loading', async () => {
   }
 });
 
-test('isReplayTailMatch classifies replayed versus novel text', async () => {
-  const { isReplayTailMatch } = await import('../list/antigravity/antigravity-runtime.provider.js');
+test('consumeReplayChunk consumes the tail with a cursor', async () => {
+  const { consumeReplayChunk } = await import('../list/antigravity/antigravity-runtime.provider.js');
   const tail = '已完成全部 9 组 Godot 无头测试与核心变更静态排查，正在汇总并行的评审结果。\n标准评审已返回，正等待最后一份独立产品评审结果。';
-  assert.equal(isReplayTailMatch(tail, '标准评审已返回，正等待最后一份'), true, 'tail-quoted chunk is replay');
-  assert.equal(isReplayTailMatch(tail, '这是全新回复的开头，转录里没有出现过'), false, 'novel reply text is live');
-  assert.equal(isReplayTailMatch('', 'anything'), false, 'no tail means nothing is replay');
-  assert.equal(isReplayTailMatch(tail, '   '), true, 'whitespace holds the guard');
+
+  // A chunk that continues the tail at the cursor is replay, and it advances
+  // the cursor; the fragment that follows the consumed text can never be
+  // replay again — even when it occurs elsewhere in the tail. That is the
+  // incident shape: a resumed run swallowed the fresh reply's first chunk
+  // (“已”) because a global substring match found it inside the tail.
+  const first = consumeReplayChunk(tail, 0, tail.slice(0, 10));
+  assert.deepEqual(first, { verdict: 'replay', nextCursor: 10 }, 'continuing chunk is replay at the cursor');
+  const tailEndChunk = tail.slice(-6);
+  const atEnd = consumeReplayChunk(tail, tail.length, tailEndChunk);
+  assert.equal(atEnd.verdict, 'live', 'past the tail end everything is fresh output');
+  const midTailHit = consumeReplayChunk(tail, tail.length, '已');
+  assert.equal(midTailHit.verdict, 'live', 'a short fresh chunk quoted mid-tail is live, not replay');
+  const midCursorHit = consumeReplayChunk(tail, 12, tail.slice(0, 4));
+  assert.equal(midCursorHit.verdict, 'live', 'a chunk quoting the tail head from a later cursor is live');
+
+  // Whitespace cannot be classified: it holds as replay without advancing.
+  const held = consumeReplayChunk(tail, 10, '   ');
+  assert.deepEqual(held, { verdict: 'replay', nextCursor: 10 }, 'whitespace holds the guard');
+
+  // No tail (the tail read failed): nothing can be proven replay.
+  assert.equal(consumeReplayChunk(null, 0, '任何文本').verdict, 'live', 'no tail means nothing is replay');
+
+  // History cleaning shifts boundaries by whitespace: a chunk found within
+  // the skip window ahead of the cursor is still replay.
+  const drifted = consumeReplayChunk(tail, 8, tail.slice(16, 30));
+  assert.equal(drifted.verdict, 'replay', 'a hit inside the skip window is replay with drift');
+  if (drifted.verdict === 'replay') {
+    assert.equal(drifted.nextCursor, 30, 'the cursor jumps to the hit end');
+  }
+  const longTail = Array.from({ length: 30 }, (_, i) => `第${i}段回放文本内容。`).join('');
+  const beyondWindow = consumeReplayChunk(longTail, 0, longTail.slice(220, 250));
+  assert.equal(beyondWindow.verdict, 'live', 'a hit beyond the skip window is live');
+
+  // The engine repeats already-delivered boundary text: when the duplicated
+  // tail ending sits behind the cursor, only the tail-end overlap can prove
+  // it replay, and it consumes to the tail's end.
+  const overlap = consumeReplayChunk(tail, tail.length - 2, tail.slice(-4));
+  assert.equal(overlap.verdict, 'replay', 'a chunk duplicating the tail ending is replay');
+  if (overlap.verdict === 'replay') {
+    assert.equal(overlap.nextCursor, tail.length, 'the overlap consumes to the tail end');
+  }
 });
 
-test('isReplayTailMatch classifies replayed versus novel text', async () => {
-  const { isReplayTailMatch } = await import('../list/antigravity/antigravity-runtime.provider.js');
+test('classifyBufferedReplay aligns the buffered stretch against the tail', async () => {
+  const { classifyBufferedReplay } = await import('../list/antigravity/antigravity-runtime.provider.js');
   const tail = '已完成全部 9 组 Godot 无头测试与核心变更静态排查，正在汇总并行的评审结果。\n标准评审已返回，正等待最后一份独立产品评审结果。';
-  assert.equal(isReplayTailMatch(tail, '标准评审已返回，正等待最后一份'), true, 'tail-quoted chunk is replay');
-  assert.equal(isReplayTailMatch(tail, '这是全新回复的开头，转录里没有出现过'), false, 'novel reply text is live');
-  assert.equal(isReplayTailMatch('', 'anything'), false, 'no tail means nothing is replay');
-  assert.equal(isReplayTailMatch(tail, '   '), true, 'whitespace holds the guard');
+
+  // The common path: the tail read lands after the replay streamed past, so
+  // the buffer ends exactly where the tail does — all of it is replay. The
+  // alignment runs on the longest suffix both texts share, so a long replay
+  // ahead of a short tail still lines up.
+  const exact = classifyBufferedReplay(tail, `x`.repeat(500) + tail);
+  assert.deepEqual(exact, { verdict: 'replay', nextCursor: tail.length }, 'a buffer ending at the tail end is all replay');
+
+  // A buffer whose ending sits mid-tail means the replay stopped partway;
+  // later chunks must keep consuming from the match end.
+  const midTail = classifyBufferedReplay(tail, tail.slice(20, 60));
+  if (midTail.verdict === 'replay') {
+    assert.equal(midTail.nextCursor, 60, 'a mid-tail ending hands the cursor to the match end');
+  } else {
+    assert.fail('a mid-tail quoted buffer is replay');
+  }
+
+  // A buffer that already carries fresh output aligns with nothing.
+  assert.equal(
+    classifyBufferedReplay(tail, `${tail}已把全新回复写出。`).verdict,
+    'live',
+    'a buffer ending with fresh text is live',
+  );
+
+  // No tail (the tail read failed): the buffer cannot be proven replay.
+  assert.equal(classifyBufferedReplay(null, tail).verdict, 'live', 'no tail means the buffer is live');
+  // Whitespace holds the guard without consuming.
+  assert.deepEqual(classifyBufferedReplay(tail, '  '), { verdict: 'replay', nextCursor: 0 }, 'whitespace holds');
+});
+
+test('a resumed turn keeps the fresh reply intact while swallowing the replay', async () => {
+  // The 2026-11-26 incident, reproduced end to end: the resumed replay ends
+  // at the tail's end, then the model's real reply opens with “已” — a
+  // character the tail also contains. The cursor-based guard must deliver it.
+  const tail = '上一轮回复：已有 24 条有效软链，标准评审已返回。';
+  const agyRoot = path.join(process.env.HOME!, '.gemini', 'antigravity-cli');
+  // A resumed load is only attempted for conversations the data root knows.
+  fs.mkdirSync(path.join(agyRoot, 'conversations', 'acp-conv-1'), { recursive: true });
+  const logsDir = path.join(agyRoot, 'brain', 'acp-conv-1', '.system_generated', 'logs');
+  fs.mkdirSync(logsDir, { recursive: true });
+  fs.writeFileSync(path.join(logsDir, 'transcript.jsonl'), `${JSON.stringify({
+    step_index: 1,
+    source: 'MODEL',
+    type: 'PLANNER_RESPONSE',
+    status: 'DONE',
+    created_at: '2026-11-26T01:00:00Z',
+    content: tail,
+  })}\n`);
+  process.env.AGY_ACP_STUB_MODE = 'acp-replay-then-live';
+  process.env.AGY_ACP_REPLAY_TAIL = tail;
+  const resumedContext = {
+    ...context,
+    resolveProviderSessionId: (sessionId: string) => (sessionId === 'sess-acp-replay' ? 'acp-conv-1' : null),
+  } as unknown as ProviderRuntimeContext;
+  const { messages, writer } = createWriter();
+  const result = await runtime.run('继续', { sessionId: 'sess-acp-replay', cwd: workspaceDir }, writer, resumedContext);
+  assert.deepEqual(result, { sessionId: 'acp-conv-1', success: true });
+
+  const streamed = messages
+    .filter((message) => message.kind === 'stream_delta')
+    .map((message) => String(message.content ?? ''))
+    .join('');
+  assert.ok(!streamed.includes(tail), 'replayed history text is swallowed');
+  assert.equal(streamed, '已把 zcode 和 opencode 一并对齐完成。', 'the fresh reply keeps every chunk including its first');
+  assert.ok(messages.some((message) => message.kind === 'complete'), 'terminal frame present');
 });

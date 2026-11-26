@@ -245,18 +245,105 @@ const isStreamInterruptedNotice = (message: string | null | undefined): boolean 
     || trimmed === `Error: ${STREAM_INTERRUPTED_NOTICE}`;
 };
 
+//----------------- Replay-guard classification (cursor-based) ------------
+
+/** Longest chunk head the classifier matches on (long chunks may drift in their tail). */
+const REPLAY_CHUNK_HEAD = 120;
+/** How far past the cursor a replayed chunk may sit and still count as continuation. */
+const REPLAY_SKIP_WINDOW = 200;
+/** Suffix length the buffered-replay verdict aligns against the tail with. */
+const REPLAY_BUFFER_PROBE = 400;
+
+/** What consuming one chunk against the transcript tail concluded. */
+export type ReplayChunkVerdict =
+  | { verdict: 'replay'; nextCursor: number }
+  | { verdict: 'live' };
+
 /**
- * True when `chunkText` is still part of the transcript tail a resumed
- * session replays on load. The tail is the last few transcript rows'
- * content; replayed chunks quote it, the model's fresh reply does not.
+ * Consumes one streamed chunk against the tail a resumed session replays,
+ * saying whether it is still replay and where the replay has progressed to.
+ *
+ * Replay is chronological and ends exactly at the tail's end, so a chunk can
+ * only be replay when it continues the tail *at the cursor* — a global
+ * `includes` misclassified the model's first real chunk whenever that short
+ * fragment happened to occur anywhere in the tail, and the lost leading text
+ * left the client's streamed placeholder unable to reconcile with the
+ * persisted row (a reply shown twice). Rules:
+ *
+ * - whitespace cannot be classified: it holds as replay without advancing
+ *   (the previous matcher's behavior);
+ * - a cursor at or past the tail's end means the tail is fully consumed —
+ *   everything after is the model's fresh output by definition;
+ * - the chunk head (first `REPLAY_CHUNK_HEAD` chars, the previous probe
+ *   width) must continue at the cursor, or sit within `REPLAY_SKIP_WINDOW`
+ *   of it (history cleaning shifts boundaries by whitespace), or overlap the
+ *   tail's end (the engine repeats already-delivered boundary text).
  * Exported for the runtime tests (consumer: antigravity-acp-runtime.test).
  */
-export function isReplayTailMatch(tailText: string, chunkText: string): boolean {
-  if (!tailText) return false;
-  const probe = chunkText.length > 120 ? chunkText.slice(0, 120) : chunkText;
-  if (!probe.trim()) return true; // whitespace-only chunk: cannot classify, keep holding
-  return tailText.includes(probe) || tailText.endsWith(probe.slice(0, 40));
+export function consumeReplayChunk(
+  tailText: string | null,
+  cursor: number,
+  chunkText: string,
+): ReplayChunkVerdict {
+  if (!chunkText.trim()) return { verdict: 'replay', nextCursor: cursor };
+  if (!tailText || cursor >= tailText.length) return { verdict: 'live' };
+  const head = chunkText.length > REPLAY_CHUNK_HEAD ? chunkText.slice(0, REPLAY_CHUNK_HEAD) : chunkText;
+  if (tailText.startsWith(head, cursor)) {
+    return { verdict: 'replay', nextCursor: Math.min(cursor + chunkText.length, tailText.length) };
+  }
+  const driftIndex = tailText.indexOf(head, cursor);
+  if (driftIndex >= 0 && driftIndex - cursor <= REPLAY_SKIP_WINDOW) {
+    return { verdict: 'replay', nextCursor: Math.min(driftIndex + chunkText.length, tailText.length) };
+  }
+  if (tailText.endsWith(head.slice(0, 40))) {
+    return { verdict: 'replay', nextCursor: tailText.length };
+  }
+  return { verdict: 'live' };
 }
+
+/** What classifying a whole buffered stretch against the tail concluded. */
+export type BufferedReplayVerdict =
+  | { verdict: 'replay'; nextCursor: number }
+  | { verdict: 'live' };
+
+/**
+ * Classifies the text buffered while the tail was still being read, once the
+ * tail is known. The buffer holds the resumed session's replayed history,
+ * which ends at the tail's end — when the buffer's own ending aligns with the
+ * tail, everything buffered is replay (the common path: the tail read
+ * finishes after the replay has streamed past). A buffer whose ending sits
+ * mid-tail means the replay stopped partway and later chunks must keep
+ * consuming from there; a buffer whose ending aligns with nothing is already
+ * carrying the model's fresh text. Exported for the runtime tests
+ * (consumer: antigravity-acp-runtime.test).
+ */
+export function classifyBufferedReplay(
+  tailText: string | null,
+  bufferText: string,
+): BufferedReplayVerdict {
+  if (!tailText) return { verdict: 'live' };
+  // Align on the longest suffix both texts share: a tail shorter than the
+  // probe window still aligns (the replay's final chars are the tail's).
+  const probeLength = Math.min(REPLAY_BUFFER_PROBE, bufferText.length, tailText.length);
+  const bufferSuffix = bufferText.slice(-probeLength);
+  if (!bufferSuffix.trim()) {
+    // Whitespace cannot be classified: hold as replay, cursor unmoved.
+    return { verdict: 'replay', nextCursor: 0 };
+  }
+  if (tailText.endsWith(bufferSuffix)) {
+    return { verdict: 'replay', nextCursor: tailText.length };
+  }
+  const midTailIndex = tailText.indexOf(bufferSuffix);
+  if (midTailIndex >= 0) {
+    return { verdict: 'replay', nextCursor: midTailIndex + bufferSuffix.length };
+  }
+  if (tailText.endsWith(bufferSuffix.slice(0, 40))) {
+    return { verdict: 'replay', nextCursor: tailText.length };
+  }
+  return { verdict: 'live' };
+}
+
+//----------------- /Replay-guard classification ------------
 
 /**
  * The ACP runtime is the default since its real-machine acceptance; setting
@@ -1424,15 +1511,22 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
       // reply, streaming for a long time). The client already shows that
       // history from its own fetch, so replayed text would glue the previous
       // replies into the new turn's bubble. Guard: buffer resumed-turn text
-      // until the transcript tail is known, then drop everything that
-      // matches the tail and stream the rest.
+      // until the transcript tail is known, then consume the replay off the
+      // tail with a cursor (`classifyBufferedReplay`/`consumeReplayChunk`) —
+      // replay ends at the tail's end, so text past the cursor is always the
+      // model's fresh output. A global substring match used to misclassify a
+      // short first real chunk that happened to occur anywhere in the tail,
+      // dropping it and leaving the client's streamed placeholder unable to
+      // reconcile with the persisted row (docs/design/agy回放守卫游标判定.md).
       let replayGuard: {
         tailText: string | null;
         tailReady: boolean;
         bufferText: string;
         mode: 'buffering' | 'replay' | 'live';
+        /** How much of the tail the replay has already quoted (`classifyBufferedReplay`/`consumeReplayChunk`). */
+        tailCursor: number;
       } | null = handle.continuity === 'resumed'
-        ? { tailText: null, tailReady: false, bufferText: '', mode: 'buffering' }
+        ? { tailText: null, tailReady: false, bufferText: '', mode: 'buffering', tailCursor: 0 }
         : null;
       cancellation.signal.throwIfAborted();
       installAcpSessionRouter(sessionKey, context, handle.client);
@@ -1798,12 +1892,14 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
           }
           if (replayGuard && message.kind === 'stream_delta' && typeof message.content === 'string' && message.content) {
             if (replayGuard.mode === 'buffering' && replayGuard.tailReady) {
-              // Tail known: the buffered text is replay when it quotes the
-              // transcript tail; otherwise it was the model's real prose
-              // that arrived while the tail was being read.
-              const bufferedProbe = replayGuard.bufferText.slice(-400);
-              if (isReplayTailMatch(replayGuard.tailText ?? '', bufferedProbe)) {
+              // Tail known: the buffered text is replay when its ending
+              // aligns with the transcript tail (the replay ends there);
+              // otherwise it was the model's real prose that arrived while
+              // the tail was being read.
+              const bufferedVerdict = classifyBufferedReplay(replayGuard.tailText, replayGuard.bufferText);
+              if (bufferedVerdict.verdict === 'replay') {
                 replayGuard.mode = 'replay';
+                replayGuard.tailCursor = bufferedVerdict.nextCursor;
                 replayGuard.bufferText = '';
               } else {
                 replayGuard.mode = 'live';
@@ -1819,12 +1915,13 @@ export class AntigravityRuntimeProvider implements IProviderRuntime {
                 replayGuard.bufferText = '';
               }
             }
-            if (replayGuard.mode === 'replay') {
-              if (!isReplayTailMatch(replayGuard.tailText ?? '', message.content)) {
-                replayGuard.mode = 'live'; // first novel chunk: live from here
-              } else {
+            if (replayGuard && replayGuard.mode === 'replay') {
+              const chunkVerdict = consumeReplayChunk(replayGuard.tailText, replayGuard.tailCursor, message.content);
+              if (chunkVerdict.verdict === 'replay') {
+                replayGuard.tailCursor = chunkVerdict.nextCursor;
                 continue;
               }
+              replayGuard.mode = 'live'; // first novel chunk: live from here
             }
             if (replayGuard && replayGuard.mode === 'live') {
               replayGuard = null; // everything after is the model's real output
