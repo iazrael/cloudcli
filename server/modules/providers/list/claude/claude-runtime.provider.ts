@@ -351,26 +351,35 @@ const PLAN_MODE_TOOLS = ['Read', 'Agent', 'Task', 'exit_plan_mode', 'TodoRead', 
 
 const TOOL_APPROVAL_TIMEOUT_MS = parseInt(process.env.CLAUDE_TOOL_APPROVAL_TIMEOUT_MS ?? '', 10) || 55000;
 
-// How long background work is allowed to keep running after a turn ends. This drives
-// two halves of the same behaviour:
-//
-//  1. Passed to the spawned CLI as CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS, which is how
-//     long it waits for still-running background *agents* before killing them.
-//  2. A backstop on how long we hold the SDK's stdin open after a turn's `result`.
-//     The SDK closes stdin as soon as a turn ends, and the CLI reads that EOF as
-//     "print wind-down" — killing background *shells* after a short grace period,
-//     which the ceiling above does not cover. Holding stdin open also lets the CLI
-//     push follow-up turns (background-task completions, Monitor notifications,
-//     scheduled wake-ups).
+// How long background work may stay silent before its held process is let go.
+// Holding the SDK's stdin open keeps the CLI from reading EOF as "print
+// wind-down" and killing everything still running; it also lets the CLI push
+// follow-up turns (background-task completions, Monitor notifications,
+// scheduled wake-ups).
 //
 // The hold normally ends long before this: background work hands the process
 // over to idle residency (below) as soon as it reports back, and a new turn
-// either continues on the held process or supersedes it. This ceiling
-// only catches background work that never reports at all, so an abandoned session
-// cannot leak a CLI process forever. The timer resets on every message, so it
-// measures silence, not total time — and a dev server left running in the
-// background prints nothing back for long stretches, hence two hours.
-const BG_WAIT_CEILING_MS = 2 * 60 * 60 * 1000;
+// either continues on the held process or supersedes it. This ceiling only
+// catches work that never reports at all, so an abandoned session cannot leak
+// a CLI process forever. The timer resets on every message, so it measures
+// silence, not total time — and a dev server left running in the background
+// prints nothing back for long stretches. Read on every use so an operator can
+// change it without a restart (`0` waits indefinitely).
+const DEFAULT_BG_WAIT_CEILING_MS = 24 * 60 * 60 * 1000;
+
+/** How long background work may stay silent before the held process is released; 0 waits indefinitely. */
+function bgWaitCeilingMs(): number {
+  const value = Number.parseInt(process.env.CLOUDCLI_CLAUDE_BG_WAIT_CEILING_MS ?? '', 10);
+  return Number.isFinite(value) && value >= 0 ? value : DEFAULT_BG_WAIT_CEILING_MS;
+}
+
+// The CLI's own print wind-down ceiling, passed as
+// CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS. Deliberately short and fixed: the hold
+// above has already spent the configured wait, so once cloudcli closes stdin
+// the CLI only needs a grace period to stop what is left. Reusing the hold
+// value here stacked two waits and made the real deadline twice the
+// configured one.
+const CLI_BG_WIND_DOWN_GRACE_MS = 10 * 60 * 1000;
 
 // Idle residency (docs/design/Claude会话常驻.md): a process whose turn ended
 // with nothing outstanding stays alive for the session's next turn, which
@@ -739,7 +748,7 @@ function mapCliOptionsToSDK(options: ClaudeRunOptions = {}): ClaudeSdkOptions {
   // Since SDK 0.2.113, options.env replaces process.env instead of overlaying it.
   // CLAUDE_CODE_ENTRYPOINT labels SDK sessions as this UI (upstream #1677);
   // a host value still wins, same as the Artifact default above.
-  sdkOptions.env = { CLAUDE_CODE_ARTIFACT: '1', CLAUDE_CODE_ENTRYPOINT: 'claudecodeui', ...process.env, CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: String(BG_WAIT_CEILING_MS) };
+  sdkOptions.env = { CLAUDE_CODE_ARTIFACT: '1', CLAUDE_CODE_ENTRYPOINT: 'claudecodeui', ...process.env, CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: String(CLI_BG_WIND_DOWN_GRACE_MS) };
 
   // Resolve the executable eagerly on Windows because the SDK uses raw child_process.spawn,
   // which does not reliably follow npm's shell wrappers like cross-spawn does.
@@ -1684,13 +1693,27 @@ async function runClaudeProcess(
       clearTimeout(idleReleaseTimer);
       idleReleaseTimer = null;
     }
+    const holdMs = bgWaitCeilingMs();
+    // 0 is the operator's explicit "wait indefinitely"; there is nothing to arm.
+    if (holdMs <= 0) return;
+    const hours = holdMs / 3_600_000;
+    const waited = hours >= 1
+      ? `${Math.round(hours * 10) / 10}h`
+      : `${Math.max(1, Math.round(holdMs / 60_000))}m`;
     idleReleaseTimer = setTimeout(() => {
       idleReleaseTimer = null;
       // The ceiling forces the release through: a native side question the
       // CLI never answers must not hold the process (and its MCP servers)
       // forever.
+      console.warn(`[Claude SDK] Background work in session ${sessionKey() ?? '<unknown>'} reported nothing for ${waited}; releasing the held process.`);
+      ws?.send?.(createNormalizedMessage({
+        kind: 'status',
+        text: `Background work reported nothing for ${waited}; stopping it.`,
+        sessionId: capturedSessionId || sessionId || null,
+        provider: 'claude'
+      }));
       releasePromptStream(true);
-    }, BG_WAIT_CEILING_MS);
+    }, Math.min(holdMs, 2 ** 31 - 1));
     // Never let the hold keep the server process alive on its own.
     idleReleaseTimer.unref?.();
   };

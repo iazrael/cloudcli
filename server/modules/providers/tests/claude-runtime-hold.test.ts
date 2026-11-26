@@ -229,6 +229,11 @@ test('SDK environment enables Artifact by default and respects an explicit host 
         await script.drain();
         assert.equal(queryOptions[0]?.env?.CLAUDE_CODE_ARTIFACT, configured ?? '1');
         assert.equal(queryOptions[0]?.env?.CLOUDCLI_TEST_ENV, 'forwarded');
+        assert.equal(
+          queryOptions[0]?.env?.CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS,
+          String(10 * 60 * 1000),
+          'the CLI only gets the short wind-down grace after cloudcli releases stdin'
+        );
       });
     }
   } finally {
@@ -1277,19 +1282,79 @@ test('turning on bypass permissions waits for background work before starting a 
   });
 });
 
-test('a held process outlasts two hours of silence minus a minute, and is let go after two', async (t) => {
+test('a held process outlasts 23h59m of silence and is let go after 24 hours', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
-  await withRun(async ({ script }) => {
+  await withRun(async ({ script, sent }) => {
     await holdForBackgroundBash(script);
 
     // A dev server left running prints nothing back to the CLI for long stretches.
-    t.mock.timers.tick(119 * 60 * 1000);
+    t.mock.timers.tick(24 * 60 * 60 * 1000 - 60 * 1000);
     await tick();
-    assert.equal(script.released(), false, 'still held after 1h59m of silence');
+    assert.equal(script.released(), false, 'still held after 23h59m of silence');
 
-    t.mock.timers.tick(2 * 60 * 1000);
+    t.mock.timers.tick(60 * 1000);
     await tick();
-    assert.equal(script.released(), true, 'released once two silent hours have passed');
+    assert.equal(script.released(), true, 'released once 24 silent hours have passed');
+    assert.ok(
+      sent.some((message) => message.kind === 'status' && /Background work reported nothing for 24h/.test(message.text ?? '')),
+      'the ceiling says why the work is going away'
+    );
+  });
+});
+
+/** Runs one test with the hold ceiling configured, restoring the previous value afterwards. */
+async function withHoldCeiling(value: string | undefined, body: () => Promise<void>): Promise<void> {
+  const previous = process.env.CLOUDCLI_CLAUDE_BG_WAIT_CEILING_MS;
+  if (value === undefined) delete process.env.CLOUDCLI_CLAUDE_BG_WAIT_CEILING_MS;
+  else process.env.CLOUDCLI_CLAUDE_BG_WAIT_CEILING_MS = value;
+  try {
+    await body();
+  } finally {
+    if (previous === undefined) delete process.env.CLOUDCLI_CLAUDE_BG_WAIT_CEILING_MS;
+    else process.env.CLOUDCLI_CLAUDE_BG_WAIT_CEILING_MS = previous;
+  }
+}
+
+test('the hold ceiling comes from the environment', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  await withHoldCeiling('90000', async () => {
+    await withRun(async ({ script }) => {
+      await holdForBackgroundBash(script);
+
+      t.mock.timers.tick(89_000);
+      await tick();
+      assert.equal(script.released(), false, 'still held before the configured ceiling');
+
+      t.mock.timers.tick(2_000);
+      await tick();
+      assert.equal(script.released(), true, 'released at the configured ceiling');
+    });
+  });
+});
+
+test('a hold ceiling of 0 keeps the process indefinitely', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  await withHoldCeiling('0', async () => {
+    await withRun(async ({ script }) => {
+      await holdForBackgroundBash(script);
+
+      t.mock.timers.tick(30 * 24 * 60 * 60 * 1000);
+      await tick();
+      assert.equal(script.released(), false, 'no ceiling is armed when it is 0');
+    });
+  });
+});
+
+test('an invalid hold ceiling falls back to the 24-hour default', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  await withHoldCeiling('not-a-number', async () => {
+    await withRun(async ({ script }) => {
+      await holdForBackgroundBash(script);
+
+      t.mock.timers.tick(24 * 60 * 60 * 1000 - 60 * 1000);
+      await tick();
+      assert.equal(script.released(), false, 'still held before the default ceiling');
+    });
   });
 });
 
