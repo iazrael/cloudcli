@@ -421,6 +421,7 @@ test('running sessions carry their tasks on a chat run that is still going', { c
         assert.deepEqual(sessions[0], {
           sessionId: 'busy-session',
           provider: 'claude',
+          runId: run.runId,
           startedAt: run.startedAt,
           lastSeq: 0,
           tasks,
@@ -502,7 +503,7 @@ test('an engine turn does not duplicate a chat run on the same session', { concu
       },
       async () => {
         assert.deepEqual(await sessionsService.listRunningSessions(), [{
-          sessionId: 'both-session', provider: 'zcode', startedAt: run.startedAt, lastSeq: 0,
+          sessionId: 'both-session', provider: 'zcode', runId: run.runId, startedAt: run.startedAt, lastSeq: 0,
         }]);
       },
     ));
@@ -565,7 +566,7 @@ test('running sessions with no background work are the chat runs alone', { concu
       { codex: { run: async () => undefined, abort: () => false } },
       async () => {
         assert.deepEqual(await sessionsService.listRunningSessions(), [{
-          sessionId: 'plain-session', provider: 'codex', startedAt: run.startedAt, lastSeq: 0,
+          sessionId: 'plain-session', provider: 'codex', runId: run.runId, startedAt: run.startedAt, lastSeq: 0,
         }]);
       },
     ));
